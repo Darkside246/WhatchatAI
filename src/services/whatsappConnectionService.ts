@@ -6,6 +6,7 @@ import {
 } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import path from 'node:path';
+import { whatsappMessageIngestionService } from './whatsappMessageIngestionService.js';
 
 export type WhatsAppConnectionStatus =
   | 'DISCONNECTED'
@@ -164,6 +165,10 @@ export class WhatsAppConnectionService {
   private attachEventHandlers(socket: WASocket): void {
     if (this.listenersAttached) return;
     this.listenersAttached = true;
+
+    socket.ev.on('messages.upsert', (payload) => {
+      whatsappMessageIngestionService.ingestUpsert(payload);
+    });
 
     socket.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;

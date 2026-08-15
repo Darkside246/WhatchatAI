@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { z } from 'zod';
 import { whatsappConnectionService } from '../services/whatsappConnectionService.js';
+import { whatsappMessageIngestionService } from '../services/whatsappMessageIngestionService.js';
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
@@ -75,6 +76,20 @@ app.post('/api/whatsapp/disconnect', async (_req, res) => {
 app.post('/api/whatsapp/logout', async (_req, res) => {
   await whatsappConnectionService.logout();
   return res.status(200).json(whatsappConnectionService.getSnapshot());
+});
+
+app.get('/api/whatsapp/messages/recent', (req, res) => {
+  const limitParam = Number(req.query.limit);
+  const limit = Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 50;
+
+  return res.status(200).json({
+    note: 'In-memory ingestion buffer (Phase 2B). Not yet backed by a database - persistence lands in Phase 3.',
+    messages: whatsappMessageIngestionService.getRecent(limit),
+  });
+});
+
+app.get('/api/whatsapp/messages/stats', (_req, res) => {
+  return res.status(200).json(whatsappMessageIngestionService.getStats());
 });
 
 const messageSchema = z.object({

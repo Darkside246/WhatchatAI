@@ -44,6 +44,18 @@ Health endpoints, configuration validation, logging, strict TypeScript, service 
 
 Implement the real QR/Baileys session. Persist session state securely. Expose real connection state only. Register one socket with the dispatcher.
 
+**Phase 2A (done):** real Baileys socket, QR generation, connection status reporting.
+
+**Phase 2B (done):** real inbound message ingestion. The connection service forwards every `messages.upsert` event from the live socket to `whatsappMessageIngestionService`, which:
+
+- Preserves `remoteJid` exactly as received, including `@lid` identifiers - it is never rewritten to a phone-based JID.
+- Derives a phone number only from a genuine phone-based JID (`@s.whatsapp.net`/`@c.us`), or from Baileys' own `remoteJidAlt` counterpart when the conversation is `@lid`-addressed. A phone number is never guessed from `@lid` digits.
+- Classifies content deterministically from the actual message payload (text, image, video, voice note vs. audio file, document with pdf/spreadsheet/other sub-typing, sticker, location, contact, reaction, poll, system), unwrapping ephemeral/view-once/caption envelopes first.
+- Marks each message `isLive` based on Baileys' own upsert type (`notify` = live, anything else = historical/synced), so historical import can never be mistaken for a live event.
+- Holds ingested messages in a bounded in-memory buffer only - there is no database yet, so nothing here is described as "saved" or "persisted". `GET /api/whatsapp/messages/recent` and `GET /api/whatsapp/messages/stats` expose this buffer for verification and say so explicitly.
+
+Persistence (chats, contacts, messages durably stored with an audit trail) is Phase 3 work, not part of 2B.
+
 ### Phase 3 - Full synchronization
 
 Import real contacts, active chats, groups, profile pictures, message history, timestamps, unread state, statuses where the connection exposes them, and media metadata. Preserve original JIDs.

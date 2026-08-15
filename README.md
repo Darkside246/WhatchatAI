@@ -17,4 +17,4 @@ This repository is being built from the ground up using a phased, page-by-page i
 
 ## Current phase
 
-Phase 0 / Phase 1 foundation setup is being implemented on a dedicated feature branch before merge to `main`.
+Phase 1 (foundation) and Phase 2A (real QR/Baileys connection) are implemented. Phase 2B (real inbound WhatsApp message ingestion) is now implemented: the connection service forwards every `messages.upsert` event to a dedicated ingestion service that classifies content type, preserves the original JID (including `@lid`), and distinguishes live from historical messages. Ingested messages are held in an in-memory buffer pending the Phase 3 persistence layer.
