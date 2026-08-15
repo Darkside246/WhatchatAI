@@ -7,7 +7,18 @@ import { fileURLToPath } from 'node:url';
 import { whatsappConnectionService } from '../services/whatsappConnectionService.js';
 import { whatsappMessageIngestionService } from '../services/whatsappMessageIngestionService.js';
 import { workspaceService, isChatNotFoundError } from '../services/workspaceService.js';
-import { checkDatabaseHealth } from '../db/pool.js';
+import { checkDatabaseHealth, pool } from '../db/pool.js';
+import { BusinessRepository } from '../repositories/businessRepository.js';
+import {
+  getLockStatus,
+  getUnlockChallenge,
+  setupLock,
+  attemptUnlock,
+  InvalidArgon2ParamsError,
+  LockAlreadyConfiguredError,
+  LockNotConfiguredError,
+} from '../services/securityLockService.js';
+import { listHumanTakeoverAlerts } from '../services/securityAlertService.js';
 import type { Request, Response, NextFunction } from 'express';
 
 const app = express();
@@ -201,6 +212,94 @@ app.post('/api/diagnostics/validate-message', (req, res) => {
   }
 
   return res.status(200).json({ valid: true });
+});
+
+async function resolveDefaultBusinessId(): Promise<string> {
+  const business = await new BusinessRepository(pool).ensureDefault();
+  return business.id;
+}
+
+const argon2ParamsSchema = z.object({
+  memoryCostKib: z.number().int().positive(),
+  timeCost: z.number().int().positive(),
+  parallelism: z.number().int().positive(),
+  hashLengthBytes: z.number().int().positive(),
+});
+
+// PIN hashing happens client-side (Argon2id, WASM) - the server only ever sees hex-encoded hashes/salts, never a raw PIN.
+const setupLockSchema = z.object({
+  salt: z.string().min(16),
+  pinHash: z.string().regex(/^[0-9a-f]+$/i).min(32),
+  argon2Params: argon2ParamsSchema,
+});
+
+const unlockSchema = z.object({
+  pinHash: z.string().regex(/^[0-9a-f]+$/i).min(32),
+});
+
+app.get('/api/security/lock/status', async (_req, res) => {
+  const businessId = await resolveDefaultBusinessId();
+  const status = await getLockStatus(businessId);
+  return res.status(200).json(status);
+});
+
+app.get('/api/security/lock/challenge', async (_req, res) => {
+  const businessId = await resolveDefaultBusinessId();
+  try {
+    const challenge = await getUnlockChallenge(businessId);
+    return res.status(200).json(challenge);
+  } catch (error) {
+    if (error instanceof LockNotConfiguredError) {
+      return res.status(404).json({ error: 'LOCK_NOT_CONFIGURED', message: error.message });
+    }
+    throw error;
+  }
+});
+
+app.post('/api/security/lock/setup', async (req, res) => {
+  const parsed = setupLockSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_SETUP_PAYLOAD' });
+  }
+
+  const businessId = await resolveDefaultBusinessId();
+  try {
+    await setupLock(businessId, parsed.data);
+    return res.status(201).json({ configured: true });
+  } catch (error) {
+    if (error instanceof LockAlreadyConfiguredError) {
+      return res.status(409).json({ error: 'LOCK_ALREADY_CONFIGURED', message: error.message });
+    }
+    if (error instanceof InvalidArgon2ParamsError) {
+      return res.status(400).json({ error: 'WEAK_ARGON2_PARAMS', message: error.message });
+    }
+    throw error;
+  }
+});
+
+app.post('/api/security/lock/unlock', async (req, res) => {
+  const parsed = unlockSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_UNLOCK_PAYLOAD' });
+  }
+
+  const businessId = await resolveDefaultBusinessId();
+  try {
+    const result = await attemptUnlock(businessId, parsed.data.pinHash);
+    if (result.revoked) return res.status(423).json(result);
+    return res.status(result.unlocked ? 200 : 401).json(result);
+  } catch (error) {
+    if (error instanceof LockNotConfiguredError) {
+      return res.status(404).json({ error: 'LOCK_NOT_CONFIGURED', message: error.message });
+    }
+    throw error;
+  }
+});
+
+app.get('/api/security/alerts/human-takeover', async (_req, res) => {
+  const businessId = await resolveDefaultBusinessId();
+  const alerts = await listHumanTakeoverAlerts(businessId);
+  return res.status(200).json({ alerts });
 });
 
 // Serves the built frontend as one process in production. In dev, the Vite dev

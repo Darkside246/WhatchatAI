@@ -1,5 +1,6 @@
 import type { Queryable } from './types.js';
 import type { MessageDirection, MessageStatus, MessageType } from '../domain/whatsapp/types.js';
+import { getEncryptionService } from '../security/encryption/index.js';
 
 export interface WhatsAppMessageRecord {
   id: string;
@@ -51,7 +52,19 @@ interface MessageRow {
   created_at: string;
 }
 
-function toRecord(row: MessageRow, wasInserted: boolean): WhatsAppMessageRecord {
+/**
+ * Message bodies are stored at rest as serialized AES-256-GCM envelopes
+ * (see src/security/encryption). tryParse() returns null for legacy/plain
+ * text so pre-encryption rows keep reading correctly.
+ */
+async function decryptTextContent(businessId: string, textContent: string | null): Promise<string | null> {
+  if (textContent === null) return null;
+  const envelope = getEncryptionService().tryParse(textContent);
+  if (!envelope) return textContent;
+  return getEncryptionService().decryptField(businessId, envelope);
+}
+
+async function toRecord(row: MessageRow, wasInserted: boolean): Promise<WhatsAppMessageRecord> {
   return {
     id: row.id,
     businessId: row.business_id,
@@ -64,7 +77,7 @@ function toRecord(row: MessageRow, wasInserted: boolean): WhatsAppMessageRecord 
     senderContactId: row.sender_contact_id,
     direction: row.direction,
     messageType: row.message_type,
-    textContent: row.text_content,
+    textContent: await decryptTextContent(row.business_id, row.text_content),
     caption: row.caption,
     timestamp: row.timestamp,
     fromMe: row.from_me,
@@ -108,6 +121,13 @@ export class WhatsAppMessageRepository {
    * insert is not an error: it returns the existing row with wasInserted=false.
    */
   async insert(input: InsertMessageInput): Promise<WhatsAppMessageRecord> {
+    const encryptedTextContent =
+      input.textContent != null
+        ? getEncryptionService()
+            .encryptField(input.businessId, input.textContent)
+            .then((envelope) => getEncryptionService().serialize(envelope))
+        : Promise.resolve(null);
+
     const { rows } = await this.db.query<MessageRow>(
       `INSERT INTO whatsapp_messages
          (business_id, whatsapp_account_id, chat_id, whatsapp_message_id, remote_jid,
@@ -127,7 +147,7 @@ export class WhatsAppMessageRepository {
         input.senderContactId ?? null,
         input.direction,
         input.messageType,
-        input.textContent ?? null,
+        await encryptedTextContent,
         input.caption ?? null,
         input.timestamp,
         input.fromMe,
@@ -180,6 +200,6 @@ export class WhatsAppMessageRepository {
        ORDER BY "timestamp" DESC LIMIT $2`,
       [chatId, limit],
     );
-    return rows.map((row) => toRecord(row, false));
+    return Promise.all(rows.map((row) => toRecord(row, false)));
   }
 }

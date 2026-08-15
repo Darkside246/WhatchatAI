@@ -176,4 +176,34 @@ export class WhatsAppChatRepository {
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }
+
+  /**
+   * Real, PII-free data for the lock-screen AlertNotifier: chats currently
+   * awaiting a human, labeled only by a stable per-business line ordinal
+   * (never the account's phone number or push name) and an unread-count
+   * urgency tier. No message text or contact identity is selected.
+   */
+  async listHumanTakeoverAlerts(businessId: string): Promise<HumanTakeoverAlertRow[]> {
+    const { rows } = await this.db.query<HumanTakeoverAlertRow>(
+      `WITH numbered_accounts AS (
+         SELECT id, ROW_NUMBER() OVER (ORDER BY created_at) AS line_number
+         FROM whatsapp_accounts
+         WHERE business_id = $1
+       )
+       SELECT c.id AS chat_id, c.unread_count, c.updated_at, na.line_number
+       FROM whatsapp_chats c
+       JOIN numbered_accounts na ON na.id = c.whatsapp_account_id
+       WHERE c.business_id = $1 AND c.ai_mode = 'HUMAN_TAKEOVER' AND c.deleted_at IS NULL
+       ORDER BY c.updated_at DESC`,
+      [businessId],
+    );
+    return rows;
+  }
+}
+
+export interface HumanTakeoverAlertRow {
+  chat_id: string;
+  unread_count: number;
+  updated_at: string;
+  line_number: string;
 }

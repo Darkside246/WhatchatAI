@@ -7,8 +7,8 @@ import {
 import QRCode from 'qrcode';
 import path from 'node:path';
 import { whatsappMessageIngestionService } from './whatsappMessageIngestionService.js';
-import { whatsappMessagePersistenceService } from './whatsappMessagePersistenceService.js';
 import { whatsappSyncService } from './whatsappSyncService.js';
+import { enqueueIncomingMessage } from '../queue/queues/incomingMessagesQueue.js';
 import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { pool } from '../db/pool.js';
 import { BusinessRepository } from '../repositories/businessRepository.js';
@@ -185,8 +185,11 @@ export class WhatsAppConnectionService {
     this.listenersAttached = true;
 
     socket.ev.on('messages.upsert', (payload) => {
+      // Speed layer: classify in-memory only (sync, no I/O) and hand off to
+      // the incoming_messages queue. No synchronous DB write happens on this
+      // event-loop turn - a dedicated worker process persists the message.
       const ingested = whatsappMessageIngestionService.ingestUpsert(payload);
-      this.persistIngestedMessages(ingested);
+      this.enqueueIngestedMessages(ingested);
     });
 
     socket.ev.on('contacts.upsert', (contacts) => {
@@ -370,18 +373,16 @@ export class WhatsAppConnectionService {
       });
   }
 
-  private persistIngestedMessages(ingested: ReturnType<typeof whatsappMessageIngestionService.ingestUpsert>): void {
+  private enqueueIngestedMessages(ingested: ReturnType<typeof whatsappMessageIngestionService.ingestUpsert>): void {
     if (!this.businessId || !this.persistedAccountId || !this.snapshot.jid) return;
     const businessId = this.businessId;
     const whatsappAccountId = this.persistedAccountId;
     const accountJid = this.snapshot.jid;
 
     for (const message of ingested) {
-      whatsappMessagePersistenceService
-        .persist({ businessId, whatsappAccountId, accountJid, ingested: message })
-        .catch((error) => {
-          console.error('[WhatsApp] Failed to persist message', message.messageId, error);
-        });
+      enqueueIncomingMessage({ businessId, whatsappAccountId, accountJid, message }).catch((error) => {
+        console.error('[WhatsApp] Failed to enqueue message', message.messageId, error);
+      });
     }
   }
 

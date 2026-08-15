@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
+import { getEncryptionService } from '../src/security/encryption/index.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 
 describe('WhatsAppMessageRepository', () => {
@@ -132,5 +133,40 @@ describe('WhatsAppMessageRepository', () => {
     await messages.updateStatus(message.id, 'delivered');
     const updated = await messages.findById(message.id);
     expect(updated?.status).toBe('delivered');
+  });
+
+  it('stores message text at rest as an AES-256-GCM envelope, not plaintext', async () => {
+    const plaintext = 'this must never be readable directly from the database';
+    const message = await messages.insert({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      whatsappMessageId: 'WA-MSG-ENCRYPTED',
+      remoteJid: '15550002222@s.whatsapp.net',
+      senderJid: '15550002222@s.whatsapp.net',
+      direction: 'inbound',
+      messageType: 'text',
+      textContent: plaintext,
+      timestamp: new Date().toISOString(),
+      fromMe: false,
+      isHistorical: false,
+    });
+
+    // The repository still hands back decrypted plaintext to callers.
+    expect(message.textContent).toBe(plaintext);
+
+    // But the raw column never holds the plaintext - only a parseable envelope.
+    const { rows } = await pool.query<{ text_content: string }>(
+      'SELECT text_content FROM whatsapp_messages WHERE id = $1',
+      [message.id],
+    );
+    const rawStored = rows[0].text_content;
+    expect(rawStored).not.toBe(plaintext);
+    expect(rawStored).not.toContain(plaintext);
+
+    const envelope = getEncryptionService().tryParse(rawStored);
+    expect(envelope).not.toBeNull();
+    const decrypted = await getEncryptionService().decryptField(businessId, envelope!);
+    expect(decrypted).toBe(plaintext);
   });
 });

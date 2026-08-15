@@ -37,6 +37,27 @@ The visual workflow is a guide, not a source of fake data or simulated services.
 - `src/db`: connection pool, health check, transaction helper, and SQL migrations.
 - `src/repositories`: one parameterized-query repository per persisted entity. Routes never touch Postgres directly.
 - `src/web`: responsive React + Vite + Tailwind UI (npm workspace). `npm run dev` runs it alongside the backend; `npm run build` produces a static bundle the Express server serves directly in production (one process, one port). See `docs/APP_BINDING_REPORT.md` for the onboarding -> sync -> workspace flow this drives.
+- `src/queue`: BullMQ queues/workers (Redis-backed). `src/queue/queues/incomingMessagesQueue.ts` is the speed-layer entry point; `src/queue/workers/incomingMessagesWorker.ts` is a standalone process (`npm run dev:worker`) that runs the Sentinel and persistence off the Baileys event loop.
+- `src/security`: `src/security/encryption` (AES-256-GCM envelope encryption, envelope-based Tenant Data Key derivation, Redis-cached with a 15-minute TTL) and `src/security/sentinel` (Stage 1 heuristic shield + Redis rate limiting, Stage 2 Gemini Flash prompt-injection/jailbreak classifier).
+- `src/redis`: shared Redis client for caching and rate limiting, separate from BullMQ's own dedicated connections (`src/queue/connection.ts`).
+
+## Zero-trust security & speed-layer pipeline
+
+Live message ingestion is fully decoupled from the API/UI process:
+
+1. `messages.upsert` (Baileys) classifies the payload in memory (no I/O) and pushes it onto the `incoming_messages` BullMQ queue - no synchronous Postgres write happens on that event-loop turn.
+2. A separate worker process (`src/queue/workers/incomingMessagesWorker.ts`) drains the queue. Per message it runs the Tiered Security Sentinel (`src/security/sentinel/sentinel.ts`) before any business logic:
+   - Stage 1 (heuristic shield): regex checks for malicious links/spam signatures, executable MIME/extension blocking, payload size limits, and a real Redis token-bucket rate limit (10 msgs/10s per sender).
+   - Stage 2 (AI sentinel): surviving text is checked by a Gemini Flash model with strict JSON-schema output (`{safe, reason}`) for prompt injection, jailbreak, and social-engineering intent. If `GEMINI_API_KEY` is unset or the call fails, this fails OPEN and honestly logs `sentinel_ai_unavailable` - it never fabricates a safe verdict. Stage 1 remains the enforced gate in that case.
+   - Every verdict is written to `security_audit_logs` (see migration 028); `rawMetadata` never carries message text, contact names, or phone numbers.
+3. Messages the Sentinel allows are persisted via the existing transactional path (`WhatsAppMessagePersistenceService`). `text_content` is stored as an AES-256-GCM envelope (`src/security/encryption`), transparently encrypted on write and decrypted on read by `WhatsAppMessageRepository` - callers still see plaintext.
+4. For a new, live, inbound message in an `AI_ACTIVE` chat, `gatherAiHandoffContext` (`src/services/aiContextGathererService.ts`) runs CRM lookup, conversation history, and knowledge-base search concurrently via `Promise.all()`. Knowledge-base vector search has no backend yet and honestly reports `available: false` rather than inventing results; wiring this context into a real Gemini Orchestrator reply is a later phase.
+
+## Application Lock Mode
+
+`src/web/src/components/ScreenLock.tsx` overlays the workspace on a 5-minute idle timeout or Alt+L, without pausing any background service - Baileys, the BullMQ worker, and the API server are separate Node processes untouched by UI lock state. The PIN (6-8 digits) is hashed client-side with Argon2id (`hash-wasm`, WASM) before it ever reaches the server; the server only ever sees hex hashes and salts (`src/services/securityLockService.ts`, `POST /api/security/lock/setup|unlock`). Ten consecutive failed attempts permanently revoke the lock (a real, audited `lock_revoked` state) - full forced re-login isn't wired because this codebase has no session/auth system yet.
+
+`src/web/src/components/AlertNotifier.tsx` polls `GET /api/security/alerts/human-takeover` and renders a pulsing amber/red banner + Web Audio chime for chats in `HUMAN_TAKEOVER` mode. It always renders, independent of the lock screen's state. Zero-Leak Rule: the endpoint (`src/services/securityAlertService.ts`) exposes only a stable per-business line ordinal and an unread-count-derived urgency tier - never message text, contact names, or phone numbers.
 
 ## Phase sequence
 

@@ -93,6 +93,35 @@ export interface WorkspaceChatDetail {
   crmContact: WorkspaceCrmContact | null;
 }
 
+export interface Argon2ParamsDto {
+  memoryCostKib: number;
+  timeCost: number;
+  parallelism: number;
+  hashLengthBytes: number;
+}
+
+export interface LockStatusResponse {
+  configured: boolean;
+}
+
+export interface UnlockChallengeResponse {
+  salt: string;
+  argon2Params: Argon2ParamsDto;
+}
+
+export interface UnlockResultResponse {
+  unlocked: boolean;
+  revoked: boolean;
+  remainingAttempts: number | null;
+}
+
+export interface HumanTakeoverAlertDto {
+  chatId: string;
+  lineLabel: string;
+  urgency: 'HIGH' | 'MEDIUM' | 'LOW';
+  triggeredAt: string;
+}
+
 class ApiError extends Error {
   constructor(
     public status: number,
@@ -129,4 +158,24 @@ export const api = {
   setAiMode: (chatId: string, aiMode: WorkspaceChatSummary['aiMode']) =>
     request(`/workspace/chats/${chatId}/ai-mode`, { method: 'PATCH', body: JSON.stringify({ aiMode }) }),
   listAgents: () => request<{ agents: AiAgentSummary[] }>('/workspace/agents'),
+  getLockStatus: () => request<LockStatusResponse>('/security/lock/status'),
+  getUnlockChallenge: () => request<UnlockChallengeResponse>('/security/lock/challenge'),
+  setupLock: (body: { salt: string; pinHash: string; argon2Params: Argon2ParamsDto }) =>
+    request<LockStatusResponse>('/security/lock/setup', { method: 'POST', body: JSON.stringify(body) }),
+  // A wrong PIN (401) or a revoked lock (423) are expected outcomes carrying
+  // a real body, not transport errors - handled here instead of via the
+  // generic request() helper, which would otherwise discard that body.
+  attemptUnlock: async (pinHash: string): Promise<UnlockResultResponse> => {
+    const response = await fetch('/api/security/lock/unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinHash }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (response.ok || response.status === 401 || response.status === 423) {
+      return body as UnlockResultResponse;
+    }
+    throw new ApiError(response.status, body.error ?? 'UNKNOWN_ERROR', body.message ?? response.statusText);
+  },
+  listHumanTakeoverAlerts: () => request<{ alerts: HumanTakeoverAlertDto[] }>('/security/alerts/human-takeover'),
 };
