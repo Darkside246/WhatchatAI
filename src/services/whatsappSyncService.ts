@@ -45,6 +45,12 @@ export class WhatsAppSyncService {
   async startInitialSync(businessId: string, whatsappAccountId: string): Promise<void> {
     if (this.activeSyncJobs.has(whatsappAccountId)) return;
 
+    // ingestHistorySet() calls this at the top of every history-set batch -
+    // once a real completion has already been recorded, further batches
+    // (which Baileys sometimes still sends) must not spawn a new job.
+    const account = await this.accountRepository.findById(whatsappAccountId);
+    if (account?.syncStatus === 'completed') return;
+
     const job = await this.syncJobRepository.create(businessId, whatsappAccountId, 'initial');
     await this.syncJobRepository.markRunning(job.id);
     await this.accountRepository.markSyncStarted(whatsappAccountId);
@@ -254,7 +260,13 @@ export class WhatsAppSyncService {
         await this.accountRepository.updateSyncProgress(whatsappAccountId, progress);
       }
 
-      if (payload.isLatest) {
+      // Baileys is supposed to flag the final history-set batch with
+      // isLatest: true, but in practice some accounts/sessions never send
+      // that final flag even after progress genuinely reaches 100% - the
+      // sync would otherwise stay "in_progress" forever. Progress hitting
+      // 100 (as reported by WhatsApp itself, never fabricated here) is
+      // treated as an equally real completion signal.
+      if (payload.isLatest || progress === 100) {
         if (jobId) await this.syncJobRepository.markCompleted(jobId);
         await this.accountRepository.markSyncCompleted(whatsappAccountId);
         this.activeSyncJobs.delete(whatsappAccountId);

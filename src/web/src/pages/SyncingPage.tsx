@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { SyncStatusResponse, WhatsAppConnectionSnapshot } from '../lib/api.js';
 
 interface Props {
@@ -6,9 +7,25 @@ interface Props {
   onContinueAnyway: () => void;
 }
 
+const STUCK_AT_FULL_PROGRESS_MS = 8000;
+
 export function SyncingPage({ connection, sync, onContinueAnyway }: Props) {
   const progress = sync?.syncProgress ?? null;
   const job = sync?.latestJob ?? null;
+  const [stuckAtFullProgress, setStuckAtFullProgress] = useState(false);
+
+  useEffect(() => {
+    if (progress === null || progress < 100 || sync?.syncStatus === 'failed') {
+      setStuckAtFullProgress(false);
+      return;
+    }
+    // WhatsApp itself has already reported 100% - if our own "sync complete"
+    // bookkeeping hasn't caught up within a few seconds (some sessions never
+    // send the final batch marker Baileys is supposed to send), offer a way
+    // through instead of leaving this screen stuck indefinitely.
+    const timer = setTimeout(() => setStuckAtFullProgress(true), STUCK_AT_FULL_PROGRESS_MS);
+    return () => clearTimeout(timer);
+  }, [progress, sync?.syncStatus]);
 
   return (
     <div className="flex min-h-full flex-col items-center justify-center gap-8 bg-surface-0 px-6 py-16 text-center">
@@ -62,6 +79,19 @@ export function SyncingPage({ connection, sync, onContinueAnyway }: Props) {
               className="mt-3 rounded-md bg-red-500/20 px-3 py-1.5 font-medium text-red-300 hover:bg-red-500/30"
             >
               Continue anyway - some data may be incomplete
+            </button>
+          </div>
+        )}
+
+        {stuckAtFullProgress && sync?.syncStatus !== 'failed' && (
+          <div className="mt-6 rounded-lg bg-amber-500/10 p-3 text-left text-xs text-amber-300">
+            <p>WhatsApp reported 100%, but the sync hasn't finalized yet.</p>
+            <button
+              type="button"
+              onClick={onContinueAnyway}
+              className="mt-3 rounded-md bg-amber-500/20 px-3 py-1.5 font-medium text-amber-200 hover:bg-amber-500/30"
+            >
+              Continue to workspace
             </button>
           </div>
         )}
