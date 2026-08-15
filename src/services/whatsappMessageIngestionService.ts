@@ -1,7 +1,8 @@
 import type { MessageUpsertType, WAMessage, WAMessageKey, proto } from '@whiskeysockets/baileys';
 import type Long from 'long';
+import { classifyJid, derivePhoneNumber, type WhatsAppJidKind } from '../domain/whatsapp/jid.js';
 
-export type WhatsAppJidKind = 'individual' | 'lid' | 'group' | 'broadcast' | 'newsletter' | 'unknown';
+export type { WhatsAppJidKind };
 
 export type WhatsAppMessageContentType =
   | 'text'
@@ -49,40 +50,6 @@ interface ClassifiedContent {
 
 const MAX_BUFFER_SIZE = 500;
 const TEXT_PREVIEW_MAX_LENGTH = 200;
-
-function classifyJid(jid: string | null | undefined): WhatsAppJidKind {
-  if (!jid) return 'unknown';
-  if (jid.endsWith('@lid')) return 'lid';
-  if (jid.endsWith('@g.us')) return 'group';
-  if (jid.endsWith('@broadcast')) return 'broadcast';
-  if (jid.endsWith('@newsletter')) return 'newsletter';
-  if (jid.endsWith('@s.whatsapp.net') || jid.endsWith('@c.us')) return 'individual';
-  return 'unknown';
-}
-
-/**
- * A `@lid` local part is an internal linked-device identifier, not a phone
- * number - parsing digits out of it produces a fabricated number. Baileys
- * separately exposes the genuine phone-based counterpart JID as
- * `key.remoteJidAlt` when one is known; only that (or a native
- * `@s.whatsapp.net` JID) is ever treated as a real phone number.
- */
-function derivePhoneNumber(
-  remoteJid: string,
-  jidKind: WhatsAppJidKind,
-  remoteJidAlt: string | null,
-): string | null {
-  let source: string | null = null;
-  if (jidKind === 'individual') {
-    source = remoteJid;
-  } else if (jidKind === 'lid' && remoteJidAlt?.endsWith('@s.whatsapp.net')) {
-    source = remoteJidAlt;
-  }
-
-  if (!source) return null;
-  const digits = (source.split('@')[0] ?? '').replace(/\D/g, '');
-  return digits ? `+${digits}` : null;
-}
 
 function classifyDocument(
   mimetype: string | null | undefined,

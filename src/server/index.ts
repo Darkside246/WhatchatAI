@@ -3,6 +3,7 @@ import express from 'express';
 import { z } from 'zod';
 import { whatsappConnectionService } from '../services/whatsappConnectionService.js';
 import { whatsappMessageIngestionService } from '../services/whatsappMessageIngestionService.js';
+import { checkDatabaseHealth } from '../db/pool.js';
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
@@ -26,6 +27,14 @@ app.get('/api/health/ai', (_req, res) => {
     provider: 'google-gemini',
     model: process.env.GEMINI_MODEL ?? 'gemini-3.5-flash-lite',
     apiKeyConfigured: configured,
+  });
+});
+
+app.get('/api/health/database', async (_req, res) => {
+  const health = await checkDatabaseHealth();
+  res.status(health.available ? 200 : 503).json({
+    status: health.available ? 'CONNECTED' : 'DATABASE_UNAVAILABLE',
+    ...health,
   });
 });
 
@@ -83,7 +92,7 @@ app.get('/api/whatsapp/messages/recent', (req, res) => {
   const limit = Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 50;
 
   return res.status(200).json({
-    note: 'In-memory ingestion buffer (Phase 2B). Not yet backed by a database - persistence lands in Phase 3.',
+    note: 'In-memory ingestion buffer used for fast inspection. Durable storage is the whatsapp_messages table (Phase 2C) - see /api/health/database for DB status.',
     messages: whatsappMessageIngestionService.getRecent(limit),
   });
 });

@@ -17,4 +17,12 @@ This repository is being built from the ground up using a phased, page-by-page i
 
 ## Current phase
 
-Phase 1 (foundation) and Phase 2A (real QR/Baileys connection) are implemented. Phase 2B (real inbound WhatsApp message ingestion) is now implemented: the connection service forwards every `messages.upsert` event to a dedicated ingestion service that classifies content type, preserves the original JID (including `@lid`), and distinguishes live from historical messages. Ingested messages are held in an in-memory buffer pending the Phase 3 persistence layer.
+Phase 1 (foundation), Phase 2A (real QR/Baileys connection), and Phase 2B (real inbound message ingestion) are implemented. Phase 2C (database + WhatsApp data model + persistence) is now implemented: a 16-table Postgres schema, a parameterized repository per entity, and a real `BEGIN`/`COMMIT` transaction that persists every live-ingested message (contact -> chat -> message -> media metadata), all tenant-scoped by `business_id`. See `docs/ARCHITECTURE.md` and `docs/PHASE_2C_REPORT.md` for details. Full contact/chat/group synchronization is Phase 3, not yet built.
+
+## Development database
+
+```
+DATABASE_URL=postgres://whatchatai:whatchatai_dev@localhost:5432/whatchatai_dev
+npm run db:migrate   # apply migrations
+npm test              # runs 36 tests against a real whatchatai_test Postgres database
+```

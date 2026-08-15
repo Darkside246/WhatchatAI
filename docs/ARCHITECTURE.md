@@ -31,7 +31,9 @@ The visual workflow is a guide, not a source of fake data or simulated services.
 - `src/services/whatsapp`: Baileys connection, QR authentication, event ingestion, synchronization, media retrieval, delivery receipts.
 - `src/services/ai`: Gemini client, multimodal processing, conversation orchestration, tool execution policy.
 - `src/services/dispatch`: single outbound WhatsApp dispatcher.
-- `src/services/persistence`: database repositories and migrations.
+- `src/domain/whatsapp`: shared JID classification, display-name resolution, and domain types - no I/O.
+- `src/db`: connection pool, health check, transaction helper, and SQL migrations.
+- `src/repositories`: one parameterized-query repository per persisted entity. Routes never touch Postgres directly.
 - `src/web`: responsive management UI.
 
 ## Phase sequence
@@ -54,11 +56,21 @@ Implement the real QR/Baileys session. Persist session state securely. Expose re
 - Marks each message `isLive` based on Baileys' own upsert type (`notify` = live, anything else = historical/synced), so historical import can never be mistaken for a live event.
 - Holds ingested messages in a bounded in-memory buffer only - there is no database yet, so nothing here is described as "saved" or "persisted". `GET /api/whatsapp/messages/recent` and `GET /api/whatsapp/messages/stats` expose this buffer for verification and say so explicitly.
 
-Persistence (chats, contacts, messages durably stored with an audit trail) is Phase 3 work, not part of 2B.
+**Phase 2C (done):** database + WhatsApp data model + persistence. See `docs/PHASE_2C_REPORT.md` for the full completion report. Summary:
+
+- 16 Postgres migrations (`src/db/migrations`) covering `businesses` (bootstrap tenant), `whatsapp_accounts`, `whatsapp_contacts`, `whatsapp_groups`, `whatsapp_group_members`, `whatsapp_chats`, `whatsapp_messages`, `whatsapp_message_reactions`, `whatsapp_media`, `whatsapp_presence`, `whatsapp_calls`, `whatsapp_statuses`, `whatsapp_connection_events`, `whatsapp_sync_jobs`, and `whatsapp_jid_mappings` - every table tenant-scoped by `business_id` (+ `whatsapp_account_id` for multi-account isolation).
+- A parameterized-query repository per entity (`src/repositories`) - no arbitrary SQL, no ORM magic, `route -> service -> repository -> database` only.
+- `WhatsAppMessagePersistenceService` (`src/services/whatsappMessagePersistenceService.ts`) is the one real write transaction for an incoming message: upsert contact -> upsert chat -> insert message (deduped by a DB unique index on `whatsapp_message_id`) -> record chat's last message -> (if media) insert media metadata, all in `BEGIN`/`COMMIT`, rolled back atomically on any failure. Wired live into `whatsappConnectionService`'s `messages.upsert` handler.
+- The real connected account and connection history are now persisted (`whatsapp_accounts`, `whatsapp_connection_events`) instead of only living in the in-process snapshot.
+- `GET /api/health/database` reports `DATABASE_UNAVAILABLE` (503) honestly when Postgres is down, and the app now survives a DB outage without crashing (a real `pg.Pool` idle-client-error bug was found and fixed by this phase's own database-failure test).
+- @lid handling: `whatsapp_jid` is always stored exactly as received; a phone number is only ever attached when it comes from a genuine `@s.whatsapp.net`/`@c.us` JID or Baileys' own `remoteJidAlt` mapping (persisted for provenance in `whatsapp_jid_mappings` when used) - never parsed out of `@lid` digits.
+- 36 tests (`test/`, `npm test`) run against a real Postgres database (`whatchatai_test`), not mocks - contact upsert/rename, @lid/phone/group JID preservation, contact/chat linking survives a rename, message dedup, historical vs. live flag, message status, reactions (FK-enforced), media metadata, call event lifecycle, presence log, statuses, sync job lifecycle, transaction rollback, and cross-business tenant isolation.
+- Explicitly deferred (schema exists, live wiring does not): full contact/chat/group sync workers, group membership sync, presence/call/status event subscription, media download, and AI processing - all Phase 3+ work per the phase plan below.
+- Known simplification: Authentication + Multi-Tenant hasn't been built yet, so a single bootstrap `businesses` row stands in for real tenant signup until that phase exists.
 
 ### Phase 3 - Full synchronization
 
-Import real contacts, active chats, groups, profile pictures, message history, timestamps, unread state, statuses where the connection exposes them, and media metadata. Preserve original JIDs.
+Import real contacts, active chats, groups, profile pictures, message history, timestamps, unread state, statuses where the connection exposes them, and media metadata into the Phase 2C schema. Preserve original JIDs.
 
 ### Phase 4 - Messaging
 

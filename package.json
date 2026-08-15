@@ -8,7 +8,9 @@
     "dev": "tsx src/server/index.ts",
     "build": "tsc --noEmit",
     "start": "node dist/server/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "test": "DATABASE_URL=postgres://whatchatai:whatchatai_dev@localhost:5432/whatchatai_test vitest run"
   },
   "engines": {
     "node": ">=20"
@@ -18,6 +20,7 @@
     "@whiskeysockets/baileys": "latest",
     "dotenv": "latest",
     "express": "latest",
+    "pg": "^8.23.0",
     "pino": "latest",
     "qrcode": "latest",
     "zod": "latest"
@@ -25,8 +28,10 @@
   "devDependencies": {
     "@types/express": "latest",
     "@types/node": "latest",
+    "@types/pg": "^8.21.0",
     "@types/qrcode": "latest",
     "tsx": "latest",
-    "typescript": "latest"
+    "typescript": "latest",
+    "vitest": "^4.1.10"
   }
 }

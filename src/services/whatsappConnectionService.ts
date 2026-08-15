@@ -7,6 +7,12 @@ import {
 import QRCode from 'qrcode';
 import path from 'node:path';
 import { whatsappMessageIngestionService } from './whatsappMessageIngestionService.js';
+import { whatsappMessagePersistenceService } from './whatsappMessagePersistenceService.js';
+import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
+import { pool } from '../db/pool.js';
+import { BusinessRepository } from '../repositories/businessRepository.js';
+import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
+import { WhatsAppConnectionEventRepository } from '../repositories/whatsappConnectionEventRepository.js';
 
 export type WhatsAppConnectionStatus =
   | 'DISCONNECTED'
@@ -40,6 +46,11 @@ export class WhatsAppConnectionService {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempt = 0;
   private listenersAttached = false;
+  private businessId: string | null = null;
+  private persistedAccountId: string | null = null;
+  private readonly businessRepository = new BusinessRepository(pool);
+  private readonly accountRepository = new WhatsAppAccountRepository(pool);
+  private readonly connectionEventRepository = new WhatsAppConnectionEventRepository(pool);
   private snapshot: WhatsAppConnectionSnapshot = {
     status: 'DISCONNECTED',
     connected: false,
@@ -167,7 +178,8 @@ export class WhatsAppConnectionService {
     this.listenersAttached = true;
 
     socket.ev.on('messages.upsert', (payload) => {
-      whatsappMessageIngestionService.ingestUpsert(payload);
+      const ingested = whatsappMessageIngestionService.ingestUpsert(payload);
+      this.persistIngestedMessages(ingested);
     });
 
     socket.ev.on('connection.update', async (update) => {
@@ -203,7 +215,9 @@ export class WhatsAppConnectionService {
       if (connection === 'open') {
         const user = socket.user;
         const jid = user?.id ?? null;
-        const phoneNumber = jid ? this.phoneFromJid(jid) : null;
+        const jidKind = classifyJid(jid);
+        const phoneNumber = jid ? derivePhoneNumber(jid, jidKind, null) : null;
+        const pushName = user?.name ?? null;
 
         this.reconnectAttempt = 0;
         this.snapshot = {
@@ -213,12 +227,16 @@ export class WhatsAppConnectionService {
           qrDataUrl: null,
           phoneNumber,
           jid,
-          pushName: user?.name ?? null,
+          pushName,
           connectedAt: new Date().toISOString(),
           lastDisconnectAt: null,
           lastError: null,
           reconnectAttempt: 0,
         };
+
+        if (jid) {
+          void this.persistConnectedAccount(jid, jidKind, phoneNumber, pushName);
+        }
       }
 
       if (connection === 'close') {
@@ -237,12 +255,84 @@ export class WhatsAppConnectionService {
         const code = this.getDisconnectCode(lastDisconnect);
         if (code === DisconnectReason.loggedOut) {
           this.snapshot = { ...this.snapshot, status: 'LOGGED_OUT' };
+          this.recordDisconnectEvent('logged_out', 'LOGGED_OUT');
           return;
         }
 
+        this.recordDisconnectEvent('disconnected', 'DISCONNECTED');
         this.scheduleReconnect();
       }
     });
+  }
+
+  /**
+   * Persists the real connected account so the DB has a genuine tenant/account
+   * row to attach contacts, chats, and messages to. A DB outage here must not
+   * be reported as a WhatsApp problem - the Baileys connection is still real
+   * and open even if this write fails; it's just logged and retried on the
+   * next connection event.
+   */
+  private async persistConnectedAccount(
+    jid: string,
+    jidKind: ReturnType<typeof classifyJid>,
+    phoneNumber: string | null,
+    pushName: string | null,
+  ): Promise<void> {
+    try {
+      const business = await this.businessRepository.ensureDefault();
+      const account = await this.accountRepository.upsertConnected({
+        businessId: business.id,
+        whatsappJid: jid,
+        jidKind,
+        phoneNumber,
+        pushName,
+        connectionStatus: 'CONNECTED',
+      });
+      this.businessId = business.id;
+      this.persistedAccountId = account.id;
+
+      await this.connectionEventRepository.record({
+        businessId: business.id,
+        whatsappAccountId: account.id,
+        eventType: 'connected',
+        status: 'CONNECTED',
+        phoneNumber,
+        jid,
+        pushName,
+      });
+    } catch (error) {
+      console.error('[WhatsApp] Failed to persist connected account:', error);
+    }
+  }
+
+  private recordDisconnectEvent(eventType: 'disconnected' | 'logged_out', status: string): void {
+    if (!this.businessId || !this.persistedAccountId) return;
+    const businessId = this.businessId;
+    const accountId = this.persistedAccountId;
+
+    void this.accountRepository.markDisconnected(accountId, status as WhatsAppConnectionStatus).catch((error) => {
+      console.error('[WhatsApp] Failed to mark account disconnected:', error);
+    });
+    void this.connectionEventRepository
+      .record({ businessId, whatsappAccountId: accountId, eventType, status })
+      .catch((error) => {
+        console.error('[WhatsApp] Failed to record disconnect event:', error);
+      });
+  }
+
+  private persistIngestedMessages(ingested: ReturnType<typeof whatsappMessageIngestionService.ingestUpsert>): void {
+    if (!this.businessId || !this.persistedAccountId || !this.snapshot.jid) return;
+    const businessId = this.businessId;
+    const whatsappAccountId = this.persistedAccountId;
+    const accountJid = this.snapshot.jid;
+
+    for (const message of ingested) {
+      whatsappMessagePersistenceService
+        .persist({ businessId, whatsappAccountId, accountJid, ingested: message })
+        .catch((error) => {
+          console.error('[WhatsApp] Failed to persist message', message.messageId, error);
+        });
+    }
   }
 
   private scheduleReconnect(): void {
@@ -285,12 +375,6 @@ export class WhatsAppConnectionService {
       error?: { output?: { statusCode?: number } };
     } | null;
     return value?.error?.output?.statusCode ?? null;
-  }
-
-  private phoneFromJid(jid: string): string | null {
-    const local = jid.split('@', 1)[0] ?? '';
-    const digits = local.replace(/\D/g, '');
-    return digits ? `+${digits}` : null;
   }
 }
 
