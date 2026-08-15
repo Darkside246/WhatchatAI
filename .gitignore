@@ -8,3 +8,4 @@ dist/
 coverage/
 .data/
 .claude/settings.local.json
+*.rdb
