@@ -25,6 +25,7 @@
   "devDependencies": {
     "@types/express": "latest",
     "@types/node": "latest",
+    "@types/qrcode": "latest",
     "tsx": "latest",
     "typescript": "latest"
   }
