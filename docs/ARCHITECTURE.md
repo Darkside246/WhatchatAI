@@ -4,6 +4,8 @@
 
 The platform is built one page and one production capability at a time. A page is not considered complete until its backend data source, error states, authentication boundaries, persistence, and live integration are connected.
 
+**Product direction:** WhatchatAI is a WhatsApp-first business operating platform (WhatsApp + AI agents + CRM + automation + analytics + billing), not just a chatbot. The full 20-phase roadmap (Foundation → WhatsApp connection → database → sync → workspace → messaging → Gemini → agents → multimodal → CRM/leads → automation → knowledge base → analytics → marketing → Google integrations → billing/entitlements → teams → admin → security → certification) lives in the product directive; this document's phase numbering below is reconciled against it as each phase is actually reached. Nothing here changes retroactively without a corresponding completed phase.
+
 ## Reference workflow
 
 The supplied multimodal workflow is the architectural guide for the processing pipeline:
@@ -67,6 +69,14 @@ Implement the real QR/Baileys session. Persist session state securely. Expose re
 - 36 tests (`test/`, `npm test`) run against a real Postgres database (`whatchatai_test`), not mocks - contact upsert/rename, @lid/phone/group JID preservation, contact/chat linking survives a rename, message dedup, historical vs. live flag, message status, reactions (FK-enforced), media metadata, call event lifecycle, presence log, statuses, sync job lifecycle, transaction rollback, and cross-business tenant isolation.
 - Explicitly deferred (schema exists, live wiring does not): full contact/chat/group sync workers, group membership sync, presence/call/status event subscription, media download, and AI processing - all Phase 3+ work per the phase plan below.
 - Known simplification: Authentication + Multi-Tenant hasn't been built yet, so a single bootstrap `businesses` row stands in for real tenant signup until that phase exists.
+
+**Phase 2C SaaS foundation extension (done):** the database/data-model foundation for the wider SaaS product (subscriptions, entitlements, AI agents, CRM), added without touching any of the WhatsApp work above. See `docs/PHASE_2C_SAAS_FOUNDATION_REPORT.md`. Summary:
+
+- 9 more migrations (`017`-`025`): `plans` + `plan_entitlements` (seeded with 4 real tiers), `subscriptions` + `subscription_events` (one live subscription per business enforced at the DB level), `usage_counters`, `ai_agents` (full persona/instruction/tool/knowledge-source config), `crm_contacts` (built around a real `whatsapp_contacts` identity, never duplicated), `leads`.
+- 7 more repositories, same parameterized pattern.
+- `EntitlementService` (`src/services/entitlementService.ts`): real backend enforcement - `canCreateAgent` / `canConnectWhatsAppAccount` check the business's actual subscription + plan entitlement + a real count, not a hidden UI button. Not yet wired to any API route (no route/UI exists yet to enforce - that's a later phase).
+- 16 more tests (52 total), all against real Postgres, including entitlement-limit-reached and tenant-isolation scenarios.
+- Explicitly not built yet: any billing provider integration, usage metering, agent routing, or CRM/agent/billing API routes or UI - per the directive's own "do not jump ahead" instruction.
 
 ### Phase 3 - Full synchronization
 
