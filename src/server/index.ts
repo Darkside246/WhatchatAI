@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { z } from 'zod';
+import { whatsappConnectionService } from '../services/whatsappConnectionService.js';
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
@@ -28,13 +29,52 @@ app.get('/api/health/ai', (_req, res) => {
 });
 
 app.get('/api/health/whatsapp', (_req, res) => {
-  // Deliberately reports the real integration state only after the WhatsApp service
-  // is wired. No simulated CONNECTED/ONLINE state is allowed here.
-  res.status(503).json({
-    status: 'not_connected',
-    connected: false,
-    reason: 'WhatsApp connection service has not been initialised yet.',
+  const snapshot = whatsappConnectionService.getSnapshot();
+  res.status(snapshot.connected ? 200 : 503).json(snapshot);
+});
+
+app.get('/api/whatsapp/status', (_req, res) => {
+  res.status(200).json(whatsappConnectionService.getSnapshot());
+});
+
+app.get('/api/whatsapp/qr', (_req, res) => {
+  const snapshot = whatsappConnectionService.getSnapshot();
+  if (!snapshot.qrDataUrl) {
+    return res.status(404).json({
+      available: false,
+      status: snapshot.status,
+      message: 'No current WhatsApp QR code is available.',
+    });
+  }
+
+  return res.status(200).json({
+    available: true,
+    status: snapshot.status,
+    qrDataUrl: snapshot.qrDataUrl,
   });
+});
+
+app.post('/api/whatsapp/connect', async (_req, res) => {
+  try {
+    const snapshot = await whatsappConnectionService.connect();
+    return res.status(202).json(snapshot);
+  } catch (error) {
+    return res.status(500).json({
+      status: 'ERROR',
+      connected: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.post('/api/whatsapp/disconnect', async (_req, res) => {
+  await whatsappConnectionService.disconnect();
+  return res.status(200).json(whatsappConnectionService.getSnapshot());
+});
+
+app.post('/api/whatsapp/logout', async (_req, res) => {
+  await whatsappConnectionService.logout();
+  return res.status(200).json(whatsappConnectionService.getSnapshot());
 });
 
 const messageSchema = z.object({
@@ -48,6 +88,10 @@ app.post('/api/diagnostics/validate-message', (req, res) => {
   }
 
   return res.status(200).json({ valid: true });
+});
+
+void whatsappConnectionService.connect().catch((error) => {
+  console.error('[WhatsApp] Initial connection failed:', error);
 });
 
 app.listen(port, () => {
