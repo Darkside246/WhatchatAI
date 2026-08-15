@@ -4,11 +4,17 @@
   "private": true,
   "description": "Production-first AI WhatsApp agent SaaS platform",
   "type": "module",
+  "workspaces": [
+    "src/web"
+  ],
   "scripts": {
-    "dev": "tsx src/server/index.ts",
-    "build": "tsc --noEmit",
+    "predev": "npm run db:migrate",
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx src/server/index.ts",
+    "dev:web": "npm run dev --workspace=src/web",
+    "build": "tsc && npm run build --workspace=src/web",
     "start": "node dist/server/index.js",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace=src/web",
     "db:migrate": "tsx src/db/migrate.ts",
     "test": "DATABASE_URL=postgres://whatchatai:whatchatai_dev@localhost:5432/whatchatai_test vitest run"
   },
@@ -30,6 +36,7 @@
     "@types/node": "latest",
     "@types/pg": "^8.21.0",
     "@types/qrcode": "latest",
+    "concurrently": "latest",
     "tsx": "latest",
     "typescript": "latest",
     "vitest": "^4.1.10"

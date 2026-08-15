@@ -8,6 +8,7 @@ import QRCode from 'qrcode';
 import path from 'node:path';
 import { whatsappMessageIngestionService } from './whatsappMessageIngestionService.js';
 import { whatsappMessagePersistenceService } from './whatsappMessagePersistenceService.js';
+import { whatsappSyncService } from './whatsappSyncService.js';
 import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { pool } from '../db/pool.js';
 import { BusinessRepository } from '../repositories/businessRepository.js';
@@ -71,6 +72,12 @@ export class WhatsAppConnectionService {
 
   getSocket(): WASocket | null {
     return this.socket;
+  }
+
+  /** The persisted tenant/account this live session is writing to, once the account is connected. */
+  getPersistedContext(): { businessId: string; whatsappAccountId: string } | null {
+    if (!this.businessId || !this.persistedAccountId) return null;
+    return { businessId: this.businessId, whatsappAccountId: this.persistedAccountId };
   }
 
   isReady(): boolean {
@@ -180,6 +187,38 @@ export class WhatsAppConnectionService {
     socket.ev.on('messages.upsert', (payload) => {
       const ingested = whatsappMessageIngestionService.ingestUpsert(payload);
       this.persistIngestedMessages(ingested);
+    });
+
+    socket.ev.on('contacts.upsert', (contacts) => {
+      this.withSyncContext((businessId, accountId) => {
+        void whatsappSyncService.ingestContacts(businessId, accountId, contacts).catch((error) => {
+          console.error('[Sync] Failed to ingest contacts.upsert:', error);
+        });
+      });
+    });
+
+    socket.ev.on('chats.upsert', (chats) => {
+      this.withSyncContext((businessId, accountId) => {
+        void whatsappSyncService.ingestChats(businessId, accountId, chats).catch((error) => {
+          console.error('[Sync] Failed to ingest chats.upsert:', error);
+        });
+      });
+    });
+
+    socket.ev.on('groups.upsert', (groups) => {
+      this.withSyncContext((businessId, accountId) => {
+        void whatsappSyncService.ingestGroups(businessId, accountId, groups).catch((error) => {
+          console.error('[Sync] Failed to ingest groups.upsert:', error);
+        });
+      });
+    });
+
+    socket.ev.on('messaging-history.set', (payload) => {
+      this.withSyncContext((businessId, accountId, accountJid) => {
+        void whatsappSyncService.ingestHistorySet(businessId, accountId, accountJid, payload).catch((error) => {
+          console.error('[Sync] Failed to ingest messaging-history.set:', error);
+        });
+      });
     });
 
     socket.ev.on('connection.update', async (update) => {
@@ -300,9 +339,20 @@ export class WhatsAppConnectionService {
         jid,
         pushName,
       });
+
+      // "initial" sync only ever kicks off once per account, not on every reconnect.
+      if (account.syncStatus === 'not_started') {
+        await whatsappSyncService.startInitialSync(business.id, account.id);
+      }
     } catch (error) {
       console.error('[WhatsApp] Failed to persist connected account:', error);
     }
+  }
+
+  /** Runs fn only once the account is actually persisted, so sync events never write against a nonexistent tenant. */
+  private withSyncContext(fn: (businessId: string, accountId: string, accountJid: string) => void): void {
+    if (!this.businessId || !this.persistedAccountId || !this.snapshot.jid) return;
+    fn(this.businessId, this.persistedAccountId, this.snapshot.jid);
   }
 
   private recordDisconnectEvent(eventType: 'disconnected' | 'logged_out', status: string): void {

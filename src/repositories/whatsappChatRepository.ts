@@ -2,6 +2,8 @@ import type { Queryable } from './types.js';
 import type { WhatsAppJidKind } from '../domain/whatsapp/jid.js';
 import type { ChatType } from '../domain/whatsapp/types.js';
 
+export type ChatAiMode = 'AI_ACTIVE' | 'AI_PAUSED' | 'HUMAN_TAKEOVER';
+
 export interface WhatsAppChatRecord {
   id: string;
   businessId: string;
@@ -14,10 +16,13 @@ export interface WhatsAppChatRecord {
   name: string | null;
   phoneNumber: string | null;
   isGroup: boolean;
+  isArchived: boolean | null;
+  isPinned: boolean | null;
   unreadCount: number;
   messageCount: number;
   lastMessageId: string | null;
   lastMessageAt: string | null;
+  aiMode: ChatAiMode;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -35,10 +40,13 @@ interface ChatRow {
   name: string | null;
   phone_number: string | null;
   is_group: boolean;
+  is_archived: boolean | null;
+  is_pinned: boolean | null;
   unread_count: number;
   message_count: number;
   last_message_id: string | null;
   last_message_at: string | null;
+  ai_mode: ChatAiMode;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -57,10 +65,13 @@ function toRecord(row: ChatRow): WhatsAppChatRecord {
     name: row.name,
     phoneNumber: row.phone_number,
     isGroup: row.is_group,
+    isArchived: row.is_archived,
+    isPinned: row.is_pinned,
     unreadCount: row.unread_count,
     messageCount: row.message_count,
     lastMessageId: row.last_message_id,
     lastMessageAt: row.last_message_at,
+    aiMode: row.ai_mode,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
@@ -77,6 +88,9 @@ export interface UpsertChatInput {
   groupId?: string | null;
   name?: string | null;
   phoneNumber?: string | null;
+  unreadCount?: number;
+  isArchived?: boolean;
+  isPinned?: boolean;
 }
 
 export class WhatsAppChatRepository {
@@ -87,14 +101,17 @@ export class WhatsAppChatRepository {
     const { rows } = await this.db.query<ChatRow>(
       `INSERT INTO whatsapp_chats
          (business_id, whatsapp_account_id, chat_jid, jid_kind, chat_type,
-          contact_id, group_id, name, phone_number, is_group)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          contact_id, group_id, name, phone_number, is_group, unread_count, is_archived, is_pinned)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, 0), $12, $13)
        ON CONFLICT (business_id, whatsapp_account_id, chat_jid) WHERE deleted_at IS NULL
        DO UPDATE SET
          contact_id = COALESCE(EXCLUDED.contact_id, whatsapp_chats.contact_id),
          group_id = COALESCE(EXCLUDED.group_id, whatsapp_chats.group_id),
          name = COALESCE(EXCLUDED.name, whatsapp_chats.name),
          phone_number = COALESCE(EXCLUDED.phone_number, whatsapp_chats.phone_number),
+         unread_count = COALESCE($11, whatsapp_chats.unread_count),
+         is_archived = COALESCE(EXCLUDED.is_archived, whatsapp_chats.is_archived),
+         is_pinned = COALESCE(EXCLUDED.is_pinned, whatsapp_chats.is_pinned),
          updated_at = now()
        RETURNING *`,
       [
@@ -108,6 +125,9 @@ export class WhatsAppChatRepository {
         input.name ?? null,
         input.phoneNumber ?? null,
         input.chatType === 'group',
+        input.unreadCount ?? null,
+        input.isArchived ?? null,
+        input.isPinned ?? null,
       ],
     );
     const row = rows[0];
@@ -146,5 +166,14 @@ export class WhatsAppChatRepository {
       [businessId, whatsappAccountId],
     );
     return rows.map(toRecord);
+  }
+
+  /** Human takeover belongs to the specific conversation, not globally to the account. */
+  async setAiMode(id: string, aiMode: ChatAiMode): Promise<WhatsAppChatRecord | null> {
+    const { rows } = await this.db.query<ChatRow>(
+      'UPDATE whatsapp_chats SET ai_mode = $2, updated_at = now() WHERE id = $1 RETURNING *',
+      [id, aiMode],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
   }
 }

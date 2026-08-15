@@ -5,8 +5,8 @@ import { WhatsAppChatRepository } from '../repositories/whatsappChatRepository.j
 import { WhatsAppMessageRepository, type WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
 import type { WhatsAppChatRecord } from '../repositories/whatsappChatRepository.js';
-import type { WhatsAppJidKind } from '../domain/whatsapp/jid.js';
-import type { ChatType, MediaType, MessageType } from '../domain/whatsapp/types.js';
+import type { MediaType, MessageType } from '../domain/whatsapp/types.js';
+import { chatTypeFromJidKind } from '../domain/whatsapp/chatType.js';
 import type {
   IngestedWhatsAppMessage,
   WhatsAppDocumentSubtype,
@@ -21,22 +21,6 @@ const MEDIA_CONTENT_TYPES = new Set<WhatsAppMessageContentType>([
   'document',
   'sticker',
 ]);
-
-function chatTypeFromJidKind(jidKind: WhatsAppJidKind): ChatType {
-  switch (jidKind) {
-    case 'individual':
-    case 'lid':
-      return 'individual';
-    case 'group':
-      return 'group';
-    case 'broadcast':
-      return 'broadcast';
-    case 'newsletter':
-      return 'newsletter';
-    default:
-      return 'other';
-  }
-}
 
 function mapContentTypeToMessageType(
   contentType: WhatsAppMessageContentType,

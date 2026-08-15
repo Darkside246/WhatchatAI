@@ -36,7 +36,7 @@ The visual workflow is a guide, not a source of fake data or simulated services.
 - `src/domain/whatsapp`: shared JID classification, display-name resolution, and domain types - no I/O.
 - `src/db`: connection pool, health check, transaction helper, and SQL migrations.
 - `src/repositories`: one parameterized-query repository per persisted entity. Routes never touch Postgres directly.
-- `src/web`: responsive management UI.
+- `src/web`: responsive React + Vite + Tailwind UI (npm workspace). `npm run dev` runs it alongside the backend; `npm run build` produces a static bundle the Express server serves directly in production (one process, one port). See `docs/APP_BINDING_REPORT.md` for the onboarding -> sync -> workspace flow this drives.
 
 ## Phase sequence
 

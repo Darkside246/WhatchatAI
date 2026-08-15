@@ -101,4 +101,34 @@ export class WhatsAppSyncJobRepository {
     const { rows } = await this.db.query<SyncJobRow>('SELECT * FROM whatsapp_sync_jobs WHERE id = $1', [id]);
     return rows[0] ? toRecord(rows[0]) : null;
   }
+
+  async incrementCounts(
+    id: string,
+    counts: Partial<{
+      chatsProcessed: number;
+      contactsProcessed: number;
+      groupsProcessed: number;
+      messagesProcessed: number;
+      mediaProcessed: number;
+    }>,
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE whatsapp_sync_jobs
+       SET chats_processed = chats_processed + $2,
+           contacts_processed = contacts_processed + $3,
+           groups_processed = groups_processed + $4,
+           messages_processed = messages_processed + $5,
+           media_processed = media_processed + $6,
+           updated_at = now()
+       WHERE id = $1`,
+      [
+        id,
+        counts.chatsProcessed ?? 0,
+        counts.contactsProcessed ?? 0,
+        counts.groupsProcessed ?? 0,
+        counts.messagesProcessed ?? 0,
+        counts.mediaProcessed ?? 0,
+      ],
+    );
+  }
 }

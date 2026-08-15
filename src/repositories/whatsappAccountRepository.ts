@@ -140,4 +140,37 @@ export class WhatsAppAccountRepository {
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }
+
+  async markSyncStarted(id: string): Promise<void> {
+    await this.db.query(
+      `UPDATE whatsapp_accounts
+       SET sync_status = 'in_progress', sync_started_at = now(), sync_completed_at = NULL,
+           sync_progress = 0, last_sync_error = NULL, updated_at = now()
+       WHERE id = $1`,
+      [id],
+    );
+  }
+
+  async updateSyncProgress(id: string, progressPercent: number | null): Promise<void> {
+    await this.db.query('UPDATE whatsapp_accounts SET sync_progress = $2, updated_at = now() WHERE id = $1', [
+      id,
+      progressPercent,
+    ]);
+  }
+
+  async markSyncCompleted(id: string): Promise<void> {
+    await this.db.query(
+      `UPDATE whatsapp_accounts
+       SET sync_status = 'completed', sync_completed_at = now(), sync_progress = 100, updated_at = now()
+       WHERE id = $1`,
+      [id],
+    );
+  }
+
+  async markSyncFailed(id: string, error: string): Promise<void> {
+    await this.db.query(
+      `UPDATE whatsapp_accounts SET sync_status = 'failed', last_sync_error = $2, updated_at = now() WHERE id = $1`,
+      [id, error],
+    );
+  }
 }
