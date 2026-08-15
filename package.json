@@ -19,6 +19,7 @@
     "dotenv": "latest",
     "express": "latest",
     "pino": "latest",
+    "qrcode": "latest",
     "zod": "latest"
   },
   "devDependencies": {
