@@ -91,6 +91,8 @@ export interface WorkspaceChatDetail {
   chat: WorkspaceChatDetailRecord;
   contact: WorkspaceContact | null;
   crmContact: WorkspaceCrmContact | null;
+  /** For a `@lid` identity, the real phone number resolved from Baileys' own lid<->phone mapping, when known. */
+  resolvedPhoneNumber: string | null;
 }
 
 export interface Argon2ParamsDto {

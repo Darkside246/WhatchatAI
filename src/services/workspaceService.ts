@@ -7,6 +7,7 @@ import { WhatsAppMessageRepository } from '../repositories/whatsappMessageReposi
 import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobRepository.js';
 import { CrmContactRepository } from '../repositories/crmContactRepository.js';
 import { AiAgentRepository } from '../repositories/aiAgentRepository.js';
+import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMappingRepository.js';
 
 export interface WorkspaceChatSummary {
   id: string;
@@ -38,12 +39,18 @@ export class WorkspaceService {
   private readonly syncJobRepository = new WhatsAppSyncJobRepository(pool);
   private readonly crmContactRepository = new CrmContactRepository(pool);
   private readonly agentRepository = new AiAgentRepository(pool);
+  private readonly jidMappingRepository = new WhatsAppJidMappingRepository(pool);
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
     const summaries: WorkspaceChatSummary[] = [];
 
     for (const chat of chats) {
+      // Status updates, broadcast lists, and newsletters aren't conversations
+      // - WhatsApp's own client keeps them out of the chat list too. Real
+      // individual/group chats only, here.
+      if (chat.chatType !== 'individual' && chat.chatType !== 'group') continue;
+
       let displayName = chat.name ?? chat.chatJid;
       let phoneNumber = chat.phoneNumber;
 
@@ -59,6 +66,18 @@ export class WorkspaceService {
             whatsappJid: contact.whatsappJid,
           });
           phoneNumber = contact.phoneNumber;
+        }
+      }
+
+      // A `@lid` chat identity carries no phone number of its own - WhatsApp
+      // supplies the real phone-based JID separately (via contacts.upsert /
+      // lidPnMappings during sync), persisted in whatsapp_jid_mappings. Only
+      // fall back to it when nothing better was already resolved.
+      if (chat.jidKind === 'lid' && !phoneNumber) {
+        const mapping = await this.jidMappingRepository.findByLid(businessId, whatsappAccountId, chat.chatJid);
+        if (mapping?.phoneNumber) {
+          phoneNumber = mapping.phoneNumber;
+          if (displayName === chat.chatJid) displayName = mapping.phoneNumber;
         }
       }
 
@@ -105,7 +124,13 @@ export class WorkspaceService {
       ? await this.crmContactRepository.upsertForWhatsAppContact({ businessId, whatsappContactId: contact.id })
       : null;
 
-    return { chat, contact, crmContact };
+    let resolvedPhoneNumber = contact?.phoneNumber ?? chat.phoneNumber ?? null;
+    if (chat.jidKind === 'lid' && !resolvedPhoneNumber) {
+      const mapping = await this.jidMappingRepository.findByLid(businessId, whatsappAccountId, chat.chatJid);
+      resolvedPhoneNumber = mapping?.phoneNumber ?? null;
+    }
+
+    return { chat, contact, crmContact, resolvedPhoneNumber };
   }
 
   async listMessages(businessId: string, whatsappAccountId: string, chatId: string, limit = 50) {

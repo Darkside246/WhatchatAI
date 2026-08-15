@@ -63,9 +63,15 @@ export function ContactDetailPanel({ onClose }: Props) {
               {(detail.contact?.displayName ?? detail.chat.name ?? detail.chat.chatJid).slice(0, 1).toUpperCase()}
             </div>
             <p className="text-sm font-medium text-white">
-              {detail.contact?.displayName ?? detail.contact?.pushName ?? detail.chat.name ?? detail.chat.chatJid}
+              {detail.contact?.displayName ??
+                detail.contact?.pushName ??
+                detail.chat.name ??
+                detail.resolvedPhoneNumber ??
+                detail.chat.chatJid}
             </p>
-            <p className="text-xs text-gray-500">{detail.contact?.phoneNumber ?? detail.chat.phoneNumber ?? detail.chat.chatJid}</p>
+            <p className="text-xs text-gray-500">
+              {detail.contact?.phoneNumber ?? detail.chat.phoneNumber ?? detail.resolvedPhoneNumber ?? detail.chat.chatJid}
+            </p>
           </div>
 
           <section>
@@ -101,6 +107,12 @@ export function ContactDetailPanel({ onClose }: Props) {
                 <dt className="text-gray-500">Type</dt>
                 <dd className="text-gray-300">{detail.chat.chatType}</dd>
               </div>
+              {detail.resolvedPhoneNumber && (
+                <div className="flex justify-between gap-2">
+                  <dt className="text-gray-500">Resolved number</dt>
+                  <dd className="text-gray-300">{detail.resolvedPhoneNumber}</dd>
+                </div>
+              )}
             </dl>
           </section>
 
