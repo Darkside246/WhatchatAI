@@ -121,4 +121,13 @@ export class WhatsAppCallRepository {
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }
+
+  async listByAccount(businessId: string, whatsappAccountId: string, limit = 100): Promise<WhatsAppCallRecord[]> {
+    const { rows } = await this.db.query<CallRow>(
+      `SELECT * FROM whatsapp_calls WHERE business_id = $1 AND whatsapp_account_id = $2
+       ORDER BY COALESCE(started_at, created_at) DESC LIMIT $3`,
+      [businessId, whatsappAccountId, limit],
+    );
+    return rows.map(toRecord);
+  }
 }

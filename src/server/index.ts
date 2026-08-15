@@ -2,8 +2,10 @@ import 'dotenv/config';
 import express from 'express';
 import { z } from 'zod';
 import path from 'node:path';
+import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { attachWebSocketServer } from '../realtime/wsServer.js';
 import { whatsappConnectionService } from '../services/whatsappConnectionService.js';
 import { whatsappMessageIngestionService } from '../services/whatsappMessageIngestionService.js';
 import { workspaceService, isChatNotFoundError } from '../services/workspaceService.js';
@@ -201,6 +203,15 @@ app.get('/api/workspace/agents', requireWorkspaceContext, async (_req, res) => {
   return res.status(200).json({ agents });
 });
 
+app.get('/api/workspace/calls', requireWorkspaceContext, async (_req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
+    businessId: string;
+    whatsappAccountId: string;
+  };
+  const calls = await workspaceService.listCalls(businessId, whatsappAccountId);
+  return res.status(200).json({ calls });
+});
+
 const messageSchema = z.object({
   text: z.string().min(1).max(10000),
 });
@@ -323,6 +334,9 @@ void whatsappConnectionService.connect().catch((error) => {
   console.error('[WhatsApp] Initial connection failed:', error);
 });
 
-app.listen(port, () => {
+const httpServer = createServer(app);
+attachWebSocketServer(httpServer);
+
+httpServer.listen(port, () => {
   console.log(`[WhatchatAI] API listening on http://localhost:${port}`);
 });

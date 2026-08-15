@@ -8,6 +8,9 @@ import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobReposi
 import { CrmContactRepository } from '../repositories/crmContactRepository.js';
 import { AiAgentRepository } from '../repositories/aiAgentRepository.js';
 import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMappingRepository.js';
+import { WhatsAppCallRepository } from '../repositories/whatsappCallRepository.js';
+import { classifyJid } from '../domain/whatsapp/jid.js';
+import type { CallStatus, CallType, MessageDirection } from '../domain/whatsapp/types.js';
 
 export interface WorkspaceChatSummary {
   id: string;
@@ -19,6 +22,21 @@ export interface WorkspaceChatSummary {
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
   aiMode: ChatAiMode;
+}
+
+export interface WorkspaceCallSummary {
+  id: string;
+  remoteJid: string;
+  displayName: string;
+  phoneNumber: string | null;
+  callType: CallType;
+  direction: MessageDirection;
+  status: CallStatus;
+  isVideo: boolean;
+  isGroup: boolean;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationSeconds: number | null;
 }
 
 export interface ChatNotFoundError extends Error {
@@ -40,6 +58,7 @@ export class WorkspaceService {
   private readonly crmContactRepository = new CrmContactRepository(pool);
   private readonly agentRepository = new AiAgentRepository(pool);
   private readonly jidMappingRepository = new WhatsAppJidMappingRepository(pool);
+  private readonly callRepository = new WhatsAppCallRepository(pool);
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
@@ -105,6 +124,54 @@ export class WorkspaceService {
       if (!b.lastMessageAt) return -1;
       return b.lastMessageAt.localeCompare(a.lastMessageAt);
     });
+  }
+
+  async listCalls(businessId: string, whatsappAccountId: string): Promise<WorkspaceCallSummary[]> {
+    const calls = await this.callRepository.listByAccount(businessId, whatsappAccountId);
+    const summaries: WorkspaceCallSummary[] = [];
+
+    for (const call of calls) {
+      let displayName = call.remoteJid;
+      let phoneNumber = call.remotePhoneNumber;
+
+      const contact = await this.contactRepository.findByJid(businessId, whatsappAccountId, call.remoteJid);
+      if (contact) {
+        displayName = resolveDisplayName({
+          verifiedName: contact.verifiedName,
+          businessName: contact.businessName,
+          displayName: contact.displayName,
+          pushName: contact.pushName,
+          phoneNumber: contact.phoneNumber,
+          whatsappJid: contact.whatsappJid,
+        });
+        phoneNumber = phoneNumber ?? contact.phoneNumber;
+      }
+
+      if (classifyJid(call.remoteJid) === 'lid' && !phoneNumber) {
+        const mapping = await this.jidMappingRepository.findByLid(businessId, whatsappAccountId, call.remoteJid);
+        if (mapping?.phoneNumber) {
+          phoneNumber = mapping.phoneNumber;
+          if (displayName === call.remoteJid) displayName = mapping.phoneNumber;
+        }
+      }
+
+      summaries.push({
+        id: call.id,
+        remoteJid: call.remoteJid,
+        displayName,
+        phoneNumber,
+        callType: call.callType,
+        direction: call.direction,
+        status: call.status,
+        isVideo: call.isVideo,
+        isGroup: call.isGroup,
+        startedAt: call.startedAt,
+        endedAt: call.endedAt,
+        durationSeconds: call.durationSeconds,
+      });
+    }
+
+    return summaries;
   }
 
   private notFound(): ChatNotFoundError {

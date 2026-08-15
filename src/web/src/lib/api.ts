@@ -50,7 +50,7 @@ export interface WorkspaceMessage {
   timestamp: string;
   fromMe: boolean;
   isHistorical: boolean;
-  status: string;
+  status: 'pending' | 'sent' | 'delivered' | 'read' | 'played' | 'failed' | 'unknown';
   hasMedia: boolean;
 }
 
@@ -124,6 +124,21 @@ export interface HumanTakeoverAlertDto {
   triggeredAt: string;
 }
 
+export interface WorkspaceCallSummary {
+  id: string;
+  remoteJid: string;
+  displayName: string;
+  phoneNumber: string | null;
+  callType: 'voice' | 'video' | 'unknown';
+  direction: 'inbound' | 'outbound';
+  status: 'offer' | 'ringing' | 'accepted' | 'rejected' | 'missed' | 'timeout' | 'ended' | 'unknown';
+  isVideo: boolean;
+  isGroup: boolean;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationSeconds: number | null;
+}
+
 class ApiError extends Error {
   constructor(
     public status: number,
@@ -160,6 +175,7 @@ export const api = {
   setAiMode: (chatId: string, aiMode: WorkspaceChatSummary['aiMode']) =>
     request(`/workspace/chats/${chatId}/ai-mode`, { method: 'PATCH', body: JSON.stringify({ aiMode }) }),
   listAgents: () => request<{ agents: AiAgentSummary[] }>('/workspace/agents'),
+  listCalls: () => request<{ calls: WorkspaceCallSummary[] }>('/workspace/calls'),
   getLockStatus: () => request<LockStatusResponse>('/security/lock/status'),
   getUnlockChallenge: () => request<UnlockChallengeResponse>('/security/lock/challenge'),
   setupLock: (body: { salt: string; pinHash: string; argon2Params: Argon2ParamsDto }) =>

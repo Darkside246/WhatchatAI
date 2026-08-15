@@ -33,6 +33,7 @@
     "pg": "^8.23.0",
     "pino": "latest",
     "qrcode": "latest",
+    "ws": "^8.21.3",
     "zod": "latest"
   },
   "devDependencies": {
@@ -40,6 +41,7 @@
     "@types/node": "latest",
     "@types/pg": "^8.21.0",
     "@types/qrcode": "latest",
+    "@types/ws": "^8.18.1",
     "concurrently": "latest",
     "tsx": "latest",
     "typescript": "latest",

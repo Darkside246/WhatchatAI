@@ -9,6 +9,8 @@ import path from 'node:path';
 import { whatsappMessageIngestionService } from './whatsappMessageIngestionService.js';
 import { whatsappSyncService } from './whatsappSyncService.js';
 import { enqueueIncomingMessage } from '../queue/queues/incomingMessagesQueue.js';
+import { enqueueMessageStatus, enqueueCallEvent } from '../queue/queues/realtimeEventsQueue.js';
+import { mapBaileysMessageStatus } from '../domain/whatsapp/messageStatus.js';
 import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { pool } from '../db/pool.js';
 import { BusinessRepository } from '../repositories/businessRepository.js';
@@ -221,6 +223,31 @@ export class WhatsAppConnectionService {
         void whatsappSyncService.ingestHistorySet(businessId, accountId, accountJid, payload).catch((error) => {
           console.error('[Sync] Failed to ingest messaging-history.set:', error);
         });
+      });
+    });
+
+    socket.ev.on('messages.update', (updates) => {
+      this.withSyncContext((businessId, accountId) => {
+        for (const { key, update } of updates) {
+          if (!key.id) continue;
+          const status = mapBaileysMessageStatus(update.status);
+          if (!status) continue; // Not a status change (e.g. a reaction/edit) - nothing real to record.
+          enqueueMessageStatus({ businessId, whatsappAccountId: accountId, whatsappMessageId: key.id, status }).catch(
+            (error) => {
+              console.error('[WhatsApp] Failed to enqueue message status update', key.id, error);
+            },
+          );
+        }
+      });
+    });
+
+    socket.ev.on('call', (events) => {
+      this.withSyncContext((businessId, accountId) => {
+        for (const event of events) {
+          enqueueCallEvent({ businessId, whatsappAccountId: accountId, event }).catch((error) => {
+            console.error('[WhatsApp] Failed to enqueue call event', event.id, error);
+          });
+        }
       });
     });
 

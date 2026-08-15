@@ -40,6 +40,30 @@ The visual workflow is a guide, not a source of fake data or simulated services.
 - `src/queue`: BullMQ queues/workers (Redis-backed). `src/queue/queues/incomingMessagesQueue.ts` is the speed-layer entry point; `src/queue/workers/incomingMessagesWorker.ts` is a standalone process (`npm run dev:worker`) that runs the Sentinel and persistence off the Baileys event loop.
 - `src/security`: `src/security/encryption` (AES-256-GCM envelope encryption, envelope-based Tenant Data Key derivation, Redis-cached with a 15-minute TTL) and `src/security/sentinel` (Stage 1 heuristic shield + Redis rate limiting, Stage 2 Gemini Flash prompt-injection/jailbreak classifier).
 - `src/redis`: shared Redis client for caching and rate limiting, separate from BullMQ's own dedicated connections (`src/queue/connection.ts`).
+- `src/realtime`: cross-process real-time event bridge (`pubsub.ts`, a dedicated Redis PUBLISH/SUBSCRIBE channel) and the WebSocket server (`wsServer.ts`, attached to the same HTTP server as the REST API at `/ws`).
+
+## Real-time inbox events and the WhatsApp-parity Inbox
+
+The BullMQ worker process persists messages, delivery-receipt statuses
+(`messages.update`), and call events (`call`) - see `src/queue/workers/incomingMessagesWorker.ts`,
+which runs both the `incoming_messages` and `realtime_events` queues. Baileys'
+numeric message-status codes and call-transition strings are mapped through
+pure domain functions (`src/domain/whatsapp/messageStatus.ts`,
+`src/domain/whatsapp/callStatus.ts`) before being persisted - unrecognized or
+purely internal signaling values (e.g. WebRTC `transport`/`relaylatency`) are
+dropped rather than mapped to a fabricated state. After each real write, the
+worker publishes an event over `src/realtime/pubsub.ts`; the API server
+process subscribes and rebroadcasts to connected WebSocket clients at `/ws`.
+The frontend's `useWhatsAppSync` hook consumes this for live chat/message/call
+updates, with REST polling kept as a fallback so the UI never silently goes
+stale if the socket drops.
+
+The Inbox (`src/web/src/pages/ChatsRoute.tsx`) has its own slim
+`InboxNavRail` (Chats/Calls, with Status shown dimmed and honestly labeled
+"not built yet" - no status/stories sync exists in this app). This is
+separate from `SaasNavRail`, the app-wide product navigation, which is left
+untouched: WhatchatAI is a SaaS platform built on WhatsApp, not a WhatsApp
+Web clone.
 
 ## Zero-trust security & speed-layer pipeline
 

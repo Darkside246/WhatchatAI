@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, type WorkspaceMessage } from '../lib/api.js';
+import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
@@ -13,6 +14,20 @@ function messageBody(message: WorkspaceMessage): string {
   return `[${message.messageType}]`;
 }
 
+/** Real delivery-receipt ticks driven by message.status (see messages.update wiring) - never a fabricated state. */
+function DeliveryTicks({ status }: { status: WorkspaceMessage['status'] }) {
+  if (status === 'failed') return <span title="Failed to send" className="text-red-400">⚠</span>;
+  if (status === 'pending') return <span title="Pending" className="text-white/50">🕐</span>;
+  if (status === 'sent') return <span title="Sent" className="text-white/60">✓</span>;
+  if (status === 'delivered') return <span title="Delivered" className="text-white/60">✓✓</span>;
+  if (status === 'read' || status === 'played') return <span title="Read" className="text-sky-300">✓✓</span>;
+  return null;
+}
+
+// WhatsApp-style subtle doodle background, as an inline SVG data URI - no external asset dependency.
+const DOODLE_BACKGROUND =
+  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Cg fill='none' stroke='%23ffffff' stroke-opacity='0.035' stroke-width='1.2'%3E%3Ccircle cx='20' cy='20' r='10'/%3E%3Cpath d='M55 15 L70 30 M70 15 L55 30'/%3E%3Crect x='45' y='55' width='16' height='16' rx='3'/%3E%3Cpath d='M10 70 Q20 60 30 70 T50 70'/%3E%3C/g%3E%3C/svg%3E\")";
+
 interface Props {
   onOpenDetail?: () => void;
 }
@@ -22,38 +37,38 @@ export function ChatThread({ onOpenDetail }: Props) {
   const [messages, setMessages] = useState<WorkspaceMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  async function load(currentChatId: string) {
+    try {
+      const { messages: list } = await api.listMessages(currentChatId);
+      setMessages([...list].reverse());
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load messages.');
+    }
+  }
+
   useEffect(() => {
     if (!chatId) return;
     setMessages(null);
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    async function load() {
-      try {
-        const { messages: list } = await api.listMessages(chatId!);
-        if (!cancelled) {
-          setMessages([...list].reverse());
-          setError(null);
-        }
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load messages.');
-      } finally {
-        if (!cancelled) timer = setTimeout(load, 4000);
-      }
-    }
-
-    void load();
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
+    void load(chatId);
+    const timer = setInterval(() => void load(chatId), 6000);
+    return () => clearInterval(timer);
   }, [chatId]);
+
+  useWhatsAppSync((event: RealtimeEvent) => {
+    if (!chatId) return;
+    if ((event.type === 'message.new' || event.type === 'message.status') && event.chatId === chatId) {
+      void load(chatId);
+    }
+  });
 
   if (!chatId) {
     return (
       <div className="flex h-full flex-1 flex-col items-center justify-center gap-2 text-gray-500">
-        <span className="text-4xl">💬</span>
-        <p className="text-sm">Select a conversation to view real messages.</p>
+        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10 text-2xl font-bold text-emerald-400">
+          W
+        </div>
+        <p className="text-sm">Select a chat to view messages</p>
       </div>
     );
   }
@@ -74,21 +89,22 @@ export function ChatThread({ onOpenDetail }: Props) {
         </button>
       </div>
 
-      <div className="flex-1 space-y-2 overflow-y-auto bg-surface-0 px-4 py-4">
+      <div className="flex-1 space-y-2 overflow-y-auto bg-surface-0 px-4 py-4" style={{ backgroundImage: DOODLE_BACKGROUND }}>
         {error && <p className="text-xs text-red-400">{error}</p>}
         {messages === null && !error && <p className="text-xs text-gray-500">Loading real message history…</p>}
         {messages?.length === 0 && <p className="text-xs text-gray-500">No messages persisted for this chat yet.</p>}
         {messages?.map((message) => (
           <div key={message.id} className={`flex ${message.fromMe ? 'justify-end' : 'justify-start'}`}>
             <div
-              className={`max-w-[75%] rounded-2xl px-3 py-2 text-sm ${
-                message.fromMe ? 'bg-emerald-600 text-white' : 'bg-surface-2 text-gray-100'
+              className={`max-w-[75%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
+                message.fromMe ? 'bg-emerald-700 text-white' : 'bg-surface-2 text-gray-100'
               }`}
             >
               <p className="whitespace-pre-wrap break-words">{messageBody(message)}</p>
-              <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-70">
+              <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-80">
                 {message.isHistorical && <span title="Synced from history">history</span>}
                 <span>{formatTime(message.timestamp)}</span>
+                {message.fromMe && <DeliveryTicks status={message.status} />}
               </div>
             </div>
           </div>
@@ -96,14 +112,20 @@ export function ChatThread({ onOpenDetail }: Props) {
       </div>
 
       <div className="shrink-0 border-t border-border-subtle bg-surface-1 p-3">
-        <div className="flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-2 px-3 py-2 opacity-60">
+        <div className="flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-2 px-3 py-2">
+          <button type="button" disabled title="Attach (not built yet)" className="cursor-not-allowed text-gray-600">
+            📎
+          </button>
+          <button type="button" disabled title="Emoji (not built yet)" className="cursor-not-allowed text-gray-600">
+            🙂
+          </button>
           <input
             disabled
             placeholder="Sending is not built yet (Phase 4 - outbound dispatcher)"
             className="flex-1 bg-transparent text-sm text-gray-400 outline-none"
           />
-          <button disabled type="button" className="rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-gray-500">
-            Send
+          <button type="button" disabled title="Voice message (not built yet)" className="cursor-not-allowed text-gray-600">
+            🎤
           </button>
         </div>
       </div>
