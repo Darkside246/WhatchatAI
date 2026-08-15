@@ -1,4 +1,22 @@
-import { Pool } from 'pg';
+import { Pool, types } from 'pg';
+
+// Every repository in this codebase types timestamp columns as `string`
+// (createdAt, updatedAt, lastMessageAt, ...), but pg's default parsers
+// convert TIMESTAMPTZ/TIMESTAMP columns to native Date objects. That
+// mismatch is silently masked wherever a Date just gets JSON.stringify'd
+// (Date -> ISO string happens automatically), but breaks anywhere code
+// calls a string method (e.g. .localeCompare) directly on a row field.
+// Returning the raw text value keeps every row's runtime shape matching
+// its TypeScript type.
+// Converted to a proper ISO-8601 string (not pg's raw wire text, which uses
+// a space separator and a colon-less UTC offset) - this is byte-identical
+// to what Date.prototype.toJSON() already produced everywhere a row's
+// timestamp got JSON-serialized, so existing callers see no change.
+const TIMESTAMP_OID = 1114;
+const TIMESTAMPTZ_OID = 1184;
+const toIsoString = (value: string) => new Date(value).toISOString();
+types.setTypeParser(TIMESTAMP_OID, toIsoString);
+types.setTypeParser(TIMESTAMPTZ_OID, toIsoString);
 
 const connectionString = process.env.DATABASE_URL;
 
