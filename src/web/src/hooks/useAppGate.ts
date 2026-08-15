@@ -18,6 +18,12 @@ export function useAppGate(): AppGateState {
   const [connection, setConnection] = useState<WhatsAppConnectionSnapshot | null>(null);
   const [sync, setSync] = useState<SyncStatusResponse | null>(null);
   const [forceContinue, setForceContinue] = useState(false);
+  // Baileys drops and auto-reconnects an already-paired session constantly
+  // (a near-guaranteed restartRequired right after first pairing, plus
+  // transient blips during/after a large history sync). None of that means
+  // the account needs re-pairing, so once we've seen a real connection we
+  // stop treating momentary disconnects as "show the QR screen again."
+  const [pairedOnce, setPairedOnce] = useState(false);
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -33,7 +39,11 @@ export function useAppGate(): AppGateState {
     async function poll() {
       try {
         const snapshot = await api.getWhatsAppStatus();
-        if (mounted.current) setConnection(snapshot);
+        if (mounted.current) {
+          setConnection(snapshot);
+          if (snapshot.connected) setPairedOnce(true);
+          if (snapshot.status === 'LOGGED_OUT') setPairedOnce(false);
+        }
       } catch {
         // Backend not reachable yet - keep retrying, don't fabricate a status.
       } finally {
@@ -46,10 +56,15 @@ export function useAppGate(): AppGateState {
   }, []);
 
   useEffect(() => {
-    if (!connection?.connected) {
+    // Keep the last known sync snapshot across a brief reconnect of an
+    // already-paired session instead of nulling it out - that null was what
+    // bounced a fully-synced workspace back to the "Synchronizing…" screen
+    // every time Baileys blipped.
+    if (!connection?.connected && !pairedOnce) {
       setSync(null);
       return;
     }
+    if (!connection?.connected) return;
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
@@ -70,11 +85,14 @@ export function useAppGate(): AppGateState {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [connection?.connected]);
+  }, [connection?.connected, pairedOnce]);
 
   let phase: AppPhase = 'loading';
   if (connection) {
-    if (!connection.connected) {
+    const needsOnboarding =
+      connection.status === 'QR_READY' || connection.status === 'LOGGED_OUT' || (!connection.connected && !pairedOnce);
+
+    if (needsOnboarding) {
       phase = 'onboarding';
     } else if (
       !forceContinue &&
