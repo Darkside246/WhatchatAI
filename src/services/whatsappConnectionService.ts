@@ -6,6 +6,7 @@ import {
 } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import path from 'node:path';
+import { rm } from 'node:fs/promises';
 import { whatsappMessageIngestionService } from './whatsappMessageIngestionService.js';
 import { whatsappSyncService } from './whatsappSyncService.js';
 import { enqueueIncomingMessage } from '../queue/queues/incomingMessagesQueue.js';
@@ -178,6 +179,8 @@ export class WhatsAppConnectionService {
       }
     }
 
+    await this.clearSessionState();
+
     this.snapshot = {
       ...this.snapshot,
       status: 'LOGGED_OUT',
@@ -188,6 +191,22 @@ export class WhatsAppConnectionService {
       jid: null,
       pushName: null,
     };
+  }
+
+  /**
+   * A logged-out WhatsApp session identity can never be resumed - WhatsApp's
+   * own servers permanently reject it. Without deleting these credentials,
+   * every future connect() attempt keeps trying (and failing) to resume the
+   * dead session instead of requesting a genuine new pairing QR, which is
+   * why a stale session directory can get an account stuck forever on
+   * "Generating a new code..." with no code ever actually appearing.
+   */
+  private async clearSessionState(): Promise<void> {
+    try {
+      await rm(DEFAULT_SESSION_DIR, { recursive: true, force: true });
+    } catch (error) {
+      console.error('[WhatsApp] Failed to clear stale session state:', error);
+    }
   }
 
   private attachEventHandlers(socket: WASocket): void {
@@ -371,6 +390,21 @@ export class WhatsAppConnectionService {
         if (code === DisconnectReason.loggedOut) {
           this.snapshot = { ...this.snapshot, status: 'LOGGED_OUT' };
           this.recordDisconnectEvent('logged_out', 'LOGGED_OUT');
+          // The credentials WhatsApp just rejected can never be resumed -
+          // without clearing them, every future connect() would keep
+          // retrying (and failing) the same dead session instead of
+          // requesting a genuine new pairing QR. Reconnecting immediately
+          // after, with a clean session, is what actually produces the
+          // fresh code the UI promises rather than leaving the account
+          // stuck on "Generating a new code..." forever.
+          await this.clearSessionState();
+          void this.connect().catch((error) => {
+            this.snapshot = {
+              ...this.snapshot,
+              status: 'ERROR',
+              lastError: error instanceof Error ? error.message : String(error),
+            };
+          });
           return;
         }
 
