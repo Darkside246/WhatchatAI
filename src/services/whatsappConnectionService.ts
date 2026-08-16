@@ -22,7 +22,7 @@ const STATUS_BROADCAST_JID = 'status@broadcast';
 import { mapBaileysMessageStatus } from '../domain/whatsapp/messageStatus.js';
 import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { pool } from '../db/pool.js';
-import { BusinessRepository } from '../repositories/businessRepository.js';
+import { ensureDefaultBusinessProvisioned } from './businessBootstrapService.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
 import { WhatsAppConnectionEventRepository } from '../repositories/whatsappConnectionEventRepository.js';
 
@@ -60,7 +60,6 @@ export class WhatsAppConnectionService {
   private listenersAttached = false;
   private businessId: string | null = null;
   private persistedAccountId: string | null = null;
-  private readonly businessRepository = new BusinessRepository(pool);
   private readonly accountRepository = new WhatsAppAccountRepository(pool);
   private readonly connectionEventRepository = new WhatsAppConnectionEventRepository(pool);
   private snapshot: WhatsAppConnectionSnapshot = {
@@ -449,7 +448,7 @@ export class WhatsAppConnectionService {
     pushName: string | null,
   ): Promise<void> {
     try {
-      const business = await this.businessRepository.ensureDefault();
+      const business = await ensureDefaultBusinessProvisioned();
       const account = await this.accountRepository.upsertConnected({
         businessId: business.id,
         whatsappJid: jid,

@@ -13,7 +13,7 @@ import { workspaceService, isChatNotFoundError, isEntitlementDeniedError } from 
 import { whatsappOutboundMessageService, isChatNotFoundError as isOutboundChatNotFoundError } from '../services/whatsappOutboundMessageService.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
-import { BusinessRepository } from '../repositories/businessRepository.js';
+import { ensureDefaultBusinessProvisioned } from '../services/businessBootstrapService.js';
 import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
 import { retrieveMedia } from '../media/localEncryptedMediaStorage.js';
 import {
@@ -469,7 +469,7 @@ app.post('/api/diagnostics/validate-message', (req, res) => {
 });
 
 async function resolveDefaultBusinessId(): Promise<string> {
-  const business = await new BusinessRepository(pool).ensureDefault();
+  const business = await ensureDefaultBusinessProvisioned();
   return business.id;
 }
 
