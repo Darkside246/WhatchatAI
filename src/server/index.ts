@@ -11,6 +11,7 @@ import { whatsappConnectionService } from '../services/whatsappConnectionService
 import { whatsappMessageIngestionService } from '../services/whatsappMessageIngestionService.js';
 import { workspaceService, isChatNotFoundError } from '../services/workspaceService.js';
 import { whatsappOutboundMessageService, isChatNotFoundError as isOutboundChatNotFoundError } from '../services/whatsappOutboundMessageService.js';
+import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
 import { BusinessRepository } from '../repositories/businessRepository.js';
 import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
@@ -25,6 +26,11 @@ import {
   LockNotConfiguredError,
 } from '../services/securityLockService.js';
 import { listHumanTakeoverAlerts } from '../services/securityAlertService.js';
+// Runs the real outbound-send BullMQ worker in this process, not the
+// separate incomingMessagesWorker.ts process - the live Baileys socket
+// only exists here, wherever whatsappConnectionService.connect() actually
+// runs. Importing this starts it as a side effect (see the file itself).
+import { outboundMessagesWorker } from '../queue/workers/outboundDispatchWorker.js';
 import type { Request, Response, NextFunction } from 'express';
 
 const app = express();
@@ -240,6 +246,28 @@ app.post('/api/workspace/chats/:chatId/messages', requireWorkspaceContext, async
       message: error instanceof Error ? error.message : String(error),
     });
   }
+});
+
+/**
+ * The send endpoint above returns 202 the instant a send is queued, not
+ * once it actually succeeds or fails - dispatch happens asynchronously in
+ * outboundDispatchWorker.ts. Without this, a genuine failure (WhatsApp
+ * disconnected, a rejected send) would be invisible in the UI: the
+ * composer would clear and the message would just never appear, with no
+ * error shown anywhere. The frontend polls this after sending so a real
+ * failure surfaces instead of silently vanishing.
+ */
+app.get('/api/workspace/outbound-messages/:id', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const outboundMessage = await new WhatsAppOutboundMessageRepository(pool).findById(String(req.params.id ?? ''));
+  if (!outboundMessage || outboundMessage.businessId !== businessId) {
+    return res.status(404).json({ error: 'OUTBOUND_MESSAGE_NOT_FOUND' });
+  }
+  return res.status(200).json({
+    id: outboundMessage.id,
+    status: outboundMessage.status,
+    lastError: outboundMessage.lastError,
+  });
 });
 
 const aiModeSchema = z.object({ aiMode: z.enum(['AI_ACTIVE', 'AI_PAUSED', 'HUMAN_TAKEOVER']) });
@@ -510,3 +538,12 @@ attachWebSocketServer(httpServer);
 httpServer.listen(port, () => {
   console.log(`[WhatchatAI] API listening on http://localhost:${port}`);
 });
+
+async function shutdown(signal: string): Promise<void> {
+  console.log(`[WhatchatAI] Received ${signal}, closing outbound dispatch worker...`);
+  await outboundMessagesWorker.close();
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));

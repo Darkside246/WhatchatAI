@@ -21,7 +21,8 @@ vi.mock('../src/services/whatsappConnectionService.js', () => ({
 }));
 
 const { enqueueOutboundMessage, outboundMessagesQueue } = await import('../src/queue/queues/outboundMessagesQueue.js');
-const { outboundMessagesWorker, sweepStaleOutboundMessages } = await import('../src/queue/workers/incomingMessagesWorker.js');
+const { outboundMessagesWorker } = await import('../src/queue/workers/outboundDispatchWorker.js');
+const { sweepStaleOutboundMessages } = await import('../src/queue/workers/incomingMessagesWorker.js');
 
 /**
  * BullMQ's Worker emits 'failed' after every attempt, not only the last one

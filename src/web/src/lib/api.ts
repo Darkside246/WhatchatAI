@@ -213,6 +213,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  // The send endpoint returns 202 the instant a send is queued, not once it
+  // actually succeeds or fails (dispatch is async) - this is how a caller
+  // finds out the real outcome.
+  getOutboundMessage: (id: string) =>
+    request<{ id: string; status: OutboundMessageDto['status']; lastError: string | null }>(
+      `/workspace/outbound-messages/${id}`,
+    ),
   setAiMode: (chatId: string, aiMode: WorkspaceChatSummary['aiMode']) =>
     request(`/workspace/chats/${chatId}/ai-mode`, { method: 'PATCH', body: JSON.stringify({ aiMode }) }),
   markChatRead: (chatId: string) => request(`/workspace/chats/${chatId}/read`, { method: 'POST' }),

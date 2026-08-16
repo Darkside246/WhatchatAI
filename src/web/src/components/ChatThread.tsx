@@ -253,16 +253,45 @@ export function ChatThread({ onOpenDetail }: Props) {
     return () => clearInterval(timer);
   }, [chatId]);
 
+  // The send endpoint returns 202 the instant a send is queued, not once it
+  // actually succeeds or fails - real dispatch happens asynchronously.
+  // Without this, a genuine failure (WhatsApp disconnected, a rejected
+  // send) would be invisible: the composer clears and the message just
+  // never appears, with no error shown anywhere. This polls the real
+  // outcome in the background so a failure surfaces instead of silently
+  // vanishing, without blocking the composer while it waits.
+  async function pollOutboundOutcome(currentChatId: string, outboundMessageId: string) {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      let result;
+      try {
+        result = await api.getOutboundMessage(outboundMessageId);
+      } catch {
+        return; // Transient poll failure - the message list's own refresh is still the source of truth.
+      }
+      if (result.status === 'sent') {
+        if (chatId === currentChatId) void load(currentChatId);
+        return;
+      }
+      if (result.status === 'failed') {
+        if (chatId === currentChatId) setSendError(result.lastError ?? 'Failed to send message.');
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+
   async function dispatchSend(currentChatId: string, body: SendMessageBody) {
     setSending(true);
     setSendError(null);
     try {
-      await api.sendMessage(currentChatId, body);
+      const { outboundMessage } = await api.sendMessage(currentChatId, body);
       // The real message row lands asynchronously once WhatsApp echoes the
       // send back through the normal sync pipeline - the 6s poll (and any
       // message.new event that arrives sooner) picks it up. A manual
       // refresh right away also catches the case where it was already fast.
       void load(currentChatId);
+      void pollOutboundOutcome(currentChatId, outboundMessage.id);
     } catch (err) {
       setSendError(err instanceof Error ? err.message : 'Failed to send message.');
     } finally {
