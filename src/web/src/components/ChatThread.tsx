@@ -22,6 +22,7 @@ import {
   type WorkspaceMessage,
   type WorkspaceMedia,
   type WorkspaceChatDetail,
+  type WorkspacePresence,
   type SendMessageBody,
 } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
@@ -84,11 +85,35 @@ function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
+/** Only ever reflects a real, received presence.update event - never inferred from message activity. */
+function formatPresence(presence: WorkspacePresence | null): string | null {
+  if (!presence) return null;
+  if (presence.state === 'available') return 'online';
+  if (presence.state === 'composing') return 'typing…';
+  if (presence.state === 'recording') return 'recording audio…';
+  if (presence.lastSeenAt) {
+    return `last seen ${new Date(presence.lastSeenAt).toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    })}`;
+  }
+  return null;
+}
+
 function messageBody(message: WorkspaceMessage): string {
   if (message.textContent) return message.textContent;
   if (message.caption) return message.caption;
   if (message.hasMedia) return `[${message.messageType}]`;
   return `[${message.messageType}]`;
+}
+
+/** Real reactor rows grouped into WhatsApp-style "emoji count" badges - never fabricated, empty when none exist. */
+function groupReactions(reactions: WorkspaceMessage['reactions']): { emoji: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const { reaction } of reactions) counts.set(reaction, (counts.get(reaction) ?? 0) + 1);
+  return [...counts.entries()].map(([emoji, count]) => ({ emoji, count }));
 }
 
 function formatFileSize(bytes: number | null): string {
@@ -355,7 +380,10 @@ export function ChatThread({ onOpenDetail }: Props) {
   useWhatsAppSync((event: RealtimeEvent) => {
     if (!chatId) return;
     if (
-      (event.type === 'message.new' || event.type === 'message.status' || event.type === 'media.updated') &&
+      (event.type === 'message.new' ||
+        event.type === 'message.status' ||
+        event.type === 'media.updated' ||
+        event.type === 'message.reaction') &&
       event.chatId === chatId
     ) {
       void load(chatId);
@@ -364,6 +392,8 @@ export function ChatThread({ onOpenDetail }: Props) {
       if (event.type === 'message.new') markRead(chatId);
     }
     if (event.type === 'chat.updated' && event.chatId === chatId) void loadDetail(chatId);
+    // Presence is keyed by JID, not chatId - only refresh when it's really this contact.
+    if (event.type === 'presence.updated' && detail?.chat.chatJid === event.contactJid) void loadDetail(chatId);
   });
 
   if (!chatId) {
@@ -386,6 +416,10 @@ export function ChatThread({ onOpenDetail }: Props) {
     '';
   const headerSecondary =
     detail?.contact?.phoneNumber ?? detail?.chat.phoneNumber ?? detail?.resolvedPhoneNumber ?? detail?.chat.chatJid ?? '';
+  // Real presence.update events only, never inferred - mirrors WhatsApp's own
+  // header behavior of showing "online"/"last seen" in place of the phone
+  // number when a genuine presence signal exists for this contact.
+  const presenceLabel = formatPresence(detail?.presence ?? null);
 
   return (
     <div className="flex h-full flex-1 flex-col">
@@ -398,8 +432,15 @@ export function ChatThread({ onOpenDetail }: Props) {
             <Avatar label={headerName} size="sm" />
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium text-fg">{headerName}</p>
-              {headerSecondary && headerSecondary !== headerName && (
-                <p className="truncate text-[11px] text-fg-muted">{headerSecondary}</p>
+              {presenceLabel ? (
+                <p className={`truncate text-[11px] ${presenceLabel === 'online' ? 'text-accent' : 'text-fg-muted'}`}>
+                  {presenceLabel}
+                </p>
+              ) : (
+                headerSecondary &&
+                headerSecondary !== headerName && (
+                  <p className="truncate text-[11px] text-fg-muted">{headerSecondary}</p>
+                )
               )}
             </div>
             <AiModeControl mode={detail.chat.aiMode} saving={savingMode} error={modeError} onSelect={handleModeSelect} />
@@ -436,6 +477,19 @@ export function ChatThread({ onOpenDetail }: Props) {
                 </div>
               ) : (
                 <p className="whitespace-pre-wrap break-words">{messageBody(message)}</p>
+              )}
+              {message.reactions.length > 0 && (
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {groupReactions(message.reactions).map(({ emoji, count }) => (
+                    <span
+                      key={emoji}
+                      className="rounded-full bg-black/20 px-1.5 py-0.5 text-[11px] leading-none"
+                    >
+                      {emoji}
+                      {count > 1 ? ` ${count}` : ''}
+                    </span>
+                  ))}
+                </div>
               )}
               <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-80">
                 {message.isHistorical && <span title="Synced from history">history</span>}

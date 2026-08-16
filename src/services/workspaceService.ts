@@ -11,9 +11,18 @@ import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMapping
 import { WhatsAppCallRepository } from '../repositories/whatsappCallRepository.js';
 import { WhatsAppStatusRepository } from '../repositories/whatsappStatusRepository.js';
 import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
+import { WhatsAppPresenceRepository } from '../repositories/whatsappPresenceRepository.js';
+import { WhatsAppMessageReactionRepository } from '../repositories/whatsappMessageReactionRepository.js';
 import type { WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { classifyJid } from '../domain/whatsapp/jid.js';
-import type { CallStatus, CallType, MediaDownloadStatus, MediaType, MessageDirection } from '../domain/whatsapp/types.js';
+import type {
+  CallStatus,
+  CallType,
+  MediaDownloadStatus,
+  MediaType,
+  MessageDirection,
+  PresenceState,
+} from '../domain/whatsapp/types.js';
 
 export interface WorkspaceChatSummary {
   id: string;
@@ -67,8 +76,19 @@ export interface WorkspaceMediaSummary {
   downloadStatus: MediaDownloadStatus;
 }
 
+export interface WorkspaceReactionSummary {
+  reactorJid: string;
+  reaction: string;
+}
+
+export interface WorkspacePresenceSummary {
+  state: PresenceState;
+  lastSeenAt: string | null;
+}
+
 export interface WorkspaceMessageSummary extends WhatsAppMessageRecord {
   media: WorkspaceMediaSummary | null;
+  reactions: WorkspaceReactionSummary[];
 }
 
 export interface ChatNotFoundError extends Error {
@@ -93,6 +113,8 @@ export class WorkspaceService {
   private readonly callRepository = new WhatsAppCallRepository(pool);
   private readonly statusRepository = new WhatsAppStatusRepository(pool);
   private readonly mediaRepository = new WhatsAppMediaRepository(pool);
+  private readonly presenceRepository = new WhatsAppPresenceRepository(pool);
+  private readonly reactionRepository = new WhatsAppMessageReactionRepository(pool);
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
@@ -287,7 +309,19 @@ export class WorkspaceService {
       resolvedPhoneNumber = mapping?.phoneNumber ?? null;
     }
 
-    return { chat, contact, crmContact, resolvedPhoneNumber };
+    // Presence is a per-JID concept - a group has no single "online" state, so this stays honestly null for groups.
+    const presence =
+      chat.chatType === 'individual'
+        ? await this.presenceRepository.findLatest(businessId, whatsappAccountId, chat.chatJid)
+        : null;
+
+    return {
+      chat,
+      contact,
+      crmContact,
+      resolvedPhoneNumber,
+      presence: presence ? { state: presence.presenceState, lastSeenAt: presence.lastSeenAt } : null,
+    };
   }
 
   async listMessages(
@@ -306,6 +340,14 @@ export class WorkspaceService {
     const mediaRows = await this.mediaRepository.findByIds(mediaIds);
     const mediaById = new Map(mediaRows.map((row) => [row.id, row]));
 
+    const reactionRows = await this.reactionRepository.listByMessages(messages.map((message) => message.id));
+    const reactionsByMessageId = new Map<string, WorkspaceReactionSummary[]>();
+    for (const reaction of reactionRows) {
+      const list = reactionsByMessageId.get(reaction.messageId) ?? [];
+      list.push({ reactorJid: reaction.reactorJid, reaction: reaction.reaction });
+      reactionsByMessageId.set(reaction.messageId, list);
+    }
+
     return messages.map((message) => {
       const mediaRow = message.mediaId ? mediaById.get(message.mediaId) : undefined;
       const media: WorkspaceMediaSummary | null = mediaRow
@@ -321,7 +363,7 @@ export class WorkspaceService {
             downloadStatus: mediaRow.downloadStatus,
           }
         : null;
-      return { ...message, media };
+      return { ...message, media, reactions: reactionsByMessageId.get(message.id) ?? [] };
     });
   }
 

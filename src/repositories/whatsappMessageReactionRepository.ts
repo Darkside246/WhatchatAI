@@ -74,4 +74,14 @@ export class WhatsAppMessageReactionRepository {
     );
     return rows.map(toRecord);
   }
+
+  /** Batch read for a message list - one query instead of one per message. */
+  async listByMessages(messageIds: string[]): Promise<WhatsAppMessageReactionRecord[]> {
+    if (messageIds.length === 0) return [];
+    const { rows } = await this.db.query<ReactionRow>(
+      'SELECT * FROM whatsapp_message_reactions WHERE message_id = ANY($1)',
+      [messageIds],
+    );
+    return rows.map(toRecord);
+  }
 }

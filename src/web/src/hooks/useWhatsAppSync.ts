@@ -1,11 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 
+// Mirrors src/realtime/pubsub.ts's RealtimeEvent union - the WebSocket
+// server forwards every published event verbatim, unfiltered, so this type
+// must stay in sync with the backend's or a real event type would compile
+// away silently instead of being handled.
 export type RealtimeEvent =
   | { type: 'message.new'; businessId: string; chatId: string }
   | { type: 'chat.updated'; businessId: string; chatId: string }
   | { type: 'message.status'; businessId: string; chatId: string; messageId: string; status: string }
   | { type: 'call.updated'; businessId: string; callId: string }
-  | { type: 'media.updated'; businessId: string; mediaId: string; messageId: string; chatId: string };
+  | { type: 'media.updated'; businessId: string; mediaId: string; messageId: string; chatId: string }
+  | { type: 'status.media.updated'; businessId: string; mediaId: string; statusId: string }
+  | { type: 'message.reaction'; businessId: string; chatId: string; messageId: string }
+  | { type: 'presence.updated'; businessId: string; contactJid: string };
 
 export interface WhatsAppSyncState {
   /** The real socket state - never assume live updates are flowing without checking this. */

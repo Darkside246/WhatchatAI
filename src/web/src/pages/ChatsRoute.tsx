@@ -6,6 +6,7 @@ import { ChatThread } from '../components/ChatThread.js';
 import { ContactDetailPanel } from '../components/ContactDetailPanel.js';
 import { InboxNavRail, type InboxView } from '../components/InboxNavRail.js';
 import { CallHistoryPanel } from '../components/CallHistoryPanel.js';
+import { StatusesPanel } from '../components/StatusesPanel.js';
 
 export function ChatsRoute() {
   const { chatId } = useParams<{ chatId: string }>();
@@ -41,7 +42,7 @@ export function ChatsRoute() {
             </div>
           )}
         </>
-      ) : (
+      ) : view === 'calls' ? (
         <>
           <CallHistoryPanel className="flex w-full shrink-0 border-r border-border-subtle md:flex md:w-80" />
           <div className="hidden min-w-0 flex-1 flex-col items-center justify-center gap-2 text-fg-muted md:flex">
@@ -49,6 +50,8 @@ export function ChatsRoute() {
             <p className="text-sm">Select a call to view details</p>
           </div>
         </>
+      ) : (
+        <StatusesPanel className="flex w-full flex-1" />
       )}
     </div>
   );

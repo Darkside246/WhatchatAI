@@ -50,6 +50,11 @@ export interface WorkspaceMedia {
   downloadStatus: 'pending' | 'downloading' | 'downloaded' | 'failed' | 'unavailable';
 }
 
+export interface WorkspaceReaction {
+  reactorJid: string;
+  reaction: string;
+}
+
 export interface WorkspaceMessage {
   id: string;
   chatId: string;
@@ -65,6 +70,7 @@ export interface WorkspaceMessage {
   status: 'pending' | 'sent' | 'delivered' | 'read' | 'played' | 'failed' | 'unknown';
   hasMedia: boolean;
   media: WorkspaceMedia | null;
+  reactions: WorkspaceReaction[];
 }
 
 export interface OutboundMessageDto {
@@ -123,12 +129,31 @@ export interface WorkspaceChatDetailRecord {
   aiMode: WorkspaceChatSummary['aiMode'];
 }
 
+export interface WorkspacePresence {
+  state: 'available' | 'unavailable' | 'composing' | 'recording' | 'paused' | 'unknown';
+  lastSeenAt: string | null;
+}
+
 export interface WorkspaceChatDetail {
   chat: WorkspaceChatDetailRecord;
   contact: WorkspaceContact | null;
   crmContact: WorkspaceCrmContact | null;
   /** For a `@lid` identity, the real phone number resolved from Baileys' own lid<->phone mapping, when known. */
   resolvedPhoneNumber: string | null;
+  /** Null for group chats (no single "online" state) or when no presence.update event has ever arrived for this contact. */
+  presence: WorkspacePresence | null;
+}
+
+export interface WorkspaceStatus {
+  id: string;
+  publisherJid: string;
+  displayName: string;
+  statusType: 'text' | 'image' | 'video' | 'audio' | 'unknown';
+  textContent: string | null;
+  media: WorkspaceMedia | null;
+  mediaAvailable: boolean;
+  createdAt: string;
+  expiresAt: string | null;
 }
 
 export interface Argon2ParamsDto {
@@ -225,6 +250,7 @@ export const api = {
   markChatRead: (chatId: string) => request(`/workspace/chats/${chatId}/read`, { method: 'POST' }),
   listAgents: () => request<{ agents: AiAgentSummary[] }>('/workspace/agents'),
   listCalls: () => request<{ calls: WorkspaceCallSummary[] }>('/workspace/calls'),
+  listStatuses: () => request<{ statuses: WorkspaceStatus[] }>('/workspace/statuses'),
   getLockStatus: () => request<LockStatusResponse>('/security/lock/status'),
   getUnlockChallenge: () => request<UnlockChallengeResponse>('/security/lock/challenge'),
   setupLock: (body: { salt: string; pinHash: string; argon2Params: Argon2ParamsDto }) =>

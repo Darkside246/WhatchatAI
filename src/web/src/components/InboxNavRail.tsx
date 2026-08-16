@@ -1,6 +1,6 @@
 import { MessageCircle, Phone, CircleDashed } from 'lucide-react';
 
-export type InboxView = 'chats' | 'calls';
+export type InboxView = 'chats' | 'calls' | 'statuses';
 
 interface Props {
   view: InboxView;
@@ -9,14 +9,10 @@ interface Props {
 
 /**
  * A slim WhatsApp-style sub-nav scoped to the Inbox pane only - it switches
- * between real data views (Chats, Calls) inside the workspace. This is
- * intentionally separate from SaasNavRail (the app-wide product nav for
+ * between real data views (Chats, Calls, Status) inside the workspace. This
+ * is intentionally separate from SaasNavRail (the app-wide product nav for
  * Dashboard/CRM/Billing/etc.): WhatchatAI is a SaaS platform built on top of
  * WhatsApp, not a WhatsApp Web clone, so the global nav stays as-is.
- *
- * Status has no real backend (no status/stories sync exists in this app
- * yet) - it's shown dimmed with an honest "not built" label rather than
- * omitted or faked.
  */
 export function InboxNavRail({ view, onChange }: Props) {
   return (
@@ -43,9 +39,11 @@ export function InboxNavRail({ view, onChange }: Props) {
       </button>
       <button
         type="button"
-        disabled
-        title="Status (not built yet)"
-        className="flex h-10 w-10 cursor-not-allowed items-center justify-center rounded-lg text-fg-muted/40"
+        onClick={() => onChange('statuses')}
+        title="Status"
+        className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+          view === 'statuses' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-surface-2 hover:text-fg-secondary'
+        }`}
       >
         <CircleDashed size={19} strokeWidth={1.75} aria-hidden />
       </button>
