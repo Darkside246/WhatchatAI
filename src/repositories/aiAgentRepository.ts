@@ -63,15 +63,15 @@ function toRecord(row: AiAgentRow): AiAgentRecord {
 export interface CreateAiAgentInput {
   businessId: string;
   name: string;
-  description?: string | null;
-  persona?: string | null;
-  tone?: string | null;
-  language?: string | null;
-  systemInstruction?: string | null;
-  greeting?: string | null;
-  businessContext?: string | null;
-  responseStyle?: string | null;
-  humanTakeoverPolicy?: string | null;
+  description?: string | null | undefined;
+  persona?: string | null | undefined;
+  tone?: string | null | undefined;
+  language?: string | null | undefined;
+  systemInstruction?: string | null | undefined;
+  greeting?: string | null | undefined;
+  businessContext?: string | null | undefined;
+  responseStyle?: string | null | undefined;
+  humanTakeoverPolicy?: string | null | undefined;
 }
 
 export class AiAgentRepository {

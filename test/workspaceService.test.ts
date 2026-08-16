@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
-import { workspaceService } from '../src/services/workspaceService.js';
-import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
+import { workspaceService, isEntitlementDeniedError } from '../src/services/workspaceService.js';
+import { createTestAccount, createTestBusiness, createTestSubscription, resetDatabase } from './helpers.js';
 
 describe('workspaceService.listChats (real Postgres timestamptz -> string mapping)', () => {
   let businessId: string;
@@ -85,5 +85,63 @@ describe('workspaceService.listChats (real Postgres timestamptz -> string mappin
     expect(chats[0]?.lastMessageAt).not.toBeNull();
     expect(new Date(chats[0]!.lastMessageAt!).toISOString()).toBe(chats[0]!.lastMessageAt);
     expect(chats[2]?.lastMessageAt).toBeNull();
+  });
+});
+
+describe('workspaceService.createAgent (real entitlement enforcement, not just a hidden UI button)', () => {
+  let businessId: string;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+  });
+
+  it('denies creation for a business with no active subscription - never fabricates an agent', async () => {
+    await expect(workspaceService.createAgent(businessId, { name: 'Reception Agent' })).rejects.toThrow();
+
+    try {
+      await workspaceService.createAgent(businessId, { name: 'Reception Agent' });
+      expect.fail('expected createAgent to reject');
+    } catch (error) {
+      expect(isEntitlementDeniedError(error)).toBe(true);
+      if (isEntitlementDeniedError(error)) {
+        expect(error.reason).toBe('NO_ACTIVE_SUBSCRIPTION');
+      }
+    }
+
+    const agents = await workspaceService.listAgents(businessId);
+    expect(agents).toEqual([]);
+  });
+
+  it('creates a real, immediately ACTIVE agent once the business is entitled', async () => {
+    await createTestSubscription(businessId, 'starter');
+    const agent = await workspaceService.createAgent(businessId, {
+      name: 'Reception Agent',
+      persona: 'Friendly and concise',
+      systemInstruction: 'Help qualify inbound leads.',
+    });
+
+    expect(agent.status).toBe('ACTIVE');
+    expect(agent.name).toBe('Reception Agent');
+
+    const agents = await workspaceService.listAgents(businessId);
+    expect(agents.map((a) => a.id)).toContain(agent.id);
+  });
+
+  it('stops creating agents once the starter plan limit (2) is reached', async () => {
+    await createTestSubscription(businessId, 'starter');
+    await workspaceService.createAgent(businessId, { name: 'Agent 1' });
+    await workspaceService.createAgent(businessId, { name: 'Agent 2' });
+
+    await expect(workspaceService.createAgent(businessId, { name: 'Agent 3' })).rejects.toThrow();
+    try {
+      await workspaceService.createAgent(businessId, { name: 'Agent 3' });
+    } catch (error) {
+      expect(isEntitlementDeniedError(error)).toBe(true);
+      if (isEntitlementDeniedError(error)) {
+        expect(error.reason).toBe('ENTITLEMENT_LIMIT_REACHED');
+        expect(error.limit).toBe(2);
+      }
+    }
   });
 });

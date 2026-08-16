@@ -7,6 +7,7 @@ import { WhatsAppMessageRepository } from '../repositories/whatsappMessageReposi
 import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobRepository.js';
 import { CrmContactRepository } from '../repositories/crmContactRepository.js';
 import { AiAgentRepository } from '../repositories/aiAgentRepository.js';
+import { EntitlementService, type EntitlementDenialReason } from './entitlementService.js';
 import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMappingRepository.js';
 import { WhatsAppCallRepository } from '../repositories/whatsappCallRepository.js';
 import { WhatsAppStatusRepository } from '../repositories/whatsappStatusRepository.js';
@@ -106,6 +107,30 @@ function isChatNotFoundError(error: unknown): error is ChatNotFoundError {
 
 export { isChatNotFoundError };
 
+export interface EntitlementDeniedError extends Error {
+  code: 'ENTITLEMENT_DENIED';
+  reason: EntitlementDenialReason;
+  limit?: number | null | undefined;
+  current?: number | undefined;
+}
+
+export function isEntitlementDeniedError(error: unknown): error is EntitlementDeniedError {
+  return error instanceof Error && (error as EntitlementDeniedError).code === 'ENTITLEMENT_DENIED';
+}
+
+export interface CreateAgentInput {
+  name: string;
+  description?: string | null | undefined;
+  persona?: string | null | undefined;
+  tone?: string | null | undefined;
+  language?: string | null | undefined;
+  systemInstruction?: string | null | undefined;
+  greeting?: string | null | undefined;
+  businessContext?: string | null | undefined;
+  responseStyle?: string | null | undefined;
+  humanTakeoverPolicy?: string | null | undefined;
+}
+
 export class WorkspaceService {
   private readonly accountRepository = new WhatsAppAccountRepository(pool);
   private readonly chatRepository = new WhatsAppChatRepository(pool);
@@ -114,6 +139,7 @@ export class WorkspaceService {
   private readonly syncJobRepository = new WhatsAppSyncJobRepository(pool);
   private readonly crmContactRepository = new CrmContactRepository(pool);
   private readonly agentRepository = new AiAgentRepository(pool);
+  private readonly entitlementService = new EntitlementService(pool);
   private readonly jidMappingRepository = new WhatsAppJidMappingRepository(pool);
   private readonly callRepository = new WhatsAppCallRepository(pool);
   private readonly statusRepository = new WhatsAppStatusRepository(pool);
@@ -404,6 +430,25 @@ export class WorkspaceService {
 
   async listAgents(businessId: string) {
     return this.agentRepository.listByBusiness(businessId);
+  }
+
+  /**
+   * Real plan-entitlement enforcement, not just a hidden UI button - a
+   * business on a plan with max_ai_agents already reached (or no live
+   * subscription at all) gets an honest denial, never a silently-created
+   * agent past its limit.
+   */
+  async createAgent(businessId: string, input: CreateAgentInput) {
+    const check = await this.entitlementService.canCreateAgent(businessId);
+    if (!check.allowed) {
+      const error = new Error(`Agent creation denied: ${check.reason}`) as EntitlementDeniedError;
+      error.code = 'ENTITLEMENT_DENIED';
+      error.reason = check.reason as EntitlementDenialReason;
+      error.limit = check.limit;
+      error.current = check.current;
+      throw error;
+    }
+    return this.agentRepository.create({ businessId, ...input });
   }
 
   async getSyncStatus(whatsappAccountId: string) {

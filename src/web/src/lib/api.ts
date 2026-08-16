@@ -107,6 +107,14 @@ export interface AiAgentSummary {
   persona: string | null;
 }
 
+export interface CreateAgentBody {
+  name: string;
+  persona?: string;
+  tone?: string;
+  language?: string;
+  systemInstruction?: string;
+}
+
 export interface WorkspaceContact {
   id: string;
   whatsappJid: string;
@@ -253,6 +261,8 @@ export const api = {
     request(`/workspace/chats/${chatId}/ai-mode`, { method: 'PATCH', body: JSON.stringify({ aiMode }) }),
   markChatRead: (chatId: string) => request(`/workspace/chats/${chatId}/read`, { method: 'POST' }),
   listAgents: () => request<{ agents: AiAgentSummary[] }>('/workspace/agents'),
+  createAgent: (body: CreateAgentBody) =>
+    request<{ agent: AiAgentSummary }>('/workspace/agents', { method: 'POST', body: JSON.stringify(body) }),
   listCalls: () => request<{ calls: WorkspaceCallSummary[] }>('/workspace/calls'),
   listStatuses: () => request<{ statuses: WorkspaceStatus[] }>('/workspace/statuses'),
   getLockStatus: () => request<LockStatusResponse>('/security/lock/status'),

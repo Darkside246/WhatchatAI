@@ -9,7 +9,7 @@ import { attachWebSocketServer } from '../realtime/wsServer.js';
 import { publishRealtimeEvent } from '../realtime/pubsub.js';
 import { whatsappConnectionService } from '../services/whatsappConnectionService.js';
 import { whatsappMessageIngestionService } from '../services/whatsappMessageIngestionService.js';
-import { workspaceService, isChatNotFoundError } from '../services/workspaceService.js';
+import { workspaceService, isChatNotFoundError, isEntitlementDeniedError } from '../services/workspaceService.js';
 import { whatsappOutboundMessageService, isChatNotFoundError as isOutboundChatNotFoundError } from '../services/whatsappOutboundMessageService.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
@@ -316,6 +316,44 @@ app.get('/api/workspace/agents', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const agents = await workspaceService.listAgents(businessId);
   return res.status(200).json({ agents });
+});
+
+const createAgentSchema = z.object({
+  name: z.string().trim().min(1),
+  description: z.string().trim().min(1).nullish(),
+  persona: z.string().trim().min(1).nullish(),
+  tone: z.string().trim().min(1).nullish(),
+  language: z.string().trim().min(1).nullish(),
+  systemInstruction: z.string().trim().min(1).nullish(),
+  greeting: z.string().trim().min(1).nullish(),
+  businessContext: z.string().trim().min(1).nullish(),
+  responseStyle: z.string().trim().min(1).nullish(),
+  humanTakeoverPolicy: z.string().trim().min(1).nullish(),
+});
+
+app.post('/api/workspace/agents', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = createAgentSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_AGENT', details: parsed.error.flatten() });
+  }
+  try {
+    const agent = await workspaceService.createAgent(businessId, parsed.data);
+    return res.status(201).json({ agent });
+  } catch (error) {
+    if (isEntitlementDeniedError(error)) {
+      const message =
+        error.reason === 'NO_ACTIVE_SUBSCRIPTION'
+          ? 'This business has no active subscription.'
+          : error.reason === 'ENTITLEMENT_DISABLED'
+            ? 'AI agents are not enabled on this plan.'
+            : `Agent limit reached for this plan (${error.current}/${error.limit}).`;
+      return res
+        .status(403)
+        .json({ error: 'ENTITLEMENT_DENIED', reason: error.reason, limit: error.limit, current: error.current, message });
+    }
+    throw error;
+  }
 });
 
 app.get('/api/workspace/calls', requireWorkspaceContext, async (_req, res) => {
