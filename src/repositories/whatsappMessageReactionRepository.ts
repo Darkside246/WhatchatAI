@@ -59,6 +59,14 @@ export class WhatsAppMessageReactionRepository {
     return toRecord(row);
   }
 
+  /** WhatsApp signals a reaction removal as an event with empty text - the row is deleted, never left with a blank reaction string. */
+  async remove(messageId: string, reactorJid: string): Promise<void> {
+    await this.db.query('DELETE FROM whatsapp_message_reactions WHERE message_id = $1 AND reactor_jid = $2', [
+      messageId,
+      reactorJid,
+    ]);
+  }
+
   async listByMessage(messageId: string): Promise<WhatsAppMessageReactionRecord[]> {
     const { rows } = await this.db.query<ReactionRow>(
       'SELECT * FROM whatsapp_message_reactions WHERE message_id = $1',

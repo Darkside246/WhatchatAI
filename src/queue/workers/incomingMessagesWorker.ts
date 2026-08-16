@@ -10,6 +10,8 @@ import {
   type CallEventJobData,
   type StatusUpdateJobData,
   type MediaDownloadJobData,
+  type MessageReactionJobData,
+  type PresenceUpdateJobData,
 } from '../queues/realtimeEventsQueue.js';
 import { whatsappMessagePersistenceService } from '../../services/whatsappMessagePersistenceService.js';
 import { runSentinel } from '../../security/sentinel/sentinel.js';
@@ -20,6 +22,8 @@ import { WhatsAppMessageRepository } from '../../repositories/whatsappMessageRep
 import { WhatsAppCallRepository } from '../../repositories/whatsappCallRepository.js';
 import { WhatsAppStatusRepository } from '../../repositories/whatsappStatusRepository.js';
 import { WhatsAppMediaRepository } from '../../repositories/whatsappMediaRepository.js';
+import { WhatsAppMessageReactionRepository } from '../../repositories/whatsappMessageReactionRepository.js';
+import { WhatsAppPresenceRepository } from '../../repositories/whatsappPresenceRepository.js';
 import { mapBaileysCallStatus, callTypeFromEvent, isTerminalCallStatus } from '../../domain/whatsapp/callStatus.js';
 import { classifyJid, derivePhoneNumber } from '../../domain/whatsapp/jid.js';
 import { decodeBuffersFromQueue } from '../../domain/whatsapp/binaryCodec.js';
@@ -98,6 +102,8 @@ const messageRepository = new WhatsAppMessageRepository(pool);
 const callRepository = new WhatsAppCallRepository(pool);
 const statusRepository = new WhatsAppStatusRepository(pool);
 const mediaRepository = new WhatsAppMediaRepository(pool);
+const reactionRepository = new WhatsAppMessageReactionRepository(pool);
+const presenceRepository = new WhatsAppPresenceRepository(pool);
 
 // Configurable, not hardcoded: operators can raise/lower this per deployment.
 const MAX_MEDIA_DOWNLOAD_BYTES = Number(process.env.MEDIA_MAX_DOWNLOAD_BYTES ?? 100 * 1024 * 1024);
@@ -289,6 +295,48 @@ async function processCallEvent(data: CallEventJobData): Promise<void> {
   await publishRealtimeEvent({ type: 'call.updated', businessId, callId: call.id });
 }
 
+/**
+ * Real reaction events - Baileys' own `messages.reaction` (a dedicated
+ * event, not classified via messages.upsert). `reaction.text` empty/falsy
+ * means the reactor removed their reaction (Baileys' own type-declaration
+ * comment on the event confirms this convention) - the row is deleted,
+ * never stored with a blank reaction. The dedicated whatsapp_message_reactions
+ * table is authoritative; a reaction is never also inserted into
+ * whatsapp_messages.
+ */
+async function processReaction(data: MessageReactionJobData): Promise<void> {
+  const { businessId, whatsappAccountId, accountJid, targetWhatsappMessageId, reaction } = data;
+
+  const message = await messageRepository.findByWhatsAppId(businessId, whatsappAccountId, targetWhatsappMessageId);
+  if (!message) return; // Reaction to a message we never persisted (not yet arrived, or Sentinel-blocked) - nothing real to attach it to.
+
+  const reactorKey = reaction.key;
+  const reactorJid = reactorKey?.fromMe ? accountJid : (reactorKey?.participant ?? reactorKey?.remoteJid ?? null);
+  if (!reactorJid) return; // No real identity to attribute the reaction to.
+
+  const emoji = reaction.text;
+  if (emoji) {
+    await reactionRepository.upsert(businessId, whatsappAccountId, message.id, reactorJid, emoji);
+  } else {
+    await reactionRepository.remove(message.id, reactorJid);
+  }
+
+  await publishRealtimeEvent({ type: 'message.reaction', businessId, chatId: message.chatId, messageId: message.id });
+}
+
+/**
+ * Real presence.update events only - WhatsApp's actual reported states
+ * ('available'/'unavailable'/'composing'/'recording'/'paused'), never
+ * inferred from whether our own socket happens to be connected.
+ */
+async function processPresenceUpdate(data: PresenceUpdateJobData): Promise<void> {
+  const { businessId, whatsappAccountId, contactJid, presence } = data;
+  const lastSeenAt = presence.lastSeen ? new Date(presence.lastSeen * 1000).toISOString() : null;
+
+  await presenceRepository.record(businessId, whatsappAccountId, contactJid, presence.lastKnownPresence, lastSeenAt);
+  await publishRealtimeEvent({ type: 'presence.updated', businessId, contactJid });
+}
+
 // Documented rule: WhatsApp's own client rings for roughly 45-60s before a
 // call goes to "missed" on the device. A call still sitting in offer/ringing
 // well past that, with no further event ever arriving from Baileys, is
@@ -320,7 +368,14 @@ export async function sweepStaleRingingCalls(): Promise<void> {
 }
 
 async function processRealtimeEventJob(
-  job: Job<MessageStatusJobData | CallEventJobData | StatusUpdateJobData | MediaDownloadJobData>,
+  job: Job<
+    | MessageStatusJobData
+    | CallEventJobData
+    | StatusUpdateJobData
+    | MediaDownloadJobData
+    | MessageReactionJobData
+    | PresenceUpdateJobData
+  >,
 ): Promise<void> {
   if (job.name === 'message-status') {
     await processMessageStatus(job.data as MessageStatusJobData);
@@ -332,6 +387,10 @@ async function processRealtimeEventJob(
     await sweepStaleRingingCalls();
   } else if (job.name === 'media-download') {
     await processMediaDownload(job.data as MediaDownloadJobData);
+  } else if (job.name === 'message-reaction') {
+    await processReaction(job.data as MessageReactionJobData);
+  } else if (job.name === 'presence-update') {
+    await processPresenceUpdate(job.data as PresenceUpdateJobData);
   }
 }
 

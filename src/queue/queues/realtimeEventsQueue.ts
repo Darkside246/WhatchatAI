@@ -1,7 +1,7 @@
 import { Queue } from 'bullmq';
 import { queueConnection } from '../connection.js';
 import type { MessageStatus } from '../../domain/whatsapp/types.js';
-import type { WACallEvent } from '@whiskeysockets/baileys';
+import type { WACallEvent, PresenceData, proto } from '@whiskeysockets/baileys';
 import type { IngestedWhatsAppMessage } from '../../services/whatsappMessageIngestionService.js';
 
 export const REALTIME_EVENTS_QUEUE = 'realtime_events';
@@ -31,6 +31,23 @@ export interface MediaDownloadJobData {
   mediaId: string;
   /** Base64-encoded raw Baileys {key, message} - see binaryCodec.ts. */
   mediaDescriptor: Record<string, unknown>;
+}
+
+export interface MessageReactionJobData {
+  businessId: string;
+  whatsappAccountId: string;
+  accountJid: string;
+  /** The WhatsApp message ID being reacted to (content.reactionMessage.key.id, before Baileys overwrites reaction.key with the reaction envelope's own key). */
+  targetWhatsappMessageId: string;
+  /** Real proto.IReaction from Baileys' messages.reaction event - reaction.key identifies the reactor, reaction.text is the emoji (falsy = removed). No Buffer fields, safe for direct JSON. */
+  reaction: proto.IReaction;
+}
+
+export interface PresenceUpdateJobData {
+  businessId: string;
+  whatsappAccountId: string;
+  contactJid: string;
+  presence: PresenceData;
 }
 
 /**
@@ -64,4 +81,12 @@ export function enqueueStatusUpdate(data: StatusUpdateJobData): Promise<unknown>
 
 export function enqueueMediaDownload(data: MediaDownloadJobData): Promise<unknown> {
   return realtimeEventsQueue.add('media-download', data);
+}
+
+export function enqueueMessageReaction(data: MessageReactionJobData): Promise<unknown> {
+  return realtimeEventsQueue.add('message-reaction', data);
+}
+
+export function enqueuePresenceUpdate(data: PresenceUpdateJobData): Promise<unknown> {
+  return realtimeEventsQueue.add('presence-update', data);
 }

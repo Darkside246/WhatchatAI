@@ -8,7 +8,9 @@ export type RealtimeEvent =
   | { type: 'chat.updated'; businessId: string; chatId: string }
   | { type: 'message.status'; businessId: string; chatId: string; messageId: string; status: string }
   | { type: 'call.updated'; businessId: string; callId: string }
-  | { type: 'media.updated'; businessId: string; mediaId: string; messageId: string; chatId: string };
+  | { type: 'media.updated'; businessId: string; mediaId: string; messageId: string; chatId: string }
+  | { type: 'message.reaction'; businessId: string; chatId: string; messageId: string }
+  | { type: 'presence.updated'; businessId: string; contactJid: string };
 
 /**
  * Cross-process event bridge: the BullMQ worker process (which actually

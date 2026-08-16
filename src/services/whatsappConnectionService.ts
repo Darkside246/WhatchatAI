@@ -9,7 +9,13 @@ import path from 'node:path';
 import { whatsappMessageIngestionService } from './whatsappMessageIngestionService.js';
 import { whatsappSyncService } from './whatsappSyncService.js';
 import { enqueueIncomingMessage } from '../queue/queues/incomingMessagesQueue.js';
-import { enqueueMessageStatus, enqueueCallEvent, enqueueStatusUpdate } from '../queue/queues/realtimeEventsQueue.js';
+import {
+  enqueueMessageStatus,
+  enqueueCallEvent,
+  enqueueStatusUpdate,
+  enqueueMessageReaction,
+  enqueuePresenceUpdate,
+} from '../queue/queues/realtimeEventsQueue.js';
 
 const STATUS_BROADCAST_JID = 'status@broadcast';
 import { mapBaileysMessageStatus } from '../domain/whatsapp/messageStatus.js';
@@ -254,6 +260,38 @@ export class WhatsAppConnectionService {
         for (const event of events) {
           enqueueCallEvent({ businessId, whatsappAccountId: accountId, event }).catch((error) => {
             console.error('[WhatsApp] Failed to enqueue call event', event.id, error);
+          });
+        }
+      });
+    });
+
+    // Real reaction events - a dedicated Baileys event, not classified via
+    // messages.upsert. `key` is the reacted-to message; `reaction.text` is
+    // the emoji, falsy when the reaction was removed (Baileys' own doc
+    // comment on this event confirms that convention).
+    socket.ev.on('messages.reaction', (reactions) => {
+      this.withSyncContext((businessId, accountId, accountJid) => {
+        for (const { key, reaction } of reactions) {
+          if (!key.id) continue;
+          enqueueMessageReaction({
+            businessId,
+            whatsappAccountId: accountId,
+            accountJid,
+            targetWhatsappMessageId: key.id,
+            reaction,
+          }).catch((error) => {
+            console.error('[WhatsApp] Failed to enqueue message reaction', key.id, error);
+          });
+        }
+      });
+    });
+
+    // Real presence events only - never inferred from socket connection state.
+    socket.ev.on('presence.update', ({ presences }) => {
+      this.withSyncContext((businessId, accountId) => {
+        for (const [contactJid, presence] of Object.entries(presences)) {
+          enqueuePresenceUpdate({ businessId, whatsappAccountId: accountId, contactJid, presence }).catch((error) => {
+            console.error('[WhatsApp] Failed to enqueue presence update', contactJid, error);
           });
         }
       });
