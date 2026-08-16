@@ -450,12 +450,39 @@ export class WhatsAppConnectionService {
         pushName,
       });
 
-      // "initial" sync only ever kicks off once per account, not on every reconnect.
-      if (account.syncStatus === 'not_started') {
+      // "initial" sync only ever kicks off once per account, not on every
+      // reconnect. A sync abandoned mid-run (dev-server restart, crash)
+      // never gets WhatsApp's own completion signal and is reconciled to
+      // 'failed' by the stale-sync-job sweep, not left silently 'in_progress'
+      // forever - so retrying it here on the next real reconnect is correct.
+      if (account.syncStatus === 'not_started' || account.syncStatus === 'failed') {
         await whatsappSyncService.startInitialSync(business.id, account.id);
       }
+
+      await this.syncParticipatingGroups(business.id, account.id);
     } catch (error) {
       console.error('[WhatsApp] Failed to persist connected account:', error);
+    }
+  }
+
+  /**
+   * Baileys' `groups.upsert` event is a delta stream, not a reliable full
+   * backfill - an account with real WhatsApp groups could otherwise
+   * persist zero of them if that event never fires for pre-existing
+   * groups. This explicit fetch is the only way to guarantee the full
+   * participating-group list actually lands. Safe on every reconnect:
+   * ingestGroups() upserts, so repeats just refresh metadata.
+   */
+  private async syncParticipatingGroups(businessId: string, accountId: string): Promise<void> {
+    if (!this.socket) return;
+    try {
+      const groups = await this.socket.groupFetchAllParticipating();
+      const processed = await whatsappSyncService.ingestGroups(businessId, accountId, Object.values(groups));
+      if (processed > 0) {
+        console.log(`[WhatsApp] Synced ${processed} participating group(s)`);
+      }
+    } catch (error) {
+      console.error('[WhatsApp] Failed to fetch participating groups:', error);
     }
   }
 

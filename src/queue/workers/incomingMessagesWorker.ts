@@ -24,6 +24,8 @@ import { WhatsAppStatusRepository } from '../../repositories/whatsappStatusRepos
 import { WhatsAppMediaRepository } from '../../repositories/whatsappMediaRepository.js';
 import { WhatsAppMessageReactionRepository } from '../../repositories/whatsappMessageReactionRepository.js';
 import { WhatsAppPresenceRepository } from '../../repositories/whatsappPresenceRepository.js';
+import { WhatsAppSyncJobRepository } from '../../repositories/whatsappSyncJobRepository.js';
+import { WhatsAppAccountRepository } from '../../repositories/whatsappAccountRepository.js';
 import { mapBaileysCallStatus, callTypeFromEvent, isTerminalCallStatus } from '../../domain/whatsapp/callStatus.js';
 import { classifyJid, derivePhoneNumber } from '../../domain/whatsapp/jid.js';
 import { decodeBuffersFromQueue } from '../../domain/whatsapp/binaryCodec.js';
@@ -100,6 +102,8 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
 
 const messageRepository = new WhatsAppMessageRepository(pool);
 const callRepository = new WhatsAppCallRepository(pool);
+const syncJobRepository = new WhatsAppSyncJobRepository(pool);
+const accountRepository = new WhatsAppAccountRepository(pool);
 const statusRepository = new WhatsAppStatusRepository(pool);
 const mediaRepository = new WhatsAppMediaRepository(pool);
 const reactionRepository = new WhatsAppMessageReactionRepository(pool);
@@ -367,6 +371,35 @@ export async function sweepStaleRingingCalls(): Promise<void> {
   }
 }
 
+// Documented rule: incrementCounts() bumps updated_at on every real batch of
+// sync progress. A 'running' job with no progress in this long has no
+// process left driving it - WhatsApp will never send it a completion signal
+// on its own - reconciled to 'failed' (never 'completed'/'partial', which
+// would falsely claim the sync actually finished) rather than left silently
+// claiming to be in-progress forever.
+const SYNC_JOB_STALE_SECONDS = 600;
+const SYNC_JOB_TIMEOUT_SWEEP_INTERVAL_MS = 120_000;
+
+export async function sweepStaleSyncJobs(): Promise<void> {
+  const stale = await syncJobRepository.findStaleRunning(SYNC_JOB_STALE_SECONDS);
+  for (const job of stale) {
+    await syncJobRepository.markFailed(
+      job.id,
+      `Abandoned mid-sync - no progress for over ${SYNC_JOB_STALE_SECONDS}s (likely a process restart or crash), reconciled by the stale-job sweep`,
+    );
+    // Setting the account back off 'in_progress' is what lets the next
+    // real reconnect retry the sync instead of the gate in
+    // persistConnectedAccount() silently skipping it forever.
+    await accountRepository.markSyncFailed(
+      job.whatsappAccountId,
+      'Sync job abandoned mid-run - will retry automatically on next reconnect',
+    );
+  }
+  if (stale.length > 0) {
+    console.log(`[RealtimeEventsWorker] Reconciled ${stale.length} stale running sync job(s) to failed`);
+  }
+}
+
 async function processRealtimeEventJob(
   job: Job<
     | MessageStatusJobData
@@ -385,6 +418,8 @@ async function processRealtimeEventJob(
     await processStatusUpdate(job.data as StatusUpdateJobData);
   } else if (job.name === 'call-timeout-sweep') {
     await sweepStaleRingingCalls();
+  } else if (job.name === 'sync-job-timeout-sweep') {
+    await sweepStaleSyncJobs();
   } else if (job.name === 'media-download') {
     await processMediaDownload(job.data as MediaDownloadJobData);
   } else if (job.name === 'message-reaction') {
@@ -444,3 +479,16 @@ void realtimeEventsQueue
   .upsertJobScheduler('call-timeout-sweep', { every: CALL_TIMEOUT_SWEEP_INTERVAL_MS }, { name: 'call-timeout-sweep' })
   .then(() => console.log(`[RealtimeEventsWorker] Scheduled call-timeout-sweep every ${CALL_TIMEOUT_SWEEP_INTERVAL_MS}ms`))
   .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule call-timeout-sweep:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler(
+    'sync-job-timeout-sweep',
+    { every: SYNC_JOB_TIMEOUT_SWEEP_INTERVAL_MS },
+    { name: 'sync-job-timeout-sweep' },
+  )
+  .then(() =>
+    console.log(`[RealtimeEventsWorker] Scheduled sync-job-timeout-sweep every ${SYNC_JOB_TIMEOUT_SWEEP_INTERVAL_MS}ms`),
+  )
+  .catch((error: Error) =>
+    console.error('[RealtimeEventsWorker] Failed to schedule sync-job-timeout-sweep:', error.message),
+  );

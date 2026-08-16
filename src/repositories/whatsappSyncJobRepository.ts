@@ -128,6 +128,24 @@ export class WhatsAppSyncJobRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /**
+   * A job can be abandoned mid-sync (dev-server restart, process crash)
+   * before WhatsApp ever sends the final completion signal, and nothing
+   * else touches its row again - the same failure mode calls have via
+   * findStaleRingingCalls(), reconciled the same way. updated_at (bumped
+   * by incrementCounts() on every real batch of progress) is the honest
+   * activity signal here, not started_at - a large historical backfill can
+   * legitimately run long without being stuck.
+   */
+  async findStaleRunning(staleAfterSeconds: number): Promise<WhatsAppSyncJobRecord[]> {
+    const { rows } = await this.db.query<SyncJobRow>(
+      `SELECT * FROM whatsapp_sync_jobs
+       WHERE status = 'running' AND updated_at < now() - ($1 || ' seconds')::interval`,
+      [staleAfterSeconds],
+    );
+    return rows.map(toRecord);
+  }
+
   async incrementCounts(
     id: string,
     counts: Partial<{
