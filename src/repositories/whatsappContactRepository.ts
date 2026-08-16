@@ -150,6 +150,36 @@ export class WhatsAppContactRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /** Reconciliation read: @lid contacts with no phone number yet - real candidates for repair once a jid_mapping exists. */
+  async findUnresolvedLidContacts(businessId: string, whatsappAccountId: string): Promise<WhatsAppContactRecord[]> {
+    const { rows } = await this.db.query<ContactRow>(
+      `SELECT * FROM whatsapp_contacts
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND jid_kind = 'lid'
+         AND phone_number IS NULL AND deleted_at IS NULL`,
+      [businessId, whatsappAccountId],
+    );
+    return rows.map(toRecord);
+  }
+
+  /** Reconciliation read: contacts with no real name field at all - only a bare JID/phone is known. Report-only, never auto-named. */
+  async countUnknownContacts(businessId: string, whatsappAccountId: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      `SELECT count(*) FROM whatsapp_contacts
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND deleted_at IS NULL
+         AND display_name IS NULL AND push_name IS NULL AND verified_name IS NULL AND business_name IS NULL`,
+      [businessId, whatsappAccountId],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  /** Reconciliation repair: backfill a phone number that only became resolvable once an authoritative jid_mapping arrived. */
+  async attachPhoneNumber(contactId: string, phoneNumber: string): Promise<void> {
+    await this.db.query('UPDATE whatsapp_contacts SET phone_number = $2, updated_at = now() WHERE id = $1', [
+      contactId,
+      phoneNumber,
+    ]);
+  }
+
   async search(businessId: string, whatsappAccountId: string, term: string): Promise<WhatsAppContactRecord[]> {
     const { rows } = await this.db.query<ContactRow>(
       `SELECT * FROM whatsapp_contacts

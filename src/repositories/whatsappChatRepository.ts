@@ -169,6 +169,29 @@ export class WhatsAppChatRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /**
+   * Reconciliation read: individual chats whose contact link never resolved
+   * (e.g. the chat arrived before its contact did). Real candidates for
+   * repair, not a fabricated "everything is fine" count.
+   */
+  async findMissingContactLinks(businessId: string, whatsappAccountId: string): Promise<WhatsAppChatRecord[]> {
+    const { rows } = await this.db.query<ChatRow>(
+      `SELECT * FROM whatsapp_chats
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND chat_type = 'individual'
+         AND contact_id IS NULL AND deleted_at IS NULL`,
+      [businessId, whatsappAccountId],
+    );
+    return rows.map(toRecord);
+  }
+
+  /** Reconciliation repair: attach a contact that only became available after the chat was created. */
+  async attachContact(chatId: string, contactId: string): Promise<void> {
+    await this.db.query('UPDATE whatsapp_chats SET contact_id = $2, updated_at = now() WHERE id = $1', [
+      chatId,
+      contactId,
+    ]);
+  }
+
   async findById(id: string): Promise<WhatsAppChatRecord | null> {
     const { rows } = await this.db.query<ChatRow>('SELECT * FROM whatsapp_chats WHERE id = $1', [id]);
     return rows[0] ? toRecord(rows[0]) : null;

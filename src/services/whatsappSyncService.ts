@@ -12,6 +12,7 @@ import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMapping
 import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobRepository.js';
 import { whatsappMessageIngestionService } from './whatsappMessageIngestionService.js';
 import { whatsappMessagePersistenceService } from './whatsappMessagePersistenceService.js';
+import { whatsappReconciliationService } from './whatsappReconciliationService.js';
 import type { WAMessage } from '@whiskeysockets/baileys';
 
 export interface HistorySetPayload {
@@ -50,6 +51,17 @@ export class WhatsAppSyncService {
     // (which Baileys sometimes still sends) must not spawn a new job.
     const account = await this.accountRepository.findById(whatsappAccountId);
     if (account?.syncStatus === 'completed') return;
+
+    // Resumability: if a prior process crashed mid-sync, a real 'running'
+    // job row for this account already exists in Postgres even though this
+    // fresh process's in-memory activeSyncJobs map is empty. Resume tracking
+    // that job instead of creating a duplicate that would leave the
+    // original stuck at 'running' forever.
+    const existingJob = await this.syncJobRepository.findRunning(businessId, whatsappAccountId, 'initial');
+    if (existingJob) {
+      this.activeSyncJobs.set(whatsappAccountId, existingJob.id);
+      return;
+    }
 
     const job = await this.syncJobRepository.create(businessId, whatsappAccountId, 'initial');
     await this.syncJobRepository.markRunning(job.id);
@@ -209,20 +221,25 @@ export class WhatsAppSyncService {
     whatsappAccountId: string,
     accountJid: string,
     messages: WAMessage[],
-  ): Promise<number> {
+  ): Promise<{ processed: number; failed: number }> {
     // Historical messages are never 'notify' (live) - reuses the same, already-tested
     // classification/dedup pipeline as the live messages.upsert path.
     const ingested = whatsappMessageIngestionService.ingestUpsert({ messages, type: 'append' });
     let processed = 0;
+    let failed = 0;
     for (const message of ingested) {
       try {
         await whatsappMessagePersistenceService.persist({ businessId, whatsappAccountId, accountJid, ingested: message });
         processed += 1;
       } catch (error) {
+        // Real, recorded failure - not silently swallowed. The sync job's
+        // errors_count reflects this, so a batch that hits real persistence
+        // failures can never be reported as a clean 'completed' sync.
+        failed += 1;
         console.error('[Sync] Failed to persist historical message', message.messageId, error);
       }
     }
-    return processed;
+    return { processed, failed };
   }
 
   async ingestHistorySet(
@@ -240,7 +257,7 @@ export class WhatsAppSyncService {
       if (payload.lidPnMappings?.length) {
         await this.ingestLidMappings(businessId, whatsappAccountId, payload.lidPnMappings);
       }
-      const messagesProcessed = await this.ingestHistoryMessages(
+      const { processed: messagesProcessed, failed: messagesFailed } = await this.ingestHistoryMessages(
         businessId,
         whatsappAccountId,
         accountJid,
@@ -252,6 +269,7 @@ export class WhatsAppSyncService {
           contactsProcessed,
           chatsProcessed,
           messagesProcessed,
+          errorsCount: messagesFailed,
         });
       }
 
@@ -267,9 +285,29 @@ export class WhatsAppSyncService {
       // 100 (as reported by WhatsApp itself, never fabricated here) is
       // treated as an equally real completion signal.
       if (payload.isLatest || progress === 100) {
-        if (jobId) await this.syncJobRepository.markCompleted(jobId);
+        if (jobId) {
+          // A batch that hit real, recorded errors along the way completed,
+          // but not cleanly - 'partial' says so honestly instead of
+          // reporting the same 'completed' state as an error-free run.
+          const job = await this.syncJobRepository.findById(jobId);
+          if (job && job.errorsCount > 0) {
+            await this.syncJobRepository.markPartial(jobId);
+          } else {
+            await this.syncJobRepository.markCompleted(jobId);
+          }
+        }
         await this.accountRepository.markSyncCompleted(whatsappAccountId);
         this.activeSyncJobs.delete(whatsappAccountId);
+
+        // Reconciliation is a best-effort repair pass over already-imported
+        // data - a failure here must never flip an otherwise-successful
+        // sync to 'failed'.
+        try {
+          const report = await whatsappReconciliationService.run(businessId, whatsappAccountId);
+          console.log(`[Sync] Reconciliation for account ${whatsappAccountId}:`, report);
+        } catch (error) {
+          console.error('[Sync] Reconciliation failed (sync itself still succeeded):', error);
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

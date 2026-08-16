@@ -97,8 +97,34 @@ export class WhatsAppSyncJobRepository {
     );
   }
 
+  /** Completed, but with real recorded errors along the way - never overstated as a clean success. */
+  async markPartial(id: string): Promise<void> {
+    await this.db.query(
+      `UPDATE whatsapp_sync_jobs
+       SET status = 'partial', completed_at = now(), progress_percent = 100, updated_at = now()
+       WHERE id = $1`,
+      [id],
+    );
+  }
+
   async findById(id: string): Promise<WhatsAppSyncJobRecord | null> {
     const { rows } = await this.db.query<SyncJobRow>('SELECT * FROM whatsapp_sync_jobs WHERE id = $1', [id]);
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
+   * The real resumability mechanism: `activeSyncJobs` in WhatsAppSyncService
+   * is in-memory only, so a worker-process restart mid-sync would otherwise
+   * spawn a duplicate job row instead of resuming the original (which would
+   * then sit stuck at 'running' forever). Called before creating a new job.
+   */
+  async findRunning(businessId: string, whatsappAccountId: string, syncType: SyncType): Promise<WhatsAppSyncJobRecord | null> {
+    const { rows } = await this.db.query<SyncJobRow>(
+      `SELECT * FROM whatsapp_sync_jobs
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND sync_type = $3 AND status = 'running'
+       ORDER BY created_at DESC LIMIT 1`,
+      [businessId, whatsappAccountId, syncType],
+    );
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
@@ -110,6 +136,7 @@ export class WhatsAppSyncJobRepository {
       groupsProcessed: number;
       messagesProcessed: number;
       mediaProcessed: number;
+      errorsCount: number;
     }>,
   ): Promise<void> {
     await this.db.query(
@@ -119,6 +146,7 @@ export class WhatsAppSyncJobRepository {
            groups_processed = groups_processed + $4,
            messages_processed = messages_processed + $5,
            media_processed = media_processed + $6,
+           errors_count = errors_count + $7,
            updated_at = now()
        WHERE id = $1`,
       [
@@ -128,6 +156,7 @@ export class WhatsAppSyncJobRepository {
         counts.groupsProcessed ?? 0,
         counts.messagesProcessed ?? 0,
         counts.mediaProcessed ?? 0,
+        counts.errorsCount ?? 0,
       ],
     );
   }

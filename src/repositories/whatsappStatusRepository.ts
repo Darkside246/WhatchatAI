@@ -98,4 +98,19 @@ export class WhatsAppStatusRepository {
     );
     return rows.map(toRecord);
   }
+
+  /** Reconciliation read: statuses whose publisher has no matching contact record. Report-only. */
+  async countUnresolvedPublishers(businessId: string, whatsappAccountId: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      `SELECT count(DISTINCT s.publisher_jid) FROM whatsapp_statuses s
+       WHERE s.business_id = $1 AND s.whatsapp_account_id = $2
+         AND NOT EXISTS (
+           SELECT 1 FROM whatsapp_contacts c
+           WHERE c.business_id = s.business_id AND c.whatsapp_account_id = s.whatsapp_account_id
+             AND c.whatsapp_jid = s.publisher_jid AND c.deleted_at IS NULL
+         )`,
+      [businessId, whatsappAccountId],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
 }

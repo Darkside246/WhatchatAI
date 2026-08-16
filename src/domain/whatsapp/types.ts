@@ -77,7 +77,7 @@ export type SyncType =
   | 'repair'
   | 'on_demand';
 
-export type SyncJobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type SyncJobStatus = 'pending' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled';
 
 export type JidMappingSource = 'baileys_alt_jid' | 'manual' | 'verified';
 

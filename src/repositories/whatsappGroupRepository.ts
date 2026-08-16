@@ -124,4 +124,16 @@ export class WhatsAppGroupRepository {
     const { rows } = await this.db.query<GroupRow>('SELECT * FROM whatsapp_groups WHERE id = $1', [id]);
     return rows[0] ? toRecord(rows[0]) : null;
   }
+
+  /** Reconciliation read: groups WhatsApp reported as having participants, with zero actual member rows persisted. Report-only - member data isn't re-derivable without a fresh groups.upsert/groupMetadata call. */
+  async countMissingMembers(businessId: string, whatsappAccountId: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      `SELECT count(*) FROM whatsapp_groups g
+       WHERE g.business_id = $1 AND g.whatsapp_account_id = $2 AND g.deleted_at IS NULL
+         AND g.participants_count > 0
+         AND NOT EXISTS (SELECT 1 FROM whatsapp_group_members m WHERE m.group_id = g.id)`,
+      [businessId, whatsappAccountId],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
 }
