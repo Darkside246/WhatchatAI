@@ -13,6 +13,8 @@ export interface WhatsAppStatusRecord {
   createdAt: string;
   expiresAt: string | null;
   viewCount: number | null;
+  /** True only when this call itself created the row - false when the unique (business, account, status_id) index already had it. */
+  wasInserted: boolean;
 }
 
 interface StatusRow {
@@ -29,7 +31,7 @@ interface StatusRow {
   view_count: number | null;
 }
 
-function toRecord(row: StatusRow): WhatsAppStatusRecord {
+function toRecord(row: StatusRow, wasInserted: boolean): WhatsAppStatusRecord {
   return {
     id: row.id,
     businessId: row.business_id,
@@ -42,6 +44,7 @@ function toRecord(row: StatusRow): WhatsAppStatusRecord {
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     viewCount: row.view_count,
+    wasInserted,
   };
 }
 
@@ -78,7 +81,7 @@ export class WhatsAppStatusRepository {
       ],
     );
 
-    if (rows[0]) return toRecord(rows[0]);
+    if (rows[0]) return toRecord(rows[0], true);
 
     const { rows: existingRows } = await this.db.query<StatusRow>(
       `SELECT * FROM whatsapp_statuses WHERE business_id = $1 AND whatsapp_account_id = $2 AND status_id = $3`,
@@ -86,7 +89,11 @@ export class WhatsAppStatusRepository {
     );
     const existing = existingRows[0];
     if (!existing) throw new Error('whatsapp_statuses insert conflicted but no existing row found');
-    return toRecord(existing);
+    return toRecord(existing, false);
+  }
+
+  async attachMedia(id: string, mediaId: string): Promise<void> {
+    await this.db.query('UPDATE whatsapp_statuses SET media_id = $2 WHERE id = $1', [id, mediaId]);
   }
 
   async listByAccount(businessId: string, whatsappAccountId: string, limit = 100): Promise<WhatsAppStatusRecord[]> {
@@ -96,7 +103,7 @@ export class WhatsAppStatusRepository {
        ORDER BY created_at DESC LIMIT $3`,
       [businessId, whatsappAccountId, limit],
     );
-    return rows.map(toRecord);
+    return rows.map((row) => toRecord(row, false));
   }
 
   /** Reconciliation read: statuses whose publisher has no matching contact record. Report-only. */

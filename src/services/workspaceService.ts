@@ -48,7 +48,8 @@ export interface WorkspaceStatusSummary {
   displayName: string;
   statusType: 'text' | 'image' | 'video' | 'audio' | 'unknown';
   textContent: string | null;
-  /** Status media download/storage is not implemented yet - always false, never fabricated. */
+  media: WorkspaceMediaSummary | null;
+  /** True only once the real media bytes are actually downloaded - never fabricated. */
   mediaAvailable: boolean;
   createdAt: string;
   expiresAt: string | null;
@@ -209,6 +210,9 @@ export class WorkspaceService {
 
   async listStatuses(businessId: string, whatsappAccountId: string): Promise<WorkspaceStatusSummary[]> {
     const statuses = await this.statusRepository.listByAccount(businessId, whatsappAccountId);
+    const mediaIds = statuses.map((status) => status.mediaId).filter((id): id is string => id !== null);
+    const mediaRows = await this.mediaRepository.findByIds(mediaIds);
+    const mediaById = new Map(mediaRows.map((row) => [row.id, row]));
     const summaries: WorkspaceStatusSummary[] = [];
 
     for (const status of statuses) {
@@ -229,13 +233,29 @@ export class WorkspaceService {
         if (mapping?.phoneNumber) displayName = mapping.phoneNumber;
       }
 
+      const mediaRow = status.mediaId ? mediaById.get(status.mediaId) : undefined;
+      const media: WorkspaceMediaSummary | null = mediaRow
+        ? {
+            id: mediaRow.id,
+            mediaType: mediaRow.mediaType,
+            mimeType: mediaRow.mimeType,
+            fileName: mediaRow.fileName,
+            fileSize: mediaRow.fileSize,
+            durationSeconds: mediaRow.durationSeconds,
+            width: mediaRow.width,
+            height: mediaRow.height,
+            downloadStatus: mediaRow.downloadStatus,
+          }
+        : null;
+
       summaries.push({
         id: status.id,
         publisherJid: status.publisherJid,
         displayName,
         statusType: status.statusType,
         textContent: status.textContent,
-        mediaAvailable: false,
+        media,
+        mediaAvailable: media?.downloadStatus === 'downloaded',
         createdAt: status.createdAt,
         expiresAt: status.expiresAt,
       });

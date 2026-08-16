@@ -10,7 +10,8 @@ export interface WhatsAppMediaRecord {
   id: string;
   businessId: string;
   whatsappAccountId: string;
-  messageId: string;
+  messageId: string | null;
+  statusId: string | null;
   mediaType: MediaType;
   mimeType: string | null;
   fileName: string | null;
@@ -33,7 +34,8 @@ interface MediaRow {
   id: string;
   business_id: string;
   whatsapp_account_id: string;
-  message_id: string;
+  message_id: string | null;
+  status_id: string | null;
   media_type: MediaType;
   mime_type: string | null;
   file_name: string | null;
@@ -58,6 +60,7 @@ function toRecord(row: MediaRow): WhatsAppMediaRecord {
     businessId: row.business_id,
     whatsappAccountId: row.whatsapp_account_id,
     messageId: row.message_id,
+    statusId: row.status_id,
     mediaType: row.media_type,
     mimeType: row.mime_type,
     fileName: row.file_name,
@@ -80,7 +83,9 @@ function toRecord(row: MediaRow): WhatsAppMediaRecord {
 export interface InsertMediaInput {
   businessId: string;
   whatsappAccountId: string;
-  messageId: string;
+  /** Exactly one of messageId/statusId must be set - a media row always belongs to one real owner. */
+  messageId?: string | null;
+  statusId?: string | null;
   mediaType: MediaType;
   mimeType?: string | null;
   fileName?: string | null;
@@ -92,15 +97,22 @@ export class WhatsAppMediaRepository {
   constructor(private readonly db: Queryable) {}
 
   async insert(input: InsertMediaInput): Promise<WhatsAppMediaRecord> {
+    const messageId = input.messageId ?? null;
+    const statusId = input.statusId ?? null;
+    if ((messageId === null) === (statusId === null)) {
+      throw new Error('whatsapp_media insert requires exactly one of messageId or statusId');
+    }
+
     const { rows } = await this.db.query<MediaRow>(
       `INSERT INTO whatsapp_media
-         (business_id, whatsapp_account_id, message_id, media_type, mime_type, file_name, file_size, duration_seconds)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         (business_id, whatsapp_account_id, message_id, status_id, media_type, mime_type, file_name, file_size, duration_seconds)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         input.businessId,
         input.whatsappAccountId,
-        input.messageId,
+        messageId,
+        statusId,
         input.mediaType,
         input.mimeType ?? null,
         input.fileName ?? null,

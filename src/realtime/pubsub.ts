@@ -9,6 +9,7 @@ export type RealtimeEvent =
   | { type: 'message.status'; businessId: string; chatId: string; messageId: string; status: string }
   | { type: 'call.updated'; businessId: string; callId: string }
   | { type: 'media.updated'; businessId: string; mediaId: string; messageId: string; chatId: string }
+  | { type: 'status.media.updated'; businessId: string; mediaId: string; statusId: string }
   | { type: 'message.reaction'; businessId: string; chatId: string; messageId: string }
   | { type: 'presence.updated'; businessId: string; contactJid: string };
 
