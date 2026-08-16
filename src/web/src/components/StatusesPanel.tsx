@@ -94,7 +94,7 @@ export function StatusesPanel({ className = '' }: Props) {
           <h1 className="text-base font-semibold text-fg">Status</h1>
           <span
             title={connected ? 'Live updates connected' : 'Live updates unavailable - showing periodically refreshed data'}
-            className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-accent' : 'bg-fg-muted/50'}`}
+            className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-success' : 'bg-fg-muted/50'}`}
           />
         </div>
         <p className="mt-1 text-xs text-fg-muted">Real status updates synced from WhatsApp - expires 24h after posting.</p>

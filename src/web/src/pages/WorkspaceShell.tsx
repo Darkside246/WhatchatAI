@@ -27,7 +27,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
             <p className="text-xs text-fg-muted">
               Connected as {connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'}
             </p>
-            <span className="rounded-full bg-accent-soft px-2 py-0.5 text-[11px] text-accent">Live</span>
+            <span className="rounded-full bg-success/15 px-2 py-0.5 text-[11px] text-success">Live</span>
           </header>
 
           <div className="flex min-h-0 flex-1">

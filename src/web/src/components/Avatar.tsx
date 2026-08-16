@@ -22,7 +22,7 @@ export function Avatar({ label, size = 'md', className = '', hasActiveStatus = f
   const initial = label.trim().slice(0, 1).toUpperCase() || '?';
   const circle = (
     <div
-      className={`flex shrink-0 items-center justify-center rounded-full bg-surface-3 font-semibold text-fg-secondary ${SIZES[size]}`}
+      className={`flex shrink-0 items-center justify-center rounded-full bg-surface-3 font-semibold text-fg-secondary ring-2 ring-surface-1 ${SIZES[size]}`}
       aria-hidden
     >
       {initial}

@@ -56,7 +56,7 @@ function AiModeControl({
           disabled={saving}
           onClick={() => onSelect('AI_ACTIVE')}
           className={`flex items-center gap-1 rounded-full px-2.5 py-1 transition-colors disabled:opacity-50 ${
-            mode === 'AI_ACTIVE' ? 'bg-accent text-black' : 'text-fg-secondary hover:text-fg'
+            mode === 'AI_ACTIVE' ? 'bg-accent text-white' : 'text-fg-secondary hover:text-fg'
           }`}
         >
           <Bot size={12} strokeWidth={2} aria-hidden />
@@ -130,9 +130,12 @@ function formatFileSize(bytes: number | null): string {
  * distinct state instead of a fake preview.
  */
 function MediaContent({ media, caption }: { media: WorkspaceMedia; caption: string | null }) {
+  // These states render inside either bubble color (outgoing solid-accent or
+  // incoming white), so they inherit the bubble's own text color rather than
+  // forcing a neutral fg tone that could go illegible against it.
   if (media.downloadStatus === 'pending' || media.downloadStatus === 'downloading') {
     return (
-      <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-xs text-fg-secondary">
+      <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-xs opacity-90">
         <Loader2 size={16} className="animate-spin" aria-hidden />
         Downloading media…
       </div>
@@ -140,7 +143,7 @@ function MediaContent({ media, caption }: { media: WorkspaceMedia; caption: stri
   }
   if (media.downloadStatus === 'unavailable') {
     return (
-      <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-xs text-fg-muted">
+      <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-xs opacity-75">
         <ImageOff size={16} aria-hidden />
         This media is no longer available
       </div>
@@ -174,12 +177,12 @@ function MediaContent({ media, caption }: { media: WorkspaceMedia; caption: stri
     <a
       href={url}
       download={media.fileName ?? undefined}
-      className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-2 text-xs text-fg hover:bg-black/15"
+      className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-2 text-xs hover:bg-black/15"
     >
       <FileText size={20} aria-hidden />
       <span className="flex flex-col">
         <span className="font-medium">{media.fileName ?? 'Document'}</span>
-        <span className="text-fg-muted">{formatFileSize(media.fileSize)}</span>
+        <span className="opacity-70">{formatFileSize(media.fileSize)}</span>
       </span>
       <Download size={14} className="ml-2 shrink-0" aria-hidden />
     </a>
@@ -189,11 +192,13 @@ function MediaContent({ media, caption }: { media: WorkspaceMedia; caption: stri
 /** Real delivery-receipt ticks driven by message.status (see messages.update wiring) - never a fabricated state. */
 function DeliveryTicks({ status }: { status: WorkspaceMessage['status'] }) {
   if (status === 'failed') return <AlertCircle size={13} className="text-error" aria-label="Failed to send" />;
-  if (status === 'pending') return <Clock size={13} className="text-fg-muted" aria-label="Pending" />;
-  if (status === 'sent') return <Check size={14} className="text-fg-secondary" aria-label="Sent" />;
-  if (status === 'delivered') return <CheckCheck size={14} className="text-fg-secondary" aria-label="Delivered" />;
-  // Read receipts use the accent green consistently, per the visual design system.
-  if (status === 'read' || status === 'played') return <CheckCheck size={14} className="text-accent" aria-label="Read" />;
+  // These ticks only ever render inside the outgoing (solid-accent) bubble, so
+  // they use the bubble's own foreground token rather than the page-neutral
+  // fg tokens, which would be illegible against that background.
+  if (status === 'pending') return <Clock size={13} className="text-message-out-fg/50" aria-label="Pending" />;
+  if (status === 'sent') return <Check size={14} className="text-message-out-fg/70" aria-label="Sent" />;
+  if (status === 'delivered') return <CheckCheck size={14} className="text-message-out-fg/70" aria-label="Delivered" />;
+  if (status === 'read' || status === 'played') return <CheckCheck size={14} className="text-message-out-fg" aria-label="Read" />;
   return null;
 }
 
@@ -433,7 +438,7 @@ export function ChatThread({ onOpenDetail }: Props) {
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium text-fg">{headerName}</p>
               {presenceLabel ? (
-                <p className={`truncate text-[11px] ${presenceLabel === 'online' ? 'text-accent' : 'text-fg-muted'}`}>
+                <p className={`truncate text-[11px] ${presenceLabel === 'online' ? 'text-success' : 'text-fg-muted'}`}>
                   {presenceLabel}
                 </p>
               ) : (
@@ -465,7 +470,7 @@ export function ChatThread({ onOpenDetail }: Props) {
           <div key={message.id} className={`flex ${message.fromMe ? 'justify-end' : 'justify-start'}`}>
             <div
               className={`max-w-[75%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
-                message.fromMe ? 'bg-message-out text-fg' : 'bg-message-in text-fg'
+                message.fromMe ? 'rounded-tr-sm bg-message-out text-message-out-fg' : 'rounded-tl-sm bg-message-in text-fg'
               }`}
             >
               {message.hasMedia && message.media ? (
@@ -503,7 +508,7 @@ export function ChatThread({ onOpenDetail }: Props) {
 
       <div className="shrink-0 border-t border-border-subtle bg-surface-1 p-3">
         {sendError && <p className="mb-2 text-xs text-error">{sendError}</p>}
-        <div className="flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-2 px-3 py-2">
+        <div className="flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-2 px-3 py-2 transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
           <input
             ref={fileInputRef}
             type="file"
@@ -532,7 +537,9 @@ export function ChatThread({ onOpenDetail }: Props) {
             disabled={sending || !draft.trim()}
             onClick={() => void handleSendText()}
             title="Send"
-            className="text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
+            className={`disabled:cursor-not-allowed disabled:opacity-50 ${
+              draft.trim() ? 'text-accent hover:text-accent-dim' : 'text-fg-muted hover:text-fg'
+            }`}
           >
             {sending ? (
               <Loader2 size={18} strokeWidth={1.75} className="animate-spin" aria-hidden />

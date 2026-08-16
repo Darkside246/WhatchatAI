@@ -178,7 +178,7 @@ export function ScreenLock({ children }: Props) {
                 <button
                   type="submit"
                   disabled={busy}
-                  className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-surface-0 transition hover:bg-accent-dim disabled:opacity-50"
+                  className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white transition hover:bg-accent-dim disabled:opacity-50"
                 >
                   {busy ? 'Saving…' : 'Set PIN and lock'}
                 </button>
@@ -202,7 +202,7 @@ export function ScreenLock({ children }: Props) {
                 <button
                   type="submit"
                   disabled={busy || revoked || !PIN_PATTERN.test(pin)}
-                  className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-surface-0 transition hover:bg-accent-dim disabled:opacity-50"
+                  className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white transition hover:bg-accent-dim disabled:opacity-50"
                 >
                   {busy ? 'Verifying…' : 'Unlock'}
                 </button>

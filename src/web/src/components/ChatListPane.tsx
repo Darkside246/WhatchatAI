@@ -10,6 +10,9 @@ const AI_MODE_DOT: Record<WorkspaceChatSummary['aiMode'], string> = {
   HUMAN_TAKEOVER: 'bg-info',
 };
 
+// "success" is reserved for live/online/connected signals - kept distinct
+// from "accent" (the brand/interactive color used for buttons and selection).
+
 type FilterPill = 'all' | 'unread' | 'groups';
 
 const FILTER_PILLS: { value: FilterPill; label: string }[] = [
@@ -74,7 +77,7 @@ export function ChatListPane({ className = '' }: Props) {
           <h1 className="text-base font-semibold text-fg">Chats</h1>
           <span
             title={connected ? 'Live updates connected' : 'Live updates unavailable - showing periodically refreshed data'}
-            className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-accent' : 'bg-fg-muted/50'}`}
+            className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-success' : 'bg-fg-muted/50'}`}
           />
         </div>
         <input
@@ -113,8 +116,8 @@ export function ChatListPane({ className = '' }: Props) {
             key={chat.id}
             to={`/chats/${chat.id}`}
             className={({ isActive }) =>
-              `flex w-full items-center gap-3 border-b border-border-subtle/60 px-4 py-3 text-left transition-colors ${
-                isActive ? 'bg-surface-2' : 'hover:bg-surface-1'
+              `flex w-full items-center gap-3 border-b border-r-4 border-border-subtle/60 px-4 py-3 text-left transition-colors ${
+                isActive ? 'border-r-accent bg-accent-soft' : 'border-r-transparent hover:bg-surface-2'
               }`
             }
           >
@@ -130,7 +133,7 @@ export function ChatListPane({ className = '' }: Props) {
               </div>
             </div>
             {chat.unreadCount > 0 && (
-              <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-unread px-1.5 text-[11px] font-semibold text-black">
+              <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-unread px-1.5 text-[11px] font-semibold text-white">
                 {chat.unreadCount}
               </span>
             )}

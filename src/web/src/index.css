@@ -3,39 +3,40 @@
 /*
  * Design tokens (light theme). Semantic names first, so components style
  * intent ("this is the accent color") rather than a specific hex. Palette
- * follows WhatsApp Web's own light-theme conventions (off-white page,
- * white panels, pale-green outgoing bubbles, dark near-black text) per the
- * reference screenshots supplied with the theme-reskin request, while
- * keeping this app's own brand green as the one accent color.
+ * matches the "WhatChat" reference app supplied with the reskin request
+ * (its default "Sleek Interface" theme): indigo as the one brand/interactive
+ * accent, emerald reserved specifically for live/online/connected signals,
+ * slate for the neutral surface and text hierarchy.
  */
 @theme {
   /* Surfaces - page/sidebar/panel/elevated, lightest to most elevated */
   --color-surface-0: #f0f2f5;
   --color-surface-1: #ffffff;
-  --color-surface-2: #f7f8fa;
-  --color-surface-3: #e9edef;
-  --color-border-subtle: #e2e5e8;
+  --color-surface-2: #f8fafc;
+  --color-surface-3: #f1f5f9;
+  --color-border-subtle: #e2e8f0;
 
-  /* Accent - the one green, used consistently for primary actions, AI
-     Autonomous state, read receipts, active nav/selection */
-  --color-accent: #22c55e;
-  --color-accent-dim: #16a34a;
-  --color-accent-soft: #22c55e1f; /* accent at ~12% for badge/pill fills */
+  /* Accent - the one brand/interactive color: primary buttons, AI
+     Autonomous state, active nav/selection, unread badges */
+  --color-accent: #4f46e5;
+  --color-accent-dim: #4338ca;
+  --color-accent-soft: #4f46e51f; /* accent at ~12% for badge/pill fills */
 
   /* Chat bubbles */
-  --color-message-out: #d9fdd3; /* pale green, outgoing */
+  --color-message-out: #4f46e5; /* solid indigo, outgoing */
+  --color-message-out-fg: #ffffff; /* outgoing bubble's own foreground - ticks/text inherit this, not the page's neutral fg tokens */
   --color-message-in: #ffffff; /* white, incoming */
 
   /* Typography hierarchy */
-  --color-fg: #111b21; /* primary text - names, message text */
-  --color-fg-secondary: #54656f; /* metadata, secondary labels */
-  --color-fg-muted: #8696a0; /* timestamps, placeholders, disabled */
+  --color-fg: #0f172a; /* primary text - names, message text */
+  --color-fg-secondary: #64748b; /* metadata, secondary labels */
+  --color-fg-muted: #94a3b8; /* timestamps, placeholders, disabled */
 
   /* Status */
-  --color-success: #22c55e;
+  --color-success: #10b981; /* live/online/connected signal - distinct from the brand accent */
   --color-warning: #f59e0b;
   --color-error: #ef4444;
-  --color-unread: #22c55e;
+  --color-unread: #4f46e5;
   /* Neutral informational tone - the real third agent_mode (HUMAN_TAKEOVER)
      isn't a success/warning/error state, so it gets its own token rather
      than being forced into one of those three. */
