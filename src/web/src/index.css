@@ -1,37 +1,35 @@
 @import "tailwindcss";
 
 /*
- * Design tokens (WHATCHATAI PHASE 2 visual overhaul). Semantic names first,
- * so components style intent ("this is the accent color") rather than a
- * specific hex - see docs/PHASE_2_VISUAL_OVERHAUL_REPORT.md for the source
- * gap analysis this token set was built against. No reference screenshot
- * was attached to the directive that requested this pass, so these values
- * are a careful approximation of its written spec (deep navy/charcoal,
- * restrained borders, one consistent green accent), not a pixel match to
- * an image Claude never saw.
+ * Design tokens (light theme). Semantic names first, so components style
+ * intent ("this is the accent color") rather than a specific hex. Palette
+ * follows WhatsApp Web's own light-theme conventions (off-white page,
+ * white panels, pale-green outgoing bubbles, dark near-black text) per the
+ * reference screenshots supplied with the theme-reskin request, while
+ * keeping this app's own brand green as the one accent color.
  */
 @theme {
-  /* Surfaces - page/sidebar/panel/elevated, darkest to lightest */
-  --color-surface-0: #05070d;
-  --color-surface-1: #0b0f1a;
-  --color-surface-2: #121826;
-  --color-surface-3: #1b2333;
-  --color-border-subtle: #232c3f;
+  /* Surfaces - page/sidebar/panel/elevated, lightest to most elevated */
+  --color-surface-0: #f0f2f5;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #f7f8fa;
+  --color-surface-3: #e9edef;
+  --color-border-subtle: #e2e5e8;
 
   /* Accent - the one green, used consistently for primary actions, AI
      Autonomous state, read receipts, active nav/selection */
   --color-accent: #22c55e;
   --color-accent-dim: #16a34a;
-  --color-accent-soft: #22c55e26; /* accent at ~15% for badge/pill fills */
+  --color-accent-soft: #22c55e1f; /* accent at ~12% for badge/pill fills */
 
   /* Chat bubbles */
-  --color-message-out: #0c3b2c; /* dark green, outgoing */
-  --color-message-in: #1b2333; /* elevated dark grey/blue, incoming - same as surface-3 */
+  --color-message-out: #d9fdd3; /* pale green, outgoing */
+  --color-message-in: #ffffff; /* white, incoming */
 
   /* Typography hierarchy */
-  --color-fg: #f3f4f6; /* primary text - names, message text */
-  --color-fg-secondary: #9ca3af; /* metadata, secondary labels */
-  --color-fg-muted: #6b7280; /* timestamps, placeholders, disabled */
+  --color-fg: #111b21; /* primary text - names, message text */
+  --color-fg-secondary: #54656f; /* metadata, secondary labels */
+  --color-fg-muted: #8696a0; /* timestamps, placeholders, disabled */
 
   /* Status */
   --color-success: #22c55e;
@@ -52,6 +50,6 @@ body,
 
 body {
   background-color: var(--color-surface-0);
-  color: #e5e7eb;
+  color: var(--color-fg);
   -webkit-font-smoothing: antialiased;
 }

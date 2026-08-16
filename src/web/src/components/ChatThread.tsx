@@ -132,7 +132,7 @@ function formatFileSize(bytes: number | null): string {
 function MediaContent({ media, caption }: { media: WorkspaceMedia; caption: string | null }) {
   if (media.downloadStatus === 'pending' || media.downloadStatus === 'downloading') {
     return (
-      <div className="flex items-center gap-2 rounded-lg bg-black/20 px-3 py-4 text-xs text-fg-secondary">
+      <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-xs text-fg-secondary">
         <Loader2 size={16} className="animate-spin" aria-hidden />
         Downloading media…
       </div>
@@ -140,7 +140,7 @@ function MediaContent({ media, caption }: { media: WorkspaceMedia; caption: stri
   }
   if (media.downloadStatus === 'unavailable') {
     return (
-      <div className="flex items-center gap-2 rounded-lg bg-black/20 px-3 py-4 text-xs text-fg-muted">
+      <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-xs text-fg-muted">
         <ImageOff size={16} aria-hidden />
         This media is no longer available
       </div>
@@ -148,7 +148,7 @@ function MediaContent({ media, caption }: { media: WorkspaceMedia; caption: stri
   }
   if (media.downloadStatus === 'failed') {
     return (
-      <div className="flex items-center gap-2 rounded-lg bg-black/20 px-3 py-4 text-xs text-error">
+      <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-xs text-error">
         <FileWarning size={16} aria-hidden />
         Media download failed
       </div>
@@ -174,7 +174,7 @@ function MediaContent({ media, caption }: { media: WorkspaceMedia; caption: stri
     <a
       href={url}
       download={media.fileName ?? undefined}
-      className="flex items-center gap-2 rounded-lg bg-black/20 px-3 py-2 text-xs text-fg hover:bg-black/30"
+      className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-2 text-xs text-fg hover:bg-black/15"
     >
       <FileText size={20} aria-hidden />
       <span className="flex flex-col">
@@ -189,9 +189,9 @@ function MediaContent({ media, caption }: { media: WorkspaceMedia; caption: stri
 /** Real delivery-receipt ticks driven by message.status (see messages.update wiring) - never a fabricated state. */
 function DeliveryTicks({ status }: { status: WorkspaceMessage['status'] }) {
   if (status === 'failed') return <AlertCircle size={13} className="text-error" aria-label="Failed to send" />;
-  if (status === 'pending') return <Clock size={13} className="text-white/50" aria-label="Pending" />;
-  if (status === 'sent') return <Check size={14} className="text-white/60" aria-label="Sent" />;
-  if (status === 'delivered') return <CheckCheck size={14} className="text-white/60" aria-label="Delivered" />;
+  if (status === 'pending') return <Clock size={13} className="text-fg-muted" aria-label="Pending" />;
+  if (status === 'sent') return <Check size={14} className="text-fg-secondary" aria-label="Sent" />;
+  if (status === 'delivered') return <CheckCheck size={14} className="text-fg-secondary" aria-label="Delivered" />;
   // Read receipts use the accent green consistently, per the visual design system.
   if (status === 'read' || status === 'played') return <CheckCheck size={14} className="text-accent" aria-label="Read" />;
   return null;
@@ -199,7 +199,7 @@ function DeliveryTicks({ status }: { status: WorkspaceMessage['status'] }) {
 
 // WhatsApp-style subtle doodle background, as an inline SVG data URI - no external asset dependency.
 const DOODLE_BACKGROUND =
-  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Cg fill='none' stroke='%23ffffff' stroke-opacity='0.035' stroke-width='1.2'%3E%3Ccircle cx='20' cy='20' r='10'/%3E%3Cpath d='M55 15 L70 30 M70 15 L55 30'/%3E%3Crect x='45' y='55' width='16' height='16' rx='3'/%3E%3Cpath d='M10 70 Q20 60 30 70 T50 70'/%3E%3C/g%3E%3C/svg%3E\")";
+  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Cg fill='none' stroke='%23111b21' stroke-opacity='0.04' stroke-width='1.2'%3E%3Ccircle cx='20' cy='20' r='10'/%3E%3Cpath d='M55 15 L70 30 M70 15 L55 30'/%3E%3Crect x='45' y='55' width='16' height='16' rx='3'/%3E%3Cpath d='M10 70 Q20 60 30 70 T50 70'/%3E%3C/g%3E%3C/svg%3E\")";
 
 interface Props {
   onOpenDetail?: () => void;
@@ -465,7 +465,7 @@ export function ChatThread({ onOpenDetail }: Props) {
           <div key={message.id} className={`flex ${message.fromMe ? 'justify-end' : 'justify-start'}`}>
             <div
               className={`max-w-[75%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
-                message.fromMe ? 'bg-message-out text-white' : 'bg-message-in text-fg'
+                message.fromMe ? 'bg-message-out text-fg' : 'bg-message-in text-fg'
               }`}
             >
               {message.hasMedia && message.media ? (

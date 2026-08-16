@@ -19,7 +19,7 @@ function formatTime(iso: string): string {
 function StatusMedia({ status }: { status: WorkspaceStatus }) {
   if (status.statusType === 'text' || !status.media) {
     return (
-      <div className="flex items-center gap-2 rounded-lg bg-black/20 px-3 py-6 text-xs text-fg-muted">
+      <div className="flex items-center gap-2 rounded-lg bg-surface-2 px-3 py-6 text-xs text-fg-muted">
         <Type size={16} aria-hidden />
         {status.textContent ?? 'Text status'}
       </div>
@@ -29,7 +29,7 @@ function StatusMedia({ status }: { status: WorkspaceStatus }) {
   const { media } = status;
   if (media.downloadStatus === 'pending' || media.downloadStatus === 'downloading') {
     return (
-      <div className="flex items-center gap-2 rounded-lg bg-black/20 px-3 py-6 text-xs text-fg-secondary">
+      <div className="flex items-center gap-2 rounded-lg bg-surface-2 px-3 py-6 text-xs text-fg-secondary">
         <Loader2 size={16} className="animate-spin" aria-hidden />
         Downloading status media…
       </div>
@@ -37,7 +37,7 @@ function StatusMedia({ status }: { status: WorkspaceStatus }) {
   }
   if (media.downloadStatus === 'unavailable') {
     return (
-      <div className="flex items-center gap-2 rounded-lg bg-black/20 px-3 py-6 text-xs text-fg-muted">
+      <div className="flex items-center gap-2 rounded-lg bg-surface-2 px-3 py-6 text-xs text-fg-muted">
         <ImageOff size={16} aria-hidden />
         No longer available
       </div>
@@ -45,7 +45,7 @@ function StatusMedia({ status }: { status: WorkspaceStatus }) {
   }
   if (media.downloadStatus === 'failed') {
     return (
-      <div className="flex items-center gap-2 rounded-lg bg-black/20 px-3 py-6 text-xs text-error">
+      <div className="flex items-center gap-2 rounded-lg bg-surface-2 px-3 py-6 text-xs text-error">
         <FileWarning size={16} aria-hidden />
         Status media download failed
       </div>
