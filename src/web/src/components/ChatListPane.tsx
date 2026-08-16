@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { api, type WorkspaceChatSummary } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
+import { Avatar } from './Avatar.js';
 
 const AI_MODE_DOT: Record<WorkspaceChatSummary['aiMode'], string> = {
-  AI_ACTIVE: 'bg-emerald-400',
-  AI_PAUSED: 'bg-amber-400',
-  HUMAN_TAKEOVER: 'bg-sky-400',
+  AI_ACTIVE: 'bg-accent',
+  AI_PAUSED: 'bg-warning',
+  HUMAN_TAKEOVER: 'bg-info',
 };
 
 type FilterPill = 'all' | 'unread' | 'groups';
@@ -70,10 +71,10 @@ export function ChatListPane({ className = '' }: Props) {
     <div className={`h-full flex-col ${className}`}>
       <div className="shrink-0 border-b border-border-subtle p-4">
         <div className="flex items-center justify-between">
-          <h1 className="text-base font-semibold text-white">Chats</h1>
+          <h1 className="text-base font-semibold text-fg">Chats</h1>
           <span
             title={connected ? 'Live updates connected' : 'Live updates unavailable - showing periodically refreshed data'}
-            className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-400' : 'bg-gray-600'}`}
+            className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-accent' : 'bg-fg-muted/50'}`}
           />
         </div>
         <input
@@ -81,7 +82,7 @@ export function ChatListPane({ className = '' }: Props) {
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           placeholder="Search or start a new chat"
-          className="mt-3 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-500 focus:border-emerald-500 focus:outline-none"
+          className="mt-3 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus:border-accent focus:outline-none"
         />
         <div className="mt-3 flex gap-1.5">
           {FILTER_PILLS.map((pill) => (
@@ -90,9 +91,7 @@ export function ChatListPane({ className = '' }: Props) {
               type="button"
               onClick={() => setFilter(pill.value)}
               className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                filter === pill.value
-                  ? 'bg-emerald-500/15 text-emerald-400'
-                  : 'bg-surface-2 text-gray-400 hover:bg-surface-3'
+                filter === pill.value ? 'bg-accent-soft text-accent' : 'bg-surface-2 text-fg-secondary hover:bg-surface-3'
               }`}
             >
               {pill.label}
@@ -102,12 +101,12 @@ export function ChatListPane({ className = '' }: Props) {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {error && <p className="p-4 text-xs text-red-400">{error}</p>}
+        {error && <p className="p-4 text-xs text-error">{error}</p>}
         {chats && chats.length === 0 && (
-          <p className="p-4 text-sm text-gray-500">No conversations yet. Real chats will appear here as WhatsApp syncs.</p>
+          <p className="p-4 text-sm text-fg-muted">No conversations yet. Real chats will appear here as WhatsApp syncs.</p>
         )}
         {chats && chats.length > 0 && filtered.length === 0 && (
-          <p className="p-4 text-sm text-gray-500">No chats match this filter.</p>
+          <p className="p-4 text-sm text-fg-muted">No chats match this filter.</p>
         )}
         {filtered.map((chat) => (
           <NavLink
@@ -119,21 +118,19 @@ export function ChatListPane({ className = '' }: Props) {
               }`
             }
           >
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-surface-3 text-sm font-semibold text-gray-300">
-              {chat.displayName.slice(0, 1).toUpperCase()}
-            </div>
+            <Avatar label={chat.displayName} />
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
-                <p className="truncate text-sm font-medium text-white">{chat.displayName}</p>
-                <span className="shrink-0 text-[11px] text-gray-500">{formatTime(chat.lastMessageAt)}</span>
+                <p className="truncate text-sm font-medium text-fg">{chat.displayName}</p>
+                <span className="shrink-0 text-[11px] text-fg-muted">{formatTime(chat.lastMessageAt)}</span>
               </div>
               <div className="mt-0.5 flex items-center gap-1.5">
                 <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${AI_MODE_DOT[chat.aiMode]}`} />
-                <p className="truncate text-xs text-gray-500">{chat.lastMessagePreview ?? 'No messages yet'}</p>
+                <p className="truncate text-xs text-fg-muted">{chat.lastMessagePreview ?? 'No messages yet'}</p>
               </div>
             </div>
             {chat.unreadCount > 0 && (
-              <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-emerald-500 px-1.5 text-[11px] font-semibold text-black">
+              <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-unread px-1.5 text-[11px] font-semibold text-black">
                 {chat.unreadCount}
               </span>
             )}

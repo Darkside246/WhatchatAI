@@ -1,13 +1,47 @@
 @import "tailwindcss";
 
+/*
+ * Design tokens (WHATCHATAI PHASE 2 visual overhaul). Semantic names first,
+ * so components style intent ("this is the accent color") rather than a
+ * specific hex - see docs/PHASE_2_VISUAL_OVERHAUL_REPORT.md for the source
+ * gap analysis this token set was built against. No reference screenshot
+ * was attached to the directive that requested this pass, so these values
+ * are a careful approximation of its written spec (deep navy/charcoal,
+ * restrained borders, one consistent green accent), not a pixel match to
+ * an image Claude never saw.
+ */
 @theme {
+  /* Surfaces - page/sidebar/panel/elevated, darkest to lightest */
   --color-surface-0: #05070d;
   --color-surface-1: #0b0f1a;
   --color-surface-2: #121826;
   --color-surface-3: #1b2333;
   --color-border-subtle: #232c3f;
+
+  /* Accent - the one green, used consistently for primary actions, AI
+     Autonomous state, read receipts, active nav/selection */
   --color-accent: #22c55e;
   --color-accent-dim: #16a34a;
+  --color-accent-soft: #22c55e26; /* accent at ~15% for badge/pill fills */
+
+  /* Chat bubbles */
+  --color-message-out: #0c3b2c; /* dark green, outgoing */
+  --color-message-in: #1b2333; /* elevated dark grey/blue, incoming - same as surface-3 */
+
+  /* Typography hierarchy */
+  --color-fg: #f3f4f6; /* primary text - names, message text */
+  --color-fg-secondary: #9ca3af; /* metadata, secondary labels */
+  --color-fg-muted: #6b7280; /* timestamps, placeholders, disabled */
+
+  /* Status */
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --color-unread: #22c55e;
+  /* Neutral informational tone - the real third agent_mode (HUMAN_TAKEOVER)
+     isn't a success/warning/error state, so it gets its own token rather
+     than being forced into one of those three. */
+  --color-info: #38bdf8;
 }
 
 html,

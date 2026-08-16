@@ -26,7 +26,7 @@ export function InboxNavRail({ view, onChange }: Props) {
         onClick={() => onChange('chats')}
         title="Chats"
         className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-          view === 'chats' ? 'bg-emerald-500/15 text-emerald-400' : 'text-gray-500 hover:bg-surface-2 hover:text-gray-300'
+          view === 'chats' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-surface-2 hover:text-fg-secondary'
         }`}
       >
         <MessageCircle size={19} strokeWidth={1.75} aria-hidden />
@@ -36,7 +36,7 @@ export function InboxNavRail({ view, onChange }: Props) {
         onClick={() => onChange('calls')}
         title="Calls"
         className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-          view === 'calls' ? 'bg-emerald-500/15 text-emerald-400' : 'text-gray-500 hover:bg-surface-2 hover:text-gray-300'
+          view === 'calls' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-surface-2 hover:text-fg-secondary'
         }`}
       >
         <Phone size={19} strokeWidth={1.75} aria-hidden />
@@ -45,7 +45,7 @@ export function InboxNavRail({ view, onChange }: Props) {
         type="button"
         disabled
         title="Status (not built yet)"
-        className="flex h-10 w-10 cursor-not-allowed items-center justify-center rounded-lg text-gray-700"
+        className="flex h-10 w-10 cursor-not-allowed items-center justify-center rounded-lg text-fg-muted/40"
       >
         <CircleDashed size={19} strokeWidth={1.75} aria-hidden />
       </button>

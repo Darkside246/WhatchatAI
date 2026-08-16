@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { X } from 'lucide-react';
 import { api, type WorkspaceChatDetail } from '../lib/api.js';
+import { Avatar } from './Avatar.js';
 
 const AI_MODE_OPTIONS: { value: WorkspaceChatDetail['chat']['aiMode']; label: string; hint: string }[] = [
   { value: 'AI_ACTIVE', label: 'AI Active', hint: 'The AI agent responds automatically.' },
@@ -46,37 +47,35 @@ export function ContactDetailPanel({ onClose }: Props) {
   return (
     <div className="flex h-full w-full flex-col overflow-y-auto bg-surface-1 lg:w-80">
       <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
-        <h2 className="text-sm font-semibold text-white">Conversation details</h2>
+        <h2 className="text-sm font-semibold text-fg">Conversation details</h2>
         {onClose && (
-          <button type="button" onClick={onClose} className="text-gray-400 hover:text-white lg:hidden">
+          <button type="button" onClick={onClose} className="text-fg-muted hover:text-fg lg:hidden">
             <X size={18} aria-hidden />
           </button>
         )}
       </div>
 
-      {error && <p className="p-4 text-xs text-red-400">{error}</p>}
-      {!detail && !error && <p className="p-4 text-xs text-gray-500">Loading real contact details…</p>}
+      {error && <p className="p-4 text-xs text-error">{error}</p>}
+      {!detail && !error && <p className="p-4 text-xs text-fg-muted">Loading real contact details…</p>}
 
       {detail && (
         <div className="flex flex-col gap-6 p-4">
           <div className="flex flex-col items-center gap-2 text-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-surface-3 text-xl font-semibold text-gray-300">
-              {(detail.contact?.displayName ?? detail.chat.name ?? detail.chat.chatJid).slice(0, 1).toUpperCase()}
-            </div>
-            <p className="text-sm font-medium text-white">
+            <Avatar label={detail.contact?.displayName ?? detail.chat.name ?? detail.chat.chatJid} size="lg" />
+            <p className="text-sm font-medium text-fg">
               {detail.contact?.displayName ??
                 detail.contact?.pushName ??
                 detail.chat.name ??
                 detail.resolvedPhoneNumber ??
                 detail.chat.chatJid}
             </p>
-            <p className="text-xs text-gray-500">
+            <p className="text-xs text-fg-muted">
               {detail.contact?.phoneNumber ?? detail.chat.phoneNumber ?? detail.resolvedPhoneNumber ?? detail.chat.chatJid}
             </p>
           </div>
 
           <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">AI &amp; takeover</h3>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">AI &amp; takeover</h3>
             <div className="flex flex-col gap-1.5">
               {AI_MODE_OPTIONS.map((option) => (
                 <button
@@ -86,52 +85,62 @@ export function ContactDetailPanel({ onClose }: Props) {
                   onClick={() => handleModeChange(option.value)}
                   className={`rounded-lg border px-3 py-2 text-left text-xs transition-colors disabled:opacity-50 ${
                     detail.chat.aiMode === option.value
-                      ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300'
-                      : 'border-border-subtle bg-surface-2 text-gray-300 hover:border-gray-500'
+                      ? 'border-accent bg-accent-soft text-accent'
+                      : 'border-border-subtle bg-surface-2 text-fg-secondary hover:border-fg-muted'
                   }`}
                 >
                   <span className="font-medium">{option.label}</span>
-                  <p className="mt-0.5 text-[11px] text-gray-500">{option.hint}</p>
+                  <p className="mt-0.5 text-[11px] text-fg-muted">{option.hint}</p>
                 </button>
               ))}
             </div>
           </section>
 
           <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">WhatsApp identity</h3>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">WhatsApp identity</h3>
             <dl className="space-y-1.5 text-xs">
               <div className="flex justify-between gap-2">
-                <dt className="text-gray-500">JID</dt>
-                <dd className="truncate text-right text-gray-300">{detail.chat.chatJid}</dd>
+                <dt className="text-fg-muted">JID</dt>
+                <dd className="truncate text-right text-fg-secondary">{detail.chat.chatJid}</dd>
               </div>
               <div className="flex justify-between gap-2">
-                <dt className="text-gray-500">Type</dt>
-                <dd className="text-gray-300">{detail.chat.chatType}</dd>
+                <dt className="text-fg-muted">Type</dt>
+                <dd className="text-fg-secondary">{detail.chat.chatType}</dd>
               </div>
               {detail.resolvedPhoneNumber && (
                 <div className="flex justify-between gap-2">
-                  <dt className="text-gray-500">Resolved number</dt>
-                  <dd className="text-gray-300">{detail.resolvedPhoneNumber}</dd>
+                  <dt className="text-fg-muted">Resolved number</dt>
+                  <dd className="text-fg-secondary">{detail.resolvedPhoneNumber}</dd>
                 </div>
               )}
             </dl>
           </section>
 
           <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">CRM</h3>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">CRM</h3>
             {detail.crmContact ? (
               <dl className="space-y-1.5 text-xs">
                 <div className="flex justify-between gap-2">
-                  <dt className="text-gray-500">Stage</dt>
-                  <dd className="text-gray-300">{detail.crmContact.stage ?? 'Not set'}</dd>
+                  <dt className="text-fg-muted">Stage</dt>
+                  <dd className="text-fg-secondary">{detail.crmContact.stage ?? 'Not set'}</dd>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <dt className="text-gray-500">Lead status</dt>
-                  <dd className="text-gray-300">{detail.crmContact.leadStatus ?? 'Not set'}</dd>
+                  <dt className="text-fg-muted">Lead status</dt>
+                  <dd className="text-fg-secondary">{detail.crmContact.leadStatus ?? 'Not set'}</dd>
                 </div>
               </dl>
-            ) : (
-              <p className="text-xs text-gray-500">No CRM record for this conversation yet.</p>
+            ) : null}
+            {detail.crmContact && detail.crmContact.tags.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {detail.crmContact.tags.map((tag) => (
+                  <span key={tag} className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-fg-secondary">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            )}
+            {!detail.crmContact && (
+              <p className="text-xs text-fg-muted">No CRM record for this conversation yet.</p>
             )}
           </section>
         </div>

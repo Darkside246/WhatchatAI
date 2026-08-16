@@ -142,13 +142,13 @@ export function ScreenLock({ children }: Props) {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-0/95 p-4 backdrop-blur-md">
           <div className="w-full max-w-sm rounded-2xl border border-border-subtle bg-surface-1 p-6 shadow-2xl">
             <div className="mb-4 flex flex-col items-center gap-2 text-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-surface-2 text-emerald-400">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-surface-2 text-accent">
                 <Lock size={22} strokeWidth={1.75} aria-hidden />
               </div>
-              <h2 className="text-lg font-semibold text-gray-100">
+              <h2 className="text-lg font-semibold text-fg">
                 {showSetupForm ? 'Set up a lock PIN' : 'Workspace locked'}
               </h2>
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-fg-muted">
                 {showSetupForm
                   ? 'Choose a 6-8 digit PIN. It is hashed on this device and never sent in the clear.'
                   : 'Enter your PIN to resume. Live messaging and AI processing keep running in the background.'}
@@ -164,7 +164,7 @@ export function ScreenLock({ children }: Props) {
                   placeholder="New PIN (6-8 digits)"
                   value={pin}
                   onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
-                  className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-center text-lg tracking-[0.3em] text-gray-100 outline-none focus:border-accent"
+                  className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-center text-lg tracking-[0.3em] text-fg outline-none focus:border-accent"
                 />
                 <input
                   type="password"
@@ -172,9 +172,9 @@ export function ScreenLock({ children }: Props) {
                   placeholder="Confirm PIN"
                   value={confirmPin}
                   onChange={(event) => setConfirmPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
-                  className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-center text-lg tracking-[0.3em] text-gray-100 outline-none focus:border-accent"
+                  className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-center text-lg tracking-[0.3em] text-fg outline-none focus:border-accent"
                 />
-                {error && <p className="text-center text-xs text-red-400">{error}</p>}
+                {error && <p className="text-center text-xs text-error">{error}</p>}
                 <button
                   type="submit"
                   disabled={busy}
@@ -193,11 +193,11 @@ export function ScreenLock({ children }: Props) {
                   placeholder="Enter PIN"
                   value={pin}
                   onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
-                  className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-center text-lg tracking-[0.3em] text-gray-100 outline-none focus:border-accent disabled:opacity-50"
+                  className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-center text-lg tracking-[0.3em] text-fg outline-none focus:border-accent disabled:opacity-50"
                 />
-                {error && <p className="text-center text-xs text-red-400">{error}</p>}
+                {error && <p className="text-center text-xs text-error">{error}</p>}
                 {remainingAttempts !== null && !revoked && (
-                  <p className="text-center text-[11px] text-gray-500">{remainingAttempts} attempts remaining before lockout.</p>
+                  <p className="text-center text-[11px] text-fg-muted">{remainingAttempts} attempts remaining before lockout.</p>
                 )}
                 <button
                   type="submit"

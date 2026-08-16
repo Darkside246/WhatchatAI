@@ -24,8 +24,8 @@ const NAV_ITEMS: { to: string; label: string; icon: LucideIcon; implemented: boo
 
 export function SaasNavRail() {
   return (
-    <nav className="hidden w-16 shrink-0 flex-col items-center gap-1 border-r border-border-subtle bg-surface-1 py-4 lg:flex">
-      <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500/15 text-sm font-bold text-emerald-400">
+    <nav className="hidden w-16 shrink-0 flex-col items-center gap-1 border-r border-border-subtle bg-surface-1 py-4 md:flex">
+      <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg bg-accent-soft text-sm font-bold text-accent">
         W
       </div>
       {NAV_ITEMS.map((item) => (
@@ -34,7 +34,7 @@ export function SaasNavRail() {
           to={item.to}
           className={({ isActive }) =>
             `flex h-11 w-11 items-center justify-center rounded-lg transition-colors ${
-              isActive ? 'bg-emerald-500/15 text-emerald-400' : 'text-gray-500 hover:bg-surface-2 hover:text-gray-300'
+              isActive ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-surface-2 hover:text-fg-secondary'
             }`
           }
           title={item.implemented ? item.label : `${item.label} (coming soon)`}
@@ -48,14 +48,14 @@ export function SaasNavRail() {
 
 export function SaasNavBottomBar() {
   return (
-    <nav className="flex shrink-0 items-center justify-around border-t border-border-subtle bg-surface-1 py-2 lg:hidden">
+    <nav className="flex shrink-0 items-center justify-around border-t border-border-subtle bg-surface-1 py-2 md:hidden">
       {NAV_ITEMS.slice(0, 5).map((item) => (
         <NavLink
           key={item.to}
           to={item.to}
           className={({ isActive }) =>
             `flex h-10 w-10 items-center justify-center rounded-lg ${
-              isActive ? 'bg-emerald-500/15 text-emerald-400' : 'text-gray-500'
+              isActive ? 'bg-accent-soft text-accent' : 'text-fg-muted'
             }`
           }
         >

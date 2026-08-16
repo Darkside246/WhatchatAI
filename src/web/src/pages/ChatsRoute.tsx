@@ -19,10 +19,10 @@ export function ChatsRoute() {
       {view === 'chats' ? (
         <>
           <ChatListPane
-            className={`w-full shrink-0 border-r border-border-subtle lg:flex lg:w-80 ${chatId ? 'hidden' : 'flex'}`}
+            className={`w-full shrink-0 border-r border-border-subtle md:flex md:w-80 ${chatId ? 'hidden' : 'flex'}`}
           />
 
-          <div className={`min-w-0 flex-1 lg:flex ${chatId ? 'flex' : 'hidden'}`}>
+          <div className={`min-w-0 flex-1 md:flex ${chatId ? 'flex' : 'hidden'}`}>
             <ChatThread onOpenDetail={() => setMobileDetailOpen(true)} />
           </div>
 
@@ -43,8 +43,8 @@ export function ChatsRoute() {
         </>
       ) : (
         <>
-          <CallHistoryPanel className="flex w-full shrink-0 border-r border-border-subtle lg:flex lg:w-80" />
-          <div className="hidden min-w-0 flex-1 flex-col items-center justify-center gap-2 text-gray-500 lg:flex">
+          <CallHistoryPanel className="flex w-full shrink-0 border-r border-border-subtle md:flex md:w-80" />
+          <div className="hidden min-w-0 flex-1 flex-col items-center justify-center gap-2 text-fg-muted md:flex">
             <Phone size={40} strokeWidth={1.5} aria-hidden />
             <p className="text-sm">Select a call to view details</p>
           </div>

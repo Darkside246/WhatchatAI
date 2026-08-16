@@ -14,7 +14,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
   return (
     <div className="flex h-full flex-col bg-surface-0">
       {sync?.syncStatus === 'failed' && (
-        <div className="shrink-0 bg-amber-500/10 px-4 py-1.5 text-center text-xs text-amber-300">
+        <div className="shrink-0 bg-warning/10 px-4 py-1.5 text-center text-xs text-warning">
           History sync did not fully complete ({sync.lastSyncError ?? 'unknown error'}). Some data may be missing.
         </div>
       )}
@@ -24,10 +24,10 @@ export function WorkspaceShell({ connection, sync }: Props) {
 
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="hidden shrink-0 items-center justify-between border-b border-border-subtle bg-surface-1 px-4 py-2 lg:flex">
-            <p className="text-xs text-gray-500">
+            <p className="text-xs text-fg-muted">
               Connected as {connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'}
             </p>
-            <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-400">Live</span>
+            <span className="rounded-full bg-accent-soft px-2 py-0.5 text-[11px] text-accent">Live</span>
           </header>
 
           <div className="flex min-h-0 flex-1">
