@@ -36,6 +36,9 @@ describe('sync job timeout reconciliation (real Postgres, documented 10-minute n
     expect(reconciled?.lastError).toContain('Abandoned mid-sync');
     // Real progress it actually made is preserved, not erased or inflated.
     expect(reconciled?.messagesProcessed).toBe(1118);
+    // 'failed' is terminal - completed_at must be set, or this job's reported
+    // duration would keep growing forever as if it were still running.
+    expect(reconciled?.completedAt).not.toBeNull();
 
     const account = await accountRepository.findById(accountId);
     expect(account?.syncStatus).toBe('failed');

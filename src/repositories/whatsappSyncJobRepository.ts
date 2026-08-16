@@ -88,10 +88,13 @@ export class WhatsAppSyncJobRepository {
     );
   }
 
+  /** 'failed' is a terminal status - completed_at must be set here too, or a
+   *  failed job's reported duration keeps growing forever as if still running. */
   async markFailed(id: string, lastError: string): Promise<void> {
     await this.db.query(
       `UPDATE whatsapp_sync_jobs
-       SET status = 'failed', last_error = $2, errors_count = errors_count + 1, updated_at = now()
+       SET status = 'failed', last_error = $2, errors_count = errors_count + 1,
+           completed_at = now(), updated_at = now()
        WHERE id = $1`,
       [id, lastError],
     );
