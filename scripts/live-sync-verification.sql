@@ -162,4 +162,47 @@ FROM whatsapp_sync_jobs
 ORDER BY created_at DESC
 LIMIT 5;
 
+\echo '=== OUTBOUND MESSAGING VALIDATION - real sends through the live account ==='
+
+\echo '--- counts by status (queued/sending should be ~0 once sends settle) ---'
+SELECT status, count(*) FROM whatsapp_outbound_messages GROUP BY status ORDER BY status;
+
+\echo '--- counts by message type ---'
+SELECT message_type, count(*) FROM whatsapp_outbound_messages GROUP BY message_type ORDER BY message_type;
+
+\echo '--- stuck queued/sending past the 5-minute sweep window (should be 0) ---'
+SELECT count(*) FROM whatsapp_outbound_messages
+WHERE status IN ('queued', 'sending') AND updated_at < now() - interval '5 minutes';
+
+\echo '--- duplicate idempotency keys (should be 0, unique-index-enforced) ---'
+SELECT count(*) AS duplicate_idempotency_groups FROM (
+  SELECT business_id, whatsapp_account_id, idempotency_key
+  FROM whatsapp_outbound_messages GROUP BY 1, 2, 3 HAVING count(*) > 1
+) d;
+
+\echo '--- sent but never linked to a real whatsapp_messages row (real gap if nonzero and old - linking is async) ---'
+SELECT count(*) FROM whatsapp_outbound_messages
+WHERE status = 'sent' AND message_id IS NULL AND sent_at < now() - interval '2 minutes';
+
+\echo '--- sent rows whose whatsapp_message_id does not actually exist in whatsapp_messages (should be 0 once linked) ---'
+SELECT count(*) FROM whatsapp_outbound_messages o
+WHERE o.status = 'sent' AND o.message_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM whatsapp_messages m WHERE m.id = o.message_id);
+
+\echo '--- failed sends (real errors, for manual review) ---'
+SELECT id, chat_id, message_type, attempt_count, last_error, created_at
+FROM whatsapp_outbound_messages WHERE status = 'failed' ORDER BY created_at DESC LIMIT 10;
+
+\echo '--- most recent 10 sends (real timeline, for manual cross-check against the phone) ---'
+SELECT id, message_type, status, attempt_count, whatsapp_message_id, created_at, sent_at
+FROM whatsapp_outbound_messages ORDER BY created_at DESC LIMIT 10;
+
+\echo '=== STATUS MEDIA VALIDATION - the mediaAvailable gap closed this pass ==='
+
+\echo '--- counts by download_status (statuses only, never message media) ---'
+SELECT download_status, count(*) FROM whatsapp_media WHERE status_id IS NOT NULL GROUP BY download_status ORDER BY download_status;
+
+\echo '--- every whatsapp_media row has exactly one real owner (should be 0, DB-constraint-enforced) ---'
+SELECT count(*) FROM whatsapp_media WHERE (message_id IS NOT NULL) = (status_id IS NOT NULL);
+
 \echo '=== DONE - paste this entire output back ==='
