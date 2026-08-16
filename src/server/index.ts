@@ -10,6 +10,7 @@ import { publishRealtimeEvent } from '../realtime/pubsub.js';
 import { whatsappConnectionService } from '../services/whatsappConnectionService.js';
 import { whatsappMessageIngestionService } from '../services/whatsappMessageIngestionService.js';
 import { workspaceService, isChatNotFoundError } from '../services/workspaceService.js';
+import { whatsappOutboundMessageService, isChatNotFoundError as isOutboundChatNotFoundError } from '../services/whatsappOutboundMessageService.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
 import { BusinessRepository } from '../repositories/businessRepository.js';
 import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
@@ -30,7 +31,9 @@ const app = express();
 const port = Number(process.env.PORT ?? 3000);
 
 app.disable('x-powered-by');
-app.use(express.json({ limit: '2mb' }));
+// 20mb (not the old 2mb) to fit base64-encoded outbound media uploads -
+// this is one global parser, so every route's real ceiling moved with it.
+app.use(express.json({ limit: '20mb' }));
 
 app.get('/api/health', (_req, res) => {
   res.status(200).json({
@@ -177,6 +180,65 @@ app.get('/api/workspace/chats/:chatId/messages', requireWorkspaceContext, async 
   } catch (error) {
     if (isChatNotFoundError(error)) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
     throw error;
+  }
+});
+
+const sendMessageSchema = z.discriminatedUnion('messageType', [
+  z.object({
+    messageType: z.literal('text'),
+    text: z.string().min(1).max(10000),
+    idempotencyKey: z.string().min(1).max(200).optional(),
+  }),
+  z.object({
+    messageType: z.enum(['image', 'video', 'audio', 'document']),
+    mediaBase64: z.string().min(1),
+    mediaMimeType: z.string().min(1),
+    mediaFileName: z.string().min(1).max(255).optional(),
+    caption: z.string().max(4000).optional(),
+    idempotencyKey: z.string().min(1).max(200).optional(),
+  }),
+]);
+
+/**
+ * The only route in this phase that can put a message on the wire, and it
+ * only ever fires from an explicit, human-initiated API call - nothing in
+ * the AI/automation layer (which doesn't exist yet) has a path here. See
+ * whatsappOutboundMessageService for the real idempotency/retry contract.
+ */
+app.post('/api/workspace/chats/:chatId/messages', requireWorkspaceContext, async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
+    businessId: string;
+    whatsappAccountId: string;
+  };
+  const parsed = sendMessageSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_SEND_PAYLOAD', details: parsed.error.flatten() });
+  }
+
+  const input = parsed.data;
+  try {
+    const outboundMessage = await whatsappOutboundMessageService.send({
+      businessId,
+      whatsappAccountId,
+      chatId: String(req.params.chatId ?? ''),
+      ...(input.idempotencyKey !== undefined && { idempotencyKey: input.idempotencyKey }),
+      messageType: input.messageType,
+      ...(input.messageType === 'text'
+        ? { text: input.text }
+        : {
+            mediaBase64: input.mediaBase64,
+            mediaMimeType: input.mediaMimeType,
+            ...(input.mediaFileName !== undefined && { mediaFileName: input.mediaFileName }),
+            ...(input.caption !== undefined && { caption: input.caption }),
+          }),
+    });
+    return res.status(202).json({ outboundMessage });
+  } catch (error) {
+    if (isOutboundChatNotFoundError(error)) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
+    return res.status(400).json({
+      error: 'SEND_FAILED',
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 });
 

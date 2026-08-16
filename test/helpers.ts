@@ -13,6 +13,7 @@ const TABLES = [
   'whatsapp_presence',
   'whatsapp_message_reactions',
   'whatsapp_media',
+  'whatsapp_outbound_messages',
   'whatsapp_messages',
   'whatsapp_chats',
   'whatsapp_group_members',

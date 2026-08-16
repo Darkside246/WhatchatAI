@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -7,17 +7,23 @@ import {
   Clock,
   AlertCircle,
   Paperclip,
-  Smile,
-  Mic,
+  Send,
+  Loader2,
   Download,
   FileText,
   ImageOff,
-  Loader2,
   FileWarning,
   Bot,
   User as UserIcon,
 } from 'lucide-react';
-import { api, mediaUrl, type WorkspaceMessage, type WorkspaceMedia, type WorkspaceChatDetail } from '../lib/api.js';
+import {
+  api,
+  mediaUrl,
+  type WorkspaceMessage,
+  type WorkspaceMedia,
+  type WorkspaceChatDetail,
+  type SendMessageBody,
+} from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
 import { Avatar } from './Avatar.js';
 
@@ -181,6 +187,10 @@ export function ChatThread({ onOpenDetail }: Props) {
   const [detail, setDetail] = useState<WorkspaceChatDetail | null>(null);
   const [savingMode, setSavingMode] = useState(false);
   const [modeError, setModeError] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function load(currentChatId: string) {
     try {
@@ -234,12 +244,84 @@ export function ChatThread({ onOpenDetail }: Props) {
     setMessages(null);
     setDetail(null);
     setModeError(null);
+    setDraft('');
+    setSendError(null);
     void load(chatId);
     void loadDetail(chatId);
     markRead(chatId);
     const timer = setInterval(() => void load(chatId), 6000);
     return () => clearInterval(timer);
   }, [chatId]);
+
+  async function dispatchSend(currentChatId: string, body: SendMessageBody) {
+    setSending(true);
+    setSendError(null);
+    try {
+      await api.sendMessage(currentChatId, body);
+      // The real message row lands asynchronously once WhatsApp echoes the
+      // send back through the normal sync pipeline - the 6s poll (and any
+      // message.new event that arrives sooner) picks it up. A manual
+      // refresh right away also catches the case where it was already fast.
+      void load(currentChatId);
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : 'Failed to send message.');
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function handleSendText() {
+    const text = draft.trim();
+    if (!chatId || !text || sending) return;
+    setDraft('');
+    await dispatchSend(chatId, { messageType: 'text', text });
+  }
+
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      void handleSendText();
+    }
+  }
+
+  function readFileAsBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result ?? '');
+        // Strip the "data:<mime>;base64," prefix FileReader adds - the API wants raw base64.
+        const commaIndex = result.indexOf(',');
+        resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+      };
+      reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function messageTypeForMime(mimeType: string): 'image' | 'video' | 'audio' | 'document' {
+    if (mimeType.startsWith('image/')) return 'image';
+    if (mimeType.startsWith('video/')) return 'video';
+    if (mimeType.startsWith('audio/')) return 'audio';
+    return 'document';
+  }
+
+  async function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = ''; // Allow re-selecting the same file later.
+    if (!file || !chatId || sending) return;
+
+    try {
+      const mediaBase64 = await readFileAsBase64(file);
+      await dispatchSend(chatId, {
+        messageType: messageTypeForMime(file.type || 'application/octet-stream'),
+        mediaBase64,
+        mediaMimeType: file.type || 'application/octet-stream',
+        mediaFileName: file.name,
+      });
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : 'Failed to read the selected file.');
+    }
+  }
 
   useWhatsAppSync((event: RealtimeEvent) => {
     if (!chatId) return;
@@ -337,20 +419,43 @@ export function ChatThread({ onOpenDetail }: Props) {
       </div>
 
       <div className="shrink-0 border-t border-border-subtle bg-surface-1 p-3">
+        {sendError && <p className="mb-2 text-xs text-error">{sendError}</p>}
         <div className="flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-2 px-3 py-2">
-          <button type="button" disabled title="Attach (not built yet)" className="cursor-not-allowed text-fg-muted/60">
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            onChange={(event) => void handleFileSelected(event)}
+          />
+          <button
+            type="button"
+            disabled={sending}
+            onClick={() => fileInputRef.current?.click()}
+            title="Attach a file"
+            className="text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
+          >
             <Paperclip size={18} strokeWidth={1.75} aria-hidden />
           </button>
-          <button type="button" disabled title="Emoji (not built yet)" className="cursor-not-allowed text-fg-muted/60">
-            <Smile size={18} strokeWidth={1.75} aria-hidden />
-          </button>
           <input
-            disabled
-            placeholder="Sending is not built yet (Phase 4 - outbound dispatcher)"
-            className="flex-1 bg-transparent text-sm text-fg-muted outline-none"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={handleComposerKeyDown}
+            disabled={sending}
+            placeholder="Type a message"
+            className="flex-1 bg-transparent text-sm text-fg outline-none placeholder:text-fg-muted disabled:opacity-50"
           />
-          <button type="button" disabled title="Voice message (not built yet)" className="cursor-not-allowed text-fg-muted/60">
-            <Mic size={18} strokeWidth={1.75} aria-hidden />
+          <button
+            type="button"
+            disabled={sending || !draft.trim()}
+            onClick={() => void handleSendText()}
+            title="Send"
+            className="text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {sending ? (
+              <Loader2 size={18} strokeWidth={1.75} className="animate-spin" aria-hidden />
+            ) : (
+              <Send size={18} strokeWidth={1.75} aria-hidden />
+            )}
           </button>
         </div>
       </div>

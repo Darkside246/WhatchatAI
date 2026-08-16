@@ -26,6 +26,14 @@ import { WhatsAppMessageReactionRepository } from '../../repositories/whatsappMe
 import { WhatsAppPresenceRepository } from '../../repositories/whatsappPresenceRepository.js';
 import { WhatsAppSyncJobRepository } from '../../repositories/whatsappSyncJobRepository.js';
 import { WhatsAppAccountRepository } from '../../repositories/whatsappAccountRepository.js';
+import {
+  WhatsAppOutboundMessageRepository,
+  type WhatsAppOutboundMessageRecord,
+} from '../../repositories/whatsappOutboundMessageRepository.js';
+import { OUTBOUND_MESSAGES_QUEUE, type OutboundMessageJobData } from '../queues/outboundMessagesQueue.js';
+import { whatsappConnectionService } from '../../services/whatsappConnectionService.js';
+import { retrieveMedia } from '../../media/localEncryptedMediaStorage.js';
+import type { AnyMessageContent } from '@whiskeysockets/baileys';
 import { mapBaileysCallStatus, callTypeFromEvent, isTerminalCallStatus } from '../../domain/whatsapp/callStatus.js';
 import { classifyJid, derivePhoneNumber } from '../../domain/whatsapp/jid.js';
 import { decodeBuffersFromQueue } from '../../domain/whatsapp/binaryCodec.js';
@@ -68,6 +76,19 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
   if (result.message.wasInserted) {
     await publishRealtimeEvent({ type: 'message.new', businessId, chatId: result.chat.id });
     await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId: result.chat.id });
+
+    // The message we just persisted may be the echo of our own outbound
+    // send (Baileys re-delivers a sent message through the same
+    // messages.upsert path, fromMe: true) - link it back to the send
+    // request that triggered it, best-effort, so the outbound row's
+    // message_id catches up once this async persistence completes.
+    if (message.fromMe) {
+      await outboundMessageRepository
+        .linkPersistedMessage(whatsappAccountId, result.message.whatsappMessageId, result.message.id)
+        .catch((error) => {
+          console.error('[IncomingMessagesWorker] Failed to link outbound message:', error);
+        });
+    }
   }
 
   // Only a genuinely new, live, inbound message in an AI-driven chat needs a
@@ -108,6 +129,7 @@ const statusRepository = new WhatsAppStatusRepository(pool);
 const mediaRepository = new WhatsAppMediaRepository(pool);
 const reactionRepository = new WhatsAppMessageReactionRepository(pool);
 const presenceRepository = new WhatsAppPresenceRepository(pool);
+const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
 
 // Configurable, not hardcoded: operators can raise/lower this per deployment.
 const MAX_MEDIA_DOWNLOAD_BYTES = Number(process.env.MEDIA_MAX_DOWNLOAD_BYTES ?? 100 * 1024 * 1024);
@@ -400,6 +422,107 @@ export async function sweepStaleSyncJobs(): Promise<void> {
   }
 }
 
+/**
+ * Builds the real Baileys send payload for an outbound request. Media
+ * bytes are decrypted from the same tenant-scoped encrypted-at-rest
+ * storage inbound media uses (localEncryptedMediaStorage.ts) - never held
+ * anywhere else on disk in plaintext.
+ */
+async function buildOutboundContent(record: WhatsAppOutboundMessageRecord): Promise<AnyMessageContent> {
+  if (record.messageType === 'text') {
+    if (!record.textContent) throw new Error('Outbound text message has no text_content');
+    return { text: record.textContent };
+  }
+
+  if (!record.mediaStorageReference) {
+    throw new Error(`Outbound ${record.messageType} message has no stored media`);
+  }
+  const buffer = await retrieveMedia(record.businessId, record.mediaStorageReference);
+
+  const caption = record.caption ?? undefined;
+  const mimetype = record.mediaMimeType ?? undefined;
+
+  switch (record.messageType) {
+    case 'image':
+      return { image: buffer, ...(caption !== undefined && { caption }), ...(mimetype !== undefined && { mimetype }) };
+    case 'video':
+      return { video: buffer, ...(caption !== undefined && { caption }), ...(mimetype !== undefined && { mimetype }) };
+    case 'audio':
+      return { audio: buffer, mimetype: mimetype ?? 'audio/ogg; codecs=opus', ptt: false };
+    case 'document':
+      return {
+        document: buffer,
+        mimetype: mimetype ?? 'application/octet-stream',
+        fileName: record.mediaFileName ?? 'file',
+        ...(caption !== undefined && { caption }),
+      };
+    default:
+      throw new Error(`Unsupported outbound message type: ${String(record.messageType)}`);
+  }
+}
+
+/**
+ * The real dispatch: calls the live Baileys socket's sendMessage and
+ * records the real outcome. Throwing here is what triggers BullMQ's own
+ * retry/backoff (defaultJobOptions on outboundMessagesQueue) - a transient
+ * failure (socket reconnecting, brief network blip) gets retried
+ * automatically; only once attempts are exhausted does the 'failed' handler
+ * below mark the row terminally failed.
+ *
+ * Known limitation, stated honestly rather than hidden: if this process
+ * crashes after WhatsApp has already accepted the send but before
+ * markSent() commits, a retry of the same job would call sendMessage again
+ * and could produce a second real message to the recipient. WhatsApp gives
+ * clients no server-side dedup key for outbound sends, so this narrow
+ * crash-mid-flight window cannot be fully closed from the client side.
+ */
+async function processOutboundMessage(job: Job<OutboundMessageJobData>): Promise<void> {
+  const { outboundMessageId } = job.data;
+  const record = await outboundMessageRepository.findById(outboundMessageId);
+  if (!record) {
+    console.error(`[OutboundMessagesWorker] No such outbound message ${outboundMessageId}`);
+    return;
+  }
+  if (record.status === 'sent') return; // Already succeeded on a prior delivery of this job.
+
+  if (!whatsappConnectionService.isReady()) {
+    throw new Error('WhatsApp is not connected - cannot send right now');
+  }
+  const socket = whatsappConnectionService.getSocket();
+  if (!socket) throw new Error('WhatsApp socket unavailable');
+
+  await outboundMessageRepository.markSending(record.id);
+
+  const content = await buildOutboundContent(record);
+  const sent = await socket.sendMessage(record.toJid, content);
+  const whatsappMessageId = sent?.key?.id;
+  if (!whatsappMessageId) throw new Error('WhatsApp accepted the send but returned no message id');
+
+  await outboundMessageRepository.markSent(record.id, whatsappMessageId);
+  await publishRealtimeEvent({ type: 'chat.updated', businessId: record.businessId, chatId: record.chatId });
+}
+
+// A row wedged in 'queued'/'sending' with no BullMQ retry left to resolve it
+// (worker crashed mid-dispatch, process killed between markSending and the
+// actual sendMessage call) - the same honesty problem the call/sync-job
+// sweeps exist for, reconciled the same way: never left silently claiming
+// to be in-flight forever.
+const OUTBOUND_MESSAGE_STALE_SECONDS = 300;
+const OUTBOUND_MESSAGE_TIMEOUT_SWEEP_INTERVAL_MS = 60_000;
+
+export async function sweepStaleOutboundMessages(): Promise<void> {
+  const stale = await outboundMessageRepository.findStalePending(OUTBOUND_MESSAGE_STALE_SECONDS);
+  for (const record of stale) {
+    await outboundMessageRepository.markFailed(
+      record.id,
+      `Abandoned mid-send - no progress for over ${OUTBOUND_MESSAGE_STALE_SECONDS}s (likely a process restart or crash), reconciled by the stale-message sweep`,
+    );
+  }
+  if (stale.length > 0) {
+    console.log(`[RealtimeEventsWorker] Reconciled ${stale.length} stale outbound message(s) to failed`);
+  }
+}
+
 async function processRealtimeEventJob(
   job: Job<
     | MessageStatusJobData
@@ -420,6 +543,8 @@ async function processRealtimeEventJob(
     await sweepStaleRingingCalls();
   } else if (job.name === 'sync-job-timeout-sweep') {
     await sweepStaleSyncJobs();
+  } else if (job.name === 'outbound-message-timeout-sweep') {
+    await sweepStaleOutboundMessages();
   } else if (job.name === 'media-download') {
     await processMediaDownload(job.data as MediaDownloadJobData);
   } else if (job.name === 'message-reaction') {
@@ -439,6 +564,15 @@ export const incomingMessagesWorker = new Worker<IncomingMessageJobData>(INCOMIN
 export const realtimeEventsWorker = new Worker(REALTIME_EVENTS_QUEUE, processRealtimeEventJob, {
   connection: queueConnection,
   concurrency: CONCURRENCY,
+});
+
+// Deliberately low concurrency - these are real sends to a single WhatsApp
+// socket, not independent DB writes; no reason to fan them out aggressively.
+const OUTBOUND_CONCURRENCY = Number(process.env.OUTBOUND_MESSAGES_WORKER_CONCURRENCY ?? 2);
+
+export const outboundMessagesWorker = new Worker<OutboundMessageJobData>(OUTBOUND_MESSAGES_QUEUE, processOutboundMessage, {
+  connection: queueConnection,
+  concurrency: OUTBOUND_CONCURRENCY,
 });
 
 incomingMessagesWorker.on('completed', (job) => {
@@ -461,9 +595,29 @@ realtimeEventsWorker.on('error', (error) => {
   console.error('[RealtimeEventsWorker] Worker error:', error.message);
 });
 
+// BullMQ fires 'failed' after every attempt, not only the last one - a
+// job with retries left simply gets rescheduled by BullMQ itself, and the
+// DB row (still 'sending' from the attempt that just threw) correctly
+// stays that way until either a later attempt succeeds or this really was
+// the final attempt, at which point the row is marked terminally 'failed'.
+outboundMessagesWorker.on('failed', (job, error) => {
+  console.error(`[OutboundMessagesWorker] Attempt failed for ${job?.data.outboundMessageId}:`, error.message);
+  const attemptsMade = job?.attemptsMade ?? 0;
+  const maxAttempts = job?.opts.attempts ?? 1;
+  if (job && attemptsMade >= maxAttempts) {
+    void outboundMessageRepository.markFailed(job.data.outboundMessageId, error.message).catch((markError) => {
+      console.error('[OutboundMessagesWorker] Failed to record terminal failure:', markError);
+    });
+  }
+});
+
+outboundMessagesWorker.on('error', (error) => {
+  console.error('[OutboundMessagesWorker] Worker error:', error.message);
+});
+
 async function shutdown(signal: string): Promise<void> {
   console.log(`[IncomingMessagesWorker] Received ${signal}, closing workers...`);
-  await Promise.all([incomingMessagesWorker.close(), realtimeEventsWorker.close()]);
+  await Promise.all([incomingMessagesWorker.close(), realtimeEventsWorker.close(), outboundMessagesWorker.close()]);
   process.exit(0);
 }
 
@@ -491,4 +645,19 @@ void realtimeEventsQueue
   )
   .catch((error: Error) =>
     console.error('[RealtimeEventsWorker] Failed to schedule sync-job-timeout-sweep:', error.message),
+  );
+
+void realtimeEventsQueue
+  .upsertJobScheduler(
+    'outbound-message-timeout-sweep',
+    { every: OUTBOUND_MESSAGE_TIMEOUT_SWEEP_INTERVAL_MS },
+    { name: 'outbound-message-timeout-sweep' },
+  )
+  .then(() =>
+    console.log(
+      `[RealtimeEventsWorker] Scheduled outbound-message-timeout-sweep every ${OUTBOUND_MESSAGE_TIMEOUT_SWEEP_INTERVAL_MS}ms`,
+    ),
+  )
+  .catch((error: Error) =>
+    console.error('[RealtimeEventsWorker] Failed to schedule outbound-message-timeout-sweep:', error.message),
   );

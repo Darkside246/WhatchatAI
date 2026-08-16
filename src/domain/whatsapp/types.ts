@@ -82,3 +82,7 @@ export type SyncJobStatus = 'pending' | 'running' | 'completed' | 'partial' | 'f
 export type JidMappingSource = 'baileys_alt_jid' | 'manual' | 'verified';
 
 export type MappingConfidence = 'high' | 'medium' | 'low';
+
+export type OutboundMessageStatus = 'queued' | 'sending' | 'sent' | 'failed';
+
+export type OutboundMessageType = 'text' | 'image' | 'video' | 'audio' | 'document';

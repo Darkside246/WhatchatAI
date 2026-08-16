@@ -67,6 +67,24 @@ export interface WorkspaceMessage {
   media: WorkspaceMedia | null;
 }
 
+export interface OutboundMessageDto {
+  id: string;
+  chatId: string;
+  status: 'queued' | 'sending' | 'sent' | 'failed';
+  messageType: 'text' | 'image' | 'video' | 'audio' | 'document';
+}
+
+export type SendMessageBody =
+  | { messageType: 'text'; text: string; idempotencyKey?: string }
+  | {
+      messageType: 'image' | 'video' | 'audio' | 'document';
+      mediaBase64: string;
+      mediaMimeType: string;
+      mediaFileName?: string;
+      caption?: string;
+      idempotencyKey?: string;
+    };
+
 /** Real, authenticated media URL - GET /api/media/:id (see server/index.ts) streams the decrypted bytes with Range support. */
 export function mediaUrl(mediaId: string): string {
   return `/api/media/${mediaId}`;
@@ -190,6 +208,11 @@ export const api = {
   listChats: () => request<{ chats: WorkspaceChatSummary[] }>('/workspace/chats'),
   getChatDetail: (chatId: string) => request<WorkspaceChatDetail>(`/workspace/chats/${chatId}`),
   listMessages: (chatId: string) => request<{ messages: WorkspaceMessage[] }>(`/workspace/chats/${chatId}/messages`),
+  sendMessage: (chatId: string, body: SendMessageBody) =>
+    request<{ outboundMessage: OutboundMessageDto }>(`/workspace/chats/${chatId}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   setAiMode: (chatId: string, aiMode: WorkspaceChatSummary['aiMode']) =>
     request(`/workspace/chats/${chatId}/ai-mode`, { method: 'PATCH', body: JSON.stringify({ aiMode }) }),
   markChatRead: (chatId: string) => request(`/workspace/chats/${chatId}/read`, { method: 'POST' }),
