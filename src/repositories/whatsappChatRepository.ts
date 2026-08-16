@@ -135,13 +135,29 @@ export class WhatsAppChatRepository {
     return toRecord(row);
   }
 
-  async recordLastMessage(chatId: string, messageId: string, occurredAt: string): Promise<void> {
+  /**
+   * incrementUnread should only be true for a genuinely new, live, inbound
+   * message - never for our own outbound sends or historical backfill, both
+   * of which the user has by definition already "seen" (or sent).
+   */
+  async recordLastMessage(chatId: string, messageId: string, occurredAt: string, incrementUnread = false): Promise<void> {
     await this.db.query(
       `UPDATE whatsapp_chats
-       SET last_message_id = $2, last_message_at = $3, message_count = message_count + 1, updated_at = now()
+       SET last_message_id = $2, last_message_at = $3, message_count = message_count + 1,
+           unread_count = unread_count + CASE WHEN $4 THEN 1 ELSE 0 END,
+           updated_at = now()
        WHERE id = $1`,
-      [chatId, messageId, occurredAt],
+      [chatId, messageId, occurredAt, incrementUnread],
     );
+  }
+
+  /** Real "mark as read" - the user actually opened and viewed this conversation. */
+  async resetUnreadCount(chatId: string): Promise<WhatsAppChatRecord | null> {
+    const { rows } = await this.db.query<ChatRow>(
+      `UPDATE whatsapp_chats SET unread_count = 0, updated_at = now() WHERE id = $1 RETURNING *`,
+      [chatId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
   }
 
   async findByJid(businessId: string, whatsappAccountId: string, chatJid: string): Promise<WhatsAppChatRecord | null> {

@@ -192,6 +192,7 @@ export const api = {
   listMessages: (chatId: string) => request<{ messages: WorkspaceMessage[] }>(`/workspace/chats/${chatId}/messages`),
   setAiMode: (chatId: string, aiMode: WorkspaceChatSummary['aiMode']) =>
     request(`/workspace/chats/${chatId}/ai-mode`, { method: 'PATCH', body: JSON.stringify({ aiMode }) }),
+  markChatRead: (chatId: string) => request(`/workspace/chats/${chatId}/read`, { method: 'POST' }),
   listAgents: () => request<{ agents: AiAgentSummary[] }>('/workspace/agents'),
   listCalls: () => request<{ calls: WorkspaceCallSummary[] }>('/workspace/calls'),
   getLockStatus: () => request<LockStatusResponse>('/security/lock/status'),

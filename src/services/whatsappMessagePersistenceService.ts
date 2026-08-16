@@ -144,12 +144,16 @@ export class WhatsAppMessagePersistenceService {
     let updatedChat = chat;
     let media: WhatsAppMediaRecord | null = null;
     if (message.wasInserted) {
-      await chatRepo.recordLastMessage(chat.id, message.id, timestamp);
+      // Only a genuinely new, live, inbound message counts as "unread" - our
+      // own outbound sends and historical backfill are never unread.
+      const incrementUnread = !ingested.fromMe && ingested.isLive;
+      await chatRepo.recordLastMessage(chat.id, message.id, timestamp, incrementUnread);
       updatedChat = {
         ...chat,
         lastMessageId: message.id,
         lastMessageAt: timestamp,
         messageCount: chat.messageCount + 1,
+        unreadCount: chat.unreadCount + (incrementUnread ? 1 : 0),
       };
 
       if (isMedia) {

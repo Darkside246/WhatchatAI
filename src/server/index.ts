@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { attachWebSocketServer } from '../realtime/wsServer.js';
+import { publishRealtimeEvent } from '../realtime/pubsub.js';
 import { whatsappConnectionService } from '../services/whatsappConnectionService.js';
 import { whatsappMessageIngestionService } from '../services/whatsappMessageIngestionService.js';
 import { workspaceService, isChatNotFoundError } from '../services/workspaceService.js';
@@ -192,6 +193,21 @@ app.patch('/api/workspace/chats/:chatId/ai-mode', requireWorkspaceContext, async
   }
   try {
     const chat = await workspaceService.setAiMode(businessId, whatsappAccountId, String(req.params.chatId ?? ''), parsed.data.aiMode);
+    return res.status(200).json({ chat });
+  } catch (error) {
+    if (isChatNotFoundError(error)) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
+    throw error;
+  }
+});
+
+app.post('/api/workspace/chats/:chatId/read', requireWorkspaceContext, async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
+    businessId: string;
+    whatsappAccountId: string;
+  };
+  try {
+    const chat = await workspaceService.markChatRead(businessId, whatsappAccountId, String(req.params.chatId ?? ''));
+    if (chat) await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId: chat.id });
     return res.status(200).json({ chat });
   } catch (error) {
     if (isChatNotFoundError(error)) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });

@@ -132,10 +132,20 @@ export function ChatThread({ onOpenDetail }: Props) {
     }
   }
 
+  // Real "mark as read": the user is actually looking at this conversation,
+  // so its unread counter resets - never a fabricated "seen" state, and
+  // never touched for chats the user hasn't opened.
+  function markRead(currentChatId: string) {
+    void api.markChatRead(currentChatId).catch(() => {
+      // Best-effort - a failed read receipt shouldn't surface as a page error.
+    });
+  }
+
   useEffect(() => {
     if (!chatId) return;
     setMessages(null);
     void load(chatId);
+    markRead(chatId);
     const timer = setInterval(() => void load(chatId), 6000);
     return () => clearInterval(timer);
   }, [chatId]);
@@ -147,6 +157,9 @@ export function ChatThread({ onOpenDetail }: Props) {
       event.chatId === chatId
     ) {
       void load(chatId);
+      // A new message arriving while this chat is already open was seen
+      // immediately - it should never sit in the unread badge.
+      if (event.type === 'message.new') markRead(chatId);
     }
   });
 

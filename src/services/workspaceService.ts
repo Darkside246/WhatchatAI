@@ -313,6 +313,15 @@ export class WorkspaceService {
     return this.chatRepository.setAiMode(chatId, aiMode);
   }
 
+  /** The user actually opened and viewed this conversation - resets the real unread counter, never fabricates a "seen" state otherwise. */
+  async markChatRead(businessId: string, whatsappAccountId: string, chatId: string) {
+    const chat = await this.chatRepository.findById(chatId);
+    if (!chat || chat.businessId !== businessId || chat.whatsappAccountId !== whatsappAccountId) {
+      throw this.notFound();
+    }
+    return this.chatRepository.resetUnreadCount(chatId);
+  }
+
   async listAgents(businessId: string) {
     return this.agentRepository.listByBusiness(businessId);
   }
