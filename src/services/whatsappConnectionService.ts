@@ -99,6 +99,27 @@ export class WhatsAppConnectionService {
     );
   }
 
+  /**
+   * WhatsApp does not push a contact's live presence or status updates to a
+   * connected device by default - real clients only start receiving them
+   * for a JID once they explicitly subscribe (the same protocol action the
+   * official app performs when a human opens that chat/profile). Without
+   * this, presence.update almost never fires and status@broadcast messages
+   * for a contact are effectively invisible even though the account is
+   * otherwise fully connected. Called when a human actually opens a chat,
+   * not blindly for every known contact - mirrors real usage instead of
+   * subscribing to hundreds of JIDs at once, which would look nothing like
+   * genuine client behavior.
+   */
+  async subscribePresence(jid: string): Promise<void> {
+    if (!this.isReady() || !this.socket) return;
+    try {
+      await this.socket.presenceSubscribe(jid);
+    } catch (error) {
+      console.error(`[WhatsApp] Failed to subscribe to presence for ${jid}:`, error);
+    }
+  }
+
   async connect(): Promise<WhatsAppConnectionSnapshot> {
     if (this.isReady()) return this.getSnapshot();
 

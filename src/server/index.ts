@@ -166,6 +166,13 @@ app.get('/api/workspace/chats/:chatId', requireWorkspaceContext, async (req, res
   };
   try {
     const detail = await workspaceService.getChatDetail(businessId, whatsappAccountId, String(req.params.chatId ?? ''));
+    // A human is genuinely looking at this chat right now - the real
+    // protocol trigger for WhatsApp to start pushing this contact's live
+    // presence and status updates. Best-effort: never blocks or fails the
+    // response over it.
+    if (detail.chat.chatType === 'individual') {
+      void whatsappConnectionService.subscribePresence(detail.chat.chatJid);
+    }
     return res.status(200).json(detail);
   } catch (error) {
     if (isChatNotFoundError(error)) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
