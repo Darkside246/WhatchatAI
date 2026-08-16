@@ -1,4 +1,5 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import { Type } from '@google/genai';
+import { getGeminiClient } from '../../services/geminiClient.js';
 
 export type AiSentinelVerdict =
   | { status: 'safe'; safe: true; reason: string }
@@ -19,15 +20,6 @@ const RESPONSE_SCHEMA = {
   required: ['safe', 'reason'],
 };
 
-let client: GoogleGenAI | null = null;
-
-function getClient(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
-  if (!client) client = new GoogleGenAI({ apiKey });
-  return client;
-}
-
 /**
  * Stage 2 of the Tiered Security Sentinel. Fails OPEN (returns 'unavailable',
  * not a fabricated 'safe' verdict) when GEMINI_API_KEY is not configured or
@@ -37,7 +29,7 @@ function getClient(): GoogleGenAI | null {
  * 'unavailable' as either an automatic pass or an automatic block.
  */
 export async function evaluateAiSentinel(textContent: string): Promise<AiSentinelVerdict> {
-  const genAi = getClient();
+  const genAi = getGeminiClient();
   if (!genAi) {
     return { status: 'unavailable', reason: 'GEMINI_API_KEY is not configured' };
   }

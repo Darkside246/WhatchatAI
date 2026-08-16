@@ -13,6 +13,7 @@ import { WhatsAppStatusRepository } from '../repositories/whatsappStatusReposito
 import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
 import { WhatsAppPresenceRepository } from '../repositories/whatsappPresenceRepository.js';
 import { WhatsAppMessageReactionRepository } from '../repositories/whatsappMessageReactionRepository.js';
+import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import type { WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { classifyJid } from '../domain/whatsapp/jid.js';
 import type {
@@ -91,6 +92,8 @@ export interface WorkspacePresenceSummary {
 export interface WorkspaceMessageSummary extends WhatsAppMessageRecord {
   media: WorkspaceMediaSummary | null;
   reactions: WorkspaceReactionSummary[];
+  /** True only when the AI reply pipeline sent this message - never inferred, read from the real dispatch record. */
+  aiGenerated: boolean;
 }
 
 export interface ChatNotFoundError extends Error {
@@ -117,6 +120,7 @@ export class WorkspaceService {
   private readonly mediaRepository = new WhatsAppMediaRepository(pool);
   private readonly presenceRepository = new WhatsAppPresenceRepository(pool);
   private readonly reactionRepository = new WhatsAppMessageReactionRepository(pool);
+  private readonly outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
@@ -352,6 +356,11 @@ export class WorkspaceService {
       reactionsByMessageId.set(reaction.messageId, list);
     }
 
+    // Only fromMe messages can possibly have been AI-sent - skip the query
+    // entirely for a page of purely inbound messages.
+    const fromMeIds = messages.filter((message) => message.fromMe).map((message) => message.id);
+    const aiGeneratedIds = new Set(await this.outboundMessageRepository.listAiGeneratedMessageIds(fromMeIds));
+
     return messages.map((message) => {
       const mediaRow = message.mediaId ? mediaById.get(message.mediaId) : undefined;
       const media: WorkspaceMediaSummary | null = mediaRow
@@ -367,7 +376,12 @@ export class WorkspaceService {
             downloadStatus: mediaRow.downloadStatus,
           }
         : null;
-      return { ...message, media, reactions: reactionsByMessageId.get(message.id) ?? [] };
+      return {
+        ...message,
+        media,
+        reactions: reactionsByMessageId.get(message.id) ?? [],
+        aiGenerated: aiGeneratedIds.has(message.id),
+      };
     });
   }
 

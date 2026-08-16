@@ -17,6 +17,9 @@ import {
 import { whatsappMessagePersistenceService } from '../../services/whatsappMessagePersistenceService.js';
 import { runSentinel } from '../../security/sentinel/sentinel.js';
 import { gatherAiHandoffContext } from '../../services/aiContextGathererService.js';
+import { generateAiReply } from '../../services/aiReplyService.js';
+import { whatsappOutboundMessageService } from '../../services/whatsappOutboundMessageService.js';
+import { AiAgentRepository } from '../../repositories/aiAgentRepository.js';
 import { publishRealtimeEvent } from '../../realtime/pubsub.js';
 import { pool } from '../../db/pool.js';
 import { WhatsAppMessageRepository } from '../../repositories/whatsappMessageRepository.js';
@@ -103,15 +106,35 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
       queryText: result.message.textContent as string,
     });
 
-    // Gemini Orchestrator wiring (turning this context into an actual AI
-    // reply) is a separate, not-yet-built phase. This log line is the real,
-    // observable hand-off point until that exists.
-    console.log(
-      `[IncomingMessagesWorker] AI handoff ready for chat ${result.chat.id}: ` +
-        `crmContact=${context.crmContact ? 'found' : 'none'}, ` +
-        `knowledgeBase=${context.knowledgeBase.available ? `${context.knowledgeBase.results.length} results` : 'unavailable'}, ` +
-        `historyMessages=${context.conversationHistory.length}`,
-    );
+    // Single-agent-per-business v1 scope - no agent-to-conversation routing
+    // exists yet (see migration 022's own comment). No active agent
+    // configured is a real, honest outcome: skip, don't fabricate a reply.
+    const agent = await aiAgentRepository.findActiveForBusiness(businessId);
+    if (!agent) {
+      console.log(
+        `[IncomingMessagesWorker] AI handoff for chat ${result.chat.id}: no active AI agent configured for business ${businessId}, skipping auto-reply.`,
+      );
+      return;
+    }
+
+    const reply = await generateAiReply(agent, context);
+    if (reply.status !== 'generated') {
+      console.log(`[IncomingMessagesWorker] AI reply unavailable for chat ${result.chat.id}: ${reply.reason}`);
+      return;
+    }
+
+    // Idempotency key derived from the inbound message's own id: if this job
+    // is ever retried/redelivered, the exact same reply is never sent twice.
+    await whatsappOutboundMessageService.send({
+      businessId,
+      whatsappAccountId,
+      chatId: result.chat.id,
+      idempotencyKey: `ai-reply:${result.message.id}`,
+      messageType: 'text',
+      text: reply.text,
+      requestedBy: 'ai',
+    });
+    console.log(`[IncomingMessagesWorker] AI reply queued for chat ${result.chat.id} (agent ${agent.id}).`);
   }
 }
 
@@ -124,6 +147,7 @@ const mediaRepository = new WhatsAppMediaRepository(pool);
 const reactionRepository = new WhatsAppMessageReactionRepository(pool);
 const presenceRepository = new WhatsAppPresenceRepository(pool);
 const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
+const aiAgentRepository = new AiAgentRepository(pool);
 
 // Configurable, not hardcoded: operators can raise/lower this per deployment.
 const MAX_MEDIA_DOWNLOAD_BYTES = Number(process.env.MEDIA_MAX_DOWNLOAD_BYTES ?? 100 * 1024 * 1024);

@@ -39,4 +39,29 @@ describe('AiAgentRepository', () => {
     expect(count).toBe(3);
     void b;
   });
+
+  describe('findActiveForBusiness (single-agent-per-business v1 scope)', () => {
+    it('returns null when the business has no active agent configured - never fabricates one', async () => {
+      const active = await agents.findActiveForBusiness(businessId);
+      expect(active).toBeNull();
+    });
+
+    it('ignores PAUSED and ARCHIVED agents entirely', async () => {
+      const paused = await agents.create({ businessId, name: 'Paused Agent' });
+      await agents.updateStatus(paused.id, 'PAUSED');
+      const archived = await agents.create({ businessId, name: 'Archived Agent' });
+      await agents.updateStatus(archived.id, 'ARCHIVED');
+
+      const active = await agents.findActiveForBusiness(businessId);
+      expect(active).toBeNull();
+    });
+
+    it('returns the most recently created ACTIVE agent when more than one exists', async () => {
+      await agents.create({ businessId, name: 'Older Agent' });
+      const newer = await agents.create({ businessId, name: 'Newer Agent' });
+
+      const active = await agents.findActiveForBusiness(businessId);
+      expect(active?.id).toBe(newer.id);
+    });
+  });
 });

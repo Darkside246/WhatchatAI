@@ -498,6 +498,11 @@ export function ChatThread({ onOpenDetail }: Props) {
               )}
               <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-80">
                 {message.isHistorical && <span title="Synced from history">history</span>}
+                {message.aiGenerated && (
+                  <span title="Sent by AI" className="flex items-center">
+                    <Bot size={11} strokeWidth={2} aria-hidden />
+                  </span>
+                )}
                 <span>{formatTime(message.timestamp)}</span>
                 {message.fromMe && <DeliveryTicks status={message.status} />}
               </div>

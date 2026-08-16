@@ -38,6 +38,8 @@ export interface CreateOutboundMessageInput {
   mediaStorageReference?: string | null;
   mediaMimeType?: string | null;
   mediaFileName?: string | null;
+  /** Defaults to 'human' (the column's own DB default) when omitted. */
+  requestedBy?: string;
 }
 
 interface OutboundMessageRow {
@@ -103,8 +105,8 @@ export class WhatsAppOutboundMessageRepository {
     const { rows } = await this.db.query<OutboundMessageRow>(
       `INSERT INTO whatsapp_outbound_messages
          (business_id, whatsapp_account_id, chat_id, to_jid, idempotency_key, message_type,
-          text_content, caption, media_storage_reference, media_mime_type, media_file_name)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          text_content, caption, media_storage_reference, media_mime_type, media_file_name, requested_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT (business_id, whatsapp_account_id, idempotency_key) DO NOTHING
        RETURNING *`,
       [
@@ -119,6 +121,7 @@ export class WhatsAppOutboundMessageRepository {
         input.mediaStorageReference ?? null,
         input.mediaMimeType ?? null,
         input.mediaFileName ?? null,
+        input.requestedBy ?? 'human',
       ],
     );
 
@@ -187,6 +190,16 @@ export class WhatsAppOutboundMessageRepository {
        WHERE whatsapp_account_id = $1 AND whatsapp_message_id = $2 AND message_id IS NULL`,
       [whatsappAccountId, whatsappMessageId, messageId],
     );
+  }
+
+  /** Batched read for the message list view - which of these persisted messages the AI reply pipeline sent, vs a human agent. */
+  async listAiGeneratedMessageIds(messageIds: string[]): Promise<string[]> {
+    if (messageIds.length === 0) return [];
+    const { rows } = await this.db.query<{ message_id: string }>(
+      `SELECT message_id FROM whatsapp_outbound_messages WHERE message_id = ANY($1) AND requested_by = 'ai'`,
+      [messageIds],
+    );
+    return rows.map((row) => row.message_id);
   }
 
   /**

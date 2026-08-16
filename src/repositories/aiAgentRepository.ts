@@ -108,6 +108,22 @@ export class AiAgentRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /**
+   * No agent-to-conversation routing exists yet (see migration 022's own
+   * comment) - single-agent-per-business is the honest v1 scope, so the
+   * most recently created ACTIVE agent is the one used for every AI-driven
+   * chat in the business. Returns null (never a fabricated default) when
+   * the business has no active agent configured.
+   */
+  async findActiveForBusiness(businessId: string): Promise<AiAgentRecord | null> {
+    const { rows } = await this.db.query<AiAgentRow>(
+      `SELECT * FROM ai_agents WHERE business_id = $1 AND status = 'ACTIVE' AND deleted_at IS NULL
+       ORDER BY created_at DESC LIMIT 1`,
+      [businessId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
   async listByBusiness(businessId: string): Promise<AiAgentRecord[]> {
     const { rows } = await this.db.query<AiAgentRow>(
       'SELECT * FROM ai_agents WHERE business_id = $1 AND deleted_at IS NULL ORDER BY created_at',

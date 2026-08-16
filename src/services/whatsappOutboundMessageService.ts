@@ -29,6 +29,8 @@ export interface SendOutboundMessageInput {
   mediaBase64?: string;
   mediaMimeType?: string;
   mediaFileName?: string;
+  /** Defaults to 'human' when omitted - set explicitly to 'ai' by the AI reply pipeline. */
+  requestedBy?: string;
 }
 
 /** WhatsApp's own outbound media ceiling is well above this - kept conservative for a v1 base64-JSON upload path. */
@@ -39,11 +41,11 @@ export class WhatsAppOutboundMessageService {
   private readonly outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
 
   /**
-   * The one entry point for a human-initiated send. Nothing in this phase
-   * gives the AI layer a path here - every call originates from an explicit
-   * API request. Idempotency-safe: a retried request with the same key
-   * (client-supplied, or generated once and required on retry) always
-   * returns the one real send request, never enqueues a second.
+   * The one entry point for sending an outbound WhatsApp message, whether
+   * requested by a human agent (the composer's explicit API call) or the AI
+   * reply pipeline (requestedBy: 'ai'). Idempotency-safe: a retried request
+   * with the same key (client-supplied, or generated once and required on
+   * retry) always returns the one real send request, never enqueues a second.
    */
   async send(input: SendOutboundMessageInput): Promise<WhatsAppOutboundMessageRecord> {
     const chat = await this.chatRepository.findById(input.chatId);
@@ -79,6 +81,7 @@ export class WhatsAppOutboundMessageService {
       mediaStorageReference,
       mediaMimeType: input.mediaMimeType ?? null,
       mediaFileName: input.mediaFileName ?? null,
+      requestedBy: input.requestedBy ?? 'human',
     });
 
     // Only actually enqueue on a genuinely new row - createIdempotent()

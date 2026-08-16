@@ -73,6 +73,8 @@ export interface WorkspaceMessage {
   hasMedia: boolean;
   media: WorkspaceMedia | null;
   reactions: WorkspaceReaction[];
+  /** True only when the AI reply pipeline sent this message - never inferred, read from the real dispatch record. */
+  aiGenerated: boolean;
 }
 
 export interface OutboundMessageDto {
