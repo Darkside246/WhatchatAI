@@ -34,6 +34,8 @@ export interface WorkspaceChatSummary {
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
   aiMode: ChatAiMode;
+  /** A real, non-expired status exists for this chat's JID right now - WhatsApp's own "status ring" signal. */
+  hasActiveStatus: boolean;
 }
 
 export interface WorkspaceCallSummary {
@@ -118,6 +120,7 @@ export class WorkspaceService {
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
+    const activeStatusJids = new Set(await this.statusRepository.listActivePublisherJids(businessId, whatsappAccountId));
     const summaries: WorkspaceChatSummary[] = [];
 
     for (const chat of chats) {
@@ -172,6 +175,7 @@ export class WorkspaceService {
         lastMessageAt: chat.lastMessageAt,
         lastMessagePreview,
         aiMode: chat.aiMode,
+        hasActiveStatus: activeStatusJids.has(chat.chatJid),
       });
     }
 

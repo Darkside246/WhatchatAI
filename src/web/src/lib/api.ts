@@ -36,6 +36,8 @@ export interface WorkspaceChatSummary {
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
   aiMode: 'AI_ACTIVE' | 'AI_PAUSED' | 'HUMAN_TAKEOVER';
+  /** A real, non-expired status exists for this chat's JID right now - WhatsApp's own "status ring" signal. */
+  hasActiveStatus: boolean;
 }
 
 export interface WorkspaceMedia {
