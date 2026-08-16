@@ -2,6 +2,7 @@ import { Queue } from 'bullmq';
 import { queueConnection } from '../connection.js';
 import type { MessageStatus } from '../../domain/whatsapp/types.js';
 import type { WACallEvent } from '@whiskeysockets/baileys';
+import type { IngestedWhatsAppMessage } from '../../services/whatsappMessageIngestionService.js';
 
 export const REALTIME_EVENTS_QUEUE = 'realtime_events';
 
@@ -16,6 +17,12 @@ export interface CallEventJobData {
   businessId: string;
   whatsappAccountId: string;
   event: WACallEvent;
+}
+
+export interface StatusUpdateJobData {
+  businessId: string;
+  whatsappAccountId: string;
+  ingested: IngestedWhatsAppMessage;
 }
 
 /**
@@ -41,4 +48,8 @@ export function enqueueMessageStatus(data: MessageStatusJobData): Promise<unknow
 
 export function enqueueCallEvent(data: CallEventJobData): Promise<unknown> {
   return realtimeEventsQueue.add('call-event', data);
+}
+
+export function enqueueStatusUpdate(data: StatusUpdateJobData): Promise<unknown> {
+  return realtimeEventsQueue.add('status-update', data);
 }

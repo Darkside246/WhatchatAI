@@ -14,6 +14,7 @@ export interface WhatsAppCallRecord {
   isVideo: boolean;
   isGroup: boolean;
   startedAt: string | null;
+  acceptedAt: string | null;
   endedAt: string | null;
   durationSeconds: number | null;
   rawMetadata: Record<string, unknown>;
@@ -32,6 +33,7 @@ interface CallRow {
   is_video: boolean;
   is_group: boolean;
   started_at: string | null;
+  accepted_at: string | null;
   ended_at: string | null;
   duration_seconds: number | null;
   raw_metadata: Record<string, unknown>;
@@ -51,6 +53,7 @@ function toRecord(row: CallRow): WhatsAppCallRecord {
     isVideo: row.is_video,
     isGroup: row.is_group,
     startedAt: row.started_at,
+    acceptedAt: row.accepted_at,
     endedAt: row.ended_at,
     durationSeconds: row.duration_seconds,
     rawMetadata: row.raw_metadata,
@@ -69,6 +72,7 @@ export interface UpsertCallEventInput {
   isVideo?: boolean;
   isGroup?: boolean;
   startedAt?: string | null;
+  acceptedAt?: string | null;
   endedAt?: string | null;
   durationSeconds?: number | null;
   rawMetadata?: Record<string, unknown>;
@@ -77,16 +81,17 @@ export interface UpsertCallEventInput {
 export class WhatsAppCallRepository {
   constructor(private readonly db: Queryable) {}
 
-  /** One real call is a stream of events (offer -> ringing -> ended); each event updates the same row. */
+  /** One real call is a stream of events (offer -> ringing -> accept -> ended); each event updates the same row. */
   async upsertEvent(input: UpsertCallEventInput): Promise<WhatsAppCallRecord> {
     const { rows } = await this.db.query<CallRow>(
       `INSERT INTO whatsapp_calls
          (business_id, whatsapp_account_id, call_id, remote_jid, remote_phone_number,
-          call_type, direction, status, is_video, is_group, started_at, ended_at, duration_seconds, raw_metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          call_type, direction, status, is_video, is_group, started_at, accepted_at, ended_at, duration_seconds, raw_metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        ON CONFLICT (business_id, whatsapp_account_id, call_id)
        DO UPDATE SET
          status = EXCLUDED.status,
+         accepted_at = COALESCE(EXCLUDED.accepted_at, whatsapp_calls.accepted_at),
          ended_at = COALESCE(EXCLUDED.ended_at, whatsapp_calls.ended_at),
          duration_seconds = COALESCE(EXCLUDED.duration_seconds, whatsapp_calls.duration_seconds),
          raw_metadata = whatsapp_calls.raw_metadata || EXCLUDED.raw_metadata,
@@ -104,6 +109,7 @@ export class WhatsAppCallRepository {
         input.isVideo ?? false,
         input.isGroup ?? false,
         input.startedAt ?? null,
+        input.acceptedAt ?? null,
         input.endedAt ?? null,
         input.durationSeconds ?? null,
         JSON.stringify(input.rawMetadata ?? {}),
@@ -127,6 +133,25 @@ export class WhatsAppCallRepository {
       `SELECT * FROM whatsapp_calls WHERE business_id = $1 AND whatsapp_account_id = $2
        ORDER BY COALESCE(started_at, created_at) DESC LIMIT $3`,
       [businessId, whatsappAccountId, limit],
+    );
+    return rows.map(toRecord);
+  }
+
+  /**
+   * Real, documented timeout rule: WhatsApp's own client rings for roughly
+   * 45-60s before a call goes to "missed" on the device. A call still
+   * sitting in offer/ringing well past that window with no further event
+   * from Baileys is treated the same way - never left stuck forever.
+   */
+  async findStaleRingingCalls(thresholdSeconds: number, limit = 100): Promise<WhatsAppCallRecord[]> {
+    const { rows } = await this.db.query<CallRow>(
+      `SELECT * FROM whatsapp_calls
+       WHERE status IN ('offer', 'ringing')
+         AND started_at IS NOT NULL
+         AND started_at < now() - ($1 || ' seconds')::interval
+       ORDER BY started_at ASC
+       LIMIT $2`,
+      [thresholdSeconds, limit],
     );
     return rows.map(toRecord);
   }

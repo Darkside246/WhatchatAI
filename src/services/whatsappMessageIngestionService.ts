@@ -14,8 +14,12 @@ export type WhatsAppMessageContentType =
   | 'sticker'
   | 'location'
   | 'contact'
+  | 'contacts'
   | 'reaction'
   | 'poll'
+  | 'poll_response'
+  | 'button'
+  | 'interactive'
   | 'system'
   | 'unsupported';
 
@@ -74,7 +78,7 @@ function truncatePreview(text: string): string {
   return text.length > TEXT_PREVIEW_MAX_LENGTH ? `${text.slice(0, TEXT_PREVIEW_MAX_LENGTH)}…` : text;
 }
 
-/** Unwraps ephemeral / view-once / caption message envelopes to reach the real content. */
+/** Unwraps ephemeral / view-once / caption / edit message envelopes to reach the real content. */
 function unwrapContent(message: proto.IMessage | null | undefined): proto.IMessage | null | undefined {
   if (!message) return message;
   const wrapped =
@@ -82,7 +86,8 @@ function unwrapContent(message: proto.IMessage | null | undefined): proto.IMessa
     message.viewOnceMessage?.message ??
     message.viewOnceMessageV2?.message ??
     message.viewOnceMessageV2Extension?.message ??
-    message.documentWithCaptionMessage?.message;
+    message.documentWithCaptionMessage?.message ??
+    message.editedMessage?.message;
   return wrapped ? unwrapContent(wrapped) : message;
 }
 
@@ -144,7 +149,10 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
   if (message.locationMessage || message.liveLocationMessage) {
     return { ...empty, contentType: 'location' };
   }
-  if (message.contactMessage || message.contactsArrayMessage) {
+  if (message.contactsArrayMessage) {
+    return { ...empty, contentType: 'contacts' };
+  }
+  if (message.contactMessage) {
     return { ...empty, contentType: 'contact' };
   }
   if (message.reactionMessage) {
@@ -152,6 +160,26 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
   }
   if (message.pollCreationMessage || message.pollCreationMessageV2 || message.pollCreationMessageV3) {
     return { ...empty, contentType: 'poll' };
+  }
+  if (message.pollUpdateMessage) {
+    return { ...empty, contentType: 'poll_response' };
+  }
+  if (message.buttonsMessage || message.buttonsResponseMessage || message.templateButtonReplyMessage) {
+    const buttonText =
+      message.buttonsResponseMessage?.selectedDisplayText ?? message.templateButtonReplyMessage?.selectedDisplayText ?? null;
+    return { ...empty, contentType: 'button', textPreview: buttonText ? truncatePreview(buttonText) : null };
+  }
+  if (
+    message.templateMessage ||
+    message.listMessage ||
+    message.listResponseMessage ||
+    message.interactiveMessage ||
+    message.interactiveResponseMessage ||
+    message.groupInviteMessage
+  ) {
+    const interactiveText =
+      message.listResponseMessage?.title ?? message.groupInviteMessage?.groupName ?? null;
+    return { ...empty, contentType: 'interactive', textPreview: interactiveText ? truncatePreview(interactiveText) : null };
   }
   if (message.protocolMessage) {
     return { ...empty, contentType: 'system' };
@@ -183,8 +211,12 @@ const CONTENT_TYPES: WhatsAppMessageContentType[] = [
   'sticker',
   'location',
   'contact',
+  'contacts',
   'reaction',
   'poll',
+  'poll_response',
+  'button',
+  'interactive',
   'system',
   'unsupported',
 ];

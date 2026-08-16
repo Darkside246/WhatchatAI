@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { X } from 'lucide-react';
 import { api, type WorkspaceChatDetail } from '../lib/api.js';
 
 const AI_MODE_OPTIONS: { value: WorkspaceChatDetail['chat']['aiMode']; label: string; hint: string }[] = [
@@ -48,7 +49,7 @@ export function ContactDetailPanel({ onClose }: Props) {
         <h2 className="text-sm font-semibold text-white">Conversation details</h2>
         {onClose && (
           <button type="button" onClick={onClose} className="text-gray-400 hover:text-white lg:hidden">
-            ✕
+            <X size={18} aria-hidden />
           </button>
         )}
       </div>

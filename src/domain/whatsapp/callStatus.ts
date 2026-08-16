@@ -31,7 +31,10 @@ export function callTypeFromEvent(isVideo: boolean | undefined): CallType {
   return isVideo ? 'video' : 'voice';
 }
 
-const TERMINAL_CALL_STATUSES: ReadonlySet<CallStatus> = new Set(['accepted', 'rejected', 'missed', 'ended']);
+// 'accepted' means the call is now in progress, not over - it is
+// deliberately NOT terminal. Only these four represent a call that has
+// actually ended, one way or another.
+const TERMINAL_CALL_STATUSES: ReadonlySet<CallStatus> = new Set(['rejected', 'missed', 'timeout', 'ended']);
 
 export function isTerminalCallStatus(status: CallStatus): boolean {
   return TERMINAL_CALL_STATUSES.has(status);

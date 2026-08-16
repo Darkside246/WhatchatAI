@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { Phone } from 'lucide-react';
 import { ChatListPane } from '../components/ChatListPane.js';
 import { ChatThread } from '../components/ChatThread.js';
 import { ContactDetailPanel } from '../components/ContactDetailPanel.js';
@@ -44,9 +45,7 @@ export function ChatsRoute() {
         <>
           <CallHistoryPanel className="flex w-full shrink-0 border-r border-border-subtle lg:flex lg:w-80" />
           <div className="hidden min-w-0 flex-1 flex-col items-center justify-center gap-2 text-gray-500 lg:flex">
-            <span className="text-3xl" aria-hidden>
-              📞
-            </span>
+            <Phone size={40} strokeWidth={1.5} aria-hidden />
             <p className="text-sm">Select a call to view details</p>
           </div>
         </>

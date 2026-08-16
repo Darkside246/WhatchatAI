@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { Lock } from 'lucide-react';
 import { api, ApiError } from '../lib/api.js';
 import { DEFAULT_ARGON2_PARAMS, generateSalt, hashPin } from '../lib/pinCrypto.js';
 import { useIdleTimer } from '../hooks/useIdleTimer.js';
@@ -141,7 +142,9 @@ export function ScreenLock({ children }: Props) {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-0/95 p-4 backdrop-blur-md">
           <div className="w-full max-w-sm rounded-2xl border border-border-subtle bg-surface-1 p-6 shadow-2xl">
             <div className="mb-4 flex flex-col items-center gap-2 text-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-surface-2 text-2xl">🔒</div>
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-surface-2 text-emerald-400">
+                <Lock size={22} strokeWidth={1.75} aria-hidden />
+              </div>
               <h2 className="text-lg font-semibold text-gray-100">
                 {showSetupForm ? 'Set up a lock PIN' : 'Workspace locked'}
               </h2>

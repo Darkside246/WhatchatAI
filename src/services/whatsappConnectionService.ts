@@ -9,7 +9,9 @@ import path from 'node:path';
 import { whatsappMessageIngestionService } from './whatsappMessageIngestionService.js';
 import { whatsappSyncService } from './whatsappSyncService.js';
 import { enqueueIncomingMessage } from '../queue/queues/incomingMessagesQueue.js';
-import { enqueueMessageStatus, enqueueCallEvent } from '../queue/queues/realtimeEventsQueue.js';
+import { enqueueMessageStatus, enqueueCallEvent, enqueueStatusUpdate } from '../queue/queues/realtimeEventsQueue.js';
+
+const STATUS_BROADCAST_JID = 'status@broadcast';
 import { mapBaileysMessageStatus } from '../domain/whatsapp/messageStatus.js';
 import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { pool } from '../db/pool.js';
@@ -191,7 +193,13 @@ export class WhatsAppConnectionService {
       // the incoming_messages queue. No synchronous DB write happens on this
       // event-loop turn - a dedicated worker process persists the message.
       const ingested = whatsappMessageIngestionService.ingestUpsert(payload);
-      this.enqueueIngestedMessages(ingested);
+      // status@broadcast is WhatsApp's fixed JID for Status updates, not a
+      // real conversation - these get their own table (whatsapp_statuses),
+      // never whatsapp_messages/whatsapp_chats.
+      const statusUpdates = ingested.filter((message) => message.remoteJid === STATUS_BROADCAST_JID);
+      const chatMessages = ingested.filter((message) => message.remoteJid !== STATUS_BROADCAST_JID);
+      this.enqueueIngestedMessages(chatMessages);
+      this.enqueueStatusUpdates(statusUpdates);
     });
 
     socket.ev.on('contacts.upsert', (contacts) => {
@@ -409,6 +417,19 @@ export class WhatsAppConnectionService {
     for (const message of ingested) {
       enqueueIncomingMessage({ businessId, whatsappAccountId, accountJid, message }).catch((error) => {
         console.error('[WhatsApp] Failed to enqueue message', message.messageId, error);
+      });
+    }
+  }
+
+  private enqueueStatusUpdates(ingested: ReturnType<typeof whatsappMessageIngestionService.ingestUpsert>): void {
+    if (ingested.length === 0) return;
+    if (!this.businessId || !this.persistedAccountId) return;
+    const businessId = this.businessId;
+    const whatsappAccountId = this.persistedAccountId;
+
+    for (const message of ingested) {
+      enqueueStatusUpdate({ businessId, whatsappAccountId, ingested: message }).catch((error) => {
+        console.error('[WhatsApp] Failed to enqueue status update', message.messageId, error);
       });
     }
   }

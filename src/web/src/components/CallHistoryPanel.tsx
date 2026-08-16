@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ArrowDownLeft, ArrowUpRight, Video, Phone as PhoneIcon } from 'lucide-react';
 import { api, type WorkspaceCallSummary } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
 
@@ -30,11 +31,8 @@ const STATUS_LABEL: Record<WorkspaceCallSummary['status'], string> = {
 function CallDirectionIcon({ call }: { call: WorkspaceCallSummary }) {
   const missed = call.status === 'missed' || call.status === 'timeout' || call.status === 'rejected';
   const colorClass = missed ? 'text-red-400' : 'text-emerald-400';
-  return (
-    <span className={`text-sm ${colorClass}`} aria-hidden>
-      {call.direction === 'inbound' ? '↙' : '↗'}
-    </span>
-  );
+  const Icon = call.direction === 'inbound' ? ArrowDownLeft : ArrowUpRight;
+  return <Icon size={14} strokeWidth={2} className={colorClass} aria-hidden />;
 }
 
 interface Props {
@@ -96,7 +94,7 @@ export function CallHistoryPanel({ className = '' }: Props) {
               <p className="truncate text-sm font-medium text-white">{call.displayName}</p>
               <div className="mt-0.5 flex items-center gap-1.5 text-xs text-gray-500">
                 <CallDirectionIcon call={call} />
-                <span aria-hidden>{call.isVideo ? '🎥' : '📞'}</span>
+                {call.isVideo ? <Video size={13} strokeWidth={1.75} aria-hidden /> : <PhoneIcon size={13} strokeWidth={1.75} aria-hidden />}
                 <span>{STATUS_LABEL[call.status]}</span>
                 {call.durationSeconds !== null && <span>· {formatDuration(call.durationSeconds)}</span>}
               </div>

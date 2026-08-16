@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { ArrowLeft, Check, CheckCheck, Clock, AlertCircle, Paperclip, Smile, Mic } from 'lucide-react';
 import { api, type WorkspaceMessage } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
 
@@ -16,11 +17,11 @@ function messageBody(message: WorkspaceMessage): string {
 
 /** Real delivery-receipt ticks driven by message.status (see messages.update wiring) - never a fabricated state. */
 function DeliveryTicks({ status }: { status: WorkspaceMessage['status'] }) {
-  if (status === 'failed') return <span title="Failed to send" className="text-red-400">⚠</span>;
-  if (status === 'pending') return <span title="Pending" className="text-white/50">🕐</span>;
-  if (status === 'sent') return <span title="Sent" className="text-white/60">✓</span>;
-  if (status === 'delivered') return <span title="Delivered" className="text-white/60">✓✓</span>;
-  if (status === 'read' || status === 'played') return <span title="Read" className="text-sky-300">✓✓</span>;
+  if (status === 'failed') return <AlertCircle size={13} className="text-red-400" aria-label="Failed to send" />;
+  if (status === 'pending') return <Clock size={13} className="text-white/50" aria-label="Pending" />;
+  if (status === 'sent') return <Check size={14} className="text-white/60" aria-label="Sent" />;
+  if (status === 'delivered') return <CheckCheck size={14} className="text-white/60" aria-label="Delivered" />;
+  if (status === 'read' || status === 'played') return <CheckCheck size={14} className="text-sky-300" aria-label="Read" />;
   return null;
 }
 
@@ -77,7 +78,7 @@ export function ChatThread({ onOpenDetail }: Props) {
     <div className="flex h-full flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-3 border-b border-border-subtle bg-surface-1 px-4 py-3">
         <Link to="/chats" className="text-gray-400 hover:text-white lg:hidden" aria-label="Back to chats">
-          ←
+          <ArrowLeft size={18} aria-hidden />
         </Link>
         <p className="flex-1 text-sm font-medium text-white">Conversation</p>
         <button
@@ -114,10 +115,10 @@ export function ChatThread({ onOpenDetail }: Props) {
       <div className="shrink-0 border-t border-border-subtle bg-surface-1 p-3">
         <div className="flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-2 px-3 py-2">
           <button type="button" disabled title="Attach (not built yet)" className="cursor-not-allowed text-gray-600">
-            📎
+            <Paperclip size={18} strokeWidth={1.75} aria-hidden />
           </button>
           <button type="button" disabled title="Emoji (not built yet)" className="cursor-not-allowed text-gray-600">
-            🙂
+            <Smile size={18} strokeWidth={1.75} aria-hidden />
           </button>
           <input
             disabled
@@ -125,7 +126,7 @@ export function ChatThread({ onOpenDetail }: Props) {
             className="flex-1 bg-transparent text-sm text-gray-400 outline-none"
           />
           <button type="button" disabled title="Voice message (not built yet)" className="cursor-not-allowed text-gray-600">
-            🎤
+            <Mic size={18} strokeWidth={1.75} aria-hidden />
           </button>
         </div>
       </div>

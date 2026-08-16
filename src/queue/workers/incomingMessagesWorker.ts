@@ -3,8 +3,10 @@ import { queueConnection } from '../connection.js';
 import { INCOMING_MESSAGES_QUEUE, type IncomingMessageJobData } from '../queues/incomingMessagesQueue.js';
 import {
   REALTIME_EVENTS_QUEUE,
+  realtimeEventsQueue,
   type MessageStatusJobData,
   type CallEventJobData,
+  type StatusUpdateJobData,
 } from '../queues/realtimeEventsQueue.js';
 import { whatsappMessagePersistenceService } from '../../services/whatsappMessagePersistenceService.js';
 import { runSentinel } from '../../security/sentinel/sentinel.js';
@@ -13,8 +15,10 @@ import { publishRealtimeEvent } from '../../realtime/pubsub.js';
 import { pool } from '../../db/pool.js';
 import { WhatsAppMessageRepository } from '../../repositories/whatsappMessageRepository.js';
 import { WhatsAppCallRepository } from '../../repositories/whatsappCallRepository.js';
+import { WhatsAppStatusRepository } from '../../repositories/whatsappStatusRepository.js';
 import { mapBaileysCallStatus, callTypeFromEvent, isTerminalCallStatus } from '../../domain/whatsapp/callStatus.js';
 import { classifyJid, derivePhoneNumber } from '../../domain/whatsapp/jid.js';
+import type { StatusType } from '../../domain/whatsapp/types.js';
 
 /**
  * Drains the incoming_messages queue and performs the real Postgres
@@ -86,6 +90,39 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
 
 const messageRepository = new WhatsAppMessageRepository(pool);
 const callRepository = new WhatsAppCallRepository(pool);
+const statusRepository = new WhatsAppStatusRepository(pool);
+
+const STATUS_TTL_MS = 24 * 60 * 60 * 1000; // WhatsApp Status entries always expire 24h after posting - a real product rule, not a guess.
+
+function mapContentTypeToStatusType(contentType: string): StatusType {
+  if (contentType === 'text' || contentType === 'image' || contentType === 'video') return contentType;
+  if (contentType === 'audio' || contentType === 'voice_note') return 'audio';
+  return 'unknown';
+}
+
+/**
+ * Baileys has no dedicated status/stories event - status updates arrive as
+ * ordinary messages.upsert events on the fixed status@broadcast JID. They
+ * are routed here (never into whatsapp_messages/whatsapp_chats) into the
+ * real whatsapp_statuses table. Status media download/storage is deferred
+ * (see the media pipeline audit) - media_id is honestly left null rather
+ * than fabricating a downloaded file that doesn't exist.
+ */
+async function processStatusUpdate(data: StatusUpdateJobData): Promise<void> {
+  const { businessId, whatsappAccountId, ingested } = data;
+  const publisherJid = ingested.participant ?? ingested.remoteJid;
+  const createdAt = ingested.messageTimestamp ?? ingested.ingestedAt;
+
+  await statusRepository.insert({
+    businessId,
+    whatsappAccountId,
+    statusId: ingested.messageId,
+    publisherJid,
+    statusType: mapContentTypeToStatusType(ingested.contentType),
+    textContent: ingested.textPreview,
+    expiresAt: new Date(new Date(createdAt).getTime() + STATUS_TTL_MS).toISOString(),
+  });
+}
 
 async function processMessageStatus(data: MessageStatusJobData): Promise<void> {
   const { businessId, whatsappAccountId, whatsappMessageId, status } = data;
@@ -112,6 +149,7 @@ async function processCallEvent(data: CallEventJobData): Promise<void> {
   const remotePhoneNumber = jidKind === 'group' ? null : derivePhoneNumber(remoteJid, jidKind, null);
 
   let startedAt: string | null = null;
+  let acceptedAt: string | null = null;
   let endedAt: string | null = null;
   let durationSeconds: number | null = null;
 
@@ -122,11 +160,16 @@ async function processCallEvent(data: CallEventJobData): Promise<void> {
 
   if (status === 'offer') {
     startedAt = eventDate;
+  } else if (status === 'accepted') {
+    acceptedAt = eventDate;
   } else if (isTerminalCallStatus(status)) {
     endedAt = eventDate;
+    // Duration is real talk time (accepted -> ended), never ring time. A
+    // call that was never answered (missed/rejected/timeout) has no
+    // duration - inventing one from ring time would misrepresent it.
     const existing = await callRepository.findByCallId(businessId, whatsappAccountId, event.id);
-    if (existing?.startedAt) {
-      durationSeconds = Math.max(0, Math.round((new Date(endedAt).getTime() - new Date(existing.startedAt).getTime()) / 1000));
+    if (existing?.acceptedAt) {
+      durationSeconds = Math.max(0, Math.round((new Date(endedAt).getTime() - new Date(existing.acceptedAt).getTime()) / 1000));
     }
   }
 
@@ -142,6 +185,7 @@ async function processCallEvent(data: CallEventJobData): Promise<void> {
     isVideo: Boolean(event.isVideo),
     isGroup: Boolean(event.isGroup),
     startedAt,
+    acceptedAt,
     endedAt,
     durationSeconds,
   });
@@ -149,11 +193,47 @@ async function processCallEvent(data: CallEventJobData): Promise<void> {
   await publishRealtimeEvent({ type: 'call.updated', businessId, callId: call.id });
 }
 
-async function processRealtimeEventJob(job: Job<MessageStatusJobData | CallEventJobData>): Promise<void> {
+// Documented rule: WhatsApp's own client rings for roughly 45-60s before a
+// call goes to "missed" on the device. A call still sitting in offer/ringing
+// well past that, with no further event ever arriving from Baileys, is
+// reconciled to 'timeout' rather than left stuck forever.
+const CALL_RING_TIMEOUT_SECONDS = 60;
+const CALL_TIMEOUT_SWEEP_INTERVAL_MS = 30_000;
+
+export async function sweepStaleRingingCalls(): Promise<void> {
+  const stale = await callRepository.findStaleRingingCalls(CALL_RING_TIMEOUT_SECONDS);
+  for (const call of stale) {
+    const updated = await callRepository.upsertEvent({
+      businessId: call.businessId,
+      whatsappAccountId: call.whatsappAccountId,
+      callId: call.callId,
+      remoteJid: call.remoteJid,
+      remotePhoneNumber: call.remotePhoneNumber,
+      callType: call.callType,
+      direction: call.direction,
+      status: 'timeout',
+      isVideo: call.isVideo,
+      isGroup: call.isGroup,
+      endedAt: new Date().toISOString(),
+    });
+    await publishRealtimeEvent({ type: 'call.updated', businessId: call.businessId, callId: updated.id });
+  }
+  if (stale.length > 0) {
+    console.log(`[RealtimeEventsWorker] Reconciled ${stale.length} stale ringing call(s) to timeout`);
+  }
+}
+
+async function processRealtimeEventJob(
+  job: Job<MessageStatusJobData | CallEventJobData | StatusUpdateJobData>,
+): Promise<void> {
   if (job.name === 'message-status') {
     await processMessageStatus(job.data as MessageStatusJobData);
   } else if (job.name === 'call-event') {
     await processCallEvent(job.data as CallEventJobData);
+  } else if (job.name === 'status-update') {
+    await processStatusUpdate(job.data as StatusUpdateJobData);
+  } else if (job.name === 'call-timeout-sweep') {
+    await sweepStaleRingingCalls();
   }
 }
 
@@ -200,3 +280,10 @@ process.on('SIGINT', () => void shutdown('SIGINT'));
 
 console.log(`[IncomingMessagesWorker] Listening on queue "${INCOMING_MESSAGES_QUEUE}" (concurrency=${CONCURRENCY})`);
 console.log(`[RealtimeEventsWorker] Listening on queue "${REALTIME_EVENTS_QUEUE}" (concurrency=${CONCURRENCY})`);
+
+// upsertJobScheduler is idempotent by scheduler id, so re-registering this on
+// every worker restart is safe and never creates duplicate schedules.
+void realtimeEventsQueue
+  .upsertJobScheduler('call-timeout-sweep', { every: CALL_TIMEOUT_SWEEP_INTERVAL_MS }, { name: 'call-timeout-sweep' })
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled call-timeout-sweep every ${CALL_TIMEOUT_SWEEP_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule call-timeout-sweep:', error.message));

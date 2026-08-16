@@ -88,4 +88,14 @@ export class WhatsAppStatusRepository {
     if (!existing) throw new Error('whatsapp_statuses insert conflicted but no existing row found');
     return toRecord(existing);
   }
+
+  async listByAccount(businessId: string, whatsappAccountId: string, limit = 100): Promise<WhatsAppStatusRecord[]> {
+    const { rows } = await this.db.query<StatusRow>(
+      `SELECT * FROM whatsapp_statuses WHERE business_id = $1 AND whatsapp_account_id = $2
+       AND (expires_at IS NULL OR expires_at > now())
+       ORDER BY created_at DESC LIMIT $3`,
+      [businessId, whatsappAccountId, limit],
+    );
+    return rows.map(toRecord);
+  }
 }

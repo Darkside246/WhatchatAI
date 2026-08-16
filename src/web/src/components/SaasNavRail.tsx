@@ -1,14 +1,25 @@
 import { NavLink } from 'react-router-dom';
+import {
+  MessageCircle,
+  BarChart3,
+  Bot,
+  Contact,
+  Zap,
+  Megaphone,
+  CreditCard,
+  Settings,
+  type LucideIcon,
+} from 'lucide-react';
 
-const NAV_ITEMS = [
-  { to: '/chats', label: 'Inbox', icon: '💬', implemented: true },
-  { to: '/dashboard', label: 'Dashboard', icon: '📊', implemented: false },
-  { to: '/agents', label: 'AI Agents', icon: '🤖', implemented: true },
-  { to: '/crm', label: 'CRM & Leads', icon: '🧾', implemented: false },
-  { to: '/automations', label: 'Automations', icon: '⚡', implemented: false },
-  { to: '/marketing', label: 'Marketing', icon: '📣', implemented: false },
-  { to: '/billing', label: 'Billing', icon: '💳', implemented: false },
-  { to: '/settings', label: 'Settings', icon: '⚙️', implemented: false },
+const NAV_ITEMS: { to: string; label: string; icon: LucideIcon; implemented: boolean }[] = [
+  { to: '/chats', label: 'Inbox', icon: MessageCircle, implemented: true },
+  { to: '/dashboard', label: 'Dashboard', icon: BarChart3, implemented: false },
+  { to: '/agents', label: 'AI Agents', icon: Bot, implemented: true },
+  { to: '/crm', label: 'CRM & Leads', icon: Contact, implemented: false },
+  { to: '/automations', label: 'Automations', icon: Zap, implemented: false },
+  { to: '/marketing', label: 'Marketing', icon: Megaphone, implemented: false },
+  { to: '/billing', label: 'Billing', icon: CreditCard, implemented: false },
+  { to: '/settings', label: 'Settings', icon: Settings, implemented: false },
 ];
 
 export function SaasNavRail() {
@@ -22,13 +33,13 @@ export function SaasNavRail() {
           key={item.to}
           to={item.to}
           className={({ isActive }) =>
-            `flex h-11 w-11 flex-col items-center justify-center rounded-lg text-lg transition-colors ${
+            `flex h-11 w-11 items-center justify-center rounded-lg transition-colors ${
               isActive ? 'bg-emerald-500/15 text-emerald-400' : 'text-gray-500 hover:bg-surface-2 hover:text-gray-300'
             }`
           }
           title={item.implemented ? item.label : `${item.label} (coming soon)`}
         >
-          <span aria-hidden>{item.icon}</span>
+          <item.icon size={20} strokeWidth={1.75} aria-hidden />
         </NavLink>
       ))}
     </nav>
@@ -43,12 +54,12 @@ export function SaasNavBottomBar() {
           key={item.to}
           to={item.to}
           className={({ isActive }) =>
-            `flex h-10 w-10 items-center justify-center rounded-lg text-lg ${
+            `flex h-10 w-10 items-center justify-center rounded-lg ${
               isActive ? 'bg-emerald-500/15 text-emerald-400' : 'text-gray-500'
             }`
           }
         >
-          <span aria-hidden>{item.icon}</span>
+          <item.icon size={20} strokeWidth={1.75} aria-hidden />
         </NavLink>
       ))}
     </nav>

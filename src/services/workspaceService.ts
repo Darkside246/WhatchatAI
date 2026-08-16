@@ -9,6 +9,7 @@ import { CrmContactRepository } from '../repositories/crmContactRepository.js';
 import { AiAgentRepository } from '../repositories/aiAgentRepository.js';
 import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMappingRepository.js';
 import { WhatsAppCallRepository } from '../repositories/whatsappCallRepository.js';
+import { WhatsAppStatusRepository } from '../repositories/whatsappStatusRepository.js';
 import { classifyJid } from '../domain/whatsapp/jid.js';
 import type { CallStatus, CallType, MessageDirection } from '../domain/whatsapp/types.js';
 
@@ -39,6 +40,18 @@ export interface WorkspaceCallSummary {
   durationSeconds: number | null;
 }
 
+export interface WorkspaceStatusSummary {
+  id: string;
+  publisherJid: string;
+  displayName: string;
+  statusType: 'text' | 'image' | 'video' | 'audio' | 'unknown';
+  textContent: string | null;
+  /** Status media download/storage is not implemented yet - always false, never fabricated. */
+  mediaAvailable: boolean;
+  createdAt: string;
+  expiresAt: string | null;
+}
+
 export interface ChatNotFoundError extends Error {
   code: 'CHAT_NOT_FOUND';
 }
@@ -59,6 +72,7 @@ export class WorkspaceService {
   private readonly agentRepository = new AiAgentRepository(pool);
   private readonly jidMappingRepository = new WhatsAppJidMappingRepository(pool);
   private readonly callRepository = new WhatsAppCallRepository(pool);
+  private readonly statusRepository = new WhatsAppStatusRepository(pool);
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
@@ -168,6 +182,43 @@ export class WorkspaceService {
         startedAt: call.startedAt,
         endedAt: call.endedAt,
         durationSeconds: call.durationSeconds,
+      });
+    }
+
+    return summaries;
+  }
+
+  async listStatuses(businessId: string, whatsappAccountId: string): Promise<WorkspaceStatusSummary[]> {
+    const statuses = await this.statusRepository.listByAccount(businessId, whatsappAccountId);
+    const summaries: WorkspaceStatusSummary[] = [];
+
+    for (const status of statuses) {
+      let displayName = status.publisherJid;
+
+      const contact = await this.contactRepository.findByJid(businessId, whatsappAccountId, status.publisherJid);
+      if (contact) {
+        displayName = resolveDisplayName({
+          verifiedName: contact.verifiedName,
+          businessName: contact.businessName,
+          displayName: contact.displayName,
+          pushName: contact.pushName,
+          phoneNumber: contact.phoneNumber,
+          whatsappJid: contact.whatsappJid,
+        });
+      } else if (classifyJid(status.publisherJid) === 'lid') {
+        const mapping = await this.jidMappingRepository.findByLid(businessId, whatsappAccountId, status.publisherJid);
+        if (mapping?.phoneNumber) displayName = mapping.phoneNumber;
+      }
+
+      summaries.push({
+        id: status.id,
+        publisherJid: status.publisherJid,
+        displayName,
+        statusType: status.statusType,
+        textContent: status.textContent,
+        mediaAvailable: false,
+        createdAt: status.createdAt,
+        expiresAt: status.expiresAt,
       });
     }
 

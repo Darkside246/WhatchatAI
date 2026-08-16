@@ -40,11 +40,13 @@ describe('mapBaileysCallStatus', () => {
     expect(callTypeFromEvent(undefined)).toBe('voice');
   });
 
-  it('identifies terminal statuses for duration computation', () => {
-    expect(isTerminalCallStatus('accepted')).toBe(true);
+  it('identifies terminal statuses - a call that was actually answered is NOT terminal', () => {
     expect(isTerminalCallStatus('rejected')).toBe(true);
     expect(isTerminalCallStatus('missed')).toBe(true);
+    expect(isTerminalCallStatus('timeout')).toBe(true);
     expect(isTerminalCallStatus('ended')).toBe(true);
+    // 'accepted' means the call is now in progress, not over.
+    expect(isTerminalCallStatus('accepted')).toBe(false);
     expect(isTerminalCallStatus('offer')).toBe(false);
     expect(isTerminalCallStatus('ringing')).toBe(false);
   });

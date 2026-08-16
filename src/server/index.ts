@@ -212,6 +212,15 @@ app.get('/api/workspace/calls', requireWorkspaceContext, async (_req, res) => {
   return res.status(200).json({ calls });
 });
 
+app.get('/api/workspace/statuses', requireWorkspaceContext, async (_req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
+    businessId: string;
+    whatsappAccountId: string;
+  };
+  const statuses = await workspaceService.listStatuses(businessId, whatsappAccountId);
+  return res.status(200).json({ statuses });
+});
+
 const messageSchema = z.object({
   text: z.string().min(1).max(10000),
 });
