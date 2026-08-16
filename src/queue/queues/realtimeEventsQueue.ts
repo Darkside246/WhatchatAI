@@ -25,6 +25,14 @@ export interface StatusUpdateJobData {
   ingested: IngestedWhatsAppMessage;
 }
 
+export interface MediaDownloadJobData {
+  businessId: string;
+  whatsappAccountId: string;
+  mediaId: string;
+  /** Base64-encoded raw Baileys {key, message} - see binaryCodec.ts. */
+  mediaDescriptor: Record<string, unknown>;
+}
+
 /**
  * Lightweight, non-Sentinel-gated background jobs: delivery-receipt status
  * updates and call events. Kept off the Baileys event loop for the same
@@ -52,4 +60,8 @@ export function enqueueCallEvent(data: CallEventJobData): Promise<unknown> {
 
 export function enqueueStatusUpdate(data: StatusUpdateJobData): Promise<unknown> {
   return realtimeEventsQueue.add('status-update', data);
+}
+
+export function enqueueMediaDownload(data: MediaDownloadJobData): Promise<unknown> {
+  return realtimeEventsQueue.add('media-download', data);
 }

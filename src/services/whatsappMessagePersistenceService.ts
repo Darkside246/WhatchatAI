@@ -3,10 +3,11 @@ import { withTransaction } from '../db/transaction.js';
 import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
 import { WhatsAppChatRepository } from '../repositories/whatsappChatRepository.js';
 import { WhatsAppMessageRepository, type WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
-import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
+import { WhatsAppMediaRepository, type WhatsAppMediaRecord } from '../repositories/whatsappMediaRepository.js';
 import type { WhatsAppChatRecord } from '../repositories/whatsappChatRepository.js';
 import type { MediaType, MessageType } from '../domain/whatsapp/types.js';
 import { chatTypeFromJidKind } from '../domain/whatsapp/chatType.js';
+import { enqueueMediaDownload } from '../queue/queues/realtimeEventsQueue.js';
 import type {
   IngestedWhatsAppMessage,
   WhatsAppDocumentSubtype,
@@ -50,6 +51,7 @@ export interface PersistIngestedMessageResult {
   message: WhatsAppMessageRecord;
   chat: WhatsAppChatRecord;
   deduplicated: boolean;
+  media: WhatsAppMediaRecord | null;
 }
 
 export class WhatsAppMessagePersistenceService {
@@ -59,9 +61,25 @@ export class WhatsAppMessagePersistenceService {
    * message -> (if media) insert media metadata, all in a single transaction.
    * A duplicate whatsapp_message_id is not an error - the unique index makes
    * the insert a no-op and this returns the existing row.
+   *
+   * The actual media download is never done here (or in the transaction) -
+   * it's a real network call to WhatsApp's CDN that can fail or take time.
+   * Once the transaction commits, a download job is enqueued so a worker
+   * fetches, verifies, and stores the real bytes out-of-band.
    */
   async persist(input: PersistIngestedMessageInput): Promise<PersistIngestedMessageResult> {
-    return withTransaction((client) => this.persistWithClient(client, input));
+    const result = await withTransaction((client) => this.persistWithClient(client, input));
+
+    if (result.media && input.ingested.mediaDescriptor) {
+      await enqueueMediaDownload({
+        businessId: input.businessId,
+        whatsappAccountId: input.whatsappAccountId,
+        mediaId: result.media.id,
+        mediaDescriptor: input.ingested.mediaDescriptor,
+      });
+    }
+
+    return result;
   }
 
   private async persistWithClient(
@@ -124,6 +142,7 @@ export class WhatsAppMessagePersistenceService {
     });
 
     let updatedChat = chat;
+    let media: WhatsAppMediaRecord | null = null;
     if (message.wasInserted) {
       await chatRepo.recordLastMessage(chat.id, message.id, timestamp);
       updatedChat = {
@@ -134,7 +153,7 @@ export class WhatsAppMessagePersistenceService {
       };
 
       if (isMedia) {
-        const media = await mediaRepo.insert({
+        media = await mediaRepo.insert({
           businessId,
           whatsappAccountId,
           messageId: message.id,
@@ -146,7 +165,7 @@ export class WhatsAppMessagePersistenceService {
       }
     }
 
-    return { message, chat: updatedChat, deduplicated: !message.wasInserted };
+    return { message, chat: updatedChat, deduplicated: !message.wasInserted, media };
   }
 }
 

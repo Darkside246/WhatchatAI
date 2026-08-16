@@ -118,12 +118,21 @@ export class WhatsAppMediaRepository {
     status: MediaDownloadStatus,
     storageReference: string | null,
     sha256: string | null,
+    fileSize: number | null = null,
   ): Promise<void> {
     await this.db.query(
       `UPDATE whatsapp_media
-       SET download_status = $2, storage_reference = $3, storage_provider = 'local', sha256 = $4, updated_at = now()
+       SET download_status = $2, storage_reference = $3, storage_provider = 'local', sha256 = $4,
+           file_size = COALESCE($5, file_size), updated_at = now()
        WHERE id = $1`,
-      [id, status, storageReference, sha256],
+      [id, status, storageReference, sha256, fileSize],
+    );
+  }
+
+  async setDownloading(id: string): Promise<void> {
+    await this.db.query(
+      `UPDATE whatsapp_media SET download_status = 'downloading', updated_at = now() WHERE id = $1`,
+      [id],
     );
   }
 
@@ -137,5 +146,11 @@ export class WhatsAppMediaRepository {
   async findById(id: string): Promise<WhatsAppMediaRecord | null> {
     const { rows } = await this.db.query<MediaRow>('SELECT * FROM whatsapp_media WHERE id = $1', [id]);
     return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  async findByIds(ids: string[]): Promise<WhatsAppMediaRecord[]> {
+    if (ids.length === 0) return [];
+    const { rows } = await this.db.query<MediaRow>('SELECT * FROM whatsapp_media WHERE id = ANY($1)', [ids]);
+    return rows.map(toRecord);
   }
 }

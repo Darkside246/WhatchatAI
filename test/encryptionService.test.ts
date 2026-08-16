@@ -71,4 +71,31 @@ describe('EncryptionService (real AES-256-GCM, real Redis-backed key cache)', ()
     expect(service.tryParse('just a plain string')).toBeNull();
     expect(service.tryParse('{"not":"an envelope"}')).toBeNull();
   });
+
+  it('round-trips real binary media bytes through encryptBuffer/decryptBuffer, byte for byte', async () => {
+    const { randomBytes } = await import('node:crypto');
+    const plaintext = randomBytes(4096); // simulated real media bytes, not a mock
+
+    const envelope = await service.encryptBuffer('tenant-a', plaintext);
+    expect(Buffer.from(envelope.ciphertext, 'base64').equals(plaintext)).toBe(false);
+
+    const decrypted = await service.decryptBuffer('tenant-a', envelope);
+    expect(decrypted.equals(plaintext)).toBe(true);
+  });
+
+  it('detects tampering of encrypted media bytes via the real GCM auth tag', async () => {
+    const { randomBytes } = await import('node:crypto');
+    const envelope = await service.encryptBuffer('tenant-a', randomBytes(256));
+    const tamperedBytes = Buffer.from(envelope.ciphertext, 'base64');
+    tamperedBytes[0] = (tamperedBytes[0]! + 1) % 256;
+    const tampered = { ...envelope, ciphertext: tamperedBytes.toString('base64') };
+
+    await expect(service.decryptBuffer('tenant-a', tampered)).rejects.toThrow();
+  });
+
+  it('derives different keys per tenant for buffer encryption too - cross-tenant media decrypt fails', async () => {
+    const plaintext = Buffer.from('real media bytes for tenant A only');
+    const envelope = await service.encryptBuffer('tenant-media-a', plaintext);
+    await expect(service.decryptBuffer('tenant-media-b', envelope)).rejects.toThrow();
+  });
 });

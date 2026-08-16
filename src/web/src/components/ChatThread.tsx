@@ -1,7 +1,21 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, Check, CheckCheck, Clock, AlertCircle, Paperclip, Smile, Mic } from 'lucide-react';
-import { api, type WorkspaceMessage } from '../lib/api.js';
+import {
+  ArrowLeft,
+  Check,
+  CheckCheck,
+  Clock,
+  AlertCircle,
+  Paperclip,
+  Smile,
+  Mic,
+  Download,
+  FileText,
+  ImageOff,
+  Loader2,
+  FileWarning,
+} from 'lucide-react';
+import { api, mediaUrl, type WorkspaceMessage, type WorkspaceMedia } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
 
 function formatTime(iso: string): string {
@@ -13,6 +27,76 @@ function messageBody(message: WorkspaceMessage): string {
   if (message.caption) return message.caption;
   if (message.hasMedia) return `[${message.messageType}]`;
   return `[${message.messageType}]`;
+}
+
+function formatFileSize(bytes: number | null): string {
+  if (bytes === null) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Renders the real, decrypted media bytes served by GET /api/media/:id - it
+ * never shows an image/video/audio element unless download_status is
+ * actually 'downloaded'. Pending/failed/unavailable each get an honest,
+ * distinct state instead of a fake preview.
+ */
+function MediaContent({ media, caption }: { media: WorkspaceMedia; caption: string | null }) {
+  if (media.downloadStatus === 'pending' || media.downloadStatus === 'downloading') {
+    return (
+      <div className="flex items-center gap-2 rounded-lg bg-black/20 px-3 py-4 text-xs text-gray-300">
+        <Loader2 size={16} className="animate-spin" aria-hidden />
+        Downloading media…
+      </div>
+    );
+  }
+  if (media.downloadStatus === 'unavailable') {
+    return (
+      <div className="flex items-center gap-2 rounded-lg bg-black/20 px-3 py-4 text-xs text-gray-400">
+        <ImageOff size={16} aria-hidden />
+        This media is no longer available
+      </div>
+    );
+  }
+  if (media.downloadStatus === 'failed') {
+    return (
+      <div className="flex items-center gap-2 rounded-lg bg-black/20 px-3 py-4 text-xs text-red-400">
+        <FileWarning size={16} aria-hidden />
+        Media download failed
+      </div>
+    );
+  }
+
+  const url = mediaUrl(media.id);
+
+  if (media.mediaType === 'image' || media.mediaType === 'sticker') {
+    return (
+      <a href={url} target="_blank" rel="noreferrer">
+        <img src={url} alt={caption ?? 'Image attachment'} className="max-h-72 max-w-full rounded-lg object-contain" />
+      </a>
+    );
+  }
+  if (media.mediaType === 'video') {
+    return <video controls src={url} className="max-h-72 max-w-full rounded-lg" />;
+  }
+  if (media.mediaType === 'audio' || media.mediaType === 'voice_note') {
+    return <audio controls src={url} className="w-64 max-w-full" />;
+  }
+  return (
+    <a
+      href={url}
+      download={media.fileName ?? undefined}
+      className="flex items-center gap-2 rounded-lg bg-black/20 px-3 py-2 text-xs text-gray-100 hover:bg-black/30"
+    >
+      <FileText size={20} aria-hidden />
+      <span className="flex flex-col">
+        <span className="font-medium">{media.fileName ?? 'Document'}</span>
+        <span className="text-gray-400">{formatFileSize(media.fileSize)}</span>
+      </span>
+      <Download size={14} className="ml-2 shrink-0" aria-hidden />
+    </a>
+  );
 }
 
 /** Real delivery-receipt ticks driven by message.status (see messages.update wiring) - never a fabricated state. */
@@ -58,7 +142,10 @@ export function ChatThread({ onOpenDetail }: Props) {
 
   useWhatsAppSync((event: RealtimeEvent) => {
     if (!chatId) return;
-    if ((event.type === 'message.new' || event.type === 'message.status') && event.chatId === chatId) {
+    if (
+      (event.type === 'message.new' || event.type === 'message.status' || event.type === 'media.updated') &&
+      event.chatId === chatId
+    ) {
       void load(chatId);
     }
   });
@@ -101,7 +188,16 @@ export function ChatThread({ onOpenDetail }: Props) {
                 message.fromMe ? 'bg-emerald-700 text-white' : 'bg-surface-2 text-gray-100'
               }`}
             >
-              <p className="whitespace-pre-wrap break-words">{messageBody(message)}</p>
+              {message.hasMedia && message.media ? (
+                <div className="space-y-1">
+                  <MediaContent media={message.media} caption={message.caption} />
+                  {(message.caption ?? message.textContent) && (
+                    <p className="whitespace-pre-wrap break-words">{message.caption ?? message.textContent}</p>
+                  )}
+                </div>
+              ) : (
+                <p className="whitespace-pre-wrap break-words">{messageBody(message)}</p>
+              )}
               <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-80">
                 {message.isHistorical && <span title="Synced from history">history</span>}
                 <span>{formatTime(message.timestamp)}</span>

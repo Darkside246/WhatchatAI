@@ -11,6 +11,8 @@ import { whatsappMessageIngestionService } from '../services/whatsappMessageInge
 import { workspaceService, isChatNotFoundError } from '../services/workspaceService.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
 import { BusinessRepository } from '../repositories/businessRepository.js';
+import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
+import { retrieveMedia } from '../media/localEncryptedMediaStorage.js';
 import {
   getLockStatus,
   getUnlockChallenge,
@@ -219,6 +221,87 @@ app.get('/api/workspace/statuses', requireWorkspaceContext, async (_req, res) =>
   };
   const statuses = await workspaceService.listStatuses(businessId, whatsappAccountId);
   return res.status(200).json({ statuses });
+});
+
+/**
+ * The only route that ever reads media bytes off disk. Requires the same
+ * connected-workspace context as every other workspace route, and re-checks
+ * that the media row actually belongs to this business before decrypting
+ * anything - no raw filesystem path is ever exposed to the client.
+ *
+ * Supports HTTP Range so <video>/<audio> elements can seek. The file is
+ * decrypted (AES-256-GCM, single auth tag - can't be partially decrypted)
+ * into memory once per request, then the requested byte range is sliced
+ * from that plaintext; this is a real, correct implementation, not
+ * disk-level zero-copy streaming.
+ */
+app.get('/api/media/:mediaId', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const mediaId = String(req.params.mediaId ?? '');
+  const media = await new WhatsAppMediaRepository(pool).findById(mediaId);
+
+  if (!media || media.businessId !== businessId) {
+    return res.status(404).json({ error: 'MEDIA_NOT_FOUND' });
+  }
+  if (media.downloadStatus === 'pending' || media.downloadStatus === 'downloading') {
+    return res.status(202).json({ error: 'MEDIA_NOT_READY', downloadStatus: media.downloadStatus });
+  }
+  if (media.downloadStatus === 'unavailable') {
+    return res.status(404).json({
+      error: 'MEDIA_UNAVAILABLE',
+      message: 'This media is no longer available from WhatsApp (expired, or the sender deleted it before it could be downloaded).',
+    });
+  }
+  if (media.downloadStatus === 'failed' || !media.storageReference) {
+    return res.status(502).json({ error: 'MEDIA_DOWNLOAD_FAILED' });
+  }
+
+  let plaintext: Buffer;
+  try {
+    plaintext = await retrieveMedia(businessId, media.storageReference);
+  } catch (error) {
+    console.error(`[API] Failed to retrieve stored media ${mediaId}:`, error);
+    return res.status(500).json({ error: 'MEDIA_STORAGE_ERROR' });
+  }
+
+  const totalSize = plaintext.length;
+  res.setHeader('Content-Type', media.mimeType ?? 'application/octet-stream');
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+  if (media.fileName) {
+    res.setHeader('Content-Disposition', `inline; filename="${media.fileName.replace(/[\r\n"]/g, '')}"`);
+  }
+
+  const range = req.headers.range;
+  if (range) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    const hasStart = Boolean(match?.[1]);
+    const hasEnd = Boolean(match?.[2]);
+    let start = 0;
+    let end = totalSize - 1;
+    if (match && (hasStart || hasEnd)) {
+      if (hasStart) {
+        start = Number(match[1]);
+        end = hasEnd ? Number(match[2]) : totalSize - 1;
+      } else {
+        // Suffix range ("bytes=-500"): last N bytes.
+        start = Math.max(0, totalSize - Number(match[2]));
+      }
+    }
+
+    if (!match || start > end || end >= totalSize || start < 0) {
+      res.setHeader('Content-Range', `bytes */${totalSize}`);
+      return res.status(416).end();
+    }
+
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+    res.setHeader('Content-Length', String(end - start + 1));
+    return res.end(plaintext.subarray(start, end + 1));
+  }
+
+  res.setHeader('Content-Length', String(totalSize));
+  return res.end(plaintext);
 });
 
 const messageSchema = z.object({

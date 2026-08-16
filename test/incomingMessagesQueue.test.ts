@@ -42,6 +42,7 @@ describe('incoming_messages BullMQ pipeline (real Redis queue + real worker + re
       mimetype: null,
       fileName: null,
       textPreview: 'Message delivered through the real BullMQ pipeline',
+      mediaDescriptor: null,
       ingestedAt: new Date().toISOString(),
     };
 

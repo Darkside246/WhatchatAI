@@ -38,6 +38,18 @@ export interface WorkspaceChatSummary {
   aiMode: 'AI_ACTIVE' | 'AI_PAUSED' | 'HUMAN_TAKEOVER';
 }
 
+export interface WorkspaceMedia {
+  id: string;
+  mediaType: 'image' | 'video' | 'audio' | 'voice_note' | 'document' | 'sticker';
+  mimeType: string | null;
+  fileName: string | null;
+  fileSize: number | null;
+  durationSeconds: number | null;
+  width: number | null;
+  height: number | null;
+  downloadStatus: 'pending' | 'downloading' | 'downloaded' | 'failed' | 'unavailable';
+}
+
 export interface WorkspaceMessage {
   id: string;
   chatId: string;
@@ -52,6 +64,12 @@ export interface WorkspaceMessage {
   isHistorical: boolean;
   status: 'pending' | 'sent' | 'delivered' | 'read' | 'played' | 'failed' | 'unknown';
   hasMedia: boolean;
+  media: WorkspaceMedia | null;
+}
+
+/** Real, authenticated media URL - GET /api/media/:id (see server/index.ts) streams the decrypted bytes with Range support. */
+export function mediaUrl(mediaId: string): string {
+  return `/api/media/${mediaId}`;
 }
 
 export interface AiAgentSummary {

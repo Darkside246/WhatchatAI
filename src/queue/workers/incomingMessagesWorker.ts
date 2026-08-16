@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { Worker, type Job } from 'bullmq';
+import { downloadMediaMessage, type WAMessage, type WAMessageKey, type proto } from '@whiskeysockets/baileys';
 import { queueConnection } from '../connection.js';
 import { INCOMING_MESSAGES_QUEUE, type IncomingMessageJobData } from '../queues/incomingMessagesQueue.js';
 import {
@@ -7,6 +9,7 @@ import {
   type MessageStatusJobData,
   type CallEventJobData,
   type StatusUpdateJobData,
+  type MediaDownloadJobData,
 } from '../queues/realtimeEventsQueue.js';
 import { whatsappMessagePersistenceService } from '../../services/whatsappMessagePersistenceService.js';
 import { runSentinel } from '../../security/sentinel/sentinel.js';
@@ -16,8 +19,11 @@ import { pool } from '../../db/pool.js';
 import { WhatsAppMessageRepository } from '../../repositories/whatsappMessageRepository.js';
 import { WhatsAppCallRepository } from '../../repositories/whatsappCallRepository.js';
 import { WhatsAppStatusRepository } from '../../repositories/whatsappStatusRepository.js';
+import { WhatsAppMediaRepository } from '../../repositories/whatsappMediaRepository.js';
 import { mapBaileysCallStatus, callTypeFromEvent, isTerminalCallStatus } from '../../domain/whatsapp/callStatus.js';
 import { classifyJid, derivePhoneNumber } from '../../domain/whatsapp/jid.js';
+import { decodeBuffersFromQueue } from '../../domain/whatsapp/binaryCodec.js';
+import { storeMedia } from '../../media/localEncryptedMediaStorage.js';
 import type { StatusType } from '../../domain/whatsapp/types.js';
 
 /**
@@ -91,6 +97,96 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
 const messageRepository = new WhatsAppMessageRepository(pool);
 const callRepository = new WhatsAppCallRepository(pool);
 const statusRepository = new WhatsAppStatusRepository(pool);
+const mediaRepository = new WhatsAppMediaRepository(pool);
+
+// Configurable, not hardcoded: operators can raise/lower this per deployment.
+const MAX_MEDIA_DOWNLOAD_BYTES = Number(process.env.MEDIA_MAX_DOWNLOAD_BYTES ?? 100 * 1024 * 1024);
+
+const MEDIA_CONTENT_KEYS = [
+  'imageMessage',
+  'videoMessage',
+  'audioMessage',
+  'documentMessage',
+  'stickerMessage',
+] as const;
+
+/** Pulls the sender-declared plaintext SHA-256 off whichever media field is present, for real integrity verification against the bytes we actually downloaded. */
+function extractDeclaredSha256(message: proto.IMessage): Buffer | null {
+  for (const key of MEDIA_CONTENT_KEYS) {
+    const content = message[key];
+    if (content?.fileSha256) return Buffer.from(content.fileSha256);
+  }
+  return null;
+}
+
+interface HttpLikeError {
+  status?: number;
+  output?: { statusCode?: number };
+}
+
+/**
+ * Downloads the real media bytes for a message via Baileys' own
+ * downloadMediaMessage, verifies them, encrypts-at-rest, and records an
+ * honest outcome - never a fabricated success. No `ctx` (reupload-request
+ * callback) is passed: this worker has no live Baileys socket, so an
+ * expired-media reupload isn't possible from here and is reported as
+ * UNAVAILABLE rather than faked.
+ */
+async function processMediaDownload(data: MediaDownloadJobData): Promise<void> {
+  const { businessId, mediaId, mediaDescriptor } = data;
+  await mediaRepository.setDownloading(mediaId);
+
+  const decoded = decodeBuffersFromQueue(mediaDescriptor) as { key: WAMessageKey; message: proto.IMessage };
+  const waMessage = { key: decoded.key, message: decoded.message } as WAMessage;
+
+  let buffer: Buffer;
+  try {
+    buffer = await downloadMediaMessage(waMessage, 'buffer', {});
+  } catch (error) {
+    const httpError = error as HttpLikeError;
+    const statusCode = httpError.output?.statusCode ?? httpError.status;
+    const unavailable = statusCode === 404 || statusCode === 410;
+    console.error(
+      `[RealtimeEventsWorker] Media download failed for media ${mediaId}: ${(error as Error).message}`,
+    );
+    await mediaRepository.setDownloadResult(mediaId, unavailable ? 'unavailable' : 'failed', null, null);
+    return;
+  }
+
+  if (!buffer || buffer.length === 0) {
+    console.error(`[RealtimeEventsWorker] Media download for ${mediaId} returned an empty buffer`);
+    await mediaRepository.setDownloadResult(mediaId, 'failed', null, null);
+    return;
+  }
+
+  if (buffer.length > MAX_MEDIA_DOWNLOAD_BYTES) {
+    console.error(
+      `[RealtimeEventsWorker] Media ${mediaId} (${buffer.length} bytes) exceeds MEDIA_MAX_DOWNLOAD_BYTES (${MAX_MEDIA_DOWNLOAD_BYTES})`,
+    );
+    await mediaRepository.setDownloadResult(mediaId, 'failed', null, null);
+    return;
+  }
+
+  const actualSha256 = createHash('sha256').update(buffer).digest();
+  const declaredSha256 = extractDeclaredSha256(decoded.message);
+  if (declaredSha256 && !actualSha256.equals(declaredSha256)) {
+    console.error(`[RealtimeEventsWorker] Media ${mediaId} failed checksum verification against sender-declared SHA-256`);
+    await mediaRepository.setDownloadResult(mediaId, 'failed', null, null);
+    return;
+  }
+
+  const sha256Hex = actualSha256.toString('hex');
+  const storageReference = await storeMedia(businessId, sha256Hex, buffer);
+  await mediaRepository.setDownloadResult(mediaId, 'downloaded', storageReference, sha256Hex, buffer.length);
+
+  const media = await mediaRepository.findById(mediaId);
+  if (media) {
+    const message = await messageRepository.findById(media.messageId);
+    if (message) {
+      await publishRealtimeEvent({ type: 'media.updated', businessId, mediaId, messageId: message.id, chatId: message.chatId });
+    }
+  }
+}
 
 const STATUS_TTL_MS = 24 * 60 * 60 * 1000; // WhatsApp Status entries always expire 24h after posting - a real product rule, not a guess.
 
@@ -224,7 +320,7 @@ export async function sweepStaleRingingCalls(): Promise<void> {
 }
 
 async function processRealtimeEventJob(
-  job: Job<MessageStatusJobData | CallEventJobData | StatusUpdateJobData>,
+  job: Job<MessageStatusJobData | CallEventJobData | StatusUpdateJobData | MediaDownloadJobData>,
 ): Promise<void> {
   if (job.name === 'message-status') {
     await processMessageStatus(job.data as MessageStatusJobData);
@@ -234,6 +330,8 @@ async function processRealtimeEventJob(
     await processStatusUpdate(job.data as StatusUpdateJobData);
   } else if (job.name === 'call-timeout-sweep') {
     await sweepStaleRingingCalls();
+  } else if (job.name === 'media-download') {
+    await processMediaDownload(job.data as MediaDownloadJobData);
   }
 }
 

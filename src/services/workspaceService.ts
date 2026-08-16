@@ -10,8 +10,10 @@ import { AiAgentRepository } from '../repositories/aiAgentRepository.js';
 import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMappingRepository.js';
 import { WhatsAppCallRepository } from '../repositories/whatsappCallRepository.js';
 import { WhatsAppStatusRepository } from '../repositories/whatsappStatusRepository.js';
+import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
+import type { WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { classifyJid } from '../domain/whatsapp/jid.js';
-import type { CallStatus, CallType, MessageDirection } from '../domain/whatsapp/types.js';
+import type { CallStatus, CallType, MediaDownloadStatus, MediaType, MessageDirection } from '../domain/whatsapp/types.js';
 
 export interface WorkspaceChatSummary {
   id: string;
@@ -52,6 +54,22 @@ export interface WorkspaceStatusSummary {
   expiresAt: string | null;
 }
 
+export interface WorkspaceMediaSummary {
+  id: string;
+  mediaType: MediaType;
+  mimeType: string | null;
+  fileName: string | null;
+  fileSize: number | null;
+  durationSeconds: number | null;
+  width: number | null;
+  height: number | null;
+  downloadStatus: MediaDownloadStatus;
+}
+
+export interface WorkspaceMessageSummary extends WhatsAppMessageRecord {
+  media: WorkspaceMediaSummary | null;
+}
+
 export interface ChatNotFoundError extends Error {
   code: 'CHAT_NOT_FOUND';
 }
@@ -73,6 +91,7 @@ export class WorkspaceService {
   private readonly jidMappingRepository = new WhatsAppJidMappingRepository(pool);
   private readonly callRepository = new WhatsAppCallRepository(pool);
   private readonly statusRepository = new WhatsAppStatusRepository(pool);
+  private readonly mediaRepository = new WhatsAppMediaRepository(pool);
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
@@ -251,12 +270,39 @@ export class WorkspaceService {
     return { chat, contact, crmContact, resolvedPhoneNumber };
   }
 
-  async listMessages(businessId: string, whatsappAccountId: string, chatId: string, limit = 50) {
+  async listMessages(
+    businessId: string,
+    whatsappAccountId: string,
+    chatId: string,
+    limit = 50,
+  ): Promise<WorkspaceMessageSummary[]> {
     const chat = await this.chatRepository.findById(chatId);
     if (!chat || chat.businessId !== businessId || chat.whatsappAccountId !== whatsappAccountId) {
       throw this.notFound();
     }
-    return this.messageRepository.listByChat(chatId, limit);
+    const messages = await this.messageRepository.listByChat(chatId, limit);
+
+    const mediaIds = messages.map((message) => message.mediaId).filter((id): id is string => id !== null);
+    const mediaRows = await this.mediaRepository.findByIds(mediaIds);
+    const mediaById = new Map(mediaRows.map((row) => [row.id, row]));
+
+    return messages.map((message) => {
+      const mediaRow = message.mediaId ? mediaById.get(message.mediaId) : undefined;
+      const media: WorkspaceMediaSummary | null = mediaRow
+        ? {
+            id: mediaRow.id,
+            mediaType: mediaRow.mediaType,
+            mimeType: mediaRow.mimeType,
+            fileName: mediaRow.fileName,
+            fileSize: mediaRow.fileSize,
+            durationSeconds: mediaRow.durationSeconds,
+            width: mediaRow.width,
+            height: mediaRow.height,
+            downloadStatus: mediaRow.downloadStatus,
+          }
+        : null;
+      return { ...message, media };
+    });
   }
 
   async setAiMode(businessId: string, whatsappAccountId: string, chatId: string, aiMode: ChatAiMode) {

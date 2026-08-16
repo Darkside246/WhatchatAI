@@ -47,6 +47,33 @@ export class EncryptionService {
     return plaintext.toString('utf8');
   }
 
+  /** Binary-safe counterpart of encryptField, for media bytes rather than text fields. */
+  async encryptBuffer(tenantId: string, plaintext: Buffer): Promise<EncryptedEnvelope> {
+    const { keyId, key } = await this.keyProvider.getDataKey(tenantId);
+    const iv = randomBytes(IV_LENGTH_BYTES);
+    const cipher = createCipheriv(ALGORITHM, key, iv);
+    const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+
+    return {
+      v: CURRENT_ENVELOPE_VERSION,
+      keyId,
+      iv: iv.toString('base64'),
+      authTag: authTag.toString('base64'),
+      ciphertext: ciphertext.toString('base64'),
+    };
+  }
+
+  async decryptBuffer(tenantId: string, envelope: EncryptedEnvelope): Promise<Buffer> {
+    if (envelope.v !== CURRENT_ENVELOPE_VERSION) {
+      throw new Error(`Unsupported encryption envelope version: ${envelope.v}`);
+    }
+    const { key } = await this.keyProvider.getDataKey(tenantId);
+    const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(envelope.iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(envelope.authTag, 'base64'));
+    return Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, 'base64')), decipher.final()]);
+  }
+
   /** Serializes an envelope to a single string safe for a TEXT column. */
   serialize(envelope: EncryptedEnvelope): string {
     return JSON.stringify(envelope);

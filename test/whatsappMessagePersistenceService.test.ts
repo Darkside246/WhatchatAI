@@ -22,6 +22,7 @@ function ingestedMessage(overrides: Partial<IngestedWhatsAppMessage> = {}): Inge
     fileName: null,
     textPreview: 'hi',
     ingestedAt: new Date().toISOString(),
+    mediaDescriptor: null,
     ...overrides,
   };
 }

@@ -1,6 +1,9 @@
 import type { MessageUpsertType, WAMessage, WAMessageKey, proto } from '@whiskeysockets/baileys';
 import type Long from 'long';
 import { classifyJid, derivePhoneNumber, type WhatsAppJidKind } from '../domain/whatsapp/jid.js';
+import { encodeBuffersForQueue } from '../domain/whatsapp/binaryCodec.js';
+
+const DOWNLOADABLE_MEDIA_TYPES = new Set(['image', 'video', 'audio', 'voice_note', 'document', 'sticker']);
 
 export type { WhatsAppJidKind };
 
@@ -42,6 +45,14 @@ export interface IngestedWhatsAppMessage {
   fileName: string | null;
   textPreview: string | null;
   ingestedAt: string;
+  /**
+   * Opaque, base64-encoded raw Baileys {key, message} for a downloadable
+   * media message - only present for real media types, and never for
+   * view-once media (WhatsApp's privacy model means view-once content is
+   * intentionally not persisted). Decoded back into a WAMessage-shaped
+   * object by the media-download worker via decodeBuffersFromQueue().
+   */
+  mediaDescriptor: Record<string, unknown> | null;
 }
 
 interface ClassifiedContent {
@@ -50,6 +61,8 @@ interface ClassifiedContent {
   mimetype: string | null;
   fileName: string | null;
   textPreview: string | null;
+  /** The fully-unwrapped message content, only set for real downloadable media types. */
+  rawMediaMessage: proto.IMessage | null;
 }
 
 const MAX_BUFFER_SIZE = 500;
@@ -78,17 +91,26 @@ function truncatePreview(text: string): string {
   return text.length > TEXT_PREVIEW_MAX_LENGTH ? `${text.slice(0, TEXT_PREVIEW_MAX_LENGTH)}…` : text;
 }
 
-/** Unwraps ephemeral / view-once / caption / edit message envelopes to reach the real content. */
-function unwrapContent(message: proto.IMessage | null | undefined): proto.IMessage | null | undefined {
-  if (!message) return message;
-  const wrapped =
-    message.ephemeralMessage?.message ??
-    message.viewOnceMessage?.message ??
-    message.viewOnceMessageV2?.message ??
-    message.viewOnceMessageV2Extension?.message ??
-    message.documentWithCaptionMessage?.message ??
-    message.editedMessage?.message;
-  return wrapped ? unwrapContent(wrapped) : message;
+/**
+ * Unwraps ephemeral / caption / edit message envelopes to reach the real
+ * content. View-once is unwrapped for classification/preview purposes too,
+ * but flagged separately - see isViewOnce - so callers can still show a
+ * caption/preview without ever downloading the underlying media.
+ */
+function unwrapContent(
+  message: proto.IMessage | null | undefined,
+  isViewOnce = false,
+): { message: proto.IMessage | null | undefined; isViewOnce: boolean } {
+  if (!message) return { message, isViewOnce };
+
+  const viewOnceWrapped =
+    message.viewOnceMessage?.message ?? message.viewOnceMessageV2?.message ?? message.viewOnceMessageV2Extension?.message;
+  if (viewOnceWrapped) return unwrapContent(viewOnceWrapped, true);
+
+  const wrapped = message.ephemeralMessage?.message ?? message.documentWithCaptionMessage?.message ?? message.editedMessage?.message;
+  if (wrapped) return unwrapContent(wrapped, isViewOnce);
+
+  return { message, isViewOnce };
 }
 
 function classifyContent(content: proto.IMessage | null | undefined): ClassifiedContent {
@@ -98,10 +120,15 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
     mimetype: null,
     fileName: null,
     textPreview: null,
+    rawMediaMessage: null,
   };
 
-  const message = unwrapContent(content);
+  const { message, isViewOnce } = unwrapContent(content);
   if (!message) return empty;
+  // View-once media is never downloaded/persisted (WhatsApp's own privacy
+  // model), so rawMediaMessage is deliberately omitted for it below even
+  // though classification/caption preview still works normally.
+  const media = (raw: proto.IMessage): proto.IMessage | null => (isViewOnce ? null : raw);
 
   if (message.conversation) {
     return { ...empty, contentType: 'text', textPreview: truncatePreview(message.conversation) };
@@ -115,6 +142,7 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
       contentType: 'image',
       mimetype: message.imageMessage.mimetype ?? null,
       textPreview: message.imageMessage.caption ? truncatePreview(message.imageMessage.caption) : null,
+      rawMediaMessage: media(message),
     };
   }
   if (message.videoMessage) {
@@ -123,6 +151,7 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
       contentType: 'video',
       mimetype: message.videoMessage.mimetype ?? null,
       textPreview: message.videoMessage.caption ? truncatePreview(message.videoMessage.caption) : null,
+      rawMediaMessage: media(message),
     };
   }
   if (message.audioMessage) {
@@ -130,6 +159,7 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
       ...empty,
       contentType: message.audioMessage.ptt ? 'voice_note' : 'audio',
       mimetype: message.audioMessage.mimetype ?? null,
+      rawMediaMessage: media(message),
     };
   }
   if (message.documentMessage) {
@@ -141,10 +171,16 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
       mimetype,
       fileName,
       textPreview: message.documentMessage.caption ? truncatePreview(message.documentMessage.caption) : null,
+      rawMediaMessage: media(message),
     };
   }
   if (message.stickerMessage) {
-    return { ...empty, contentType: 'sticker', mimetype: message.stickerMessage.mimetype ?? null };
+    return {
+      ...empty,
+      contentType: 'sticker',
+      mimetype: message.stickerMessage.mimetype ?? null,
+      rawMediaMessage: media(message),
+    };
   }
   if (message.locationMessage || message.liveLocationMessage) {
     return { ...empty, contentType: 'location' };
@@ -266,7 +302,12 @@ export class WhatsAppMessageIngestionService {
     const key = message.key as WAMessageKey;
     const remoteJid = key.remoteJid ?? '';
     const jidKind = classifyJid(remoteJid);
-    const classified = classifyContent(message.message);
+    const { rawMediaMessage, ...classified } = classifyContent(message.message);
+
+    const mediaDescriptor =
+      rawMediaMessage && DOWNLOADABLE_MEDIA_TYPES.has(classified.contentType)
+        ? (encodeBuffersForQueue({ key, message: rawMediaMessage }) as Record<string, unknown>)
+        : null;
 
     return {
       messageId: key.id ?? '',
@@ -281,6 +322,7 @@ export class WhatsAppMessageIngestionService {
       messageTimestamp: toIsoTimestamp(message.messageTimestamp ?? null),
       ingestedAt: new Date().toISOString(),
       ...classified,
+      mediaDescriptor,
     };
   }
 }

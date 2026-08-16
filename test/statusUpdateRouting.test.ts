@@ -48,6 +48,7 @@ describe('status@broadcast routing (real Postgres, real BullMQ worker)', () => {
       fileName: null,
       textPreview: 'On vacation this week!',
       ingestedAt: postedAt.toISOString(),
+      mediaDescriptor: null,
     };
 
     const completion = new Promise<void>((resolve, reject) => {
@@ -102,6 +103,7 @@ describe('status@broadcast routing (real Postgres, real BullMQ worker)', () => {
         fileName: null,
         textPreview: null,
         ingestedAt: new Date().toISOString(),
+        mediaDescriptor: null,
       };
       const completion = new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error(`Timed out on ${statusId}`)), 10_000);
