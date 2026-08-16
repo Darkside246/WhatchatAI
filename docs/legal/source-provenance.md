@@ -25,16 +25,36 @@ surface (see `dependency-and-license-audit.md` for that dependency's
 license). No lines, functions, components, or file structures were copied
 from any of those reference projects.
 
-One clarification on "research" vs. "reuse": the Phase 2 directive asked
-for GitHub research into five reference repositories (WhatsApp-Flows-Tools,
-whatsapp-web.js, WAHA, WAHA docs, WACRM) for architectural ideas. That
-research step was not actually performed in this session — the Phase 2
-audit covered Baileys' own installed capabilities directly, not those five
-repos. Nothing from them has been read, copied, or adapted. If a future
-session does perform that research and something from it (an architectural
-pattern, a UI structure, actual source lines) makes it into WhatchatAI, an
-entry is required below — including for a pattern extracted only
-conceptually and reimplemented, per the "record the decision" rule.
+## Research status (updated)
+
+- **Chatwoot**: actually researched this pass — a fresh shallow clone of
+  `https://github.com/chatwoot/chatwoot` was inspected directly (real
+  model files under `app/models/` and `enterprise/app/models/`, not the
+  README). Findings: `docs/reference/chatwoot-feature-map.md`,
+  `docs/reference/architecture-gap-analysis.md`. Result: **conceptual
+  patterns only were extracted** (e.g. the shape of `AutomationRule`'s
+  event/condition/action model, `Conversation`'s dual agent/contact
+  last-seen tracking) — no source lines were copied. No entry is required
+  in the table below because "conceptual pattern, reimplemented
+  originally" per this policy's own preference (see "Prefer original
+  implementation when practical" in the governing directive) doesn't
+  constitute reuse of the source itself. If a future session copies actual
+  Chatwoot source lines, an entry is required then.
+- **whatsapp-web.js**: actually researched this pass — a fresh shallow
+  clone of `https://github.com/wwebjs/whatsapp-web.js` was inspected
+  directly (`src/Client.js`, `src/structures/*.js`,
+  `src/util/Constants.js`). Findings:
+  `docs/reference/whatsapp-connector-comparison.md`,
+  `docs/reference/whatsapp-feature-map.md`. Result: **not adopted as a
+  connector** (see `docs/architecture/adr-001-whatsapp-connector.md`) and
+  **no source reused** — it informed the connector comparison only.
+- **WAHA, WAHA docs, WACRM, WhatsApp-Flows-Tools**: still **not
+  researched** — this session's directive scoped Phase A research to
+  Chatwoot and whatsapp-web.js only (narrower than the earlier Phase 2
+  directive, which named all five but whose research step was never
+  carried out). Nothing from these four has been read, copied, or
+  adapted. If a future directive asks for that research, this record must
+  be updated the same way the two entries above just were.
 
 ## Table
 
@@ -50,9 +70,23 @@ Columns, for future entries:
 
 ## Special note: Chatwoot's `enterprise/` directory
 
-No file from Chatwoot's `enterprise/` directory has been inspected, copied,
-or adapted. Per policy, that directory remains entirely off-limits until a
-human has reviewed `enterprise/LICENSE` from the Chatwoot repository and
-explicitly determined compatibility with WhatchatAI's commercial SaaS
-distribution — that review has not happened, so no future contribution may
-draw on that directory without it happening first.
+`enterprise/LICENSE` was read directly this pass (real text, not
+assumed). It is a source-available license, not MIT: production use
+requires agreeing to Chatwoot's Subscription Terms of Service and holding
+a valid Enterprise License "for the correct number of user seats";
+copying, merging, publishing, distributing, sublicensing, or selling the
+software is explicitly forbidden outside that subscription. Only
+development/testing copying is permitted without one.
+
+**Engineering-level determination** (not legal advice, per this
+document's own framing): this license is **not compatible** with
+WhatchatAI incorporating any `enterprise/` source into a commercial SaaS
+product without purchasing a Chatwoot Enterprise subscription — which
+defeats the purpose of "reuse" in the first place. `enterprise/app/models/
+captain/*.rb` (Chatwoot's AI system) was specifically inspected under this
+finding and confirmed to fall under this license — see the "AI / Captain"
+row in `docs/reference/chatwoot-feature-map.md` for the conceptual-only
+treatment given to it. No code from `enterprise/` has been copied or
+adapted, and none should be without a human confirming the commercial
+subscription terms first — this record does not substitute for that
+confirmation, it documents why the directory remains off-limits.
