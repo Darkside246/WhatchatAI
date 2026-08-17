@@ -3,6 +3,7 @@ import { Lock } from 'lucide-react';
 import { api, ApiError } from '../lib/api.js';
 import { DEFAULT_ARGON2_PARAMS, generateSalt, hashPin } from '../lib/pinCrypto.js';
 import { useIdleTimer } from '../hooks/useIdleTimer.js';
+import { LOCK_NOW_EVENT } from '../lib/lockEvents.js';
 import { AlertNotifier } from './AlertNotifier.js';
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -64,6 +65,13 @@ export function ScreenLock({ children }: Props) {
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
+  }, [engageLock]);
+
+  // A "Lock now" button elsewhere (Settings) reaches this same real engageLock -
+  // not a second, separate lock implementation.
+  useEffect(() => {
+    window.addEventListener(LOCK_NOW_EVENT, engageLock);
+    return () => window.removeEventListener(LOCK_NOW_EVENT, engageLock);
   }, [engageLock]);
 
   async function handleSetupSubmit(event: FormEvent) {

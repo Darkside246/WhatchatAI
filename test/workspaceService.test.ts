@@ -252,3 +252,42 @@ describe('workspaceService.sendReaction (a real reaction send, not a faked local
     ).rejects.toThrow();
   });
 });
+
+describe('workspaceService.updateAccountProfilePicture (pushes to WhatsApp itself, never a local-only swap)', () => {
+  let businessId: string;
+  let accountId: string;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId);
+  });
+
+  it('rejects with a real "not connected" error rather than silently succeeding - no live socket exists in tests', async () => {
+    const fakeJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+    await expect(
+      workspaceService.updateAccountProfilePicture(businessId, accountId, fakeJpeg, 'image/jpeg'),
+    ).rejects.toThrow(/not connected/i);
+  });
+
+  it('throws not-found for an account belonging to a different business', async () => {
+    const otherBusinessId = await createTestBusiness('Other Business');
+    const fakeJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+    await expect(
+      workspaceService.updateAccountProfilePicture(otherBusinessId, accountId, fakeJpeg, 'image/jpeg'),
+    ).rejects.toThrow();
+    try {
+      await workspaceService.updateAccountProfilePicture(otherBusinessId, accountId, fakeJpeg, 'image/jpeg');
+      expect.fail('expected updateAccountProfilePicture to reject');
+    } catch (error) {
+      expect(isChatNotFoundError(error)).toBe(true);
+    }
+  });
+
+  it('throws not-found for a nonexistent account id', async () => {
+    const fakeJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+    await expect(
+      workspaceService.updateAccountProfilePicture(businessId, '00000000-0000-0000-0000-000000000000', fakeJpeg, 'image/jpeg'),
+    ).rejects.toThrow();
+  });
+});

@@ -162,6 +162,21 @@ export class WhatsAppConnectionService {
   }
 
   /**
+   * A real profile picture update on the connected WhatsApp account itself
+   * - Baileys resizes/encodes the image internally (generateProfilePicture)
+   * and pushes it to WhatsApp's own servers, exactly what the official app
+   * does when you change your photo. Throws on failure (never silently
+   * swallowed) so the caller can report a real error rather than pretending
+   * the change landed.
+   */
+  async updateOwnProfilePicture(imageBuffer: Buffer): Promise<void> {
+    if (!this.isReady() || !this.socket || !this.snapshot.jid) {
+      throw new Error('WhatsApp is not connected');
+    }
+    await this.socket.updateProfilePicture(this.snapshot.jid, imageBuffer);
+  }
+
+  /**
    * A real reaction send - `react` is a regular AnyMessageContent variant
    * Baileys accepts via sendMessage, not a separate ad-hoc protocol call.
    * An empty `emoji` string is WhatsApp's own convention for removing a

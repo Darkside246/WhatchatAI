@@ -370,6 +370,12 @@ export const api = {
   getBusiness: () => request<{ business: WorkspaceBusiness }>('/workspace/business'),
   updateBusiness: (name: string) =>
     request<{ business: WorkspaceBusiness }>('/workspace/business', { method: 'PATCH', body: JSON.stringify({ name }) }),
+  /** Pushes a real profile picture to WhatsApp itself (Baileys updateProfilePicture) - never just a local-only avatar swap. */
+  updateAccountProfilePicture: (imageBase64: string, mimeType: string) =>
+    request<{ status: string }>('/workspace/account/profile-picture', {
+      method: 'PUT',
+      body: JSON.stringify({ imageBase64, mimeType }),
+    }),
   listAgents: () => request<{ agents: AiAgentSummary[] }>('/workspace/agents'),
   createAgent: (body: CreateAgentBody) =>
     request<{ agent: AiAgentSummary }>('/workspace/agents', { method: 'POST', body: JSON.stringify(body) }),

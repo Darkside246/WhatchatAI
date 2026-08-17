@@ -23,6 +23,7 @@ import type { WhatsAppMessageRecord } from '../repositories/whatsappMessageRepos
 import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { describeMessageType } from '../domain/whatsapp/messagePreview.js';
 import { whatsappConnectionService } from './whatsappConnectionService.js';
+import { enqueueContactProfilePictureSync, storeAndAttachAccountProfilePicture } from './profilePictureSyncService.js';
 import type {
   CallStatus,
   CallType,
@@ -286,6 +287,13 @@ export class WorkspaceService {
         };
         phoneNumber = contact.phoneNumber;
         avatarMediaId = contact.profilePictureMediaId;
+
+        // Best-effort, rate-limited background fetch so a real photo is
+        // usually already there by the time a human opens this chat,
+        // instead of only ever starting on that first click.
+        if (!avatarMediaId) {
+          enqueueContactProfilePictureSync(businessId, whatsappAccountId, contact.id, contact.whatsappJid);
+        }
       }
 
       // A `@lid` chat identity carries no phone number of its own - resolved
@@ -661,6 +669,21 @@ export class WorkspaceService {
     const updated = await this.businessRepository.updateName(businessId, name);
     if (!updated) throw new Error(`Business ${businessId} not found`);
     return updated;
+  }
+
+  /**
+   * A real profile picture change - pushed to WhatsApp's own servers first
+   * (updateOwnProfilePicture throws on failure, so a rejected upload never
+   * gets stored locally as if it succeeded), then the exact same bytes are
+   * kept as this account's local copy so the UI reflects it immediately
+   * without waiting on a redundant CDN round-trip.
+   */
+  async updateAccountProfilePicture(businessId: string, whatsappAccountId: string, imageBuffer: Buffer, mimeType: string): Promise<void> {
+    const account = await this.accountRepository.findById(whatsappAccountId);
+    if (!account || account.businessId !== businessId) throw this.notFound();
+
+    await whatsappConnectionService.updateOwnProfilePicture(imageBuffer);
+    await storeAndAttachAccountProfilePicture(businessId, whatsappAccountId, imageBuffer, mimeType);
   }
 
   /**

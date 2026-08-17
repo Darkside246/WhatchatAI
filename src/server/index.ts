@@ -375,6 +375,37 @@ app.patch('/api/workspace/business', requireWorkspaceContext, async (req, res) =
   return res.status(200).json({ business });
 });
 
+const updateProfilePictureSchema = z.object({
+  imageBase64: z.string().min(1),
+  mimeType: z.string().min(1),
+});
+
+/**
+ * A real profile picture change on the connected WhatsApp account -
+ * see workspaceService.updateAccountProfilePicture's own doc comment for
+ * why the WhatsApp push happens before anything is stored locally.
+ */
+app.put('/api/workspace/account/profile-picture', requireWorkspaceContext, async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
+    businessId: string;
+    whatsappAccountId: string;
+  };
+  const parsed = updateProfilePictureSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_PROFILE_PICTURE' });
+  }
+  try {
+    const buffer = Buffer.from(parsed.data.imageBase64, 'base64');
+    await workspaceService.updateAccountProfilePicture(businessId, whatsappAccountId, buffer, parsed.data.mimeType);
+    return res.status(200).json({ status: 'updated' });
+  } catch (error) {
+    if (isChatNotFoundError(error)) return res.status(404).json({ error: 'ACCOUNT_NOT_FOUND' });
+    return res
+      .status(502)
+      .json({ error: 'PROFILE_PICTURE_UPDATE_FAILED', message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 app.get('/api/workspace/billing', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const billing = await workspaceService.getBillingOverview(businessId);

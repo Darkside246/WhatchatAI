@@ -1,8 +1,26 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Camera, Lock } from 'lucide-react';
 import { api, mediaUrl, ApiError, type WorkspaceBusiness, type WhatsAppConnectionSnapshot } from '../lib/api.js';
 import { Avatar } from '../components/Avatar.js';
+import { MediaLightbox } from '../components/MediaLightbox.js';
 import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
+import { triggerLockNow } from '../lib/lockEvents.js';
+
+const MAX_PROFILE_PICTURE_BYTES = 5 * 1024 * 1024;
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // data:<mime>;base64,<payload> - only the payload goes to the API.
+      resolve(result.slice(result.indexOf(',') + 1));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
 
 const STATUS_COLOR: Record<WhatsAppConnectionSnapshot['status'], string> = {
   CONNECTED: 'bg-success/15 text-success',
@@ -101,6 +119,40 @@ function BusinessProfileCard() {
 function WhatsAppAccountCard({ connection }: { connection: WhatsAppConnectionSnapshot | null }) {
   const [busy, setBusy] = useState<'disconnect' | 'logout' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function handlePhotoSelected(file: File) {
+    if (!file.type.startsWith('image/')) {
+      setError('Please choose an image file.');
+      return;
+    }
+    if (file.size > MAX_PROFILE_PICTURE_BYTES) {
+      setError('Image is too large (max 5MB).');
+      return;
+    }
+
+    setError(null);
+    setUploadingPhoto(true);
+    const objectUrl = URL.createObjectURL(file);
+    setPreviewUrl(objectUrl);
+    try {
+      const imageBase64 = await fileToBase64(file);
+      await api.updateAccountProfilePicture(imageBase64, file.type);
+      // The real photo will replace this local preview once the next
+      // connection-status poll picks up the newly attached media id.
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to update profile picture on WhatsApp.');
+      setPreviewUrl(null);
+      URL.revokeObjectURL(objectUrl);
+    } finally {
+      setUploadingPhoto(false);
+    }
+  }
+
+  const currentPhotoUrl = previewUrl ?? (connection?.avatarMediaId ? mediaUrl(connection.avatarMediaId) : null);
 
   async function handleDisconnect() {
     setBusy('disconnect');
@@ -139,15 +191,47 @@ function WhatsAppAccountCard({ connection }: { connection: WhatsAppConnectionSna
       </div>
 
       <div className="mt-4 flex items-center gap-3">
-        <Avatar
-          label={connection.pushName ?? connection.phoneNumber ?? '?'}
-          photoUrl={connection.avatarMediaId ? mediaUrl(connection.avatarMediaId) : null}
-        />
+        <div className="group relative">
+          <button
+            type="button"
+            onClick={() => currentPhotoUrl && setLightboxOpen(true)}
+            disabled={!currentPhotoUrl}
+            className="block disabled:cursor-default"
+            title={currentPhotoUrl ? 'View photo' : undefined}
+          >
+            <Avatar label={connection.pushName ?? connection.phoneNumber ?? '?'} photoUrl={currentPhotoUrl} />
+          </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadingPhoto}
+            title="Change profile photo on WhatsApp"
+            className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full border border-surface-1 bg-accent text-white shadow transition hover:bg-accent-dim disabled:opacity-50"
+          >
+            <Camera size={11} aria-hidden />
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = '';
+              if (file) void handlePhotoSelected(file);
+            }}
+          />
+        </div>
         <div className="min-w-0">
           <p className="truncate text-sm font-medium text-fg">{connection.pushName ?? '—'}</p>
           <p className="truncate text-xs text-fg-muted">{connection.phoneNumber ?? '—'}</p>
+          {uploadingPhoto && <p className="text-[11px] text-fg-muted">Updating on WhatsApp…</p>}
         </div>
       </div>
+
+      {lightboxOpen && currentPhotoUrl && (
+        <MediaLightbox imageUrl={currentPhotoUrl} fileName={null} onClose={() => setLightboxOpen(false)} />
+      )}
 
       <dl className="mt-4 grid grid-cols-2 gap-3 text-xs">
         <div>
@@ -191,6 +275,36 @@ function WhatsAppAccountCard({ connection }: { connection: WhatsAppConnectionSna
           {busy === 'logout' ? 'Logging out…' : 'Log out'}
         </button>
       </div>
+    </div>
+  );
+}
+
+function SecurityCard() {
+  const [configured, setConfigured] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    api
+      .getLockStatus()
+      .then((status) => setConfigured(status.configured))
+      .catch(() => setConfigured(null));
+  }, []);
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      <h2 className="text-sm font-semibold text-fg">Screen lock</h2>
+      <p className="mt-1 text-xs text-fg-muted">
+        {configured
+          ? 'A PIN is set - the app locks automatically after 5 minutes idle, or press Alt+L any time. Live messaging, AI replies, and the CRM keep running while locked.'
+          : 'No PIN set up yet. Press "Lock now" (or Alt+L) to set one.'}
+      </p>
+      <button
+        type="button"
+        onClick={() => triggerLockNow()}
+        className="mt-3 flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-xs font-medium text-fg-secondary hover:bg-surface-3"
+      >
+        <Lock size={13} aria-hidden />
+        {configured ? 'Lock now' : 'Set up a PIN'}
+      </button>
     </div>
   );
 }
@@ -249,6 +363,7 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
         <ThemeCard />
         <BusinessProfileCard />
         <WhatsAppAccountCard connection={connection} />
+        <SecurityCard />
       </div>
     </div>
   );
