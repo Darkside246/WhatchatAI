@@ -181,6 +181,11 @@ export interface WorkspaceBillingOverview {
   entitlements: WorkspaceBillingEntitlement[];
 }
 
+export interface WorkspaceBusiness {
+  id: string;
+  name: string;
+}
+
 export interface AiAgentSummary {
   id: string;
   name: string;
@@ -342,6 +347,9 @@ export const api = {
     request(`/workspace/chats/${chatId}/ai-mode`, { method: 'PATCH', body: JSON.stringify({ aiMode }) }),
   markChatRead: (chatId: string) => request(`/workspace/chats/${chatId}/read`, { method: 'POST' }),
   getBilling: () => request<WorkspaceBillingOverview>('/workspace/billing'),
+  getBusiness: () => request<{ business: WorkspaceBusiness }>('/workspace/business'),
+  updateBusiness: (name: string) =>
+    request<{ business: WorkspaceBusiness }>('/workspace/business', { method: 'PATCH', body: JSON.stringify({ name }) }),
   listAgents: () => request<{ agents: AiAgentSummary[] }>('/workspace/agents'),
   createAgent: (body: CreateAgentBody) =>
     request<{ agent: AiAgentSummary }>('/workspace/agents', { method: 'POST', body: JSON.stringify(body) }),

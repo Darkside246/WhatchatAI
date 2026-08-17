@@ -1,6 +1,7 @@
 import { pool } from '../db/pool.js';
 import { resolveDisplayName } from '../domain/whatsapp/displayName.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
+import { BusinessRepository, type BusinessRecord } from '../repositories/businessRepository.js';
 import { WhatsAppChatRepository, type ChatAiMode } from '../repositories/whatsappChatRepository.js';
 import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
 import { WhatsAppMessageRepository } from '../repositories/whatsappMessageRepository.js';
@@ -225,6 +226,7 @@ export interface CreateAgentInput {
 
 export class WorkspaceService {
   private readonly accountRepository = new WhatsAppAccountRepository(pool);
+  private readonly businessRepository = new BusinessRepository(pool);
   private readonly chatRepository = new WhatsAppChatRepository(pool);
   private readonly contactRepository = new WhatsAppContactRepository(pool);
   private readonly messageRepository = new WhatsAppMessageRepository(pool);
@@ -544,6 +546,18 @@ export class WorkspaceService {
       throw error;
     }
     return this.agentRepository.create({ businessId, ...input });
+  }
+
+  async getBusinessProfile(businessId: string): Promise<BusinessRecord> {
+    const business = await this.businessRepository.findById(businessId);
+    if (!business) throw new Error(`Business ${businessId} not found`);
+    return business;
+  }
+
+  async updateBusinessName(businessId: string, name: string): Promise<BusinessRecord> {
+    const updated = await this.businessRepository.updateName(businessId, name);
+    if (!updated) throw new Error(`Business ${businessId} not found`);
+    return updated;
   }
 
   /**

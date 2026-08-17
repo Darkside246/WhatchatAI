@@ -5,6 +5,7 @@ import { ChatsRoute } from './ChatsRoute.js';
 import { AgentsPage } from './AgentsPage.js';
 import { CrmRoute } from './CrmRoute.js';
 import { BillingRoute } from './BillingRoute.js';
+import { SettingsRoute } from './SettingsRoute.js';
 import { PlaceholderPage } from './PlaceholderPage.js';
 
 interface Props {
@@ -57,10 +58,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
                 element={<PlaceholderPage title="Marketing" description="Campaigns and broadcast tools are not built yet." />}
               />
               <Route path="/billing" element={<BillingRoute />} />
-              <Route
-                path="/settings"
-                element={<PlaceholderPage title="Settings" description="Only settings with a real backend will appear here." />}
-              />
+              <Route path="/settings" element={<SettingsRoute connection={connection} />} />
               <Route path="*" element={<Navigate to="/chats" replace />} />
             </Routes>
           </div>

@@ -25,4 +25,17 @@ export class BusinessRepository {
     if (!row) throw new Error('businesses insert returned no row');
     return row;
   }
+
+  async findById(id: string): Promise<BusinessRecord | null> {
+    const { rows } = await this.db.query<BusinessRecord>('SELECT id, name FROM businesses WHERE id = $1', [id]);
+    return rows[0] ?? null;
+  }
+
+  async updateName(id: string, name: string): Promise<BusinessRecord | null> {
+    const { rows } = await this.db.query<BusinessRecord>(
+      'UPDATE businesses SET name = $2, updated_at = now() WHERE id = $1 RETURNING id, name',
+      [id, name],
+    );
+    return rows[0] ?? null;
+  }
 }

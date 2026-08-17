@@ -19,7 +19,7 @@ const NAV_ITEMS: { to: string; label: string; icon: LucideIcon; implemented: boo
   { to: '/automations', label: 'Automations', icon: Zap, implemented: false },
   { to: '/marketing', label: 'Marketing', icon: Megaphone, implemented: false },
   { to: '/billing', label: 'Billing', icon: CreditCard, implemented: true },
-  { to: '/settings', label: 'Settings', icon: Settings, implemented: false },
+  { to: '/settings', label: 'Settings', icon: Settings, implemented: true },
 ];
 
 export function SaasNavRail() {

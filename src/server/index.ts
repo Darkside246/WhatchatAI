@@ -318,6 +318,24 @@ app.post('/api/workspace/chats/:chatId/read', requireWorkspaceContext, async (re
   }
 });
 
+app.get('/api/workspace/business', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const business = await workspaceService.getBusinessProfile(businessId);
+  return res.status(200).json({ business });
+});
+
+const updateBusinessSchema = z.object({ name: z.string().trim().min(1).max(200) });
+
+app.patch('/api/workspace/business', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = updateBusinessSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_BUSINESS' });
+  }
+  const business = await workspaceService.updateBusinessName(businessId, parsed.data.name);
+  return res.status(200).json({ business });
+});
+
 app.get('/api/workspace/billing', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const billing = await workspaceService.getBillingOverview(businessId);
