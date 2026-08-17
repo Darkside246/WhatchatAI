@@ -3,6 +3,7 @@ import {
   makeWASocket,
   useMultiFileAuthState,
   type WASocket,
+  type WAMessageKey,
 } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import path from 'node:path';
@@ -139,6 +140,21 @@ export class WhatsAppConnectionService {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * A real reaction send - `react` is a regular AnyMessageContent variant
+   * Baileys accepts via sendMessage, not a separate ad-hoc protocol call.
+   * An empty `emoji` string is WhatsApp's own convention for removing a
+   * reaction, not a special case this method needs to branch on. Throws
+   * (never silently swallowed) so the caller can report a real failure
+   * back to the API response rather than pretending it succeeded.
+   */
+  async sendReaction(key: WAMessageKey, emoji: string): Promise<void> {
+    if (!this.isReady() || !this.socket) {
+      throw new Error('WhatsApp is not connected');
+    }
+    await this.socket.sendMessage(key.remoteJid ?? '', { react: { text: emoji, key } });
   }
 
   async connect(): Promise<WhatsAppConnectionSnapshot> {

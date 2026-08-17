@@ -307,6 +307,32 @@ app.patch('/api/workspace/chats/:chatId/ai-mode', requireWorkspaceContext, async
   }
 });
 
+const reactionSchema = z.object({ emoji: z.string().max(8) });
+
+/**
+ * A real reaction send over the live socket - see
+ * workspaceService.sendReaction's own doc comment for why no reaction row
+ * is written here: Baileys' messages.reaction event does that once this
+ * send actually lands, the same real path an incoming reaction takes.
+ */
+app.post('/api/workspace/messages/:messageId/reactions', requireWorkspaceContext, async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
+    businessId: string;
+    whatsappAccountId: string;
+  };
+  const parsed = reactionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_REACTION' });
+  }
+  try {
+    await workspaceService.sendReaction(businessId, whatsappAccountId, String(req.params.messageId ?? ''), parsed.data.emoji);
+    return res.status(202).json({ status: 'sent' });
+  } catch (error) {
+    if (isChatNotFoundError(error)) return res.status(404).json({ error: 'MESSAGE_NOT_FOUND' });
+    return res.status(502).json({ error: 'REACTION_SEND_FAILED', message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 app.post('/api/workspace/chats/:chatId/read', requireWorkspaceContext, async (req, res) => {
   const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
     businessId: string;

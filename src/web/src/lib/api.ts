@@ -362,6 +362,9 @@ export const api = {
   setAiMode: (chatId: string, aiMode: WorkspaceChatSummary['aiMode']) =>
     request(`/workspace/chats/${chatId}/ai-mode`, { method: 'PATCH', body: JSON.stringify({ aiMode }) }),
   markChatRead: (chatId: string) => request(`/workspace/chats/${chatId}/read`, { method: 'POST' }),
+  /** Empty emoji removes any existing reaction - WhatsApp's own convention. */
+  sendReaction: (messageId: string, emoji: string) =>
+    request(`/workspace/messages/${messageId}/reactions`, { method: 'POST', body: JSON.stringify({ emoji }) }),
   getBilling: () => request<WorkspaceBillingOverview>('/workspace/billing'),
   getDashboard: () => request<WorkspaceDashboardOverview>('/workspace/dashboard'),
   getBusiness: () => request<{ business: WorkspaceBusiness }>('/workspace/business'),

@@ -15,6 +15,7 @@ import {
   FileWarning,
   Bot,
   User as UserIcon,
+  SmilePlus,
 } from 'lucide-react';
 import {
   api,
@@ -29,6 +30,7 @@ import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js
 import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
 import { Avatar } from './Avatar.js';
+import { MediaLightbox } from './MediaLightbox.js';
 
 type AiMode = WorkspaceChatDetail['chat']['aiMode'];
 
@@ -104,6 +106,8 @@ function formatPresence(presence: WorkspacePresence | null): string | null {
   return null;
 }
 
+const QUICK_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥'];
+
 /** A real, human-readable stand-in for a non-text message's preview - never the raw internal type name (e.g. `[unknown]`, `[system]`) verbatim. */
 const MESSAGE_TYPE_LABELS: Record<string, string> = {
   image: 'Photo',
@@ -152,7 +156,15 @@ function formatFileSize(bytes: number | null): string {
  * actually 'downloaded'. Pending/failed/unavailable each get an honest,
  * distinct state instead of a fake preview.
  */
-function MediaContent({ media, caption }: { media: WorkspaceMedia; caption: string | null }) {
+function MediaContent({
+  media,
+  caption,
+  onImageClick,
+}: {
+  media: WorkspaceMedia;
+  caption: string | null;
+  onImageClick: (url: string, fileName: string | null) => void;
+}) {
   // These states render inside either bubble color (outgoing solid-accent or
   // incoming white), so they inherit the bubble's own text color rather than
   // forcing a neutral fg tone that could go illegible against it.
@@ -185,9 +197,9 @@ function MediaContent({ media, caption }: { media: WorkspaceMedia; caption: stri
 
   if (media.mediaType === 'image' || media.mediaType === 'sticker') {
     return (
-      <a href={url} target="_blank" rel="noreferrer">
+      <button type="button" onClick={() => onImageClick(url, media.fileName)} className="block cursor-zoom-in">
         <img src={url} alt={caption ?? 'Image attachment'} className="max-h-72 max-w-full rounded-lg object-contain" />
-      </a>
+      </button>
     );
   }
   if (media.mediaType === 'video') {
@@ -241,6 +253,9 @@ export function ChatThread({ onOpenDetail }: Props) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<{ url: string; fileName: string | null } | null>(null);
+  const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
+  const [reactionError, setReactionError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function load(currentChatId: string) {
@@ -290,6 +305,23 @@ export function ChatThread({ onOpenDetail }: Props) {
     }
   }
 
+  /**
+   * Fire-and-forget the real send; the reaction bubble itself only appears
+   * once Baileys' own messages.reaction event round-trips back through
+   * ingestion and the realtime 'message.reaction' event reloads this list -
+   * never an optimistic local reaction that could disagree with what
+   * WhatsApp actually recorded.
+   */
+  async function handleReact(messageId: string, emoji: string) {
+    setReactionPickerFor(null);
+    setReactionError(null);
+    try {
+      await api.sendReaction(messageId, emoji);
+    } catch (err) {
+      setReactionError(err instanceof Error ? err.message : 'Failed to send reaction.');
+    }
+  }
+
   useEffect(() => {
     if (!chatId) return;
     setMessages(null);
@@ -297,6 +329,8 @@ export function ChatThread({ onOpenDetail }: Props) {
     setModeError(null);
     setDraft('');
     setSendError(null);
+    setReactionPickerFor(null);
+    setReactionError(null);
     void load(chatId);
     void loadDetail(chatId);
     markRead(chatId);
@@ -489,18 +523,56 @@ export function ChatThread({ onOpenDetail }: Props) {
 
       <div className={`flex-1 space-y-2 overflow-y-auto bg-surface-0 px-4 py-4 ${doodleClass}`}>
         {error && <p className="text-xs text-error">{error}</p>}
+        {reactionError && <p className="text-xs text-error">{reactionError}</p>}
         {messages === null && !error && <p className="text-xs text-fg-muted">Loading real message history…</p>}
         {messages?.length === 0 && <p className="text-xs text-fg-muted">No messages persisted for this chat yet.</p>}
         {messages?.map((message) => (
-          <div key={message.id} className={`flex ${message.fromMe ? 'justify-end' : 'justify-start'}`}>
+          <div key={message.id} className={`group relative flex ${message.fromMe ? 'justify-end' : 'justify-start'}`}>
             <div
-              className={`max-w-[75%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
+              className={`relative max-w-[75%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
                 message.fromMe ? 'rounded-tr-sm bg-message-out text-message-out-fg' : 'rounded-tl-sm bg-message-in text-fg'
               }`}
             >
+              <button
+                type="button"
+                onClick={() => setReactionPickerFor((current) => (current === message.id ? null : message.id))}
+                title="React"
+                className={`absolute -top-3 z-10 rounded-full border border-border-subtle bg-surface-1 p-1 text-fg-secondary opacity-0 shadow-sm transition-opacity hover:text-fg group-hover:opacity-100 ${
+                  message.fromMe ? '-left-3' : '-right-3'
+                }`}
+              >
+                <SmilePlus size={13} aria-hidden />
+              </button>
+
+              {reactionPickerFor === message.id && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setReactionPickerFor(null)} />
+                  <div
+                    className={`absolute -top-11 z-20 flex items-center gap-1 rounded-full border border-border-subtle bg-surface-1 px-2 py-1 shadow-lg ${
+                      message.fromMe ? 'right-0' : 'left-0'
+                    }`}
+                  >
+                    {QUICK_EMOJIS.map((emoji) => (
+                      <button
+                        key={emoji}
+                        type="button"
+                        onClick={() => void handleReact(message.id, emoji)}
+                        className="rounded-full p-0.5 text-base transition-transform hover:scale-125"
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+
               {message.hasMedia && message.media ? (
                 <div className="space-y-1">
-                  <MediaContent media={message.media} caption={message.caption} />
+                  <MediaContent
+                    media={message.media}
+                    caption={message.caption}
+                    onImageClick={(url, fileName) => setLightbox({ url, fileName })}
+                  />
                   {(message.caption ?? message.textContent) && (
                     <p className="whitespace-pre-wrap break-words">{message.caption ?? message.textContent}</p>
                   )}
@@ -579,6 +651,10 @@ export function ChatThread({ onOpenDetail }: Props) {
           </button>
         </div>
       </div>
+
+      {lightbox && (
+        <MediaLightbox imageUrl={lightbox.url} fileName={lightbox.fileName} onClose={() => setLightbox(null)} />
+      )}
     </div>
   );
 }

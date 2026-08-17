@@ -194,3 +194,61 @@ describe('workspaceService.updateAgentStatus (the real, business-wide AI kill sw
     ).rejects.toThrow();
   });
 });
+
+describe('workspaceService.sendReaction (a real reaction send, not a faked local one)', () => {
+  let businessId: string;
+  let accountId: string;
+  let messageId: string;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId);
+
+    const chatRepository = new WhatsAppChatRepository(pool);
+    const messageRepository = new WhatsAppMessageRepository(pool);
+    const chat = await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550004444@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+    const message = await messageRepository.insert({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId: chat.id,
+      whatsappMessageId: 'WS-MSG-REACT',
+      remoteJid: chat.chatJid,
+      senderJid: chat.chatJid,
+      direction: 'inbound',
+      messageType: 'text',
+      textContent: 'react to me',
+      timestamp: new Date().toISOString(),
+      fromMe: false,
+      isHistorical: false,
+    });
+    messageId = message.id;
+  });
+
+  it('rejects with a real "not connected" error rather than silently succeeding - no live socket exists in tests', async () => {
+    await expect(workspaceService.sendReaction(businessId, accountId, messageId, '👍')).rejects.toThrow(/not connected/i);
+  });
+
+  it('throws not-found for a message belonging to a different business', async () => {
+    const otherBusinessId = await createTestBusiness('Other Business');
+    await expect(workspaceService.sendReaction(otherBusinessId, accountId, messageId, '👍')).rejects.toThrow();
+    try {
+      await workspaceService.sendReaction(otherBusinessId, accountId, messageId, '👍');
+      expect.fail('expected sendReaction to reject');
+    } catch (error) {
+      expect(isChatNotFoundError(error)).toBe(true);
+    }
+  });
+
+  it('throws not-found for a nonexistent message id', async () => {
+    await expect(
+      workspaceService.sendReaction(businessId, accountId, '00000000-0000-0000-0000-000000000000', '👍'),
+    ).rejects.toThrow();
+  });
+});

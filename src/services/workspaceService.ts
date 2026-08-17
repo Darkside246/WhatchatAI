@@ -22,6 +22,7 @@ import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutbo
 import type { WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { classifyJid } from '../domain/whatsapp/jid.js';
 import { describeMessageType } from '../domain/whatsapp/messagePreview.js';
+import { whatsappConnectionService } from './whatsappConnectionService.js';
 import type {
   CallStatus,
   CallType,
@@ -531,6 +532,34 @@ export class WorkspaceService {
       throw this.notFound();
     }
     return this.chatRepository.setAiMode(chatId, aiMode);
+  }
+
+  /**
+   * A real reaction send over the live socket - not a locally-faked emoji
+   * that only this app's UI shows. An empty emoji removes any existing
+   * reaction (WhatsApp's own convention). The reaction row itself is never
+   * written here: Baileys' own messages.reaction event fires for this send
+   * exactly like it would for a reaction from the other side, and the
+   * existing ingestion pipeline persists it from that one real event - so
+   * this method's job ends at the send, not the bookkeeping.
+   */
+  async sendReaction(businessId: string, whatsappAccountId: string, messageId: string, emoji: string): Promise<void> {
+    const message = await this.messageRepository.findById(messageId);
+    if (!message || message.businessId !== businessId || message.whatsappAccountId !== whatsappAccountId) {
+      throw this.notFound();
+    }
+    const chat = await this.chatRepository.findById(message.chatId);
+    if (!chat) throw this.notFound();
+
+    await whatsappConnectionService.sendReaction(
+      {
+        remoteJid: message.remoteJid,
+        id: message.whatsappMessageId,
+        fromMe: message.fromMe,
+        participant: chat.chatType === 'group' ? message.senderJid : null,
+      },
+      emoji,
+    );
   }
 
   /** The user actually opened and viewed this conversation - resets the real unread counter, never fabricates a "seen" state otherwise. */
