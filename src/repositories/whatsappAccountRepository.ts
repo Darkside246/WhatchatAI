@@ -12,6 +12,7 @@ export interface WhatsAppAccountRecord {
   pushName: string | null;
   profileName: string | null;
   profilePictureUrl: string | null;
+  profilePictureMediaId: string | null;
   aboutText: string | null;
   connectionStatus: ConnectionStatus;
   connectedAt: string | null;
@@ -38,6 +39,7 @@ interface AccountRow {
   push_name: string | null;
   profile_name: string | null;
   profile_picture_url: string | null;
+  profile_picture_media_id: string | null;
   about_text: string | null;
   connection_status: ConnectionStatus;
   connected_at: string | null;
@@ -65,6 +67,7 @@ function toRecord(row: AccountRow): WhatsAppAccountRecord {
     pushName: row.push_name,
     profileName: row.profile_name,
     profilePictureUrl: row.profile_picture_url,
+    profilePictureMediaId: row.profile_picture_media_id,
     aboutText: row.about_text,
     connectionStatus: row.connection_status,
     connectedAt: row.connected_at,
@@ -139,6 +142,14 @@ export class WhatsAppAccountRepository {
       [businessId, whatsappJid],
     );
     return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /** Points this account at its real, downloaded profile picture - only ever called once a fetch has actually succeeded. */
+  async attachProfilePicture(accountId: string, mediaId: string): Promise<void> {
+    await this.db.query('UPDATE whatsapp_accounts SET profile_picture_media_id = $2, updated_at = now() WHERE id = $1', [
+      accountId,
+      mediaId,
+    ]);
   }
 
   async countByBusiness(businessId: string): Promise<number> {

@@ -23,6 +23,7 @@ import { mapBaileysMessageStatus } from '../domain/whatsapp/messageStatus.js';
 import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { pool } from '../db/pool.js';
 import { ensureDefaultBusinessProvisioned } from './businessBootstrapService.js';
+import { syncAccountProfilePicture } from './profilePictureSyncService.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
 import { WhatsAppConnectionEventRepository } from '../repositories/whatsappConnectionEventRepository.js';
 
@@ -116,6 +117,24 @@ export class WhatsAppConnectionService {
       await this.socket.presenceSubscribe(jid);
     } catch (error) {
       console.error(`[WhatsApp] Failed to subscribe to presence for ${jid}:`, error);
+    }
+  }
+
+  /**
+   * WhatsApp never pushes a contact's profile picture either - like presence,
+   * it exists only behind an explicit per-JID fetch (sock.profilePictureUrl).
+   * Returns the real, current CDN URL, or null for the two genuinely
+   * indistinguishable-to-us honest cases Baileys collapses into the same
+   * error: no photo set, or privacy settings hide it from this account.
+   * Never a fabricated/cached URL - always this call's real result.
+   */
+  async fetchProfilePictureUrl(jid: string): Promise<string | null> {
+    if (!this.isReady() || !this.socket) return null;
+    try {
+      const url = await this.socket.profilePictureUrl(jid, 'image');
+      return url ?? null;
+    } catch {
+      return null;
     }
   }
 
@@ -469,6 +488,11 @@ export class WhatsAppConnectionService {
         jid,
         pushName,
       });
+
+      // Best-effort, never blocks the connection itself - "my profile photo"
+      // is a real fetch+download, so it can genuinely fail (no photo set,
+      // slow network) without that being a connection problem.
+      void syncAccountProfilePicture(business.id, account.id, jid);
 
       // "initial" sync only ever kicks off once per account, not on every
       // reconnect. A sync abandoned mid-run (dev-server restart, crash)

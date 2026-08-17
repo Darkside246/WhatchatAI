@@ -12,6 +12,8 @@ export interface WhatsAppMediaRecord {
   whatsappAccountId: string;
   messageId: string | null;
   statusId: string | null;
+  contactId: string | null;
+  accountId: string | null;
   mediaType: MediaType;
   mimeType: string | null;
   fileName: string | null;
@@ -36,6 +38,8 @@ interface MediaRow {
   whatsapp_account_id: string;
   message_id: string | null;
   status_id: string | null;
+  contact_id: string | null;
+  account_id: string | null;
   media_type: MediaType;
   mime_type: string | null;
   file_name: string | null;
@@ -61,6 +65,8 @@ function toRecord(row: MediaRow): WhatsAppMediaRecord {
     whatsappAccountId: row.whatsapp_account_id,
     messageId: row.message_id,
     statusId: row.status_id,
+    contactId: row.contact_id,
+    accountId: row.account_id,
     mediaType: row.media_type,
     mimeType: row.mime_type,
     fileName: row.file_name,
@@ -83,9 +89,11 @@ function toRecord(row: MediaRow): WhatsAppMediaRecord {
 export interface InsertMediaInput {
   businessId: string;
   whatsappAccountId: string;
-  /** Exactly one of messageId/statusId must be set - a media row always belongs to one real owner. */
+  /** Exactly one of messageId/statusId/contactId/accountId must be set - a media row always belongs to one real owner. */
   messageId?: string | null;
   statusId?: string | null;
+  contactId?: string | null;
+  accountId?: string | null;
   mediaType: MediaType;
   mimeType?: string | null;
   fileName?: string | null;
@@ -99,20 +107,25 @@ export class WhatsAppMediaRepository {
   async insert(input: InsertMediaInput): Promise<WhatsAppMediaRecord> {
     const messageId = input.messageId ?? null;
     const statusId = input.statusId ?? null;
-    if ((messageId === null) === (statusId === null)) {
-      throw new Error('whatsapp_media insert requires exactly one of messageId or statusId');
+    const contactId = input.contactId ?? null;
+    const accountId = input.accountId ?? null;
+    const ownerCount = [messageId, statusId, contactId, accountId].filter((value) => value !== null).length;
+    if (ownerCount !== 1) {
+      throw new Error('whatsapp_media insert requires exactly one of messageId, statusId, contactId, or accountId');
     }
 
     const { rows } = await this.db.query<MediaRow>(
       `INSERT INTO whatsapp_media
-         (business_id, whatsapp_account_id, message_id, status_id, media_type, mime_type, file_name, file_size, duration_seconds)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         (business_id, whatsapp_account_id, message_id, status_id, contact_id, account_id, media_type, mime_type, file_name, file_size, duration_seconds)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [
         input.businessId,
         input.whatsappAccountId,
         messageId,
         statusId,
+        contactId,
+        accountId,
         input.mediaType,
         input.mimeType ?? null,
         input.fileName ?? null,

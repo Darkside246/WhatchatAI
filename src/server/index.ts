@@ -20,6 +20,7 @@ import { whatsappOutboundMessageService, isChatNotFoundError as isOutboundChatNo
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
 import { ensureDefaultBusinessProvisioned } from '../services/businessBootstrapService.js';
+import { syncContactProfilePicture } from '../services/profilePictureSyncService.js';
 import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
 import { retrieveMedia } from '../media/localEncryptedMediaStorage.js';
 import {
@@ -178,6 +179,9 @@ app.get('/api/workspace/chats/:chatId', requireWorkspaceContext, async (req, res
     // response over it.
     if (detail.chat.chatType === 'individual') {
       void whatsappConnectionService.subscribePresence(detail.chat.chatJid);
+      if (detail.contact) {
+        void syncContactProfilePicture(businessId, whatsappAccountId, detail.contact.id, detail.chat.chatJid);
+      }
     }
     return res.status(200).json(detail);
   } catch (error) {

@@ -17,6 +17,7 @@ export interface WhatsAppContactRecord {
   isBusiness: boolean | null;
   isContact: boolean | null;
   profilePictureUrl: string | null;
+  profilePictureMediaId: string | null;
   aboutText: string | null;
   sourceType: SourceType;
   createdAt: string;
@@ -39,6 +40,7 @@ interface ContactRow {
   is_business: boolean | null;
   is_contact: boolean | null;
   profile_picture_url: string | null;
+  profile_picture_media_id: string | null;
   about_text: string | null;
   source_type: SourceType;
   created_at: string;
@@ -62,6 +64,7 @@ function toRecord(row: ContactRow): WhatsAppContactRecord {
     isBusiness: row.is_business,
     isContact: row.is_contact,
     profilePictureUrl: row.profile_picture_url,
+    profilePictureMediaId: row.profile_picture_media_id,
     aboutText: row.about_text,
     sourceType: row.source_type,
     createdAt: row.created_at,
@@ -177,6 +180,14 @@ export class WhatsAppContactRepository {
     await this.db.query('UPDATE whatsapp_contacts SET phone_number = $2, updated_at = now() WHERE id = $1', [
       contactId,
       phoneNumber,
+    ]);
+  }
+
+  /** Points this contact at its real, downloaded profile picture - only ever called once a fetch has actually succeeded. */
+  async attachProfilePicture(contactId: string, mediaId: string): Promise<void> {
+    await this.db.query('UPDATE whatsapp_contacts SET profile_picture_media_id = $2, updated_at = now() WHERE id = $1', [
+      contactId,
+      mediaId,
     ]);
   }
 
