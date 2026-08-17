@@ -441,6 +441,12 @@ export interface FunnelDetailDto {
   counts: FunnelCounts;
 }
 
+export interface MarketingCopySuggestionResult {
+  status: 'ok' | 'unavailable';
+  reason?: string;
+  suggestions: string[];
+}
+
 export interface NotificationDto {
   id: string;
   type: NotificationType;
@@ -769,4 +775,7 @@ export const api = {
     request<{ instance: FunnelInstanceDto }>(`/workspace/funnels/${funnelId}/enroll`, { method: 'POST', body: JSON.stringify({ crmContactId }) }),
   cancelFunnelInstance: (funnelId: string, instanceId: string) =>
     request<{ instance: FunnelInstanceDto }>(`/workspace/funnels/${funnelId}/instances/${instanceId}/cancel`, { method: 'POST' }),
+
+  suggestMarketingCopy: (input: { kind: 'campaign_message' | 'status_caption' | 'follow_up'; businessContext: string; count?: number }) =>
+    request<MarketingCopySuggestionResult>('/workspace/marketing/ai-suggest', { method: 'POST', body: JSON.stringify(input) }),
 };

@@ -121,6 +121,7 @@ import {
   isFunnelInstanceNotFoundError,
   isAlreadyEnrolledError,
 } from '../services/funnelService.js';
+import { suggestMarketingCopy } from '../services/marketingAiService.js';
 import {
   createScheduledStatus,
   listScheduledStatuses,
@@ -988,6 +989,21 @@ app.post('/api/workspace/funnels/:funnelId/instances/:instanceId/cancel', requir
     if (isFunnelInstanceNotFoundError(error)) return res.status(404).json({ error: 'FUNNEL_INSTANCE_NOT_FOUND' });
     throw error;
   }
+});
+
+const suggestCopySchema = z.object({
+  kind: z.enum(['campaign_message', 'status_caption', 'follow_up']),
+  businessContext: z.string().trim().min(1).max(500),
+  count: z.number().int().min(1).max(5).optional(),
+});
+
+app.post('/api/workspace/marketing/ai-suggest', requireWorkspaceContext, requirePermission('marketing.create'), async (req, res) => {
+  const parsed = suggestCopySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_SUGGEST_REQUEST', details: parsed.error.flatten() });
+  // Always 200 - "unavailable" (e.g. Gemini not configured) is an honest,
+  // expected outcome the frontend reads from result.status, not a transport error.
+  const result = await suggestMarketingCopy(parsed.data);
+  return res.status(200).json(result);
 });
 
 const reactionSchema = z.object({ emoji: z.string().max(8) });

@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { ArrowLeft, Megaphone, Send, Check, X, Users, CalendarClock, Image as ImageIcon } from 'lucide-react';
+import { ArrowLeft, Megaphone, Send, Check, X, Users, CalendarClock, Image as ImageIcon, Sparkles } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -8,6 +8,78 @@ import {
   type EligibleRecipientDto,
   type ScheduledStatusDto,
 } from '../lib/api.js';
+
+/**
+ * Real Gemini-generated suggestions - never a canned template. Clearly
+ * labeled as AI drafts the user picks from, never auto-applied.
+ */
+function AiSuggestPanel({ kind, onPick }: { kind: 'campaign_message' | 'status_caption'; onPick: (text: string) => void }) {
+  const [context, setContext] = useState('');
+  const [suggestions, setSuggestions] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+
+  async function handleGenerate() {
+    if (!context.trim()) return;
+    setBusy(true);
+    setNote(null);
+    setSuggestions(null);
+    try {
+      const result = await api.suggestMarketingCopy({ kind, businessContext: context.trim() });
+      if (result.status === 'ok') setSuggestions(result.suggestions);
+      else setNote(result.reason ?? 'AI suggestions are not available right now.');
+    } catch {
+      setNote('AI suggestions are not available right now.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} className="flex items-center gap-1 self-start text-xs font-medium text-accent hover:text-accent-dim">
+        <Sparkles size={12} aria-hidden />
+        Suggest with AI
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-border-subtle bg-surface-2 p-3">
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          placeholder="What's this about? (e.g. weekend sale, 20% off)"
+          value={context}
+          onChange={(event) => setContext(event.target.value)}
+          className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-2 py-1.5 text-xs text-fg outline-none focus:border-accent"
+        />
+        <button type="button" disabled={busy || !context.trim()} onClick={handleGenerate} className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+          {busy ? 'Thinking…' : 'Generate'}
+        </button>
+      </div>
+      {note && <p className="mt-2 text-xs text-fg-muted">{note}</p>}
+      {suggestions && (
+        <div className="mt-2 space-y-1.5">
+          {suggestions.map((suggestion, index) => (
+            <button
+              key={index}
+              type="button"
+              onClick={() => {
+                onPick(suggestion);
+                setOpen(false);
+              }}
+              className="block w-full rounded-lg border border-border-subtle bg-surface-1 px-2 py-1.5 text-left text-xs text-fg-secondary hover:border-accent hover:text-fg"
+            >
+              {suggestion}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const STATUS_LABEL: Record<CampaignDto['status'], string> = {
   DRAFT: 'Draft',
@@ -118,6 +190,8 @@ function NewCampaignForm({ onCreated, onCancel }: { onCreated: (campaignId: stri
             className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-sm text-fg outline-none focus:border-accent"
           />
         </label>
+
+        <AiSuggestPanel kind="campaign_message" onPick={(text) => setMessageText(text)} />
 
         <label className="flex flex-col gap-1 text-sm text-fg-secondary">
           Message
@@ -470,6 +544,8 @@ function NewStatusForm({ onCreated, onCancel }: { onCreated: () => void; onCance
             </button>
           ))}
         </div>
+
+        <AiSuggestPanel kind="status_caption" onPick={(text) => (statusType === 'text' ? setTextContent(text) : setCaption(text))} />
 
         {statusType === 'text' ? (
           <>
