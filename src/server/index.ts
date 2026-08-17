@@ -1,5 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import path from 'node:path';
 import { createServer } from 'node:http';
@@ -11,6 +13,7 @@ import { whatsappConnectionService } from '../services/whatsappConnectionService
 import { whatsappMessageIngestionService } from '../services/whatsappMessageIngestionService.js';
 import * as gooseService from '../services/gooseService.js';
 import { globalSearch } from '../services/globalSearchService.js';
+import { isInlineSafeMime } from '../domain/whatsapp/mediaCompatibility.js';
 import {
   workspaceService,
   isChatNotFoundError,
@@ -139,6 +142,70 @@ const app = express();
 const port = Number(process.env.PORT ?? 3000);
 
 app.disable('x-powered-by');
+
+/**
+ * Real security headers on every response. The CSP is deliberately strict:
+ * this app serves its own bundled JS/CSS and never loads third-party
+ * scripts, so 'self' is the whole allowlist. connectSrc keeps ws:/wss: for
+ * the real-time bridge; imgSrc keeps blob:/data: for locally-previewed
+ * outbound attachments before they upload.
+ *
+ * crossOriginEmbedderPolicy is left off: it would break the media endpoint's
+ * range requests without adding anything here.
+ */
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        // Vite injects styles inline at runtime; unsafe-inline is required
+        // for style only, never for script.
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'blob:', 'data:'],
+        mediaSrc: ["'self'", 'blob:'],
+        connectSrc: ["'self'", 'ws:', 'wss:'],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  }),
+);
+
+/**
+ * A real global ceiling on API traffic per IP. Deliberately generous - this
+ * is an abuse/runaway brake, not a product limit. Auth has its own, much
+ * tighter, per-account brute-force lockout in authService.
+ */
+app.use(
+  '/api',
+  rateLimit({
+    windowMs: 60_000,
+    limit: 300,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    message: { error: 'RATE_LIMITED', message: 'Too many requests. Slow down and try again shortly.' },
+  }),
+);
+
+/**
+ * A much tighter brake on the endpoints where a single request costs real
+ * money or sends something irreversible to a real person (Gemini calls,
+ * WhatsApp sends). Layered on top of the global limiter above.
+ */
+const expensiveActionLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 30,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'RATE_LIMITED', message: 'Too many requests for this action. Try again shortly.' },
+});
+app.use('/api/workspace/marketing/ai-suggest', expensiveActionLimiter);
+app.use('/api/workspace/campaigns', expensiveActionLimiter);
+
 // 20mb (not the old 2mb) to fit base64-encoded outbound media uploads -
 // this is one global parser, so every route's real ceiling moved with it.
 app.use(express.json({ limit: '20mb' }));
@@ -598,7 +665,7 @@ const sendMessageSchema = z.discriminatedUnion('messageType', [
  * the AI/automation layer (which doesn't exist yet) has a path here. See
  * whatsappOutboundMessageService for the real idempotency/retry contract.
  */
-app.post('/api/workspace/chats/:chatId/messages', requireWorkspaceContext, async (req, res) => {
+app.post('/api/workspace/chats/:chatId/messages', requireWorkspaceContext, requirePermission('whatsapp.send'), async (req, res) => {
   const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
     businessId: string;
     whatsappAccountId: string;
@@ -659,7 +726,7 @@ app.get('/api/workspace/outbound-messages/:id', requireWorkspaceContext, async (
 
 const aiModeSchema = z.object({ aiMode: z.enum(['AI_ACTIVE', 'AI_PAUSED', 'HUMAN_TAKEOVER']) });
 
-app.patch('/api/workspace/chats/:chatId/ai-mode', requireWorkspaceContext, async (req, res) => {
+app.patch('/api/workspace/chats/:chatId/ai-mode', requireWorkspaceContext, requirePermission('ai.activate'), async (req, res) => {
   const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
     businessId: string;
     whatsappAccountId: string;
@@ -682,7 +749,7 @@ const assignChatSchema = z.object({
   assigneeTeamId: z.string().uuid().nullable(),
 });
 
-app.patch('/api/workspace/chats/:chatId/assignment', requireWorkspaceContext, async (req, res) => {
+app.patch('/api/workspace/chats/:chatId/assignment', requireWorkspaceContext, requirePermission('whatsapp.manage'), async (req, res) => {
   const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const parsed = assignChatSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_ASSIGNMENT_PAYLOAD' });
@@ -1048,7 +1115,7 @@ const reactionSchema = z.object({ emoji: z.string().max(8) });
  * is written here: Baileys' messages.reaction event does that once this
  * send actually lands, the same real path an incoming reaction takes.
  */
-app.post('/api/workspace/messages/:messageId/reactions', requireWorkspaceContext, async (req, res) => {
+app.post('/api/workspace/messages/:messageId/reactions', requireWorkspaceContext, requirePermission('whatsapp.send'), async (req, res) => {
   const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
     businessId: string;
     whatsappAccountId: string;
@@ -1105,7 +1172,7 @@ app.get('/api/workspace/business', requireWorkspaceContext, async (_req, res) =>
 
 const updateBusinessSchema = z.object({ name: z.string().trim().min(1).max(200) });
 
-app.patch('/api/workspace/business', requireWorkspaceContext, async (req, res) => {
+app.patch('/api/workspace/business', requireWorkspaceContext, requirePermission('settings.manage'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const parsed = updateBusinessSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -1125,7 +1192,7 @@ const updateProfilePictureSchema = z.object({
  * see workspaceService.updateAccountProfilePicture's own doc comment for
  * why the WhatsApp push happens before anything is stored locally.
  */
-app.put('/api/workspace/account/profile-picture', requireWorkspaceContext, async (req, res) => {
+app.put('/api/workspace/account/profile-picture', requireWorkspaceContext, requirePermission('whatsapp.manage'), async (req, res) => {
   const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
     businessId: string;
     whatsappAccountId: string;
@@ -1171,7 +1238,7 @@ const createAgentSchema = z.object({
   humanTakeoverPolicy: z.string().trim().min(1).nullish(),
 });
 
-app.post('/api/workspace/agents', requireWorkspaceContext, async (req, res) => {
+app.post('/api/workspace/agents', requireWorkspaceContext, requirePermission('ai.create'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const parsed = createAgentSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -1207,7 +1274,7 @@ const updateAgentStatusSchema = z.object({
  * separate "enabled" flag layered on top - the same status this business's
  * whole auto-reply pipeline already gates on.
  */
-app.patch('/api/workspace/agents/:agentId/status', requireWorkspaceContext, async (req, res) => {
+app.patch('/api/workspace/agents/:agentId/status', requireWorkspaceContext, requirePermission('ai.activate'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const parsed = updateAgentStatusSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -1235,7 +1302,7 @@ const updateCrmContactSchema = z.object({
   tags: z.array(z.string().trim().min(1)),
 });
 
-app.patch('/api/workspace/crm-contacts/:id', requireWorkspaceContext, async (req, res) => {
+app.patch('/api/workspace/crm-contacts/:id', requireWorkspaceContext, requirePermission('crm.edit'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const parsed = updateCrmContactSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -1266,7 +1333,7 @@ const createLeadSchema = z.object({
   notes: z.string().trim().min(1).nullish(),
 });
 
-app.post('/api/workspace/leads', requireWorkspaceContext, async (req, res) => {
+app.post('/api/workspace/leads', requireWorkspaceContext, requirePermission('leads.edit'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const parsed = createLeadSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -1289,7 +1356,7 @@ const updateLeadSchema = z.object({
   notes: z.string().trim().nullable(),
 });
 
-app.patch('/api/workspace/leads/:id', requireWorkspaceContext, async (req, res) => {
+app.patch('/api/workspace/leads/:id', requireWorkspaceContext, requirePermission('leads.edit'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const parsed = updateLeadSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -1306,7 +1373,7 @@ app.patch('/api/workspace/leads/:id', requireWorkspaceContext, async (req, res) 
 
 const updateLeadStatusSchema = z.object({ status: z.enum(['NEW', 'QUALIFIED', 'ENGAGED', 'WON', 'LOST']) });
 
-app.patch('/api/workspace/leads/:id/status', requireWorkspaceContext, async (req, res) => {
+app.patch('/api/workspace/leads/:id/status', requireWorkspaceContext, requirePermission('leads.edit'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const parsed = updateLeadStatusSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -1420,12 +1487,23 @@ app.get('/api/media/:mediaId', requireAuth, requireWorkspaceContext, async (req,
   }
 
   const totalSize = plaintext.length;
-  res.setHeader('Content-Type', media.mimeType ?? 'application/octet-stream');
+
+  // A WhatsApp sender controls the MIME type on media they send us. Echoing
+  // an arbitrary one back with `inline` disposition would let a hostile
+  // sender get script (text/html, image/svg+xml) executed in this app's own
+  // origin the moment an authenticated agent opened the media URL. Anything
+  // outside the inline-safe allowlist is still served in full - just as a
+  // neutral-typed download the browser will never render.
+  const inlineSafe = isInlineSafeMime(media.mimeType);
+  const safeFileName = media.fileName?.replace(/[\r\n"]/g, '');
+  res.setHeader('Content-Type', inlineSafe ? (media.mimeType as string) : 'application/octet-stream');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Accept-Ranges', 'bytes');
   res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
-  if (media.fileName) {
-    res.setHeader('Content-Disposition', `inline; filename="${media.fileName.replace(/[\r\n"]/g, '')}"`);
-  }
+  res.setHeader(
+    'Content-Disposition',
+    `${inlineSafe ? 'inline' : 'attachment'}${safeFileName ? `; filename="${safeFileName}"` : ''}`,
+  );
 
   const range = req.headers.range;
   if (range) {

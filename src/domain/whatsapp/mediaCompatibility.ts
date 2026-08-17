@@ -43,6 +43,36 @@ const MIME_TO_EXTENSION: Record<string, string> = {
   'application/vnd.ms-powerpoint': 'ppt',
 };
 
+/**
+ * MIME types that are safe for a browser to render inline in this app's own
+ * origin. Anything outside this set is still stored and downloadable, but is
+ * served as an attachment with a neutral content type - a WhatsApp sender
+ * controls the MIME on media they send, so honouring an arbitrary one
+ * inline (text/html, image/svg+xml) would let them run script against an
+ * authenticated agent's session.
+ */
+const INLINE_SAFE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'video/mp4',
+  'video/webm',
+  'video/3gpp',
+  'video/quicktime',
+  'audio/ogg',
+  'audio/opus',
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/wav',
+  'audio/aac',
+  'application/pdf',
+]);
+
+export function isInlineSafeMime(mimeType: string | null): boolean {
+  return Boolean(mimeType && INLINE_SAFE_MIME_TYPES.has(mimeType));
+}
+
 export function isSupportedMime(mimeType: string | null): boolean {
   // Every real MIME type WhatsApp/Baileys can hand us is at least
   // downloadable and storable - "supported" here means "not silently
