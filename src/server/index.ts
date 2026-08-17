@@ -318,6 +318,15 @@ app.post('/api/workspace/chats/:chatId/read', requireWorkspaceContext, async (re
   }
 });
 
+app.get('/api/workspace/dashboard', requireWorkspaceContext, async (_req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
+    businessId: string;
+    whatsappAccountId: string;
+  };
+  const dashboard = await workspaceService.getDashboardOverview(businessId, whatsappAccountId);
+  return res.status(200).json(dashboard);
+});
+
 app.get('/api/workspace/business', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const business = await workspaceService.getBusinessProfile(businessId);

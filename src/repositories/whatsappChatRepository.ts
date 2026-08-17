@@ -207,6 +207,22 @@ export class WhatsAppChatRepository {
     return rows.map(toRecord);
   }
 
+  /** Real dashboard aggregate - total real chats vs those with a real message since a real timestamp, never estimated. */
+  async countStatsSince(
+    businessId: string,
+    whatsappAccountId: string,
+    sinceIso: string,
+  ): Promise<{ total: number; activeSince: number }> {
+    const { rows } = await this.db.query<{ total: string; active_since: string }>(
+      `SELECT count(*)::int AS total,
+              count(*) FILTER (WHERE last_message_at >= $3)::int AS active_since
+       FROM whatsapp_chats
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND deleted_at IS NULL`,
+      [businessId, whatsappAccountId, sinceIso],
+    );
+    return { total: Number(rows[0]?.total ?? 0), activeSince: Number(rows[0]?.active_since ?? 0) };
+  }
+
   /** Human takeover belongs to the specific conversation, not globally to the account. */
   async setAiMode(id: string, aiMode: ChatAiMode): Promise<WhatsAppChatRecord | null> {
     const { rows } = await this.db.query<ChatRow>(

@@ -178,6 +178,14 @@ export interface CreateLeadInput {
   notes?: string | null | undefined;
 }
 
+export interface WorkspaceDashboardOverview {
+  periodDays: number;
+  messages: { inbound: number; outbound: number };
+  chats: { total: number; activeSince: number };
+  calls: Partial<Record<CallStatus, number>>;
+  outboundReplies: { human: number; ai: number };
+}
+
 export interface WorkspaceBillingEntitlement {
   key: string;
   label: string;
@@ -546,6 +554,24 @@ export class WorkspaceService {
       throw error;
     }
     return this.agentRepository.create({ businessId, ...input });
+  }
+
+  /**
+   * Real aggregate counts over the trailing window, computed straight from
+   * the same tables the rest of the workspace reads/writes - never a
+   * separately maintained (and driftable) analytics rollup.
+   */
+  async getDashboardOverview(businessId: string, whatsappAccountId: string, periodDays = 30): Promise<WorkspaceDashboardOverview> {
+    const sinceIso = new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000).toISOString();
+
+    const [messages, chats, calls, outboundReplies] = await Promise.all([
+      this.messageRepository.countByDirectionSince(businessId, whatsappAccountId, sinceIso),
+      this.chatRepository.countStatsSince(businessId, whatsappAccountId, sinceIso),
+      this.callRepository.countByStatusSince(businessId, whatsappAccountId, sinceIso),
+      this.outboundMessageRepository.countSentByRequesterSince(businessId, whatsappAccountId, sinceIso),
+    ]);
+
+    return { periodDays, messages, chats, calls, outboundReplies };
   }
 
   async getBusinessProfile(businessId: string): Promise<BusinessRecord> {

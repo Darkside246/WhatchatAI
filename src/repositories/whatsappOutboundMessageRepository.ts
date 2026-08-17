@@ -192,6 +192,23 @@ export class WhatsAppOutboundMessageRepository {
     );
   }
 
+  /** Real dashboard aggregate - real, successfully sent messages grouped by who requested them (never counting queued/failed attempts as if they went out). */
+  async countSentByRequesterSince(
+    businessId: string,
+    whatsappAccountId: string,
+    sinceIso: string,
+  ): Promise<{ human: number; ai: number }> {
+    const { rows } = await this.db.query<{ requested_by: string; count: string }>(
+      `SELECT requested_by, count(*)::int AS count FROM whatsapp_outbound_messages
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND status = 'sent' AND sent_at >= $3
+       GROUP BY requested_by`,
+      [businessId, whatsappAccountId, sinceIso],
+    );
+    const human = rows.find((row) => row.requested_by === 'human')?.count ?? '0';
+    const ai = rows.find((row) => row.requested_by === 'ai')?.count ?? '0';
+    return { human: Number(human), ai: Number(ai) };
+  }
+
   /** Batched read for the message list view - which of these persisted messages the AI reply pipeline sent, vs a human agent. */
   async listAiGeneratedMessageIds(messageIds: string[]): Promise<string[]> {
     if (messageIds.length === 0) return [];

@@ -13,7 +13,7 @@ import {
 
 const NAV_ITEMS: { to: string; label: string; icon: LucideIcon; implemented: boolean }[] = [
   { to: '/chats', label: 'Inbox', icon: MessageCircle, implemented: true },
-  { to: '/dashboard', label: 'Dashboard', icon: BarChart3, implemented: false },
+  { to: '/dashboard', label: 'Dashboard', icon: BarChart3, implemented: true },
   { to: '/agents', label: 'AI Agents', icon: Bot, implemented: true },
   { to: '/crm', label: 'CRM & Leads', icon: Contact, implemented: true },
   { to: '/automations', label: 'Automations', icon: Zap, implemented: false },

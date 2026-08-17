@@ -156,6 +156,14 @@ export interface UpdateLeadBody {
   notes: string | null;
 }
 
+export interface WorkspaceDashboardOverview {
+  periodDays: number;
+  messages: { inbound: number; outbound: number };
+  chats: { total: number; activeSince: number };
+  calls: Partial<Record<WorkspaceCallSummary['status'], number>>;
+  outboundReplies: { human: number; ai: number };
+}
+
 export interface WorkspaceBillingEntitlement {
   key: string;
   label: string;
@@ -347,6 +355,7 @@ export const api = {
     request(`/workspace/chats/${chatId}/ai-mode`, { method: 'PATCH', body: JSON.stringify({ aiMode }) }),
   markChatRead: (chatId: string) => request(`/workspace/chats/${chatId}/read`, { method: 'POST' }),
   getBilling: () => request<WorkspaceBillingOverview>('/workspace/billing'),
+  getDashboard: () => request<WorkspaceDashboardOverview>('/workspace/dashboard'),
   getBusiness: () => request<{ business: WorkspaceBusiness }>('/workspace/business'),
   updateBusiness: (name: string) =>
     request<{ business: WorkspaceBusiness }>('/workspace/business', { method: 'PATCH', body: JSON.stringify({ name }) }),

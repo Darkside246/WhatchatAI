@@ -202,4 +202,21 @@ export class WhatsAppMessageRepository {
     );
     return Promise.all(rows.map((row) => toRecord(row, false)));
   }
+
+  /** Real dashboard aggregate - inbound vs outbound message counts since a real timestamp, never estimated. */
+  async countByDirectionSince(
+    businessId: string,
+    whatsappAccountId: string,
+    sinceIso: string,
+  ): Promise<{ inbound: number; outbound: number }> {
+    const { rows } = await this.db.query<{ direction: MessageDirection; count: string }>(
+      `SELECT direction, count(*)::int AS count FROM whatsapp_messages
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND "timestamp" >= $3 AND deleted_at IS NULL
+       GROUP BY direction`,
+      [businessId, whatsappAccountId, sinceIso],
+    );
+    const inbound = rows.find((row) => row.direction === 'inbound')?.count ?? '0';
+    const outbound = rows.find((row) => row.direction === 'outbound')?.count ?? '0';
+    return { inbound: Number(inbound), outbound: Number(outbound) };
+  }
 }

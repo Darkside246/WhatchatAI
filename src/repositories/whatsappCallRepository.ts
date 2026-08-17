@@ -137,6 +137,23 @@ export class WhatsAppCallRepository {
     return rows.map(toRecord);
   }
 
+  /** Real dashboard aggregate - call counts grouped by their real terminal/current status since a real timestamp. */
+  async countByStatusSince(
+    businessId: string,
+    whatsappAccountId: string,
+    sinceIso: string,
+  ): Promise<Record<CallStatus, number>> {
+    const { rows } = await this.db.query<{ status: CallStatus; count: string }>(
+      `SELECT status, count(*)::int AS count FROM whatsapp_calls
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND COALESCE(started_at, created_at) >= $3
+       GROUP BY status`,
+      [businessId, whatsappAccountId, sinceIso],
+    );
+    const result = {} as Record<CallStatus, number>;
+    for (const row of rows) result[row.status] = Number(row.count);
+    return result;
+  }
+
   /**
    * Real, documented timeout rule: WhatsApp's own client rings for roughly
    * 45-60s before a call goes to "missed" on the device. A call still

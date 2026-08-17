@@ -6,6 +6,7 @@ import { AgentsPage } from './AgentsPage.js';
 import { CrmRoute } from './CrmRoute.js';
 import { BillingRoute } from './BillingRoute.js';
 import { SettingsRoute } from './SettingsRoute.js';
+import { DashboardRoute } from './DashboardRoute.js';
 import { PlaceholderPage } from './PlaceholderPage.js';
 
 interface Props {
@@ -39,15 +40,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
               <Route path="/chats" element={<ChatsRoute />} />
               <Route path="/chats/:chatId" element={<ChatsRoute />} />
               <Route path="/agents" element={<AgentsPage />} />
-              <Route
-                path="/dashboard"
-                element={
-                  <PlaceholderPage
-                    title="Dashboard"
-                    description="Business-wide metrics from real data will live here once analytics is built."
-                  />
-                }
-              />
+              <Route path="/dashboard" element={<DashboardRoute />} />
               <Route path="/crm" element={<CrmRoute />} />
               <Route
                 path="/automations"
