@@ -21,7 +21,8 @@ export type SecurityEventType =
   | 'team_created'
   | 'chat_assigned'
   | 'member_created'
-  | 'member_role_changed';
+  | 'member_role_changed'
+  | 'agent_updated';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 

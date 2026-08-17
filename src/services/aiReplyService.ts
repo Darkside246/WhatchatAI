@@ -1,6 +1,6 @@
 import { getGeminiClient } from './geminiClient.js';
 import * as gooseService from './gooseService.js';
-import type { AiAgentRecord } from '../repositories/aiAgentRepository.js';
+import { ADVICE_RESTRICTED_CATEGORIES, type AiAgentRecord } from '../repositories/aiAgentRepository.js';
 import type { AiHandoffContext } from './aiContextGathererService.js';
 
 export type AiReplyResult = { status: 'generated'; text: string } | { status: 'unavailable'; reason: string };
@@ -32,6 +32,29 @@ function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffContext)
   if (context.knowledgeBase.available && context.knowledgeBase.results.length > 0) {
     const excerpts = context.knowledgeBase.results.map((result) => `- ${result.title}: ${result.snippet}`).join('\n');
     lines.push(`Relevant knowledge base excerpts:\n${excerpts}`);
+  }
+
+  if (agent.category && agent.category !== 'general') {
+    lines.push(`This agent covers the "${agent.category}" side of the business${agent.specialization ? ` (${agent.specialization})` : ''}.`);
+  }
+
+  /**
+   * The hard scope rule for trades where wrong guidance can cause real
+   * physical, legal, or financial harm. These agents run the BUSINESS side of
+   * the job - they must never become an advice channel.
+   */
+  if (ADVICE_RESTRICTED_CATEGORIES.includes(agent.category)) {
+    lines.push(
+      'CRITICAL SCOPE LIMIT: you handle business operations only - booking and scheduling jobs, quoting, ' +
+        'confirming appointments, sharing job status, collecting job details, and answering questions about ' +
+        'pricing, availability, and process. You must NEVER give technical, diagnostic, safety, repair, ' +
+        'installation, or DIY advice, and never tell the customer how to fix, test, bypass, or work on ' +
+        'anything themselves - not even if they insist, say it is simple, or claim to be qualified. If asked ' +
+        'for that kind of guidance, say plainly that it needs a qualified professional to assess it, and ' +
+        'offer to book a visit or have someone call them back. Treat anything involving gas, live electricity, ' +
+        'water damage, structural work, or an immediate hazard as urgent: do not advise, hand over to a human ' +
+        'straight away.',
+    );
   }
 
   lines.push(

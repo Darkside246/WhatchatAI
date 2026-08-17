@@ -1252,6 +1252,12 @@ app.get('/api/workspace/agents', requireWorkspaceContext, async (_req, res) => {
   return res.status(200).json({ agents });
 });
 
+const AGENT_CATEGORY_VALUES = [
+  'general', 'sales', 'support', 'billing', 'bookings', 'logistics',
+  'plumbing', 'electrical', 'mechanical', 'hvac', 'construction',
+  'cleaning', 'landscaping', 'it_services', 'beauty', 'hospitality',
+] as const;
+
 const createAgentSchema = z.object({
   name: z.string().trim().min(1),
   description: z.string().trim().min(1).nullish(),
@@ -1263,6 +1269,14 @@ const createAgentSchema = z.object({
   businessContext: z.string().trim().min(1).nullish(),
   responseStyle: z.string().trim().min(1).nullish(),
   humanTakeoverPolicy: z.string().trim().min(1).nullish(),
+  category: z.enum(AGENT_CATEGORY_VALUES).optional(),
+  specialization: z.string().trim().min(1).nullish(),
+  triggerKeywords: z.array(z.string().trim().min(1)).max(50).optional(),
+  blockedKeywords: z.array(z.string().trim().min(1)).max(50).optional(),
+  responseDelaySeconds: z.number().int().min(0).max(300).optional(),
+  parentAgentId: z.string().uuid().nullish(),
+  escalateToAgentId: z.string().uuid().nullish(),
+  priority: z.number().int().min(0).max(1000).optional(),
 });
 
 app.post('/api/workspace/agents', requireWorkspaceContext, requirePermission('ai.create'), async (req, res) => {
@@ -1286,6 +1300,27 @@ app.post('/api/workspace/agents', requireWorkspaceContext, requirePermission('ai
         .status(403)
         .json({ error: 'ENTITLEMENT_DENIED', reason: error.reason, limit: error.limit, current: error.current, message });
     }
+    throw error;
+  }
+});
+
+/**
+ * A real full edit of an existing agent. Separate from the status route
+ * below on purpose: changing configuration and flipping the AI kill switch
+ * are different actions with different permissions, and the kill switch
+ * stays independently audited.
+ */
+app.patch('/api/workspace/agents/:agentId', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = createAgentSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_AGENT', details: parsed.error.flatten() });
+  }
+  try {
+    const agent = await workspaceService.updateAgent(businessId, String(req.params.agentId ?? ''), parsed.data);
+    return res.status(200).json({ agent });
+  } catch (error) {
+    if (isChatNotFoundError(error)) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });
     throw error;
   }
 });

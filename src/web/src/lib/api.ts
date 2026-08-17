@@ -465,19 +465,65 @@ export interface NotificationDto {
   dismissedAt: string | null;
 }
 
+export const AGENT_CATEGORIES = [
+  'general', 'sales', 'support', 'billing', 'bookings', 'logistics',
+  'plumbing', 'electrical', 'mechanical', 'hvac', 'construction',
+  'cleaning', 'landscaping', 'it_services', 'beauty', 'hospitality',
+] as const;
+export type AgentCategory = (typeof AGENT_CATEGORIES)[number];
+
+/**
+ * Trades where the agent is hard-limited to business operations and barred
+ * from giving technical or safety advice. Mirrors the backend list in
+ * aiAgentRepository - shown in the UI so the operator can see the limit is
+ * real and enforced server-side, not just a label.
+ */
+export const ADVICE_RESTRICTED_CATEGORIES: readonly AgentCategory[] = [
+  'plumbing', 'electrical', 'mechanical', 'hvac', 'construction', 'it_services',
+];
+
 export interface AiAgentSummary {
   id: string;
   name: string;
   status: 'ACTIVE' | 'PAUSED' | 'ARCHIVED';
+  description: string | null;
   persona: string | null;
+  tone: string | null;
+  language: string | null;
+  systemInstruction: string | null;
+  greeting: string | null;
+  businessContext: string | null;
+  responseStyle: string | null;
+  humanTakeoverPolicy: string | null;
+  category: AgentCategory;
+  specialization: string | null;
+  triggerKeywords: string[];
+  blockedKeywords: string[];
+  responseDelaySeconds: number;
+  parentAgentId: string | null;
+  escalateToAgentId: string | null;
+  priority: number;
 }
 
 export interface CreateAgentBody {
   name: string;
-  persona?: string;
-  tone?: string;
-  language?: string;
-  systemInstruction?: string;
+  description?: string | null;
+  persona?: string | null;
+  tone?: string | null;
+  language?: string | null;
+  systemInstruction?: string | null;
+  greeting?: string | null;
+  businessContext?: string | null;
+  responseStyle?: string | null;
+  humanTakeoverPolicy?: string | null;
+  category?: AgentCategory;
+  specialization?: string | null;
+  triggerKeywords?: string[];
+  blockedKeywords?: string[];
+  responseDelaySeconds?: number;
+  parentAgentId?: string | null;
+  escalateToAgentId?: string | null;
+  priority?: number;
 }
 
 export interface WorkspaceContact {
@@ -661,6 +707,8 @@ export const api = {
   listAgents: () => request<{ agents: AiAgentSummary[] }>('/workspace/agents'),
   createAgent: (body: CreateAgentBody) =>
     request<{ agent: AiAgentSummary }>('/workspace/agents', { method: 'POST', body: JSON.stringify(body) }),
+  updateAgent: (id: string, body: CreateAgentBody) =>
+    request<{ agent: AiAgentSummary }>(`/workspace/agents/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   updateAgentStatus: (id: string, status: AiAgentSummary['status']) =>
     request<{ agent: AiAgentSummary }>(`/workspace/agents/${id}/status`, {
       method: 'PATCH',

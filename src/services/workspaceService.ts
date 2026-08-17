@@ -8,7 +8,7 @@ import { WhatsAppMessageRepository } from '../repositories/whatsappMessageReposi
 import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobRepository.js';
 import { CrmContactRepository, type UpdateCrmContactInput } from '../repositories/crmContactRepository.js';
 import { LeadRepository, type UpdateLeadInput, type LeadRecord } from '../repositories/leadRepository.js';
-import { AiAgentRepository, type AiAgentRecord } from '../repositories/aiAgentRepository.js';
+import { AiAgentRepository, type AiAgentRecord, type AgentCategory } from '../repositories/aiAgentRepository.js';
 import { EntitlementService, type EntitlementDenialReason } from './entitlementService.js';
 import { SubscriptionRepository } from '../repositories/subscriptionRepository.js';
 import { PlanRepository } from '../repositories/planRepository.js';
@@ -265,6 +265,14 @@ export interface CreateAgentInput {
   businessContext?: string | null | undefined;
   responseStyle?: string | null | undefined;
   humanTakeoverPolicy?: string | null | undefined;
+  category?: AgentCategory | undefined;
+  specialization?: string | null | undefined;
+  triggerKeywords?: string[] | undefined;
+  blockedKeywords?: string[] | undefined;
+  responseDelaySeconds?: number | undefined;
+  parentAgentId?: string | null | undefined;
+  escalateToAgentId?: string | null | undefined;
+  priority?: number | undefined;
 }
 
 export class WorkspaceService {
@@ -768,6 +776,36 @@ export class WorkspaceService {
       throw error;
     }
     return this.agentRepository.create({ businessId, ...input });
+  }
+
+  /**
+   * A real full edit of an existing agent. Verifies the agent belongs to this
+   * business before touching it, and validates that any parent/escalation
+   * target is also this business's own agent - so hierarchy can never be
+   * pointed at another tenant's agent, and an agent can never be made its own
+   * parent.
+   */
+  async updateAgent(businessId: string, agentId: string, input: CreateAgentInput): Promise<AiAgentRecord> {
+    const agent = await this.agentRepository.findById(agentId);
+    if (!agent || agent.businessId !== businessId || agent.deletedAt) throw this.notFound();
+
+    for (const linkedId of [input.parentAgentId, input.escalateToAgentId]) {
+      if (!linkedId) continue;
+      if (linkedId === agentId) throw this.notFound();
+      const linked = await this.agentRepository.findById(linkedId);
+      if (!linked || linked.businessId !== businessId || linked.deletedAt) throw this.notFound();
+    }
+
+    const updated = await this.agentRepository.update(agentId, input);
+    if (!updated) throw this.notFound();
+
+    await this.securityAuditLogRepository.record({
+      businessId,
+      eventType: 'agent_updated',
+      rawMetadata: { agentId, category: updated.category },
+    });
+
+    return updated;
   }
 
   /**
