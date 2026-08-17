@@ -17,6 +17,7 @@ import {
   User as UserIcon,
   SmilePlus,
   Sparkles,
+  Lock,
 } from 'lucide-react';
 import {
   api,
@@ -732,6 +733,25 @@ export function ChatThread({ onOpenDetail }: Props) {
         {reactionError && <p className="text-xs text-error">{reactionError}</p>}
         {messages === null && !error && <p className="text-xs text-fg-muted">Loading real message history…</p>}
         {messages?.length === 0 && <p className="text-xs text-fg-muted">No messages persisted for this chat yet.</p>}
+
+        {/*
+          The reference design puts WhatsApp's "Messages and calls are
+          end-to-end encrypted. No one outside of this chat can read or
+          listen." banner here. Repeating that verbatim would be a false
+          claim in a shared team inbox: WhatsApp's end-to-end encryption
+          terminates at this linked device, and from there messages are
+          decrypted, stored (encrypted at rest), and deliberately readable by
+          every teammate with access. This says what is actually true
+          instead.
+        */}
+        {messages && messages.length > 0 && (
+          <div className="flex justify-center pb-1">
+            <span className="flex max-w-md items-center gap-1.5 rounded-lg bg-surface-2 px-3 py-1.5 text-center text-[11px] text-fg-muted shadow-sm">
+              <Lock size={11} className="shrink-0" aria-hidden />
+              Encrypted by WhatsApp in transit, stored encrypted here, and readable by your team.
+            </span>
+          </div>
+        )}
         {messages?.map((message, index) => (
           <div key={message.id}>
             {(index === 0 || dayKey(messages[index - 1]!.timestamp) !== dayKey(message.timestamp)) && (
