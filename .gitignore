@@ -7,5 +7,6 @@ dist/
 .DS_Store
 coverage/
 .data/
+data/
 .claude/settings.local.json
 *.rdb
