@@ -1,7 +1,10 @@
+import { useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
+import { Search } from 'lucide-react';
 import type { SyncStatusResponse, WhatsAppConnectionSnapshot } from '../lib/api.js';
 import { SaasNavRail, SaasNavBottomBar } from '../components/SaasNavRail.js';
 import { NotificationCenter } from '../components/NotificationCenter.js';
+import { CommandPalette } from '../components/CommandPalette.js';
 import { ChatsRoute } from './ChatsRoute.js';
 import { AgentsPage } from './AgentsPage.js';
 import { CrmRoute } from './CrmRoute.js';
@@ -17,6 +20,8 @@ interface Props {
 }
 
 export function WorkspaceShell({ connection, sync }: Props) {
+  const [searchOpen, setSearchOpen] = useState(false);
+
   return (
     <div className="flex h-full flex-col bg-surface-0">
       {sync?.syncStatus === 'failed' && (
@@ -25,12 +30,23 @@ export function WorkspaceShell({ connection, sync }: Props) {
         </div>
       )}
 
+      <CommandPalette open={searchOpen} onOpenChange={setSearchOpen} />
+
       <div className="flex min-h-0 flex-1">
         <SaasNavRail />
 
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="flex shrink-0 items-center justify-between border-b border-border-subtle bg-surface-1 px-4 py-2">
-            <p className="hidden text-xs text-fg-muted sm:block">
+            <button
+              type="button"
+              onClick={() => setSearchOpen(true)}
+              className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-xs text-fg-muted hover:bg-surface-3"
+            >
+              <Search size={13} aria-hidden />
+              <span className="hidden sm:inline">Search…</span>
+              <kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-[9px] sm:inline">⌘K</kbd>
+            </button>
+            <p className="hidden text-xs text-fg-muted md:block">
               Connected as {connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'}
             </p>
             <div className="flex items-center gap-3">

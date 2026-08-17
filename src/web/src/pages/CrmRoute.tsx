@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   api,
   ApiError,
@@ -183,10 +184,10 @@ function ContactDetailCard({
   );
 }
 
-function ContactsTab() {
+function ContactsTab({ focusContactId }: { focusContactId: string | null }) {
   const [contacts, setContacts] = useState<WorkspaceCrmContactSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(focusContactId);
 
   function load() {
     api
@@ -199,6 +200,10 @@ function ContactsTab() {
   }
 
   useEffect(load, []);
+
+  useEffect(() => {
+    if (focusContactId) setSelectedId(focusContactId);
+  }, [focusContactId]);
 
   const selected = contacts?.find((c) => c.id === selectedId) ?? null;
 
@@ -246,7 +251,15 @@ function ContactsTab() {
   );
 }
 
-function LeadCard({ lead, onChanged }: { lead: WorkspaceLeadSummary; onChanged: (updated: WorkspaceLeadSummary) => void }) {
+function LeadCard({
+  lead,
+  onChanged,
+  highlighted,
+}: {
+  lead: WorkspaceLeadSummary;
+  onChanged: (updated: WorkspaceLeadSummary) => void;
+  highlighted: boolean;
+}) {
   const [busy, setBusy] = useState(false);
 
   async function move(status: LeadStatusValue) {
@@ -262,7 +275,7 @@ function LeadCard({ lead, onChanged }: { lead: WorkspaceLeadSummary; onChanged: 
   }
 
   return (
-    <div className="rounded-xl border border-border-subtle bg-surface-2 p-3">
+    <div className={`rounded-xl border bg-surface-2 p-3 ${highlighted ? 'border-accent ring-1 ring-accent' : 'border-border-subtle'}`}>
       <p className="text-sm font-medium text-fg">{lead.displayName}</p>
       {lead.nextAction && <p className="mt-1 text-xs text-fg-secondary">Next: {lead.nextAction}</p>}
       <div className="mt-2 flex items-center justify-between text-[11px] text-fg-muted">
@@ -286,7 +299,7 @@ function LeadCard({ lead, onChanged }: { lead: WorkspaceLeadSummary; onChanged: 
   );
 }
 
-function LeadsTab() {
+function LeadsTab({ focusLeadId }: { focusLeadId: string | null }) {
   const [leads, setLeads] = useState<WorkspaceLeadSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -325,7 +338,7 @@ function LeadsTab() {
           </div>
           <div className="space-y-2">
             {leads?.filter((l) => l.status === status).map((lead) => (
-              <LeadCard key={lead.id} lead={lead} onChanged={handleChanged} />
+              <LeadCard key={lead.id} lead={lead} onChanged={handleChanged} highlighted={lead.id === focusLeadId} />
             ))}
           </div>
         </div>
@@ -335,7 +348,14 @@ function LeadsTab() {
 }
 
 export function CrmRoute() {
-  const [tab, setTab] = useState<'contacts' | 'leads'>('contacts');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab: 'contacts' | 'leads' = searchParams.get('tab') === 'leads' ? 'leads' : 'contacts';
+  const focusContactId = searchParams.get('contactId');
+  const focusLeadId = searchParams.get('leadId');
+
+  function setTab(value: 'contacts' | 'leads') {
+    setSearchParams(value === 'contacts' ? {} : { tab: value });
+  }
 
   return (
     <div className="flex h-full flex-1 flex-col">
@@ -354,7 +374,7 @@ export function CrmRoute() {
           </button>
         ))}
       </div>
-      {tab === 'contacts' ? <ContactsTab /> : <LeadsTab />}
+      {tab === 'contacts' ? <ContactsTab focusContactId={focusContactId} /> : <LeadsTab focusLeadId={focusLeadId} />}
     </div>
   );
 }

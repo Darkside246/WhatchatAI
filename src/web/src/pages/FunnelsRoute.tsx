@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { ArrowLeft, GitBranch, Plus, Trash2, Play, Pause, ArrowUp, ArrowDown, UserPlus2 } from 'lucide-react';
 import {
   api,
@@ -388,8 +389,12 @@ function FunnelDetailView({ funnelId, onBack }: { funnelId: string; onBack: () =
 }
 
 export function FunnelsRoute() {
+  const [searchParams] = useSearchParams();
+  const initialFunnelId = searchParams.get('funnelId');
   const [funnels, setFunnels] = useState<FunnelDto[] | null>(null);
-  const [view, setView] = useState<{ mode: 'list' } | { mode: 'detail'; funnelId: string }>({ mode: 'list' });
+  const [view, setView] = useState<{ mode: 'list' } | { mode: 'detail'; funnelId: string }>(
+    initialFunnelId ? { mode: 'detail', funnelId: initialFunnelId } : { mode: 'list' },
+  );
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
 

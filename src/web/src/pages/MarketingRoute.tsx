@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Megaphone, Send, Check, X, Users, CalendarClock, Image as ImageIcon, Sparkles } from 'lucide-react';
 import {
   api,
@@ -369,9 +370,11 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
   );
 }
 
-function CampaignsTab() {
+function CampaignsTab({ initialCampaignId }: { initialCampaignId: string | null }) {
   const [campaigns, setCampaigns] = useState<CampaignDto[] | null>(null);
-  const [view, setView] = useState<{ mode: 'list' } | { mode: 'new' } | { mode: 'detail'; campaignId: string }>({ mode: 'list' });
+  const [view, setView] = useState<{ mode: 'list' } | { mode: 'new' } | { mode: 'detail'; campaignId: string }>(
+    initialCampaignId ? { mode: 'detail', campaignId: initialCampaignId } : { mode: 'list' },
+  );
 
   async function load() {
     try {
@@ -693,7 +696,13 @@ function StatusSchedulerTab() {
 }
 
 export function MarketingRoute() {
-  const [tab, setTab] = useState<'campaigns' | 'status'>('campaigns');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab: 'campaigns' | 'status' = searchParams.get('tab') === 'status' ? 'status' : 'campaigns';
+  const initialCampaignId = searchParams.get('campaignId');
+
+  function setTab(value: 'campaigns' | 'status') {
+    setSearchParams(value === 'campaigns' ? {} : { tab: value });
+  }
 
   return (
     <div className="flex h-full flex-1 flex-col">
@@ -713,7 +722,7 @@ export function MarketingRoute() {
           Status
         </button>
       </div>
-      {tab === 'campaigns' ? <CampaignsTab /> : <StatusSchedulerTab />}
+      {tab === 'campaigns' ? <CampaignsTab initialCampaignId={initialCampaignId} /> : <StatusSchedulerTab />}
     </div>
   );
 }

@@ -576,6 +576,14 @@ export interface WorkspaceCallSummary {
   durationSeconds: number | null;
 }
 
+export interface GlobalSearchResult {
+  type: 'chat' | 'contact' | 'lead' | 'campaign' | 'funnel';
+  id: string;
+  title: string;
+  subtitle: string | null;
+  url: string;
+}
+
 class ApiError extends Error {
   constructor(
     public status: number,
@@ -778,4 +786,6 @@ export const api = {
 
   suggestMarketingCopy: (input: { kind: 'campaign_message' | 'status_caption' | 'follow_up'; businessContext: string; count?: number }) =>
     request<MarketingCopySuggestionResult>('/workspace/marketing/ai-suggest', { method: 'POST', body: JSON.stringify(input) }),
+
+  globalSearch: (query: string) => request<{ results: GlobalSearchResult[] }>(`/workspace/search?q=${encodeURIComponent(query)}`),
 };

@@ -10,6 +10,7 @@ import { publishRealtimeEvent } from '../realtime/pubsub.js';
 import { whatsappConnectionService } from '../services/whatsappConnectionService.js';
 import { whatsappMessageIngestionService } from '../services/whatsappMessageIngestionService.js';
 import * as gooseService from '../services/gooseService.js';
+import { globalSearch } from '../services/globalSearchService.js';
 import {
   workspaceService,
   isChatNotFoundError,
@@ -1056,6 +1057,13 @@ app.post('/api/workspace/chats/:chatId/read', requireWorkspaceContext, async (re
     if (isChatNotFoundError(error)) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
     throw error;
   }
+});
+
+app.get('/api/workspace/search', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const query = typeof req.query.q === 'string' ? req.query.q : '';
+  const results = await globalSearch(businessId, query);
+  return res.status(200).json({ results });
 });
 
 app.get('/api/workspace/dashboard', requireWorkspaceContext, async (_req, res) => {
