@@ -10,6 +10,7 @@ export function AgentsPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
 
   function load() {
     api
@@ -19,6 +20,20 @@ export function AgentsPage() {
   }
 
   useEffect(load, []);
+
+  async function handleToggleStatus(agent: AiAgentSummary) {
+    const nextStatus = agent.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
+    setTogglingId(agent.id);
+    setError(null);
+    try {
+      const res = await api.updateAgentStatus(agent.id, nextStatus);
+      setAgents((current) => current?.map((a) => (a.id === agent.id ? res.agent : a)) ?? current);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to update agent status.');
+    } finally {
+      setTogglingId(null);
+    }
+  }
 
   async function handleCreate(event: FormEvent) {
     event.preventDefault();
@@ -162,6 +177,29 @@ export function AgentsPage() {
               </span>
             </div>
             <p className="mt-2 text-xs text-fg-muted">{agent.persona ?? 'No persona set.'}</p>
+            <button
+              type="button"
+              onClick={() => void handleToggleStatus(agent)}
+              disabled={togglingId === agent.id || agent.status === 'ARCHIVED'}
+              title={
+                agent.status === 'ACTIVE'
+                  ? 'Stops this agent from auto-replying to any chat in this business - human takeover for every conversation at once.'
+                  : 'Lets this agent auto-reply again wherever a chat is set to AI Active.'
+              }
+              className={`mt-3 w-full rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+                agent.status === 'ACTIVE'
+                  ? 'border-warning/30 text-warning hover:bg-warning/10'
+                  : 'border-accent/30 text-accent hover:bg-accent-soft'
+              }`}
+            >
+              {togglingId === agent.id
+                ? 'Updating…'
+                : agent.status === 'ACTIVE'
+                  ? 'Pause agent (disable everywhere)'
+                  : agent.status === 'PAUSED'
+                    ? 'Activate agent'
+                    : 'Archived'}
+            </button>
           </div>
         ))}
       </div>

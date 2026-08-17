@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
-import { workspaceService, isEntitlementDeniedError } from '../src/services/workspaceService.js';
+import { AiAgentRepository } from '../src/repositories/aiAgentRepository.js';
+import { workspaceService, isEntitlementDeniedError, isChatNotFoundError } from '../src/services/workspaceService.js';
 import { createTestAccount, createTestBusiness, createTestSubscription, resetDatabase } from './helpers.js';
 
 describe('workspaceService.listChats (real Postgres timestamptz -> string mapping)', () => {
@@ -143,5 +144,53 @@ describe('workspaceService.createAgent (real entitlement enforcement, not just a
         expect(error.limit).toBe(2);
       }
     }
+  });
+});
+
+describe('workspaceService.updateAgentStatus (the real, business-wide AI kill switch)', () => {
+  let businessId: string;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    await createTestSubscription(businessId, 'starter');
+  });
+
+  it('pausing an agent removes it from findActiveForBusiness - the same check the auto-reply worker gates on', async () => {
+    const agent = await workspaceService.createAgent(businessId, { name: 'Reception Agent' });
+    const agentRepository = new AiAgentRepository(pool);
+    expect(await agentRepository.findActiveForBusiness(businessId)).not.toBeNull();
+
+    const paused = await workspaceService.updateAgentStatus(businessId, agent.id, 'PAUSED');
+    expect(paused.status).toBe('PAUSED');
+    expect(await agentRepository.findActiveForBusiness(businessId)).toBeNull();
+
+    const reactivated = await workspaceService.updateAgentStatus(businessId, agent.id, 'ACTIVE');
+    expect(reactivated.status).toBe('ACTIVE');
+    expect((await agentRepository.findActiveForBusiness(businessId))?.id).toBe(agent.id);
+  });
+
+  it('throws not-found for an agent belonging to a different business - never lets one tenant toggle another tenant\'s agent', async () => {
+    const otherBusinessId = await createTestBusiness('Other Business');
+    await createTestSubscription(otherBusinessId, 'starter');
+    const otherAgent = await workspaceService.createAgent(otherBusinessId, { name: 'Other Agent' });
+
+    await expect(workspaceService.updateAgentStatus(businessId, otherAgent.id, 'PAUSED')).rejects.toThrow();
+    try {
+      await workspaceService.updateAgentStatus(businessId, otherAgent.id, 'PAUSED');
+      expect.fail('expected updateAgentStatus to reject');
+    } catch (error) {
+      expect(isChatNotFoundError(error)).toBe(true);
+    }
+
+    const agentRepository = new AiAgentRepository(pool);
+    const untouched = await agentRepository.findById(otherAgent.id);
+    expect(untouched?.status).toBe('ACTIVE');
+  });
+
+  it('throws not-found for a nonexistent agent id', async () => {
+    await expect(
+      workspaceService.updateAgentStatus(businessId, '00000000-0000-0000-0000-000000000000', 'PAUSED'),
+    ).rejects.toThrow();
   });
 });

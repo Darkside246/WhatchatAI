@@ -40,6 +40,8 @@ export interface WorkspaceChatSummary {
   aiMode: 'AI_ACTIVE' | 'AI_PAUSED' | 'HUMAN_TAKEOVER';
   /** A real, non-expired status exists for this chat's JID right now - WhatsApp's own "status ring" signal. */
   hasActiveStatus: boolean;
+  /** The real count of active statuses for this JID - the ring divides into exactly this many segments, same as WhatsApp's own UI. */
+  activeStatusCount: number;
   /** This contact's real, downloaded profile picture media row - null for groups and until a sync has actually succeeded. */
   avatarMediaId: string | null;
 }
@@ -368,6 +370,11 @@ export const api = {
   listAgents: () => request<{ agents: AiAgentSummary[] }>('/workspace/agents'),
   createAgent: (body: CreateAgentBody) =>
     request<{ agent: AiAgentSummary }>('/workspace/agents', { method: 'POST', body: JSON.stringify(body) }),
+  updateAgentStatus: (id: string, status: AiAgentSummary['status']) =>
+    request<{ agent: AiAgentSummary }>(`/workspace/agents/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }),
   listCrmContacts: () => request<{ crmContacts: WorkspaceCrmContactSummary[] }>('/workspace/crm-contacts'),
   updateCrmContact: (id: string, body: UpdateCrmContactBody) =>
     request<{ crmContact: WorkspaceCrmContactSummary }>(`/workspace/crm-contacts/${id}`, {

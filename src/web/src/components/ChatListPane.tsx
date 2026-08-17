@@ -123,7 +123,7 @@ export function ChatListPane({ className = '' }: Props) {
           >
             <Avatar
               label={chat.displayName}
-              hasActiveStatus={chat.hasActiveStatus}
+              statusCount={chat.activeStatusCount}
               photoUrl={chat.avatarMediaId ? mediaUrl(chat.avatarMediaId) : null}
             />
             <div className="min-w-0 flex-1">

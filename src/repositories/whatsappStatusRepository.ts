@@ -106,14 +106,20 @@ export class WhatsAppStatusRepository {
     return rows.map((row) => toRecord(row, false));
   }
 
-  /** One real query for the whole chat list - which publishers currently have a real, non-expired status (WhatsApp's own "status ring" signal). */
-  async listActivePublisherJids(businessId: string, whatsappAccountId: string): Promise<string[]> {
-    const { rows } = await this.db.query<{ publisher_jid: string }>(
-      `SELECT DISTINCT publisher_jid FROM whatsapp_statuses
-       WHERE business_id = $1 AND whatsapp_account_id = $2 AND (expires_at IS NULL OR expires_at > now())`,
+  /**
+   * One real query for the whole chat list - which publishers currently
+   * have a real, non-expired status, and how many (WhatsApp's own "status
+   * ring" divides into exactly this many segments, never a fabricated
+   * fixed number).
+   */
+  async countActiveByPublisher(businessId: string, whatsappAccountId: string): Promise<Map<string, number>> {
+    const { rows } = await this.db.query<{ publisher_jid: string; count: string }>(
+      `SELECT publisher_jid, count(*)::int AS count FROM whatsapp_statuses
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND (expires_at IS NULL OR expires_at > now())
+       GROUP BY publisher_jid`,
       [businessId, whatsappAccountId],
     );
-    return rows.map((row) => row.publisher_jid);
+    return new Map(rows.map((row) => [row.publisher_jid, Number(row.count)]));
   }
 
   /** Reconciliation read: statuses whose publisher has no matching contact record. Report-only. */

@@ -8,7 +8,7 @@ import { WhatsAppMessageRepository } from '../repositories/whatsappMessageReposi
 import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobRepository.js';
 import { CrmContactRepository, type UpdateCrmContactInput } from '../repositories/crmContactRepository.js';
 import { LeadRepository, type UpdateLeadInput, type LeadRecord } from '../repositories/leadRepository.js';
-import { AiAgentRepository } from '../repositories/aiAgentRepository.js';
+import { AiAgentRepository, type AiAgentRecord } from '../repositories/aiAgentRepository.js';
 import { EntitlementService, type EntitlementDenialReason } from './entitlementService.js';
 import { SubscriptionRepository } from '../repositories/subscriptionRepository.js';
 import { PlanRepository } from '../repositories/planRepository.js';
@@ -29,7 +29,7 @@ import type {
   MessageDirection,
   PresenceState,
 } from '../domain/whatsapp/types.js';
-import type { LeadStatus, SubscriptionStatus } from '../domain/platform/types.js';
+import type { AgentStatus, LeadStatus, SubscriptionStatus } from '../domain/platform/types.js';
 
 export interface WorkspaceChatSummary {
   id: string;
@@ -43,6 +43,8 @@ export interface WorkspaceChatSummary {
   aiMode: ChatAiMode;
   /** A real, non-expired status exists for this chat's JID right now - WhatsApp's own "status ring" signal. */
   hasActiveStatus: boolean;
+  /** The real count of active statuses for this JID - the ring divides into exactly this many segments, same as WhatsApp's own UI. */
+  activeStatusCount: number;
   /** This contact's real, downloaded profile picture media row - null for groups and until a sync has actually succeeded. */
   avatarMediaId: string | null;
 }
@@ -257,7 +259,7 @@ export class WorkspaceService {
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
-    const activeStatusJids = new Set(await this.statusRepository.listActivePublisherJids(businessId, whatsappAccountId));
+    const activeStatusCounts = await this.statusRepository.countActiveByPublisher(businessId, whatsappAccountId);
     const summaries: WorkspaceChatSummary[] = [];
 
     for (const chat of chats) {
@@ -314,7 +316,8 @@ export class WorkspaceService {
         lastMessageAt: chat.lastMessageAt,
         lastMessagePreview,
         aiMode: chat.aiMode,
-        hasActiveStatus: activeStatusJids.has(chat.chatJid),
+        hasActiveStatus: activeStatusCounts.has(chat.chatJid),
+        activeStatusCount: activeStatusCounts.get(chat.chatJid) ?? 0,
         avatarMediaId,
       });
     }
@@ -559,6 +562,21 @@ export class WorkspaceService {
       throw error;
     }
     return this.agentRepository.create({ businessId, ...input });
+  }
+
+  /**
+   * The real, business-wide AI kill switch - a PAUSED agent is invisible to
+   * findActiveForBusiness(), so the incoming-message worker silently skips
+   * auto-reply for every chat in this business rather than sending anything,
+   * without needing a separate "enabled" flag anywhere else.
+   */
+  async updateAgentStatus(businessId: string, agentId: string, status: AgentStatus): Promise<AiAgentRecord> {
+    const agent = await this.agentRepository.findById(agentId);
+    if (!agent || agent.businessId !== businessId || agent.deletedAt) {
+      throw this.notFound();
+    }
+    await this.agentRepository.updateStatus(agentId, status);
+    return { ...agent, status };
   }
 
   /**

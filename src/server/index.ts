@@ -399,6 +399,32 @@ app.post('/api/workspace/agents', requireWorkspaceContext, async (req, res) => {
   }
 });
 
+const updateAgentStatusSchema = z.object({
+  status: z.enum(['ACTIVE', 'PAUSED', 'ARCHIVED']),
+});
+
+/**
+ * The real AI kill switch - pausing (or archiving) an agent here is what
+ * actually stops findActiveForBusiness() from returning it, which is what
+ * the incoming-message worker checks before generating any reply. Not a
+ * separate "enabled" flag layered on top - the same status this business's
+ * whole auto-reply pipeline already gates on.
+ */
+app.patch('/api/workspace/agents/:agentId/status', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = updateAgentStatusSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_AGENT_STATUS', details: parsed.error.flatten() });
+  }
+  try {
+    const agent = await workspaceService.updateAgentStatus(businessId, String(req.params.agentId ?? ''), parsed.data.status);
+    return res.status(200).json({ agent });
+  } catch (error) {
+    if (isChatNotFoundError(error)) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });
+    throw error;
+  }
+});
+
 app.get('/api/workspace/crm-contacts', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const crmContacts = await workspaceService.listCrmContacts(businessId);

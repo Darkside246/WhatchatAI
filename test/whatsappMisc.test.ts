@@ -123,6 +123,53 @@ describe('Remaining Phase 2C repositories', () => {
     expect(status.textContent).toBe('Out of office');
   });
 
+  it('counts real active statuses per publisher - the ring divides into exactly this many segments', async () => {
+    const statuses = new WhatsAppStatusRepository(pool);
+    const publisherA = '15550002222@s.whatsapp.net';
+    const publisherB = '15550003333@s.whatsapp.net';
+
+    await statuses.insert({
+      businessId,
+      whatsappAccountId: accountId,
+      statusId: 'STATUS-A-1',
+      publisherJid: publisherA,
+      statusType: 'text',
+      textContent: 'first',
+    });
+    await statuses.insert({
+      businessId,
+      whatsappAccountId: accountId,
+      statusId: 'STATUS-A-2',
+      publisherJid: publisherA,
+      statusType: 'text',
+      textContent: 'second',
+    });
+    await statuses.insert({
+      businessId,
+      whatsappAccountId: accountId,
+      statusId: 'STATUS-B-1',
+      publisherJid: publisherB,
+      statusType: 'text',
+      textContent: 'only one',
+    });
+    // Expired - must not count toward the real, current segment count.
+    await statuses.insert({
+      businessId,
+      whatsappAccountId: accountId,
+      statusId: 'STATUS-A-EXPIRED',
+      publisherJid: publisherA,
+      statusType: 'text',
+      textContent: 'stale',
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+
+    const counts = await statuses.countActiveByPublisher(businessId, accountId);
+
+    expect(counts.get(publisherA)).toBe(2);
+    expect(counts.get(publisherB)).toBe(1);
+    expect(counts.has('15559999999@s.whatsapp.net')).toBe(false);
+  });
+
   it('tracks a sync job through its real lifecycle', async () => {
     const syncJobs = new WhatsAppSyncJobRepository(pool);
     const job = await syncJobs.create(businessId, accountId, 'contacts');

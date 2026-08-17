@@ -88,6 +88,11 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
       config: {
         systemInstruction: buildSystemInstruction(agent, context),
         temperature: 0.6,
+        // Flash-tier models reason internally before answering, and those
+        // thinking tokens draw from the same budget as the visible reply -
+        // left unset, a real reply can be cut off mid-word once that budget
+        // runs out before the model finishes writing the answer itself.
+        maxOutputTokens: 1024,
       },
     });
 
