@@ -1,11 +1,22 @@
-import { useEffect, useRef, useState } from 'react';
-import { Camera, Lock } from 'lucide-react';
-import { api, mediaUrl, ApiError, type WorkspaceBusiness, type WhatsAppConnectionSnapshot } from '../lib/api.js';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { Camera, Lock, LogOut, Monitor, Trash2, UserPlus } from 'lucide-react';
+import {
+  api,
+  mediaUrl,
+  ApiError,
+  BUSINESS_ROLES,
+  type WorkspaceBusiness,
+  type WhatsAppConnectionSnapshot,
+  type AuthSessionDto,
+  type MemberDto,
+  type BusinessRole,
+} from '../lib/api.js';
 import { Avatar } from '../components/Avatar.js';
 import { MediaLightbox } from '../components/MediaLightbox.js';
 import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
 import { triggerLockNow } from '../lib/lockEvents.js';
+import { useAuth } from '../hooks/useAuth.js';
 
 const MAX_PROFILE_PICTURE_BYTES = 5 * 1024 * 1024;
 
@@ -353,6 +364,313 @@ function ThemeCard() {
   );
 }
 
+function AccountCard() {
+  const auth = useAuth();
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      <h2 className="text-sm font-semibold text-fg">Account</h2>
+      <p className="mt-1 text-xs text-fg-muted">
+        Signed in as <span className="text-fg-secondary">{auth.user?.email}</span>
+        {auth.role && <> · <span className="text-fg-secondary">{auth.role}</span></>}
+      </p>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          await auth.logout();
+        }}
+        className="mt-3 flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-xs font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
+      >
+        <LogOut size={13} aria-hidden />
+        Sign out
+      </button>
+    </div>
+  );
+}
+
+function formatSessionTimestamp(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+function SessionsCard() {
+  const [sessions, setSessions] = useState<AuthSessionDto[] | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    try {
+      const result = await api.listSessions();
+      setSessions(result.sessions);
+    } catch {
+      setError('Could not load your sessions.');
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function handleRevoke(id: string) {
+    setBusyId(id);
+    try {
+      await api.revokeSession(id);
+      await load();
+    } catch {
+      setError('Could not sign out that device.');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleRevokeOthers() {
+    setBusyId('others');
+    try {
+      await api.revokeOtherSessions();
+      await load();
+    } catch {
+      setError('Could not sign out other devices.');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const hasOtherSessions = (sessions ?? []).some((session) => !session.isCurrent);
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-fg">Sessions</h2>
+        {hasOtherSessions && (
+          <button
+            type="button"
+            disabled={busyId === 'others'}
+            onClick={handleRevokeOthers}
+            className="text-xs font-medium text-fg-secondary hover:text-fg disabled:opacity-50"
+          >
+            Sign out all other sessions
+          </button>
+        )}
+      </div>
+      <p className="mt-1 text-xs text-fg-muted">Devices currently signed in to your account.</p>
+      {error && <p className="mt-2 text-xs text-error">{error}</p>}
+
+      <div className="mt-3 space-y-2">
+        {sessions === null && <p className="text-xs text-fg-muted">Loading…</p>}
+        {sessions?.length === 0 && <p className="text-xs text-fg-muted">No active sessions.</p>}
+        {sessions?.map((session) => (
+          <div key={session.id} className="flex items-center justify-between gap-3 rounded-lg border border-border-subtle px-3 py-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <Monitor size={15} className="shrink-0 text-fg-muted" aria-hidden />
+              <div className="min-w-0">
+                <p className="truncate text-xs font-medium text-fg">
+                  {session.browser} on {session.os}
+                  {session.isCurrent && <span className="ml-1.5 rounded-full bg-success/15 px-1.5 py-0.5 text-[10px] font-semibold text-success">Current device</span>}
+                </p>
+                <p className="truncate text-[11px] text-fg-muted">
+                  Last active {formatSessionTimestamp(session.lastSeenAt)}
+                  {session.ipAddress ? ` · ${session.ipAddress}` : ''}
+                </p>
+              </div>
+            </div>
+            {!session.isCurrent && (
+              <button
+                type="button"
+                disabled={busyId === session.id}
+                onClick={() => handleRevoke(session.id)}
+                className="shrink-0 text-xs font-medium text-error hover:underline disabled:opacity-50"
+              >
+                Sign out
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const ASSIGNABLE_ROLES = BUSINESS_ROLES.filter((role) => role !== 'OWNER');
+
+function TeamMembersCard() {
+  const auth = useAuth();
+  const canManage = auth.role === 'OWNER' || auth.role === 'ADMIN';
+  const [members, setMembers] = useState<MemberDto[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [email, setEmail] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [role, setRole] = useState<BusinessRole>('AGENT');
+  const [busy, setBusy] = useState(false);
+  const [createdCredential, setCreatedCredential] = useState<{ email: string; temporaryPassword: string } | null>(null);
+
+  async function load() {
+    try {
+      const result = await api.listMembers();
+      setMembers(result.members);
+    } catch {
+      setError('Could not load team members.');
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function handleCreate(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.createMember({ email, displayName, role });
+      setCreatedCredential({ email: result.member.email, temporaryPassword: result.temporaryPassword });
+      setEmail('');
+      setDisplayName('');
+      setRole('AGENT');
+      setShowAddForm(false);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not add that team member.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRoleChange(membershipId: string, nextRole: BusinessRole) {
+    try {
+      await api.updateMemberRole(membershipId, nextRole);
+      await load();
+    } catch {
+      setError('Could not update that member’s role.');
+    }
+  }
+
+  async function handleRemove(membershipId: string) {
+    try {
+      await api.removeMember(membershipId);
+      await load();
+    } catch {
+      setError('Could not remove that member.');
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-fg">Team</h2>
+        {canManage && (
+          <button
+            type="button"
+            onClick={() => setShowAddForm((value) => !value)}
+            className="flex items-center gap-1.5 text-xs font-medium text-accent hover:text-accent-dim"
+          >
+            <UserPlus size={13} aria-hidden />
+            Add member
+          </button>
+        )}
+      </div>
+      <p className="mt-1 text-xs text-fg-muted">
+        No email delivery is configured yet - adding a member creates a one-time password shown here once for you to share with them directly.
+      </p>
+
+      {error && <p className="mt-2 text-xs text-error">{error}</p>}
+
+      {createdCredential && (
+        <div className="mt-3 rounded-lg border border-accent/40 bg-accent-soft p-3 text-xs text-fg">
+          <p className="font-medium">Account created for {createdCredential.email}</p>
+          <p className="mt-1">
+            Temporary password: <code className="rounded bg-surface-1 px-1.5 py-0.5 font-mono">{createdCredential.temporaryPassword}</code>
+          </p>
+          <p className="mt-1 text-fg-muted">Share this with them now - it won&apos;t be shown again.</p>
+          <button type="button" onClick={() => setCreatedCredential(null)} className="mt-2 text-fg-muted hover:text-fg">
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {showAddForm && canManage && (
+        <form onSubmit={handleCreate} className="mt-3 flex flex-col gap-2 rounded-lg border border-border-subtle p-3">
+          <input
+            type="text"
+            required
+            placeholder="Full name"
+            value={displayName}
+            onChange={(event) => setDisplayName(event.target.value)}
+            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg outline-none focus:border-accent"
+          />
+          <input
+            type="email"
+            required
+            placeholder="Email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg outline-none focus:border-accent"
+          />
+          <select
+            value={role}
+            onChange={(event) => setRole(event.target.value as BusinessRole)}
+            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg outline-none focus:border-accent"
+          >
+            {ASSIGNABLE_ROLES.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+          >
+            {busy ? 'Adding…' : 'Add member'}
+          </button>
+        </form>
+      )}
+
+      <div className="mt-3 space-y-2">
+        {members === null && <p className="text-xs text-fg-muted">Loading…</p>}
+        {members?.map((member) => (
+          <div key={member.membershipId} className="flex items-center justify-between gap-3 rounded-lg border border-border-subtle px-3 py-2">
+            <div className="min-w-0">
+              <p className="truncate text-xs font-medium text-fg">{member.displayName}</p>
+              <p className="truncate text-[11px] text-fg-muted">{member.email}</p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {canManage && member.role !== 'OWNER' ? (
+                <select
+                  value={member.role}
+                  onChange={(event) => handleRoleChange(member.membershipId, event.target.value as BusinessRole)}
+                  className="rounded-lg border border-border-subtle bg-surface-1 px-2 py-1 text-[11px] text-fg outline-none focus:border-accent"
+                >
+                  {ASSIGNABLE_ROLES.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="rounded-full bg-surface-3 px-2 py-0.5 text-[11px] font-medium text-fg-secondary">{member.role}</span>
+              )}
+              {canManage && member.role !== 'OWNER' && (
+                <button
+                  type="button"
+                  onClick={() => handleRemove(member.membershipId)}
+                  aria-label={`Remove ${member.displayName}`}
+                  className="text-fg-muted hover:text-error"
+                >
+                  <Trash2 size={14} aria-hidden />
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSnapshot | null }) {
   return (
     <div className="flex-1 overflow-y-auto p-6">
@@ -363,6 +681,9 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
         <ThemeCard />
         <BusinessProfileCard />
         <WhatsAppAccountCard connection={connection} />
+        <AccountCard />
+        <TeamMembersCard />
+        <SessionsCard />
         <SecurityCard />
       </div>
     </div>

@@ -5,6 +5,11 @@ import { PlanRepository } from '../src/repositories/planRepository.js';
 import { SubscriptionRepository } from '../src/repositories/subscriptionRepository.js';
 
 const TABLES = [
+  'auth_login_attempts',
+  'sessions',
+  'user_preferences',
+  'business_memberships',
+  'users',
   'whatsapp_jid_mappings',
   'whatsapp_sync_jobs',
   'whatsapp_connection_events',

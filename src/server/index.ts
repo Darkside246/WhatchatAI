@@ -33,6 +33,32 @@ import {
   LockNotConfiguredError,
 } from '../services/securityLockService.js';
 import { listHumanTakeoverAlerts } from '../services/securityAlertService.js';
+import {
+  isRegistrationOpen,
+  register,
+  login,
+  logout,
+  listSessions,
+  revokeSession,
+  revokeOtherSessions,
+  isEmailAlreadyRegisteredError,
+  isRegistrationClosedError,
+  isInvalidCredentialsError,
+  isRateLimitedError,
+  isWeakPasswordError,
+  isSessionNotFoundError,
+} from '../services/authService.js';
+import {
+  listMembers,
+  createMember,
+  updateMemberRole,
+  removeMember,
+  isEmailAlreadyRegisteredError as isMemberEmailAlreadyRegisteredError,
+  isMembershipNotFoundError,
+  isCannotModifyOwnerError,
+} from '../services/workspaceMemberService.js';
+import { requireAuth, requirePermission, setSessionCookie, clearSessionCookie, readSessionToken, type AuthContext } from './authMiddleware.js';
+import { BUSINESS_ROLES, isBusinessRole } from '../domain/auth/permissions.js';
 // Runs the real outbound-send BullMQ worker in this process, not the
 // separate incomingMessagesWorker.ts process - the live Baileys socket
 // only exists here, wherever whatsappConnectionService.connect() actually
@@ -79,6 +105,155 @@ app.get('/api/health/whatsapp', (_req, res) => {
   const snapshot = whatsappConnectionService.getSnapshot();
   res.status(snapshot.connected ? 200 : 503).json(snapshot);
 });
+
+const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+
+function deviceContextFrom(req: Request) {
+  return { ipAddress: req.ip ?? null, userAgent: req.headers['user-agent'] ?? null };
+}
+
+app.get('/api/auth/bootstrap-status', async (_req, res) => {
+  const registrationOpen = await isRegistrationOpen();
+  return res.status(200).json({ registrationOpen });
+});
+
+const registerSchema = z.object({
+  email: z.string().trim().email(),
+  password: z.string().min(1),
+  displayName: z.string().trim().min(1).max(200),
+});
+
+app.post('/api/auth/register', async (req, res) => {
+  const parsed = registerSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_REGISTER_PAYLOAD', details: parsed.error.flatten() });
+
+  try {
+    const result = await register(parsed.data, deviceContextFrom(req));
+    setSessionCookie(req, res, result.token, SESSION_MAX_AGE_SECONDS);
+    return res.status(201).json({ user: result.user, business: result.business, role: result.membership.role });
+  } catch (error) {
+    if (isRegistrationClosedError(error)) return res.status(403).json({ error: 'REGISTRATION_CLOSED', message: error.message });
+    if (isEmailAlreadyRegisteredError(error)) return res.status(409).json({ error: 'EMAIL_ALREADY_REGISTERED', message: error.message });
+    if (isWeakPasswordError(error)) return res.status(400).json({ error: 'WEAK_PASSWORD', message: error.message });
+    throw error;
+  }
+});
+
+const loginSchema = z.object({ email: z.string().trim().email(), password: z.string().min(1) });
+
+app.post('/api/auth/login', async (req, res) => {
+  const parsed = loginSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_LOGIN_PAYLOAD' });
+
+  try {
+    const result = await login(parsed.data.email, parsed.data.password, deviceContextFrom(req));
+    setSessionCookie(req, res, result.token, SESSION_MAX_AGE_SECONDS);
+    return res.status(200).json({ user: result.user, business: result.business, role: result.membership.role });
+  } catch (error) {
+    if (isRateLimitedError(error)) return res.status(429).json({ error: 'RATE_LIMITED', message: error.message });
+    if (isInvalidCredentialsError(error)) return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: error.message });
+    throw error;
+  }
+});
+
+app.post('/api/auth/logout', async (req, res) => {
+  const token = readSessionToken(req);
+  if (token) await logout(token);
+  clearSessionCookie(req, res);
+  return res.status(200).json({ status: 'logged_out' });
+});
+
+app.get('/api/auth/me', requireAuth, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const business = await ensureDefaultBusinessProvisioned();
+  return res.status(200).json({ user: auth.user, business, role: auth.role });
+});
+
+app.get('/api/auth/sessions', requireAuth, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const sessions = await listSessions(auth.userId, auth.sessionId);
+  return res.status(200).json({ sessions });
+});
+
+app.delete('/api/auth/sessions/:sessionId', requireAuth, async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  try {
+    await revokeSession(auth.userId, String(req.params.sessionId ?? ''));
+    return res.status(200).json({ status: 'revoked' });
+  } catch (error) {
+    if (isSessionNotFoundError(error)) return res.status(404).json({ error: 'SESSION_NOT_FOUND' });
+    throw error;
+  }
+});
+
+app.post('/api/auth/sessions/revoke-others', requireAuth, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const revokedCount = await revokeOtherSessions(auth.userId, auth.sessionId);
+  return res.status(200).json({ revokedCount });
+});
+
+const createMemberSchema = z.object({
+  email: z.string().trim().email(),
+  displayName: z.string().trim().min(1).max(200),
+  role: z.enum(BUSINESS_ROLES.filter((role) => role !== 'OWNER') as [string, ...string[]]),
+});
+
+app.get('/api/workspace/members', requireAuth, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const members = await listMembers(auth.businessId);
+  return res.status(200).json({ members });
+});
+
+app.post('/api/workspace/members', requireAuth, requirePermission('users.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = createMemberSchema.safeParse(req.body);
+  if (!parsed.success || !isBusinessRole(parsed.data.role)) {
+    return res.status(400).json({ error: 'INVALID_MEMBER', details: parsed.success ? undefined : parsed.error.flatten() });
+  }
+  try {
+    const result = await createMember(auth.businessId, auth.userId, { email: parsed.data.email, displayName: parsed.data.displayName, role: parsed.data.role as Exclude<(typeof BUSINESS_ROLES)[number], 'OWNER'> });
+    return res.status(201).json(result);
+  } catch (error) {
+    if (isMemberEmailAlreadyRegisteredError(error)) return res.status(409).json({ error: 'EMAIL_ALREADY_REGISTERED', message: error.message });
+    throw error;
+  }
+});
+
+const updateMemberRoleSchema = z.object({
+  role: z.enum(BUSINESS_ROLES.filter((role) => role !== 'OWNER') as [string, ...string[]]),
+});
+
+app.patch('/api/workspace/members/:membershipId/role', requireAuth, requirePermission('users.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = updateMemberRoleSchema.safeParse(req.body);
+  if (!parsed.success || !isBusinessRole(parsed.data.role)) return res.status(400).json({ error: 'INVALID_ROLE' });
+  try {
+    const member = await updateMemberRole(auth.businessId, String(req.params.membershipId ?? ''), parsed.data.role as Exclude<(typeof BUSINESS_ROLES)[number], 'OWNER'>);
+    return res.status(200).json({ member });
+  } catch (error) {
+    if (isMembershipNotFoundError(error)) return res.status(404).json({ error: 'MEMBER_NOT_FOUND' });
+    if (isCannotModifyOwnerError(error)) return res.status(403).json({ error: 'CANNOT_MODIFY_OWNER', message: error.message });
+    throw error;
+  }
+});
+
+app.delete('/api/workspace/members/:membershipId', requireAuth, requirePermission('users.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  try {
+    await removeMember(auth.businessId, String(req.params.membershipId ?? ''));
+    return res.status(200).json({ status: 'removed' });
+  } catch (error) {
+    if (isMembershipNotFoundError(error)) return res.status(404).json({ error: 'MEMBER_NOT_FOUND' });
+    if (isCannotModifyOwnerError(error)) return res.status(403).json({ error: 'CANNOT_MODIFY_OWNER', message: error.message });
+    throw error;
+  }
+});
+
+// Every /api/whatsapp/* route below requires a real, valid session - see
+// authMiddleware.ts. WhatsApp connection status/QR/phone number are
+// business-sensitive, not public diagnostics (those live under
+// /api/health/whatsapp instead, which stays open).
+app.use('/api/whatsapp', requireAuth);
 
 app.get('/api/whatsapp/status', (_req, res) => {
   res.status(200).json(whatsappConnectionService.getSnapshot());
@@ -147,9 +322,25 @@ function requireWorkspaceContext(_req: Request, res: Response, next: NextFunctio
     });
     return;
   }
+  // This process holds exactly one live Baileys socket, so it can only ever
+  // serve the one business it's connected to. An authenticated session for
+  // a different business (schema-valid, since a user can belong to more
+  // than one business) is refused here rather than silently served against
+  // the wrong tenant's WhatsApp account.
+  const auth = res.locals.auth as AuthContext | undefined;
+  if (auth && auth.businessId !== context.businessId) {
+    res.status(403).json({ error: 'BUSINESS_MISMATCH', message: 'This session belongs to a different business than the one currently connected.' });
+    return;
+  }
   res.locals.workspaceContext = context;
   next();
 }
+
+// Every /api/workspace/* route below requires a real, valid session first -
+// see authMiddleware.ts. Individual routes then layer requirePermission()
+// where the action is sensitive enough to need more than "any authenticated
+// member of this business."
+app.use('/api/workspace', requireAuth);
 
 app.get('/api/workspace/sync-status', requireWorkspaceContext, async (_req, res) => {
   const { whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
@@ -611,7 +802,7 @@ app.get('/api/workspace/statuses', requireWorkspaceContext, async (_req, res) =>
  * from that plaintext; this is a real, correct implementation, not
  * disk-level zero-copy streaming.
  */
-app.get('/api/media/:mediaId', requireWorkspaceContext, async (req, res) => {
+app.get('/api/media/:mediaId', requireAuth, requireWorkspaceContext, async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const mediaId = String(req.params.mediaId ?? '');
   const media = await new WhatsAppMediaRepository(pool).findById(mediaId);
@@ -693,11 +884,6 @@ app.post('/api/diagnostics/validate-message', (req, res) => {
   return res.status(200).json({ valid: true });
 });
 
-async function resolveDefaultBusinessId(): Promise<string> {
-  const business = await ensureDefaultBusinessProvisioned();
-  return business.id;
-}
-
 const argon2ParamsSchema = z.object({
   memoryCostKib: z.number().int().positive(),
   timeCost: z.number().int().positive(),
@@ -716,14 +902,14 @@ const unlockSchema = z.object({
   pinHash: z.string().regex(/^[0-9a-f]+$/i).min(32),
 });
 
-app.get('/api/security/lock/status', async (_req, res) => {
-  const businessId = await resolveDefaultBusinessId();
+app.get('/api/security/lock/status', requireAuth, async (_req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
   const status = await getLockStatus(businessId);
   return res.status(200).json(status);
 });
 
-app.get('/api/security/lock/challenge', async (_req, res) => {
-  const businessId = await resolveDefaultBusinessId();
+app.get('/api/security/lock/challenge', requireAuth, async (_req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
   try {
     const challenge = await getUnlockChallenge(businessId);
     return res.status(200).json(challenge);
@@ -735,13 +921,13 @@ app.get('/api/security/lock/challenge', async (_req, res) => {
   }
 });
 
-app.post('/api/security/lock/setup', async (req, res) => {
+app.post('/api/security/lock/setup', requireAuth, async (req, res) => {
   const parsed = setupLockSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: 'INVALID_SETUP_PAYLOAD' });
   }
 
-  const businessId = await resolveDefaultBusinessId();
+  const { businessId } = res.locals.auth as AuthContext;
   try {
     await setupLock(businessId, parsed.data);
     return res.status(201).json({ configured: true });
@@ -756,13 +942,13 @@ app.post('/api/security/lock/setup', async (req, res) => {
   }
 });
 
-app.post('/api/security/lock/unlock', async (req, res) => {
+app.post('/api/security/lock/unlock', requireAuth, async (req, res) => {
   const parsed = unlockSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: 'INVALID_UNLOCK_PAYLOAD' });
   }
 
-  const businessId = await resolveDefaultBusinessId();
+  const { businessId } = res.locals.auth as AuthContext;
   try {
     const result = await attemptUnlock(businessId, parsed.data.pinHash);
     if (result.revoked) return res.status(423).json(result);
@@ -775,8 +961,8 @@ app.post('/api/security/lock/unlock', async (req, res) => {
   }
 });
 
-app.get('/api/security/alerts/human-takeover', async (_req, res) => {
-  const businessId = await resolveDefaultBusinessId();
+app.get('/api/security/alerts/human-takeover', requireAuth, async (_req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
   const alerts = await listHumanTakeoverAlerts(businessId);
   return res.status(200).json({ alerts });
 });

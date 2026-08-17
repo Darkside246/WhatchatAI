@@ -200,6 +200,47 @@ export interface WorkspaceBusiness {
   name: string;
 }
 
+export const BUSINESS_ROLES = ['OWNER', 'ADMIN', 'MANAGER', 'SUPERVISOR', 'AGENT', 'MARKETING', 'VIEWER'] as const;
+export type BusinessRole = (typeof BUSINESS_ROLES)[number];
+
+export interface AuthUserDto {
+  id: string;
+  email: string;
+  displayName: string;
+  status: string;
+}
+
+export interface AuthMeResponse {
+  user: AuthUserDto;
+  business: WorkspaceBusiness;
+  role: BusinessRole;
+}
+
+export interface BootstrapStatusResponse {
+  registrationOpen: boolean;
+}
+
+export interface AuthSessionDto {
+  id: string;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  ipAddress: string | null;
+  browser: string;
+  os: string;
+  isCurrent: boolean;
+}
+
+export interface MemberDto {
+  membershipId: string;
+  userId: string;
+  email: string;
+  displayName: string;
+  role: BusinessRole;
+  status: string;
+  joinedAt: string;
+}
+
 export interface AiAgentSummary {
   id: string;
   name: string;
@@ -327,6 +368,7 @@ class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
     ...init,
   });
   const body = await response.json().catch(() => ({}));
@@ -413,6 +455,7 @@ export const api = {
     const response = await fetch('/api/security/lock/unlock', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
       body: JSON.stringify({ pinHash }),
     });
     const body = await response.json().catch(() => ({}));
@@ -422,4 +465,22 @@ export const api = {
     throw new ApiError(response.status, body.error ?? 'UNKNOWN_ERROR', body.message ?? response.statusText);
   },
   listHumanTakeoverAlerts: () => request<{ alerts: HumanTakeoverAlertDto[] }>('/security/alerts/human-takeover'),
+
+  getBootstrapStatus: () => request<BootstrapStatusResponse>('/auth/bootstrap-status'),
+  registerAccount: (body: { email: string; password: string; displayName: string }) =>
+    request<AuthMeResponse>('/auth/register', { method: 'POST', body: JSON.stringify(body) }),
+  login: (email: string, password: string) =>
+    request<AuthMeResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  logout: () => request<{ status: string }>('/auth/logout', { method: 'POST' }),
+  getMe: () => request<AuthMeResponse>('/auth/me'),
+  listSessions: () => request<{ sessions: AuthSessionDto[] }>('/auth/sessions'),
+  revokeSession: (id: string) => request<{ status: string }>(`/auth/sessions/${id}`, { method: 'DELETE' }),
+  revokeOtherSessions: () => request<{ revokedCount: number }>('/auth/sessions/revoke-others', { method: 'POST' }),
+
+  listMembers: () => request<{ members: MemberDto[] }>('/workspace/members'),
+  createMember: (body: { email: string; displayName: string; role: BusinessRole }) =>
+    request<{ member: MemberDto; temporaryPassword: string }>('/workspace/members', { method: 'POST', body: JSON.stringify(body) }),
+  updateMemberRole: (membershipId: string, role: BusinessRole) =>
+    request<{ member: MemberDto }>(`/workspace/members/${membershipId}/role`, { method: 'PATCH', body: JSON.stringify({ role }) }),
+  removeMember: (membershipId: string) => request<{ status: string }>(`/workspace/members/${membershipId}`, { method: 'DELETE' }),
 };
