@@ -5,6 +5,9 @@ import { PlanRepository } from '../src/repositories/planRepository.js';
 import { SubscriptionRepository } from '../src/repositories/subscriptionRepository.js';
 
 const TABLES = [
+  'funnel_instances',
+  'funnel_steps',
+  'funnel_definitions',
   'scheduled_statuses',
   'campaign_recipients',
   'campaigns',

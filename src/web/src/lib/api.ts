@@ -376,6 +376,71 @@ export interface ScheduledStatusDto {
   updatedAt: string;
 }
 
+export const FUNNEL_NODE_TYPES = [
+  'MESSAGE',
+  'WAIT',
+  'CONDITION',
+  'ASSIGN_HUMAN',
+  'ASSIGN_TEAM',
+  'ADD_TAG',
+  'REMOVE_TAG',
+  'UPDATE_STAGE',
+  'NOTIFY_USER',
+] as const;
+export type FunnelNodeType = (typeof FUNNEL_NODE_TYPES)[number];
+
+export interface FunnelStepDto {
+  id: string;
+  funnelId: string;
+  position: number;
+  nodeType: FunnelNodeType;
+  config: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface FunnelInstanceDto {
+  id: string;
+  funnelId: string;
+  businessId: string;
+  crmContactId: string;
+  chatId: string;
+  currentPosition: number;
+  status: 'ACTIVE' | 'WAITING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+  startedAt: string;
+  completedAt: string | null;
+  lastError: string | null;
+  updatedAt: string;
+}
+
+export interface FunnelCounts {
+  entered: number;
+  active: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+}
+
+export interface FunnelDto {
+  id: string;
+  businessId: string;
+  whatsappAccountId: string;
+  createdBy: string;
+  name: string;
+  description: string | null;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+  stepCount: number;
+  counts: FunnelCounts;
+}
+
+export interface FunnelDetailDto {
+  funnel: Omit<FunnelDto, 'stepCount' | 'counts'>;
+  steps: FunnelStepDto[];
+  instances: FunnelInstanceDto[];
+  counts: FunnelCounts;
+}
+
 export interface NotificationDto {
   id: string;
   type: NotificationType;
@@ -688,4 +753,20 @@ export const api = {
   }) => request<{ status: ScheduledStatusDto }>('/workspace/scheduled-statuses', { method: 'POST', body: JSON.stringify(input) }),
   scheduleStatus: (id: string) => request<{ status: ScheduledStatusDto }>(`/workspace/scheduled-statuses/${id}/schedule`, { method: 'POST' }),
   cancelScheduledStatus: (id: string) => request<{ status: ScheduledStatusDto }>(`/workspace/scheduled-statuses/${id}/cancel`, { method: 'POST' }),
+
+  listFunnels: () => request<{ funnels: FunnelDto[] }>('/workspace/funnels'),
+  createFunnel: (name: string, description: string | null) =>
+    request<{ funnel: FunnelDto }>('/workspace/funnels', { method: 'POST', body: JSON.stringify({ name, description }) }),
+  getFunnel: (funnelId: string) => request<FunnelDetailDto>(`/workspace/funnels/${funnelId}`),
+  updateFunnel: (funnelId: string, name: string, description: string | null) =>
+    request<{ funnel: FunnelDto }>(`/workspace/funnels/${funnelId}`, { method: 'PATCH', body: JSON.stringify({ name, description }) }),
+  deleteFunnel: (funnelId: string) => request<{ status: string }>(`/workspace/funnels/${funnelId}`, { method: 'DELETE' }),
+  replaceFunnelSteps: (funnelId: string, steps: { nodeType: FunnelNodeType; config: Record<string, unknown> }[]) =>
+    request<{ steps: FunnelStepDto[] }>(`/workspace/funnels/${funnelId}/steps`, { method: 'PUT', body: JSON.stringify({ steps }) }),
+  activateFunnel: (funnelId: string) => request<{ funnel: FunnelDto }>(`/workspace/funnels/${funnelId}/activate`, { method: 'POST' }),
+  deactivateFunnel: (funnelId: string) => request<{ funnel: FunnelDto }>(`/workspace/funnels/${funnelId}/deactivate`, { method: 'POST' }),
+  enrollInFunnel: (funnelId: string, crmContactId: string) =>
+    request<{ instance: FunnelInstanceDto }>(`/workspace/funnels/${funnelId}/enroll`, { method: 'POST', body: JSON.stringify({ crmContactId }) }),
+  cancelFunnelInstance: (funnelId: string, instanceId: string) =>
+    request<{ instance: FunnelInstanceDto }>(`/workspace/funnels/${funnelId}/instances/${instanceId}/cancel`, { method: 'POST' }),
 };

@@ -9,7 +9,7 @@ import { BillingRoute } from './BillingRoute.js';
 import { SettingsRoute } from './SettingsRoute.js';
 import { DashboardRoute } from './DashboardRoute.js';
 import { MarketingRoute } from './MarketingRoute.js';
-import { PlaceholderPage } from './PlaceholderPage.js';
+import { FunnelsRoute } from './FunnelsRoute.js';
 
 interface Props {
   connection: WhatsAppConnectionSnapshot | null;
@@ -47,10 +47,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/dashboard" element={<DashboardRoute />} />
               <Route path="/crm" element={<CrmRoute />} />
-              <Route
-                path="/automations"
-                element={<PlaceholderPage title="Automations" description="The no-code automation builder is not built yet." />}
-              />
+              <Route path="/automations" element={<FunnelsRoute />} />
               <Route path="/marketing" element={<MarketingRoute />} />
               <Route path="/billing" element={<BillingRoute />} />
               <Route path="/settings" element={<SettingsRoute connection={connection} />} />

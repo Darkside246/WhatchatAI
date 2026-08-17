@@ -104,6 +104,23 @@ import { outboundMessagesWorker } from '../queue/workers/outboundDispatchWorker.
 // Same reasoning as outboundMessagesWorker above - real status@broadcast
 // publishing needs the live socket that only exists in this process.
 import { scheduledStatusPublishWorker } from '../queue/workers/scheduledStatusPublishWorker.js';
+// Same reasoning - a WAIT-node resume may itself send a real WhatsApp message.
+import { funnelAdvanceWorker } from '../queue/workers/funnelAdvanceWorker.js';
+import {
+  createFunnel,
+  listFunnels,
+  getFunnel,
+  updateFunnelMeta,
+  deleteFunnel,
+  setFunnelActive,
+  replaceFunnelSteps,
+  enrollContact,
+  cancelFunnelInstance,
+  isFunnelNotFoundError,
+  isInvalidFunnelStepError,
+  isFunnelInstanceNotFoundError,
+  isAlreadyEnrolledError,
+} from '../services/funnelService.js';
 import {
   createScheduledStatus,
   listScheduledStatuses,
@@ -847,6 +864,132 @@ app.post(
   scheduledStatusActionHandler((businessId, id) => cancelScheduledStatus(businessId, id)),
 );
 
+app.get('/api/workspace/funnels', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const funnels = await listFunnels(businessId);
+  return res.status(200).json({ funnels });
+});
+
+const createFunnelSchema = z.object({ name: z.string().trim().min(1).max(200), description: z.string().trim().max(2000).nullish() });
+
+app.post('/api/workspace/funnels', requireWorkspaceContext, requirePermission('automation.create'), async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const auth = res.locals.auth as AuthContext;
+  const parsed = createFunnelSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_FUNNEL', details: parsed.error.flatten() });
+  const funnel = await createFunnel(businessId, whatsappAccountId, auth.userId, parsed.data.name, parsed.data.description ?? null);
+  return res.status(201).json({ funnel });
+});
+
+app.get('/api/workspace/funnels/:funnelId', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    const detail = await getFunnel(businessId, String(req.params.funnelId ?? ''));
+    return res.status(200).json(detail);
+  } catch (error) {
+    if (isFunnelNotFoundError(error)) return res.status(404).json({ error: 'FUNNEL_NOT_FOUND' });
+    throw error;
+  }
+});
+
+const updateFunnelSchema = z.object({ name: z.string().trim().min(1).max(200), description: z.string().trim().max(2000).nullable() });
+
+app.patch('/api/workspace/funnels/:funnelId', requireWorkspaceContext, requirePermission('automation.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = updateFunnelSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_FUNNEL' });
+  try {
+    const funnel = await updateFunnelMeta(businessId, String(req.params.funnelId ?? ''), parsed.data.name, parsed.data.description);
+    return res.status(200).json({ funnel });
+  } catch (error) {
+    if (isFunnelNotFoundError(error)) return res.status(404).json({ error: 'FUNNEL_NOT_FOUND' });
+    throw error;
+  }
+});
+
+app.delete('/api/workspace/funnels/:funnelId', requireWorkspaceContext, requirePermission('automation.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    await deleteFunnel(businessId, String(req.params.funnelId ?? ''));
+    return res.status(200).json({ status: 'deleted' });
+  } catch (error) {
+    if (isFunnelNotFoundError(error)) return res.status(404).json({ error: 'FUNNEL_NOT_FOUND' });
+    throw error;
+  }
+});
+
+const funnelStepSchema = z.object({
+  nodeType: z.enum(['MESSAGE', 'WAIT', 'CONDITION', 'ASSIGN_HUMAN', 'ASSIGN_TEAM', 'ADD_TAG', 'REMOVE_TAG', 'UPDATE_STAGE', 'NOTIFY_USER']),
+  config: z.record(z.string(), z.unknown()),
+});
+const replaceStepsSchema = z.object({ steps: z.array(funnelStepSchema) });
+
+app.put('/api/workspace/funnels/:funnelId/steps', requireWorkspaceContext, requirePermission('automation.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = replaceStepsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_STEPS', details: parsed.error.flatten() });
+  try {
+    const steps = await replaceFunnelSteps(businessId, String(req.params.funnelId ?? ''), parsed.data.steps);
+    return res.status(200).json({ steps });
+  } catch (error) {
+    if (isFunnelNotFoundError(error)) return res.status(404).json({ error: 'FUNNEL_NOT_FOUND' });
+    if (isInvalidFunnelStepError(error)) return res.status(400).json({ error: 'INVALID_STEP', message: error.message });
+    throw error;
+  }
+});
+
+app.post('/api/workspace/funnels/:funnelId/activate', requireWorkspaceContext, requirePermission('automation.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    const funnel = await setFunnelActive(businessId, String(req.params.funnelId ?? ''), true);
+    return res.status(200).json({ funnel });
+  } catch (error) {
+    if (isFunnelNotFoundError(error)) return res.status(404).json({ error: 'FUNNEL_NOT_FOUND' });
+    if (isInvalidFunnelStepError(error)) return res.status(400).json({ error: 'INVALID_STEP', message: error.message });
+    throw error;
+  }
+});
+
+app.post('/api/workspace/funnels/:funnelId/deactivate', requireWorkspaceContext, requirePermission('automation.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    const funnel = await setFunnelActive(businessId, String(req.params.funnelId ?? ''), false);
+    return res.status(200).json({ funnel });
+  } catch (error) {
+    if (isFunnelNotFoundError(error)) return res.status(404).json({ error: 'FUNNEL_NOT_FOUND' });
+    throw error;
+  }
+});
+
+const enrollSchema = z.object({ crmContactId: z.string().uuid() });
+
+app.post('/api/workspace/funnels/:funnelId/enroll', requireWorkspaceContext, requirePermission('automation.execute'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = enrollSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_ENROLL' });
+  try {
+    const instance = await enrollContact(businessId, String(req.params.funnelId ?? ''), parsed.data.crmContactId);
+    return res.status(201).json({ instance });
+  } catch (error) {
+    if (isFunnelNotFoundError(error)) return res.status(404).json({ error: 'FUNNEL_NOT_FOUND' });
+    if (isAlreadyEnrolledError(error)) return res.status(409).json({ error: 'ALREADY_ENROLLED', message: error.message });
+    if (isInvalidFunnelStepError(error)) return res.status(400).json({ error: 'INVALID_ENROLL', message: error.message });
+    throw error;
+  }
+});
+
+app.post('/api/workspace/funnels/:funnelId/instances/:instanceId/cancel', requireWorkspaceContext, requirePermission('automation.execute'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    const instance = await cancelFunnelInstance(businessId, String(req.params.funnelId ?? ''), String(req.params.instanceId ?? ''));
+    return res.status(200).json({ instance });
+  } catch (error) {
+    if (isFunnelNotFoundError(error)) return res.status(404).json({ error: 'FUNNEL_NOT_FOUND' });
+    if (isFunnelInstanceNotFoundError(error)) return res.status(404).json({ error: 'FUNNEL_INSTANCE_NOT_FOUND' });
+    throw error;
+  }
+});
+
 const reactionSchema = z.object({ emoji: z.string().max(8) });
 
 /**
@@ -1387,6 +1530,7 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`[WhatchatAI] Received ${signal}, closing outbound dispatch worker...`);
   await outboundMessagesWorker.close();
   await scheduledStatusPublishWorker.close();
+  await funnelAdvanceWorker.close();
   process.exit(0);
 }
 
