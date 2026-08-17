@@ -5,7 +5,8 @@ import { WhatsAppChatRepository, type ChatAiMode } from '../repositories/whatsap
 import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
 import { WhatsAppMessageRepository } from '../repositories/whatsappMessageRepository.js';
 import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobRepository.js';
-import { CrmContactRepository } from '../repositories/crmContactRepository.js';
+import { CrmContactRepository, type UpdateCrmContactInput } from '../repositories/crmContactRepository.js';
+import { LeadRepository, type UpdateLeadInput, type LeadRecord } from '../repositories/leadRepository.js';
 import { AiAgentRepository } from '../repositories/aiAgentRepository.js';
 import { EntitlementService, type EntitlementDenialReason } from './entitlementService.js';
 import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMappingRepository.js';
@@ -25,6 +26,7 @@ import type {
   MessageDirection,
   PresenceState,
 } from '../domain/whatsapp/types.js';
+import type { LeadStatus } from '../domain/platform/types.js';
 
 export interface WorkspaceChatSummary {
   id: string;
@@ -118,6 +120,61 @@ export function isEntitlementDeniedError(error: unknown): error is EntitlementDe
   return error instanceof Error && (error as EntitlementDeniedError).code === 'ENTITLEMENT_DENIED';
 }
 
+export interface CrmContactNotFoundError extends Error {
+  code: 'CRM_CONTACT_NOT_FOUND';
+}
+
+export function isCrmContactNotFoundError(error: unknown): error is CrmContactNotFoundError {
+  return error instanceof Error && (error as CrmContactNotFoundError).code === 'CRM_CONTACT_NOT_FOUND';
+}
+
+export interface LeadNotFoundError extends Error {
+  code: 'LEAD_NOT_FOUND';
+}
+
+export function isLeadNotFoundError(error: unknown): error is LeadNotFoundError {
+  return error instanceof Error && (error as LeadNotFoundError).code === 'LEAD_NOT_FOUND';
+}
+
+export interface WorkspaceCrmContactSummary {
+  id: string;
+  whatsappContactId: string | null;
+  displayName: string;
+  phoneNumber: string | null;
+  source: string | null;
+  stage: string | null;
+  leadStatus: string | null;
+  tags: string[];
+  notes: string | null;
+  updatedAt: string;
+}
+
+export interface WorkspaceLeadSummary {
+  id: string;
+  crmContactId: string;
+  displayName: string;
+  phoneNumber: string | null;
+  source: string | null;
+  stage: string | null;
+  status: LeadStatus;
+  score: number | null;
+  value: number | null;
+  nextAction: string | null;
+  notes: string | null;
+  lastActivityAt: string | null;
+  updatedAt: string;
+}
+
+export interface CreateLeadInput {
+  crmContactId: string;
+  source?: string | null | undefined;
+  stage?: string | null | undefined;
+  score?: number | null | undefined;
+  value?: number | null | undefined;
+  nextAction?: string | null | undefined;
+  notes?: string | null | undefined;
+}
+
 export interface CreateAgentInput {
   name: string;
   description?: string | null | undefined;
@@ -138,6 +195,7 @@ export class WorkspaceService {
   private readonly messageRepository = new WhatsAppMessageRepository(pool);
   private readonly syncJobRepository = new WhatsAppSyncJobRepository(pool);
   private readonly crmContactRepository = new CrmContactRepository(pool);
+  private readonly leadRepository = new LeadRepository(pool);
   private readonly agentRepository = new AiAgentRepository(pool);
   private readonly entitlementService = new EntitlementService(pool);
   private readonly jidMappingRepository = new WhatsAppJidMappingRepository(pool);
@@ -449,6 +507,114 @@ export class WorkspaceService {
       throw error;
     }
     return this.agentRepository.create({ businessId, ...input });
+  }
+
+  private crmContactNotFound(): CrmContactNotFoundError {
+    const error = new Error('CRM contact not found for this business.') as CrmContactNotFoundError;
+    error.code = 'CRM_CONTACT_NOT_FOUND';
+    return error;
+  }
+
+  private leadNotFound(): LeadNotFoundError {
+    const error = new Error('Lead not found for this business.') as LeadNotFoundError;
+    error.code = 'LEAD_NOT_FOUND';
+    return error;
+  }
+
+  private toCrmContactSummary(row: Awaited<ReturnType<CrmContactRepository['listByBusiness']>>[number]): WorkspaceCrmContactSummary {
+    return {
+      id: row.id,
+      whatsappContactId: row.whatsappContactId,
+      displayName: row.whatsappJid
+        ? resolveDisplayName({
+            verifiedName: row.contactVerifiedName,
+            businessName: row.contactBusinessName,
+            displayName: row.contactDisplayName,
+            pushName: row.contactPushName,
+            shortName: row.contactShortName,
+            phoneNumber: row.phoneNumber,
+            whatsappJid: row.whatsappJid,
+          })
+        : 'Unknown contact',
+      phoneNumber: row.phoneNumber,
+      source: row.source,
+      stage: row.stage,
+      leadStatus: row.leadStatus,
+      tags: row.tags,
+      notes: row.notes,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  async listCrmContacts(businessId: string): Promise<WorkspaceCrmContactSummary[]> {
+    const rows = await this.crmContactRepository.listByBusiness(businessId);
+    return rows.map((row) => this.toCrmContactSummary(row));
+  }
+
+  async updateCrmContact(
+    businessId: string,
+    crmContactId: string,
+    input: UpdateCrmContactInput,
+  ): Promise<WorkspaceCrmContactSummary> {
+    const updated = await this.crmContactRepository.update(businessId, crmContactId, input);
+    if (!updated) throw this.crmContactNotFound();
+    // update() returns the plain record without the joined WhatsApp contact
+    // info the summary display name needs - re-read it the same way the list does.
+    const rows = await this.crmContactRepository.listByBusiness(businessId, 1000);
+    const row = rows.find((r) => r.id === crmContactId);
+    if (!row) throw this.crmContactNotFound();
+    return this.toCrmContactSummary(row);
+  }
+
+  private toLeadSummary(row: Awaited<ReturnType<LeadRepository['listByBusiness']>>[number]): WorkspaceLeadSummary {
+    return {
+      id: row.id,
+      crmContactId: row.crmContactId,
+      displayName: row.whatsappJid
+        ? resolveDisplayName({
+            verifiedName: row.contactVerifiedName,
+            businessName: row.contactBusinessName,
+            displayName: row.contactDisplayName,
+            pushName: row.contactPushName,
+            shortName: row.contactShortName,
+            phoneNumber: row.phoneNumber,
+            whatsappJid: row.whatsappJid,
+          })
+        : 'Unknown contact',
+      phoneNumber: row.phoneNumber,
+      source: row.source,
+      stage: row.stage,
+      status: row.status,
+      score: row.score,
+      value: row.value,
+      nextAction: row.nextAction,
+      notes: row.notes,
+      lastActivityAt: row.lastActivityAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  async listLeads(businessId: string): Promise<WorkspaceLeadSummary[]> {
+    const rows = await this.leadRepository.listByBusiness(businessId);
+    return rows.map((row) => this.toLeadSummary(row));
+  }
+
+  async createLead(businessId: string, input: CreateLeadInput) {
+    const crmContact = await this.crmContactRepository.findByIdForBusiness(businessId, input.crmContactId);
+    if (!crmContact) throw this.crmContactNotFound();
+    return this.leadRepository.create({ businessId, ...input });
+  }
+
+  async updateLead(businessId: string, leadId: string, input: UpdateLeadInput): Promise<LeadRecord> {
+    const updated = await this.leadRepository.update(businessId, leadId, input);
+    if (!updated) throw this.leadNotFound();
+    return updated;
+  }
+
+  async updateLeadStatus(businessId: string, leadId: string, status: LeadStatus): Promise<LeadRecord> {
+    const updated = await this.leadRepository.updateStatusForBusiness(businessId, leadId, status);
+    if (!updated) throw this.leadNotFound();
+    return updated;
   }
 
   async getSyncStatus(whatsappAccountId: string) {

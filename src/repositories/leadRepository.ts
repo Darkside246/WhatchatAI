@@ -54,12 +54,53 @@ function toRecord(row: LeadRow): LeadRecord {
 export interface CreateLeadInput {
   businessId: string;
   crmContactId: string;
-  source?: string | null;
-  stage?: string | null;
-  score?: number | null;
-  value?: number | null;
-  nextAction?: string | null;
-  notes?: string | null;
+  source?: string | null | undefined;
+  stage?: string | null | undefined;
+  score?: number | null | undefined;
+  value?: number | null | undefined;
+  nextAction?: string | null | undefined;
+  notes?: string | null | undefined;
+}
+
+export interface LeadWithContactInfo extends LeadRecord {
+  whatsappJid: string | null;
+  phoneNumber: string | null;
+  contactDisplayName: string | null;
+  contactPushName: string | null;
+  contactVerifiedName: string | null;
+  contactBusinessName: string | null;
+  contactShortName: string | null;
+}
+
+interface LeadWithContactInfoRow extends LeadRow {
+  whatsapp_jid: string | null;
+  phone_number: string | null;
+  contact_display_name: string | null;
+  contact_push_name: string | null;
+  contact_verified_name: string | null;
+  contact_business_name: string | null;
+  contact_short_name: string | null;
+}
+
+function toRecordWithContactInfo(row: LeadWithContactInfoRow): LeadWithContactInfo {
+  return {
+    ...toRecord(row),
+    whatsappJid: row.whatsapp_jid,
+    phoneNumber: row.phone_number,
+    contactDisplayName: row.contact_display_name,
+    contactPushName: row.contact_push_name,
+    contactVerifiedName: row.contact_verified_name,
+    contactBusinessName: row.contact_business_name,
+    contactShortName: row.contact_short_name,
+  };
+}
+
+export interface UpdateLeadInput {
+  stage: string | null;
+  score: number | null;
+  value: number | null;
+  nextAction: string | null;
+  notes: string | null;
 }
 
 export class LeadRepository {
@@ -104,5 +145,46 @@ export class LeadRepository {
       [crmContactId],
     );
     return rows.map(toRecord);
+  }
+
+  /** The real pipeline view - joined through crm_contacts to the WhatsApp contact it's built around so a caller can render a real name, never a bare id. */
+  async listByBusiness(businessId: string, limit = 200): Promise<LeadWithContactInfo[]> {
+    const { rows } = await this.db.query<LeadWithContactInfoRow>(
+      `SELECT l.*,
+              wc.whatsapp_jid, wc.phone_number,
+              wc.display_name AS contact_display_name, wc.push_name AS contact_push_name,
+              wc.verified_name AS contact_verified_name, wc.business_name AS contact_business_name,
+              wc.short_name AS contact_short_name
+       FROM leads l
+       JOIN crm_contacts c ON c.id = l.crm_contact_id
+       LEFT JOIN whatsapp_contacts wc ON wc.id = c.whatsapp_contact_id
+       WHERE l.business_id = $1 AND l.deleted_at IS NULL
+       ORDER BY l.updated_at DESC
+       LIMIT $2`,
+      [businessId, limit],
+    );
+    return rows.map(toRecordWithContactInfo);
+  }
+
+  /** Tenant-scoped write - a lead id from another business is never editable through this. */
+  async update(businessId: string, id: string, input: UpdateLeadInput): Promise<LeadRecord | null> {
+    const { rows } = await this.db.query<LeadRow>(
+      `UPDATE leads SET stage = $3, score = $4, value = $5, next_action = $6, notes = $7, last_activity_at = now(), updated_at = now()
+       WHERE id = $1 AND business_id = $2 AND deleted_at IS NULL
+       RETURNING *`,
+      [id, businessId, input.stage, input.score, input.value, input.nextAction, input.notes],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /** Tenant-scoped status transition - a lead id from another business is never editable through this. */
+  async updateStatusForBusiness(businessId: string, id: string, status: LeadStatus): Promise<LeadRecord | null> {
+    const { rows } = await this.db.query<LeadRow>(
+      `UPDATE leads SET status = $3, last_activity_at = now(), updated_at = now()
+       WHERE id = $1 AND business_id = $2 AND deleted_at IS NULL
+       RETURNING *`,
+      [id, businessId, status],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
   }
 }

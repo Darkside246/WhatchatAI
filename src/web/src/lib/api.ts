@@ -100,6 +100,62 @@ export function mediaUrl(mediaId: string): string {
   return `/api/media/${mediaId}`;
 }
 
+export interface WorkspaceCrmContactSummary {
+  id: string;
+  whatsappContactId: string | null;
+  displayName: string;
+  phoneNumber: string | null;
+  source: string | null;
+  stage: string | null;
+  leadStatus: string | null;
+  tags: string[];
+  notes: string | null;
+  updatedAt: string;
+}
+
+export interface UpdateCrmContactBody {
+  stage: string | null;
+  leadStatus: string | null;
+  notes: string | null;
+  tags: string[];
+}
+
+export type LeadStatusValue = 'NEW' | 'QUALIFIED' | 'ENGAGED' | 'WON' | 'LOST';
+
+export interface WorkspaceLeadSummary {
+  id: string;
+  crmContactId: string;
+  displayName: string;
+  phoneNumber: string | null;
+  source: string | null;
+  stage: string | null;
+  status: LeadStatusValue;
+  score: number | null;
+  value: number | null;
+  nextAction: string | null;
+  notes: string | null;
+  lastActivityAt: string | null;
+  updatedAt: string;
+}
+
+export interface CreateLeadBody {
+  crmContactId: string;
+  source?: string;
+  stage?: string;
+  score?: number;
+  value?: number;
+  nextAction?: string;
+  notes?: string;
+}
+
+export interface UpdateLeadBody {
+  stage: string | null;
+  score: number | null;
+  value: number | null;
+  nextAction: string | null;
+  notes: string | null;
+}
+
 export interface AiAgentSummary {
   id: string;
   name: string;
@@ -263,6 +319,22 @@ export const api = {
   listAgents: () => request<{ agents: AiAgentSummary[] }>('/workspace/agents'),
   createAgent: (body: CreateAgentBody) =>
     request<{ agent: AiAgentSummary }>('/workspace/agents', { method: 'POST', body: JSON.stringify(body) }),
+  listCrmContacts: () => request<{ crmContacts: WorkspaceCrmContactSummary[] }>('/workspace/crm-contacts'),
+  updateCrmContact: (id: string, body: UpdateCrmContactBody) =>
+    request<{ crmContact: WorkspaceCrmContactSummary }>(`/workspace/crm-contacts/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  listLeads: () => request<{ leads: WorkspaceLeadSummary[] }>('/workspace/leads'),
+  createLead: (body: CreateLeadBody) =>
+    request<{ lead: WorkspaceLeadSummary }>('/workspace/leads', { method: 'POST', body: JSON.stringify(body) }),
+  updateLead: (id: string, body: UpdateLeadBody) =>
+    request<{ lead: WorkspaceLeadSummary }>(`/workspace/leads/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  updateLeadStatus: (id: string, status: LeadStatusValue) =>
+    request<{ lead: WorkspaceLeadSummary }>(`/workspace/leads/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }),
   listCalls: () => request<{ calls: WorkspaceCallSummary[] }>('/workspace/calls'),
   listStatuses: () => request<{ statuses: WorkspaceStatus[] }>('/workspace/statuses'),
   getLockStatus: () => request<LockStatusResponse>('/security/lock/status'),

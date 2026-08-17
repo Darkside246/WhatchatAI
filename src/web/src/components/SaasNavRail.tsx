@@ -15,7 +15,7 @@ const NAV_ITEMS: { to: string; label: string; icon: LucideIcon; implemented: boo
   { to: '/chats', label: 'Inbox', icon: MessageCircle, implemented: true },
   { to: '/dashboard', label: 'Dashboard', icon: BarChart3, implemented: false },
   { to: '/agents', label: 'AI Agents', icon: Bot, implemented: true },
-  { to: '/crm', label: 'CRM & Leads', icon: Contact, implemented: false },
+  { to: '/crm', label: 'CRM & Leads', icon: Contact, implemented: true },
   { to: '/automations', label: 'Automations', icon: Zap, implemented: false },
   { to: '/marketing', label: 'Marketing', icon: Megaphone, implemented: false },
   { to: '/billing', label: 'Billing', icon: CreditCard, implemented: false },

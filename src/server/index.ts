@@ -9,7 +9,13 @@ import { attachWebSocketServer } from '../realtime/wsServer.js';
 import { publishRealtimeEvent } from '../realtime/pubsub.js';
 import { whatsappConnectionService } from '../services/whatsappConnectionService.js';
 import { whatsappMessageIngestionService } from '../services/whatsappMessageIngestionService.js';
-import { workspaceService, isChatNotFoundError, isEntitlementDeniedError } from '../services/workspaceService.js';
+import {
+  workspaceService,
+  isChatNotFoundError,
+  isEntitlementDeniedError,
+  isCrmContactNotFoundError,
+  isLeadNotFoundError,
+} from '../services/workspaceService.js';
 import { whatsappOutboundMessageService, isChatNotFoundError as isOutboundChatNotFoundError } from '../services/whatsappOutboundMessageService.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
@@ -352,6 +358,105 @@ app.post('/api/workspace/agents', requireWorkspaceContext, async (req, res) => {
         .status(403)
         .json({ error: 'ENTITLEMENT_DENIED', reason: error.reason, limit: error.limit, current: error.current, message });
     }
+    throw error;
+  }
+});
+
+app.get('/api/workspace/crm-contacts', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const crmContacts = await workspaceService.listCrmContacts(businessId);
+  return res.status(200).json({ crmContacts });
+});
+
+const updateCrmContactSchema = z.object({
+  stage: z.string().trim().min(1).nullable(),
+  leadStatus: z.string().trim().min(1).nullable(),
+  notes: z.string().trim().nullable(),
+  tags: z.array(z.string().trim().min(1)),
+});
+
+app.patch('/api/workspace/crm-contacts/:id', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = updateCrmContactSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_CRM_CONTACT', details: parsed.error.flatten() });
+  }
+  try {
+    const crmContact = await workspaceService.updateCrmContact(businessId, String(req.params.id ?? ''), parsed.data);
+    return res.status(200).json({ crmContact });
+  } catch (error) {
+    if (isCrmContactNotFoundError(error)) return res.status(404).json({ error: 'CRM_CONTACT_NOT_FOUND' });
+    throw error;
+  }
+});
+
+app.get('/api/workspace/leads', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const leads = await workspaceService.listLeads(businessId);
+  return res.status(200).json({ leads });
+});
+
+const createLeadSchema = z.object({
+  crmContactId: z.string().uuid(),
+  source: z.string().trim().min(1).nullish(),
+  stage: z.string().trim().min(1).nullish(),
+  score: z.number().nullish(),
+  value: z.number().nullish(),
+  nextAction: z.string().trim().min(1).nullish(),
+  notes: z.string().trim().min(1).nullish(),
+});
+
+app.post('/api/workspace/leads', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = createLeadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_LEAD', details: parsed.error.flatten() });
+  }
+  try {
+    const lead = await workspaceService.createLead(businessId, parsed.data);
+    return res.status(201).json({ lead });
+  } catch (error) {
+    if (isCrmContactNotFoundError(error)) return res.status(404).json({ error: 'CRM_CONTACT_NOT_FOUND' });
+    throw error;
+  }
+});
+
+const updateLeadSchema = z.object({
+  stage: z.string().trim().min(1).nullable(),
+  score: z.number().nullable(),
+  value: z.number().nullable(),
+  nextAction: z.string().trim().nullable(),
+  notes: z.string().trim().nullable(),
+});
+
+app.patch('/api/workspace/leads/:id', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = updateLeadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_LEAD', details: parsed.error.flatten() });
+  }
+  try {
+    const lead = await workspaceService.updateLead(businessId, String(req.params.id ?? ''), parsed.data);
+    return res.status(200).json({ lead });
+  } catch (error) {
+    if (isLeadNotFoundError(error)) return res.status(404).json({ error: 'LEAD_NOT_FOUND' });
+    throw error;
+  }
+});
+
+const updateLeadStatusSchema = z.object({ status: z.enum(['NEW', 'QUALIFIED', 'ENGAGED', 'WON', 'LOST']) });
+
+app.patch('/api/workspace/leads/:id/status', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = updateLeadStatusSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_LEAD_STATUS' });
+  }
+  try {
+    const lead = await workspaceService.updateLeadStatus(businessId, String(req.params.id ?? ''), parsed.data.status);
+    return res.status(200).json({ lead });
+  } catch (error) {
+    if (isLeadNotFoundError(error)) return res.status(404).json({ error: 'LEAD_NOT_FOUND' });
     throw error;
   }
 });

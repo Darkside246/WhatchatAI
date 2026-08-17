@@ -3,6 +3,7 @@ import type { SyncStatusResponse, WhatsAppConnectionSnapshot } from '../lib/api.
 import { SaasNavRail, SaasNavBottomBar } from '../components/SaasNavRail.js';
 import { ChatsRoute } from './ChatsRoute.js';
 import { AgentsPage } from './AgentsPage.js';
+import { CrmRoute } from './CrmRoute.js';
 import { PlaceholderPage } from './PlaceholderPage.js';
 
 interface Props {
@@ -45,15 +46,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
                   />
                 }
               />
-              <Route
-                path="/crm"
-                element={
-                  <PlaceholderPage
-                    title="CRM & Leads"
-                    description="Lead pipeline and CRM views are not built yet. CRM data is already being captured per-conversation in the chat details panel."
-                  />
-                }
-              />
+              <Route path="/crm" element={<CrmRoute />} />
               <Route
                 path="/automations"
                 element={<PlaceholderPage title="Automations" description="The no-code automation builder is not built yet." />}

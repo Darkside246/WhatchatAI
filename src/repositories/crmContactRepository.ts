@@ -67,6 +67,46 @@ export interface UpsertCrmContactInput {
   leadStatus?: string | null;
 }
 
+export interface CrmContactWithContactInfo extends CrmContactRecord {
+  whatsappJid: string | null;
+  phoneNumber: string | null;
+  contactDisplayName: string | null;
+  contactPushName: string | null;
+  contactVerifiedName: string | null;
+  contactBusinessName: string | null;
+  contactShortName: string | null;
+}
+
+interface CrmContactWithContactInfoRow extends CrmContactRow {
+  whatsapp_jid: string | null;
+  phone_number: string | null;
+  contact_display_name: string | null;
+  contact_push_name: string | null;
+  contact_verified_name: string | null;
+  contact_business_name: string | null;
+  contact_short_name: string | null;
+}
+
+function toRecordWithContactInfo(row: CrmContactWithContactInfoRow): CrmContactWithContactInfo {
+  return {
+    ...toRecord(row),
+    whatsappJid: row.whatsapp_jid,
+    phoneNumber: row.phone_number,
+    contactDisplayName: row.contact_display_name,
+    contactPushName: row.contact_push_name,
+    contactVerifiedName: row.contact_verified_name,
+    contactBusinessName: row.contact_business_name,
+    contactShortName: row.contact_short_name,
+  };
+}
+
+export interface UpdateCrmContactInput {
+  stage: string | null;
+  leadStatus: string | null;
+  notes: string | null;
+  tags: string[];
+}
+
 export class CrmContactRepository {
   constructor(private readonly db: Queryable) {}
 
@@ -94,11 +134,49 @@ export class CrmContactRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /** Tenant-scoped lookup - confirms a crm_contact id genuinely belongs to this business before it's used to attach anything (e.g. a new lead). */
+  async findByIdForBusiness(businessId: string, id: string): Promise<CrmContactRecord | null> {
+    const { rows } = await this.db.query<CrmContactRow>(
+      'SELECT * FROM crm_contacts WHERE id = $1 AND business_id = $2 AND deleted_at IS NULL',
+      [id, businessId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
   async findByWhatsAppContact(businessId: string, whatsappContactId: string): Promise<CrmContactRecord | null> {
     const { rows } = await this.db.query<CrmContactRow>(
       `SELECT * FROM crm_contacts
        WHERE business_id = $1 AND whatsapp_contact_id = $2 AND deleted_at IS NULL`,
       [businessId, whatsappContactId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /** The real CRM list view - joined with the WhatsApp contact it's built around so a caller can render a real name, never a bare id. */
+  async listByBusiness(businessId: string, limit = 200): Promise<CrmContactWithContactInfo[]> {
+    const { rows } = await this.db.query<CrmContactWithContactInfoRow>(
+      `SELECT c.*,
+              wc.whatsapp_jid, wc.phone_number,
+              wc.display_name AS contact_display_name, wc.push_name AS contact_push_name,
+              wc.verified_name AS contact_verified_name, wc.business_name AS contact_business_name,
+              wc.short_name AS contact_short_name
+       FROM crm_contacts c
+       LEFT JOIN whatsapp_contacts wc ON wc.id = c.whatsapp_contact_id
+       WHERE c.business_id = $1 AND c.deleted_at IS NULL
+       ORDER BY c.updated_at DESC
+       LIMIT $2`,
+      [businessId, limit],
+    );
+    return rows.map(toRecordWithContactInfo);
+  }
+
+  /** Tenant-scoped write - a crm_contact id from another business is never editable through this. */
+  async update(businessId: string, id: string, input: UpdateCrmContactInput): Promise<CrmContactRecord | null> {
+    const { rows } = await this.db.query<CrmContactRow>(
+      `UPDATE crm_contacts SET stage = $3, lead_status = $4, notes = $5, tags = $6::jsonb, updated_at = now()
+       WHERE id = $1 AND business_id = $2 AND deleted_at IS NULL
+       RETURNING *`,
+      [id, businessId, input.stage, input.leadStatus, input.notes, JSON.stringify(input.tags)],
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }
