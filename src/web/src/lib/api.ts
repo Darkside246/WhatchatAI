@@ -370,6 +370,25 @@ export interface CreateCampaignResultDto {
 export const SCHEDULED_STATUS_STATES = ['DRAFT', 'SCHEDULED', 'PUBLISHING', 'PUBLISHED', 'FAILED', 'CANCELLED'] as const;
 export type ScheduledStatusState = (typeof SCHEDULED_STATUS_STATES)[number];
 
+/**
+ * Which engine can actually answer right now. 'configured' deliberately
+ * does NOT mean "proven working" - see aiEngineStatusService for why we
+ * refuse to spend the operator's quota proving it on every page load.
+ */
+export interface AiEngineStatusDto {
+  id: 'gemini' | 'goose';
+  label: string;
+  role: 'primary' | 'failover';
+  state: 'configured' | 'available' | 'unavailable' | 'not_configured';
+  checkedBy: 'configuration' | 'live_probe';
+  reason?: string;
+}
+
+export interface AiEnginesDto {
+  engines: AiEngineStatusDto[];
+  canGenerate: boolean;
+}
+
 export interface ScheduledStatusDto {
   id: string;
   businessId: string;
@@ -855,6 +874,8 @@ export const api = {
     ),
   revokeScheduledStatus: (id: string) =>
     request<{ status: 'requested' }>(`/workspace/scheduled-statuses/${id}/revoke`, { method: 'POST' }),
+
+  getAiEngines: () => request<AiEnginesDto>('/workspace/ai-engines'),
 
   listScheduledStatuses: () => request<{ statuses: ScheduledStatusDto[] }>('/workspace/scheduled-statuses'),
   createScheduledStatus: (input: {

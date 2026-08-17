@@ -141,6 +141,7 @@ import {
   isScheduledStatusNotFoundError,
   isInvalidScheduledStatusError,
 } from '../services/scheduledStatusService.js';
+import { getAiEngineStatus } from '../services/aiEngineStatusService.js';
 import {
   revokeMessage,
   recallCampaign,
@@ -599,6 +600,15 @@ function requireWorkspaceContext(_req: Request, res: Response, next: NextFunctio
 // where the action is sensitive enough to need more than "any authenticated
 // member of this business."
 app.use('/api/workspace', requireAuth);
+
+/**
+ * Which engine can actually answer a customer right now. Workspace-scoped
+ * because it is operator-facing status, not a public liveness probe.
+ */
+app.get('/api/workspace/ai-engines', requireWorkspaceContext, async (_req, res) => {
+  return res.status(200).json(await getAiEngineStatus());
+});
+
 
 app.get('/api/workspace/sync-status', requireWorkspaceContext, async (_req, res) => {
   const { whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };

@@ -11,6 +11,7 @@ import {
 } from '../lib/api.js';
 import { ToggleSwitch } from '../components/ToggleSwitch.js';
 import { AgentCanvas } from '../components/AgentCanvas.js';
+import { AiEngineStrip } from '../components/AiEngineStrip.js';
 
 const CATEGORY_LABEL: Record<AgentCategory, string> = {
   general: 'General',
@@ -460,6 +461,9 @@ export function AgentsPage() {
             </button>
           </div>
         </div>
+        <div className="shrink-0 px-6 pt-3">
+          <AiEngineStrip />
+        </div>
         <AgentCanvas agents={agents ?? []} onChanged={load} />
       </div>
     );
@@ -497,6 +501,10 @@ export function AgentsPage() {
               New agent
             </button>
           </div>
+        </div>
+
+        <div className="mt-4">
+          <AiEngineStrip />
         </div>
 
         {error && <p className="mt-4 text-xs text-error">{error}</p>}
