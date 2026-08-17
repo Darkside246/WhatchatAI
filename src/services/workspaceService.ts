@@ -809,6 +809,17 @@ export class WorkspaceService {
   }
 
   /**
+   * Persists a real drag on the org canvas. Verifies ownership first, and
+   * deliberately touches nothing but the coordinates - moving a tile must
+   * never be able to alter routing behaviour.
+   */
+  async updateAgentPosition(businessId: string, agentId: string, x: number, y: number): Promise<void> {
+    const agent = await this.agentRepository.findById(agentId);
+    if (!agent || agent.businessId !== businessId || agent.deletedAt) throw this.notFound();
+    await this.agentRepository.updatePosition(agentId, x, y);
+  }
+
+  /**
    * The real, business-wide AI kill switch - a PAUSED agent is invisible to
    * findActiveForBusiness(), so the incoming-message worker silently skips
    * auto-reply for every chat in this business rather than sending anything,

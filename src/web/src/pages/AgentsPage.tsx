@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Bot, ShieldAlert, Plus, ArrowLeft, Clock, GitBranch } from 'lucide-react';
+import { Bot, ShieldAlert, Plus, ArrowLeft, Clock, GitBranch, LayoutGrid, Network } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -10,6 +10,7 @@ import {
   type CreateAgentBody,
 } from '../lib/api.js';
 import { ToggleSwitch } from '../components/ToggleSwitch.js';
+import { AgentCanvas } from '../components/AgentCanvas.js';
 
 const CATEGORY_LABEL: Record<AgentCategory, string> = {
   general: 'General',
@@ -361,6 +362,7 @@ export function AgentsPage() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [tab, setTab] = useState<'tiles' | 'canvas'>('tiles');
 
   function load() {
     api
@@ -435,6 +437,34 @@ export function AgentsPage() {
     );
   }
 
+  if (tab === 'canvas') {
+    return (
+      <div className="flex h-full flex-1 flex-col">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-6 py-3">
+          <h1 className="text-base font-semibold text-fg">Agent structure</h1>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setTab('tiles')}
+              className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-fg-secondary hover:bg-surface-2"
+            >
+              <LayoutGrid size={13} aria-hidden />
+              Tiles
+            </button>
+            <button
+              type="button"
+              className="flex items-center gap-1.5 rounded-lg bg-accent-soft px-3 py-1.5 text-xs font-medium text-accent"
+            >
+              <Network size={13} aria-hidden />
+              Canvas
+            </button>
+          </div>
+        </div>
+        <AgentCanvas agents={agents ?? []} onChanged={load} />
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <div className="mx-auto max-w-4xl">
@@ -445,18 +475,28 @@ export function AgentsPage() {
               Each agent replies on WhatsApp using only real conversation and CRM data.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              setForm(EMPTY_FORM);
-              setFormError(null);
-              setView({ mode: 'new' });
-            }}
-            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-dim"
-          >
-            <Plus size={14} aria-hidden />
-            New agent
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setTab('canvas')}
+              className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-sm font-medium text-fg-secondary hover:border-accent hover:text-accent"
+            >
+              <Network size={14} aria-hidden />
+              Canvas
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setForm(EMPTY_FORM);
+                setFormError(null);
+                setView({ mode: 'new' });
+              }}
+              className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-dim"
+            >
+              <Plus size={14} aria-hidden />
+              New agent
+            </button>
+          </div>
         </div>
 
         {error && <p className="mt-4 text-xs text-error">{error}</p>}

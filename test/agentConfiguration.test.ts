@@ -94,6 +94,24 @@ describe('AI agent configuration (real persisted config, real tenant isolation)'
     expect(linked.escalateToAgentId).toBe(manager.id);
   });
 
+  it('persists a real canvas position, and refuses to move another business\'s agent', async () => {
+    const agent = await workspaceService.createAgent(businessId, { name: 'Placed' });
+    expect(agent.canvasX).toBeNull();
+    expect(agent.canvasY).toBeNull();
+
+    await workspaceService.updateAgentPosition(businessId, agent.id, 320, 176);
+    const moved = (await workspaceService.listAgents(businessId)).find((candidate) => candidate.id === agent.id);
+    expect(moved?.canvasX).toBe(320);
+    expect(moved?.canvasY).toBe(176);
+
+    // Moving a tile must never alter routing configuration.
+    expect(moved?.triggerKeywords).toEqual([]);
+    expect(moved?.status).toBe('ACTIVE');
+
+    const otherBusinessId = await createTestBusiness('Other Business');
+    await expect(workspaceService.updateAgentPosition(otherBusinessId, agent.id, 1, 1)).rejects.toThrow();
+  });
+
   it('classifies the hazardous/regulated trades as advice-restricted, so their prompt carries the operations-only limit', () => {
     for (const category of ['plumbing', 'electrical', 'mechanical', 'hvac', 'construction'] as const) {
       expect(ADVICE_RESTRICTED_CATEGORIES).toContain(category);

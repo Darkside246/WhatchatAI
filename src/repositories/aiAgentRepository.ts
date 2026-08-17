@@ -40,6 +40,9 @@ export interface AiAgentRecord {
   parentAgentId: string | null;
   escalateToAgentId: string | null;
   priority: number;
+  /** Real operator-chosen canvas coordinates. Null until they actually place it. */
+  canvasX: number | null;
+  canvasY: number | null;
   status: AgentStatus;
   createdAt: string;
   updatedAt: string;
@@ -67,6 +70,8 @@ interface AiAgentRow {
   parent_agent_id: string | null;
   escalate_to_agent_id: string | null;
   priority: number;
+  canvas_x: number | null;
+  canvas_y: number | null;
   status: AgentStatus;
   created_at: string;
   updated_at: string;
@@ -95,6 +100,8 @@ function toRecord(row: AiAgentRow): AiAgentRecord {
     parentAgentId: row.parent_agent_id,
     escalateToAgentId: row.escalate_to_agent_id,
     priority: row.priority,
+    canvasX: row.canvas_x === null ? null : Number(row.canvas_x),
+    canvasY: row.canvas_y === null ? null : Number(row.canvas_y),
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -244,6 +251,11 @@ export class AiAgentRepository {
       [businessId],
     );
     return Number(rows[0]?.count ?? 0);
+  }
+
+  /** Persists a real drag on the org canvas. Position only - never touches configuration. */
+  async updatePosition(id: string, x: number, y: number): Promise<void> {
+    await this.db.query('UPDATE ai_agents SET canvas_x = $2, canvas_y = $3, updated_at = now() WHERE id = $1', [id, x, y]);
   }
 
   async updateStatus(id: string, status: AgentStatus): Promise<void> {

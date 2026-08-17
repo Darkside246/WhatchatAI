@@ -503,6 +503,16 @@ export interface AiAgentSummary {
   parentAgentId: string | null;
   escalateToAgentId: string | null;
   priority: number;
+  /** Real operator-chosen canvas coordinates. Null until they actually place it. */
+  canvasX: number | null;
+  canvasY: number | null;
+}
+
+export interface RoutingPreviewResult {
+  outcome: 'route' | 'escalate_to_human' | 'no_agent';
+  reason: string;
+  agentId: string | null;
+  matchedKeyword: string | null;
 }
 
 export interface CreateAgentBody {
@@ -709,6 +719,10 @@ export const api = {
     request<{ agent: AiAgentSummary }>('/workspace/agents', { method: 'POST', body: JSON.stringify(body) }),
   updateAgent: (id: string, body: CreateAgentBody) =>
     request<{ agent: AiAgentSummary }>(`/workspace/agents/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  updateAgentPosition: (id: string, x: number, y: number) =>
+    request<void>(`/workspace/agents/${id}/position`, { method: 'PATCH', body: JSON.stringify({ x, y }) }),
+  previewAgentRouting: (text: string) =>
+    request<RoutingPreviewResult>('/workspace/agents/routing-preview', { method: 'POST', body: JSON.stringify({ text }) }),
   updateAgentStatus: (id: string, status: AiAgentSummary['status']) =>
     request<{ agent: AiAgentSummary }>(`/workspace/agents/${id}/status`, {
       method: 'PATCH',

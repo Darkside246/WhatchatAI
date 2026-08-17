@@ -15,6 +15,7 @@ import * as gooseService from '../services/gooseService.js';
 import { globalSearch } from '../services/globalSearchService.js';
 import { isInlineSafeMime } from '../domain/whatsapp/mediaCompatibility.js';
 import { suggestReplies } from '../services/replySuggestionService.js';
+import { routeInboundMessage } from '../services/agentRoutingService.js';
 import {
   workspaceService,
   isChatNotFoundError,
@@ -1323,6 +1324,51 @@ app.patch('/api/workspace/agents/:agentId', requireWorkspaceContext, requirePerm
     if (isChatNotFoundError(error)) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });
     throw error;
   }
+});
+
+const agentPositionSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+});
+
+/**
+ * Persists a real drag on the org canvas. Position only - deliberately a
+ * separate route from the config edit so moving a tile can never alter
+ * routing behaviour, and so it does not need the heavier ai.edit permission.
+ */
+app.patch('/api/workspace/agents/:agentId/position', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = agentPositionSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_POSITION' });
+  try {
+    await workspaceService.updateAgentPosition(businessId, String(req.params.agentId ?? ''), parsed.data.x, parsed.data.y);
+    return res.status(204).end();
+  } catch (error) {
+    if (isChatNotFoundError(error)) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });
+    throw error;
+  }
+});
+
+const routingPreviewSchema = z.object({ text: z.string().trim().min(1).max(2000) });
+
+/**
+ * A real dry run of the routing engine. Calls the exact same
+ * routeInboundMessage the worker uses, so what the canvas highlights is what
+ * would genuinely happen - not a separate simulation that could drift. Sends
+ * nothing and writes nothing.
+ */
+app.post('/api/workspace/agents/routing-preview', requireWorkspaceContext, requirePermission('ai.view'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = routingPreviewSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PREVIEW_TEXT' });
+
+  const decision = await routeInboundMessage(businessId, parsed.data.text);
+  return res.status(200).json({
+    outcome: decision.outcome,
+    reason: decision.reason,
+    agentId: decision.outcome === 'no_agent' ? null : decision.agent.id,
+    matchedKeyword: decision.outcome === 'no_agent' ? null : decision.matchedKeyword,
+  });
 });
 
 const updateAgentStatusSchema = z.object({
