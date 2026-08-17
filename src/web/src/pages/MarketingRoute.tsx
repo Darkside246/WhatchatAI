@@ -1,11 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { ArrowLeft, Megaphone, Send, Check, X, Users } from 'lucide-react';
+import { ArrowLeft, Megaphone, Send, Check, X, Users, CalendarClock, Image as ImageIcon } from 'lucide-react';
 import {
   api,
   ApiError,
   type CampaignDto,
   type CampaignDetailDto,
   type EligibleRecipientDto,
+  type ScheduledStatusDto,
 } from '../lib/api.js';
 
 const STATUS_LABEL: Record<CampaignDto['status'], string> = {
@@ -294,7 +295,7 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
   );
 }
 
-export function MarketingRoute() {
+function CampaignsTab() {
   const [campaigns, setCampaigns] = useState<CampaignDto[] | null>(null);
   const [view, setView] = useState<{ mode: 'list' } | { mode: 'new' } | { mode: 'detail'; campaignId: string }>({ mode: 'list' });
 
@@ -372,6 +373,271 @@ export function MarketingRoute() {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+const SCHEDULED_STATUS_LABEL: Record<ScheduledStatusDto['status'], string> = {
+  DRAFT: 'Draft',
+  SCHEDULED: 'Scheduled',
+  PUBLISHING: 'Publishing',
+  PUBLISHED: 'Published',
+  FAILED: 'Failed',
+  CANCELLED: 'Cancelled',
+};
+
+const SCHEDULED_STATUS_COLOR: Record<ScheduledStatusDto['status'], string> = {
+  DRAFT: 'bg-fg-muted/15 text-fg-muted',
+  SCHEDULED: 'bg-info/15 text-info',
+  PUBLISHING: 'bg-accent-soft text-accent',
+  PUBLISHED: 'bg-success/15 text-success',
+  FAILED: 'bg-error/15 text-error',
+  CANCELLED: 'bg-fg-muted/15 text-fg-muted',
+};
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      resolve(result.slice(result.indexOf(',') + 1));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function NewStatusForm({ onCreated, onCancel }: { onCreated: () => void; onCancel: () => void }) {
+  const [statusType, setStatusType] = useState<'text' | 'image' | 'video'>('text');
+  const [textContent, setTextContent] = useState('');
+  const [caption, setCaption] = useState('');
+  const [backgroundColor, setBackgroundColor] = useState('#25D366');
+  const [file, setFile] = useState<File | null>(null);
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const input: Parameters<typeof api.createScheduledStatus>[0] = {
+        statusType,
+        scheduledAt: new Date(scheduledAt).toISOString(),
+      };
+      if (statusType === 'text') {
+        input.textContent = textContent.trim();
+        input.backgroundColor = backgroundColor;
+      } else {
+        if (!file) throw new Error('Choose a file for this status.');
+        input.mediaBase64 = await fileToBase64(file);
+        input.mediaMimeType = file.type;
+        if (caption.trim()) input.caption = caption.trim();
+      }
+      const result = await api.createScheduledStatus(input);
+      await api.scheduleStatus(result.status.id);
+      onCreated();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Could not schedule that status.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-xl">
+      <button type="button" onClick={onCancel} className="mb-4 flex items-center gap-1.5 text-xs font-medium text-fg-muted hover:text-fg">
+        <ArrowLeft size={13} aria-hidden />
+        Back to Status
+      </button>
+
+      <h2 className="text-base font-semibold text-fg">Schedule a Status</h2>
+      <p className="mt-1 text-xs text-fg-muted">Posts to WhatsApp Status, visible to your real saved contacts, at the time you choose.</p>
+
+      <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-4">
+        <div className="flex gap-1.5">
+          {(['text', 'image', 'video'] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => setStatusType(option)}
+              className={`rounded-full px-3 py-1 text-xs font-medium capitalize ${
+                statusType === option ? 'bg-accent text-white' : 'bg-surface-3 text-fg-muted hover:text-fg-secondary'
+              }`}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+
+        {statusType === 'text' ? (
+          <>
+            <textarea
+              required
+              rows={3}
+              maxLength={700}
+              placeholder="What's on your mind?"
+              value={textContent}
+              onChange={(event) => setTextContent(event.target.value)}
+              className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            />
+            <label className="flex items-center gap-2 text-xs text-fg-secondary">
+              Background
+              <input type="color" value={backgroundColor} onChange={(event) => setBackgroundColor(event.target.value)} className="h-7 w-10 rounded border border-border-subtle" />
+            </label>
+          </>
+        ) : (
+          <>
+            <input
+              type="file"
+              required
+              accept={statusType === 'image' ? 'image/*' : 'video/*'}
+              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              className="text-xs text-fg-secondary"
+            />
+            <input
+              type="text"
+              placeholder="Caption (optional)"
+              value={caption}
+              onChange={(event) => setCaption(event.target.value)}
+              className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            />
+          </>
+        )}
+
+        <label className="flex flex-col gap-1 text-sm text-fg-secondary">
+          Publish at
+          <input
+            type="datetime-local"
+            required
+            value={scheduledAt}
+            onChange={(event) => setScheduledAt(event.target.value)}
+            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+          />
+        </label>
+
+        {error && <p className="text-xs text-error">{error}</p>}
+
+        <button type="submit" disabled={busy} className="self-start rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+          {busy ? 'Scheduling…' : 'Schedule'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function StatusSchedulerTab() {
+  const [statuses, setStatuses] = useState<ScheduledStatusDto[] | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  async function load() {
+    try {
+      const result = await api.listScheduledStatuses();
+      setStatuses(result.statuses);
+    } catch {
+      setStatuses([]);
+    }
+  }
+
+  useEffect(() => {
+    if (!creating) void load();
+  }, [creating]);
+
+  async function handleCancel(id: string) {
+    setBusyId(id);
+    try {
+      await api.cancelScheduledStatus(id);
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  if (creating) {
+    return (
+      <div className="flex-1 overflow-y-auto p-6">
+        <NewStatusForm onCreated={() => setCreating(false)} onCancel={() => setCreating(false)} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto p-6">
+      <div className="mx-auto max-w-2xl">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-semibold text-fg">Status</h1>
+            <p className="mt-1 text-sm text-fg-muted">Real, scheduled WhatsApp Status posts - published automatically at the time you choose.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-dim"
+          >
+            <CalendarClock size={14} aria-hidden />
+            Schedule Status
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-2">
+          {statuses === null && <p className="text-xs text-fg-muted">Loading…</p>}
+          {statuses?.length === 0 && (
+            <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-border-subtle p-10 text-center">
+              <ImageIcon size={22} className="text-fg-muted" aria-hidden />
+              <p className="text-sm text-fg-secondary">Nothing scheduled yet.</p>
+            </div>
+          )}
+          {statuses?.map((status) => (
+            <div key={status.id} className="flex items-center justify-between rounded-xl border border-border-subtle bg-surface-2 p-4">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-fg capitalize">
+                  {status.statusType} Status{status.textContent ? `: ${status.textContent.slice(0, 40)}` : ''}
+                </p>
+                <p className="mt-0.5 text-xs text-fg-muted">
+                  {formatDate(status.scheduledAt)}
+                  {status.lastError ? ` · ${status.lastError}` : ''}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${SCHEDULED_STATUS_COLOR[status.status]}`}>{SCHEDULED_STATUS_LABEL[status.status]}</span>
+                {status.status === 'SCHEDULED' && (
+                  <button type="button" disabled={busyId === status.id} onClick={() => handleCancel(status.id)} className="text-fg-muted hover:text-error">
+                    <X size={14} aria-hidden />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function MarketingRoute() {
+  const [tab, setTab] = useState<'campaigns' | 'status'>('campaigns');
+
+  return (
+    <div className="flex h-full flex-1 flex-col">
+      <div className="flex shrink-0 gap-1 border-b border-border-subtle bg-surface-1 px-6 pt-3">
+        <button
+          type="button"
+          onClick={() => setTab('campaigns')}
+          className={`rounded-t-lg px-3 py-2 text-sm font-medium ${tab === 'campaigns' ? 'border-b-2 border-accent text-accent' : 'text-fg-muted hover:text-fg-secondary'}`}
+        >
+          Campaigns
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('status')}
+          className={`rounded-t-lg px-3 py-2 text-sm font-medium ${tab === 'status' ? 'border-b-2 border-accent text-accent' : 'text-fg-muted hover:text-fg-secondary'}`}
+        >
+          Status
+        </button>
+      </div>
+      {tab === 'campaigns' ? <CampaignsTab /> : <StatusSchedulerTab />}
     </div>
   );
 }

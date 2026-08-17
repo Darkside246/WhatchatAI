@@ -354,6 +354,28 @@ export interface CreateCampaignResultDto {
   skippedCrmContactIds: string[];
 }
 
+export const SCHEDULED_STATUS_STATES = ['DRAFT', 'SCHEDULED', 'PUBLISHING', 'PUBLISHED', 'FAILED', 'CANCELLED'] as const;
+export type ScheduledStatusState = (typeof SCHEDULED_STATUS_STATES)[number];
+
+export interface ScheduledStatusDto {
+  id: string;
+  businessId: string;
+  whatsappAccountId: string;
+  createdBy: string;
+  statusType: 'text' | 'image' | 'video';
+  textContent: string | null;
+  caption: string | null;
+  backgroundColor: string | null;
+  mediaStorageReference: string | null;
+  mediaMimeType: string | null;
+  scheduledAt: string;
+  status: ScheduledStatusState;
+  publishedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface NotificationDto {
   id: string;
   type: NotificationType;
@@ -653,4 +675,17 @@ export const api = {
   approveCampaign: (campaignId: string) => request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/approve`, { method: 'POST' }),
   sendCampaign: (campaignId: string) => request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/send`, { method: 'POST' }),
   cancelCampaign: (campaignId: string) => request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/cancel`, { method: 'POST' }),
+
+  listScheduledStatuses: () => request<{ statuses: ScheduledStatusDto[] }>('/workspace/scheduled-statuses'),
+  createScheduledStatus: (input: {
+    statusType: 'text' | 'image' | 'video';
+    textContent?: string;
+    caption?: string;
+    backgroundColor?: string;
+    mediaBase64?: string;
+    mediaMimeType?: string;
+    scheduledAt: string;
+  }) => request<{ status: ScheduledStatusDto }>('/workspace/scheduled-statuses', { method: 'POST', body: JSON.stringify(input) }),
+  scheduleStatus: (id: string) => request<{ status: ScheduledStatusDto }>(`/workspace/scheduled-statuses/${id}/schedule`, { method: 'POST' }),
+  cancelScheduledStatus: (id: string) => request<{ status: ScheduledStatusDto }>(`/workspace/scheduled-statuses/${id}/cancel`, { method: 'POST' }),
 };

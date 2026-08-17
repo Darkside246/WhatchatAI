@@ -205,4 +205,14 @@ export class WhatsAppContactRepository {
     );
     return rows.map(toRecord);
   }
+
+  /** Real recipient list for a status post - only individual, real saved contacts, never a fabricated audience. */
+  async listIndividualJidsForAccount(businessId: string, whatsappAccountId: string): Promise<string[]> {
+    const { rows } = await this.db.query<{ whatsapp_jid: string }>(
+      `SELECT whatsapp_jid FROM whatsapp_contacts
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND jid_kind = 'individual' AND deleted_at IS NULL`,
+      [businessId, whatsappAccountId],
+    );
+    return rows.map((row) => row.whatsapp_jid);
+  }
 }

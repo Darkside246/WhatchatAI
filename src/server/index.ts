@@ -101,6 +101,18 @@ import { BUSINESS_ROLES, isBusinessRole } from '../domain/auth/permissions.js';
 // only exists here, wherever whatsappConnectionService.connect() actually
 // runs. Importing this starts it as a side effect (see the file itself).
 import { outboundMessagesWorker } from '../queue/workers/outboundDispatchWorker.js';
+// Same reasoning as outboundMessagesWorker above - real status@broadcast
+// publishing needs the live socket that only exists in this process.
+import { scheduledStatusPublishWorker } from '../queue/workers/scheduledStatusPublishWorker.js';
+import {
+  createScheduledStatus,
+  listScheduledStatuses,
+  getScheduledStatus,
+  scheduleStatus,
+  cancelScheduledStatus,
+  isScheduledStatusNotFoundError,
+  isInvalidScheduledStatusError,
+} from '../services/scheduledStatusService.js';
 import type { Request, Response, NextFunction } from 'express';
 
 const app = express();
@@ -766,6 +778,75 @@ app.post(
   campaignActionHandler((businessId, campaignId) => cancelCampaign(businessId, campaignId)),
 );
 
+app.get('/api/workspace/scheduled-statuses', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const statuses = await listScheduledStatuses(businessId);
+  return res.status(200).json({ statuses });
+});
+
+const createScheduledStatusSchema = z.object({
+  statusType: z.enum(['text', 'image', 'video']),
+  textContent: z.string().trim().min(1).max(700).optional(),
+  caption: z.string().trim().max(700).optional(),
+  backgroundColor: z.string().trim().max(9).optional(),
+  mediaBase64: z.string().min(1).optional(),
+  mediaMimeType: z.string().min(1).optional(),
+  scheduledAt: z.string().min(1),
+});
+
+app.post('/api/workspace/scheduled-statuses', requireWorkspaceContext, requirePermission('marketing.create'), async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const auth = res.locals.auth as AuthContext;
+  const parsed = createScheduledStatusSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_SCHEDULED_STATUS', details: parsed.error.flatten() });
+  try {
+    const status = await createScheduledStatus(businessId, whatsappAccountId, auth.userId, parsed.data);
+    return res.status(201).json({ status });
+  } catch (error) {
+    if (isInvalidScheduledStatusError(error)) return res.status(400).json({ error: 'INVALID_SCHEDULED_STATUS', message: error.message });
+    throw error;
+  }
+});
+
+app.get('/api/workspace/scheduled-statuses/:id', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    const status = await getScheduledStatus(businessId, String(req.params.id ?? ''));
+    return res.status(200).json({ status });
+  } catch (error) {
+    if (isScheduledStatusNotFoundError(error)) return res.status(404).json({ error: 'SCHEDULED_STATUS_NOT_FOUND' });
+    throw error;
+  }
+});
+
+function scheduledStatusActionHandler(action: (businessId: string, id: string) => Promise<unknown>) {
+  return async (req: Request, res: Response) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    try {
+      const status = await action(businessId, String(req.params.id ?? ''));
+      return res.status(200).json({ status });
+    } catch (error) {
+      if (isScheduledStatusNotFoundError(error)) return res.status(404).json({ error: 'SCHEDULED_STATUS_NOT_FOUND' });
+      if (isInvalidScheduledStatusError(error)) return res.status(409).json({ error: 'INVALID_SCHEDULED_STATUS', message: error.message });
+      throw error;
+    }
+  };
+}
+
+app.post(
+  '/api/workspace/scheduled-statuses/:id/schedule',
+  requireWorkspaceContext,
+  requirePermission('marketing.schedule'),
+  scheduledStatusActionHandler((businessId, id) => scheduleStatus(businessId, id)),
+);
+
+app.post(
+  '/api/workspace/scheduled-statuses/:id/cancel',
+  requireWorkspaceContext,
+  requirePermission('marketing.create'),
+  scheduledStatusActionHandler((businessId, id) => cancelScheduledStatus(businessId, id)),
+);
+
 const reactionSchema = z.object({ emoji: z.string().max(8) });
 
 /**
@@ -1305,6 +1386,7 @@ httpServer.listen(port, () => {
 async function shutdown(signal: string): Promise<void> {
   console.log(`[WhatchatAI] Received ${signal}, closing outbound dispatch worker...`);
   await outboundMessagesWorker.close();
+  await scheduledStatusPublishWorker.close();
   process.exit(0);
 }
 
