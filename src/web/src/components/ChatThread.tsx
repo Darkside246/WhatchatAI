@@ -61,7 +61,7 @@ function AiModeControl({
 }) {
   return (
     <div className="hidden shrink-0 flex-col items-end gap-1 sm:flex">
-      <div className="flex items-center gap-0.5 rounded-full border border-border-subtle bg-surface-2 p-0.5 text-[11px] font-medium">
+      <div className="flex items-center gap-0.5 rounded-full border border-border-subtle bg-surface-2 p-0.5 text-meta font-medium">
         <button
           type="button"
           disabled={saving}
@@ -85,9 +85,9 @@ function AiModeControl({
           Human Agent
         </button>
       </div>
-      {saving && <span className="text-[10px] text-fg-muted">Saving…</span>}
-      {!saving && mode === 'AI_PAUSED' && <span className="text-[10px] text-warning">AI Paused</span>}
-      {!saving && error && <span className="text-[10px] text-error">{error}</span>}
+      {saving && <span className="text-meta text-fg-muted">Saving…</span>}
+      {!saving && mode === 'AI_PAUSED' && <span className="text-meta text-warning">AI Paused</span>}
+      {!saving && error && <span className="text-meta text-error">{error}</span>}
     </div>
   );
 }
@@ -131,7 +131,7 @@ function AssigneeControl({
         value={value}
         disabled={saving}
         onChange={handleChange}
-        className="rounded-full border border-border-subtle bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-fg-secondary outline-none focus:border-accent disabled:opacity-50"
+        className="rounded-full border border-border-subtle bg-surface-2 px-2.5 py-1 text-meta font-medium text-fg-secondary outline-none focus:border-accent disabled:opacity-50"
       >
         <option value="">Unassigned</option>
         {members.length > 0 && (
@@ -153,7 +153,7 @@ function AssigneeControl({
           </optgroup>
         )}
       </select>
-      {error && <span className="text-[10px] text-error">{error}</span>}
+      {error && <span className="text-meta text-error">{error}</span>}
     </div>
   );
 }
@@ -288,7 +288,7 @@ function MediaContent({
   // forcing a neutral fg tone that could go illegible against it.
   if (media.downloadStatus === 'pending' || media.downloadStatus === 'downloading') {
     return (
-      <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-xs opacity-90">
+      <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-caption opacity-90">
         <Loader2 size={16} className="animate-spin" aria-hidden />
         Downloading media…
       </div>
@@ -296,7 +296,7 @@ function MediaContent({
   }
   if (media.downloadStatus === 'unavailable') {
     return (
-      <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-xs opacity-75">
+      <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-caption opacity-75">
         <ImageOff size={16} aria-hidden />
         This media is no longer available
       </div>
@@ -304,7 +304,7 @@ function MediaContent({
   }
   if (media.downloadStatus === 'failed') {
     return (
-      <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-xs text-error">
+      <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-caption text-error">
         <FileWarning size={16} aria-hidden />
         Media download failed
       </div>
@@ -330,7 +330,7 @@ function MediaContent({
     <a
       href={url}
       download={media.fileName ?? undefined}
-      className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-2 text-xs hover:bg-black/15"
+      className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-2 text-caption hover:bg-black/15"
     >
       <FileText size={20} aria-hidden />
       <span className="flex flex-col">
@@ -697,10 +697,10 @@ export function ChatThread({ onOpenDetail }: Props) {
   if (!chatId) {
     return (
       <div className="flex h-full flex-1 flex-col items-center justify-center gap-2 text-fg-muted">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent-soft text-2xl font-bold text-accent">
+        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent-soft text-display font-bold text-accent">
           W
         </div>
-        <p className="text-sm">Select a chat to view messages</p>
+        <p className="text-body">Select a chat to view messages</p>
       </div>
     );
   }
@@ -742,15 +742,15 @@ export function ChatThread({ onOpenDetail }: Props) {
               />
             </button>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-fg">{headerName}</p>
+              <p className="truncate text-body font-medium text-fg">{headerName}</p>
               {presenceLabel ? (
-                <p className={`truncate text-[11px] ${presenceLabel === 'online' ? 'text-success' : 'text-fg-muted'}`}>
+                <p className={`truncate text-meta ${presenceLabel === 'online' ? 'text-success' : 'text-fg-muted'}`}>
                   {presenceLabel}
                 </p>
               ) : (
                 headerSecondary &&
                 headerSecondary !== headerName && (
-                  <p className="truncate text-[11px] text-fg-muted">{headerSecondary}</p>
+                  <p className="truncate text-meta text-fg-muted">{headerSecondary}</p>
                 )
               )}
             </div>
@@ -766,23 +766,23 @@ export function ChatThread({ onOpenDetail }: Props) {
             <AiModeControl mode={detail.chat.aiMode} saving={savingMode} error={modeError} onSelect={handleModeSelect} />
           </>
         ) : (
-          <p className="flex-1 text-sm text-fg-secondary">Loading real conversation…</p>
+          <p className="flex-1 text-body text-fg-secondary">Loading real conversation…</p>
         )}
         <button
           type="button"
           onClick={onOpenDetail}
-          className="rounded-md px-2 py-1 text-xs text-fg-muted hover:bg-surface-2 hover:text-fg lg:hidden"
+          className="rounded-md px-2 py-1 text-caption text-fg-muted hover:bg-surface-2 hover:text-fg lg:hidden"
         >
           Details
         </button>
       </div>
 
       <div className={`flex-1 space-y-2 overflow-y-auto bg-surface-0 px-4 py-4 ${doodleClass}`}>
-        {error && <p className="text-xs text-error">{error}</p>}
-        {reactionError && <p className="text-xs text-error">{reactionError}</p>}
-        {revokeError && <p className="text-xs text-error">{revokeError}</p>}
-        {messages === null && !error && <p className="text-xs text-fg-muted">Loading real message history…</p>}
-        {messages?.length === 0 && <p className="text-xs text-fg-muted">No messages persisted for this chat yet.</p>}
+        {error && <p className="text-caption text-error">{error}</p>}
+        {reactionError && <p className="text-caption text-error">{reactionError}</p>}
+        {revokeError && <p className="text-caption text-error">{revokeError}</p>}
+        {messages === null && !error && <p className="text-caption text-fg-muted">Loading real message history…</p>}
+        {messages?.length === 0 && <p className="text-caption text-fg-muted">No messages persisted for this chat yet.</p>}
 
         {/*
           The reference design puts WhatsApp's "Messages and calls are
@@ -796,7 +796,7 @@ export function ChatThread({ onOpenDetail }: Props) {
         */}
         {messages && messages.length > 0 && (
           <div className="flex justify-center pb-1">
-            <span className="flex max-w-md items-center gap-1.5 rounded-lg bg-surface-2 px-3 py-1.5 text-center text-[11px] text-fg-muted shadow-sm">
+            <span className="flex max-w-md items-center gap-1.5 rounded-lg bg-surface-2 px-3 py-1.5 text-center text-meta text-fg-muted shadow-sm">
               <Lock size={11} className="shrink-0" aria-hidden />
               Encrypted by WhatsApp in transit, stored encrypted here, and readable by your team.
             </span>
@@ -806,14 +806,14 @@ export function ChatThread({ onOpenDetail }: Props) {
           <div key={message.id}>
             {(index === 0 || dayKey(messages[index - 1]!.timestamp) !== dayKey(message.timestamp)) && (
               <div className="flex justify-center py-2">
-                <span className="rounded-lg bg-surface-2 px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-fg-muted shadow-sm">
+                <span className="rounded-lg bg-surface-2 px-3 py-1 text-meta font-medium uppercase tracking-wide text-fg-muted shadow-sm">
                   {formatDaySeparator(message.timestamp)}
                 </span>
               </div>
             )}
             <div className={`group relative flex ${message.fromMe ? 'justify-end' : 'justify-start'}`}>
             <div
-              className={`relative max-w-[75%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
+              className={`relative max-w-[75%] rounded-2xl px-3 py-2 text-body shadow-sm ${
                 message.fromMe ? 'rounded-tr-sm bg-message-out text-message-out-fg' : 'rounded-tl-sm bg-message-in text-fg'
               }`}
             >
@@ -853,7 +853,7 @@ export function ChatThread({ onOpenDetail }: Props) {
                         key={emoji}
                         type="button"
                         onClick={() => void handleReact(message.id, emoji)}
-                        className="rounded-full p-0.5 text-base transition-transform hover:scale-125"
+                        className="rounded-full p-0.5 text-body-lg transition-transform hover:scale-125"
                       >
                         {emoji}
                       </button>
@@ -881,7 +881,7 @@ export function ChatThread({ onOpenDetail }: Props) {
                   {groupReactions(message.reactions).map(({ emoji, count }) => (
                     <span
                       key={emoji}
-                      className="rounded-full bg-black/20 px-1.5 py-0.5 text-[11px] leading-none"
+                      className="rounded-full bg-black/20 px-1.5 py-0.5 text-meta leading-none"
                     >
                       {emoji}
                       {count > 1 ? ` ${count}` : ''}
@@ -890,12 +890,12 @@ export function ChatThread({ onOpenDetail }: Props) {
                 </div>
               )}
               {message.revokeStatus !== 'none' && (
-                <p className="mt-1 flex items-center gap-1 text-[10px] italic opacity-80">
+                <p className="mt-1 flex items-center gap-1 text-meta italic opacity-80">
                   <Trash2 size={10} aria-hidden />
                   {revokeLabel(message)}
                 </p>
               )}
-              <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-80">
+              <div className="mt-1 flex items-center justify-end gap-1 text-meta opacity-80">
                 {message.isHistorical && <span title="Synced from history">history</span>}
                 {message.aiGenerated && (
                   <span title="Sent by AI" className="flex items-center">
@@ -913,7 +913,7 @@ export function ChatThread({ onOpenDetail }: Props) {
 
       {replySuggestions.length > 0 && (
         <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-t border-border-subtle bg-surface-2/60 px-4 py-2">
-          <span className="flex shrink-0 items-center gap-1.5 text-[11px] font-semibold text-accent">
+          <span className="flex shrink-0 items-center gap-1.5 text-meta font-semibold text-accent">
             <Sparkles size={13} aria-hidden />
             <span className="hidden sm:inline">AI drafts</span>
           </span>
@@ -925,7 +925,7 @@ export function ChatThread({ onOpenDetail }: Props) {
                 setDraft(suggestion);
                 setReplySuggestions([]);
               }}
-              className="shrink-0 whitespace-nowrap rounded-full border border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg-secondary shadow-sm transition-colors hover:border-accent hover:text-accent"
+              className="shrink-0 whitespace-nowrap rounded-full border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg-secondary shadow-sm transition-colors hover:border-accent hover:text-accent"
             >
               {suggestion}
             </button>
@@ -934,7 +934,7 @@ export function ChatThread({ onOpenDetail }: Props) {
       )}
 
       <div className="relative shrink-0 border-t border-border-subtle bg-surface-1 p-3">
-        {sendError && <p className="mb-2 text-xs text-error">{sendError}</p>}
+        {sendError && <p className="mb-2 text-caption text-error">{sendError}</p>}
 
         {emojiPickerOpen && (
           <div
@@ -944,7 +944,7 @@ export function ChatThread({ onOpenDetail }: Props) {
           >
             {EMOJI_CATEGORIES.map((category) => (
               <div key={category.label} className="mb-3 last:mb-0">
-                <p className="mb-1.5 text-[11px] font-semibold text-fg-muted">{category.label}</p>
+                <p className="mb-1.5 text-meta font-semibold text-fg-muted">{category.label}</p>
                 <div className="grid grid-cols-8 gap-1">
                   {category.emojis.map((emoji) => (
                     <button
@@ -952,7 +952,7 @@ export function ChatThread({ onOpenDetail }: Props) {
                       type="button"
                       aria-label={`Insert ${emoji}`}
                       onClick={() => setDraft((previous) => previous + emoji)}
-                      className="rounded p-1 text-lg transition-transform hover:scale-125 hover:bg-surface-3"
+                      className="rounded p-1 text-title transition-transform hover:scale-125 hover:bg-surface-3"
                     >
                       {emoji}
                     </button>
@@ -995,7 +995,7 @@ export function ChatThread({ onOpenDetail }: Props) {
             onKeyDown={handleComposerKeyDown}
             disabled={sending}
             placeholder="Type a message"
-            className="flex-1 bg-transparent text-sm text-fg outline-none placeholder:text-fg-muted disabled:opacity-50"
+            className="flex-1 bg-transparent text-body text-fg outline-none placeholder:text-fg-muted disabled:opacity-50"
           />
           <button
             type="button"

@@ -128,15 +128,15 @@ function toBody(form: AgentForm): CreateAgentBody {
   };
 }
 
-const FIELD = 'w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus:border-accent focus:outline-none';
-const LABEL = 'block text-xs font-medium text-fg-secondary';
+const FIELD = 'w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg placeholder:text-fg-muted focus:border-accent focus:outline-none';
+const LABEL = 'block text-caption font-medium text-fg-secondary';
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <label className="flex flex-col gap-1.5">
       <span className={LABEL}>{label}</span>
       {children}
-      {hint && <span className="text-[11px] text-fg-muted">{hint}</span>}
+      {hint && <span className="text-meta text-fg-muted">{hint}</span>}
     </label>
   );
 }
@@ -172,7 +172,7 @@ function AgentEditor({
   return (
     <form onSubmit={onSubmit} className="mx-auto max-w-3xl space-y-6">
       <section className="space-y-4 rounded-xl border border-border-subtle bg-surface-1 p-5">
-        <h2 className="text-sm font-semibold text-fg">Identity</h2>
+        <h2 className="text-body font-semibold text-fg">Identity</h2>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Name">
             <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={FIELD} required />
@@ -206,7 +206,7 @@ function AgentEditor({
         {restricted && (
           <div className="flex gap-2.5 rounded-lg border border-warning/40 bg-warning/10 p-3">
             <ShieldAlert size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden />
-            <p className="text-xs text-fg-secondary">
+            <p className="text-caption text-fg-secondary">
               <span className="font-semibold text-fg">Business operations only.</span> This is a regulated or hazardous trade,
               so the agent is hard-limited server-side to bookings, quotes, job status, and scheduling. It is instructed never
               to give technical, diagnostic, safety, repair, or DIY advice, and to hand anything urgent straight to a human.
@@ -217,7 +217,7 @@ function AgentEditor({
       </section>
 
       <section className="space-y-4 rounded-xl border border-border-subtle bg-surface-1 p-5">
-        <h2 className="text-sm font-semibold text-fg">Voice</h2>
+        <h2 className="text-body font-semibold text-fg">Voice</h2>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Persona">
             <input value={form.persona} onChange={(e) => setForm({ ...form, persona: e.target.value })} className={FIELD} />
@@ -254,7 +254,7 @@ function AgentEditor({
       </section>
 
       <section className="space-y-4 rounded-xl border border-border-subtle bg-surface-1 p-5">
-        <h2 className="text-sm font-semibold text-fg">Rules &amp; routing</h2>
+        <h2 className="text-body font-semibold text-fg">Rules &amp; routing</h2>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Trigger keywords" hint="Comma separated. Used to pick this agent when several could handle a chat.">
             <input
@@ -304,7 +304,7 @@ function AgentEditor({
       </section>
 
       <section className="space-y-4 rounded-xl border border-border-subtle bg-surface-1 p-5">
-        <h2 className="text-sm font-semibold text-fg">Structure</h2>
+        <h2 className="text-body font-semibold text-fg">Structure</h2>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Reports to" hint="Where this agent sits under another in your structure.">
             <select
@@ -337,17 +337,17 @@ function AgentEditor({
         </div>
       </section>
 
-      {error && <p className="text-xs text-error">{error}</p>}
+      {error && <p className="text-caption text-error">{error}</p>}
 
       <div className="flex items-center gap-2">
         <button
           type="submit"
           disabled={saving || !form.name.trim()}
-          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+          className="rounded-lg bg-accent px-4 py-2 text-body font-medium text-white hover:bg-accent-dim disabled:opacity-50"
         >
           {saving ? 'Saving…' : submitLabel}
         </button>
-        <button type="button" onClick={onCancel} className="rounded-lg px-4 py-2 text-sm text-fg-secondary hover:text-fg">
+        <button type="button" onClick={onCancel} className="rounded-lg px-4 py-2 text-body text-fg-secondary hover:text-fg">
           Cancel
         </button>
       </div>
@@ -416,12 +416,12 @@ export function AgentsPage() {
         <button
           type="button"
           onClick={() => setView({ mode: 'list' })}
-          className="mb-4 flex items-center gap-1.5 text-xs font-medium text-fg-muted hover:text-fg"
+          className="mb-4 flex items-center gap-1.5 text-caption font-medium text-fg-muted hover:text-fg"
         >
           <ArrowLeft size={13} aria-hidden />
           Back to agents
         </button>
-        <h1 className="mx-auto mb-5 max-w-3xl text-lg font-semibold text-fg">
+        <h1 className="mx-auto mb-5 max-w-3xl text-title font-semibold text-fg">
           {view.mode === 'edit' ? `Edit ${editing?.name ?? 'agent'}` : 'New AI agent'}
         </h1>
         <AgentEditor
@@ -442,19 +442,19 @@ export function AgentsPage() {
     return (
       <div className="flex h-full flex-1 flex-col">
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-6 py-3">
-          <h1 className="text-base font-semibold text-fg">Agent structure</h1>
+          <h1 className="text-body-lg font-semibold text-fg">Agent structure</h1>
           <div className="flex items-center gap-1">
             <button
               type="button"
               onClick={() => setTab('tiles')}
-              className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-fg-secondary hover:bg-surface-2"
+              className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-2"
             >
               <LayoutGrid size={13} aria-hidden />
               Tiles
             </button>
             <button
               type="button"
-              className="flex items-center gap-1.5 rounded-lg bg-accent-soft px-3 py-1.5 text-xs font-medium text-accent"
+              className="flex items-center gap-1.5 rounded-lg bg-accent-soft px-3 py-1.5 text-caption font-medium text-accent"
             >
               <Network size={13} aria-hidden />
               Canvas
@@ -474,8 +474,8 @@ export function AgentsPage() {
       <div className="mx-auto max-w-4xl">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-lg font-semibold text-fg">AI agents</h1>
-            <p className="mt-1 text-sm text-fg-muted">
+            <h1 className="text-title font-semibold text-fg">AI agents</h1>
+            <p className="mt-1 text-body text-fg-muted">
               Each agent replies on WhatsApp using only real conversation and CRM data.
             </p>
           </div>
@@ -483,7 +483,7 @@ export function AgentsPage() {
             <button
               type="button"
               onClick={() => setTab('canvas')}
-              className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-sm font-medium text-fg-secondary hover:border-accent hover:text-accent"
+              className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-body font-medium text-fg-secondary hover:border-accent hover:text-accent"
             >
               <Network size={14} aria-hidden />
               Canvas
@@ -495,7 +495,7 @@ export function AgentsPage() {
                 setFormError(null);
                 setView({ mode: 'new' });
               }}
-              className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-dim"
+              className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-body font-medium text-white hover:bg-accent-dim"
             >
               <Plus size={14} aria-hidden />
               New agent
@@ -507,15 +507,15 @@ export function AgentsPage() {
           <AiEngineStrip />
         </div>
 
-        {error && <p className="mt-4 text-xs text-error">{error}</p>}
+        {error && <p className="mt-4 text-caption text-error">{error}</p>}
 
         <div className="mt-5 grid gap-3 sm:grid-cols-2">
-          {agents === null && <p className="text-xs text-fg-muted">Loading…</p>}
+          {agents === null && <p className="text-caption text-fg-muted">Loading…</p>}
           {agents?.length === 0 && (
             <div className="col-span-full flex flex-col items-center gap-2 rounded-xl border border-dashed border-border-subtle p-10 text-center">
               <Bot size={22} className="text-fg-muted" aria-hidden />
-              <p className="text-sm text-fg-secondary">No agents yet.</p>
-              <p className="text-xs text-fg-muted">Create one to let AI answer WhatsApp conversations for you.</p>
+              <p className="text-body text-fg-secondary">No agents yet.</p>
+              <p className="text-caption text-fg-muted">Create one to let AI answer WhatsApp conversations for you.</p>
             </div>
           )}
           {agents?.map((agent) => {
@@ -525,12 +525,12 @@ export function AgentsPage() {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <p className="truncate text-sm font-semibold text-fg">{agent.name}</p>
-                      <span className="shrink-0 rounded-full bg-surface-3 px-2 py-0.5 text-[10px] font-medium text-fg-secondary">
+                      <p className="truncate text-body font-semibold text-fg">{agent.name}</p>
+                      <span className="shrink-0 rounded-full bg-surface-3 px-2 py-0.5 text-meta font-medium text-fg-secondary">
                         {CATEGORY_LABEL[agent.category]}
                       </span>
                     </div>
-                    {agent.specialization && <p className="mt-0.5 truncate text-xs text-fg-muted">{agent.specialization}</p>}
+                    {agent.specialization && <p className="mt-0.5 truncate text-caption text-fg-muted">{agent.specialization}</p>}
                   </div>
                   <ToggleSwitch
                     checked={agent.status === 'ACTIVE'}
@@ -540,7 +540,7 @@ export function AgentsPage() {
                   />
                 </div>
 
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg-muted">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-fg-muted">
                   {ADVICE_RESTRICTED_CATEGORIES.includes(agent.category) && (
                     <span className="flex items-center gap-1 text-warning">
                       <ShieldAlert size={11} aria-hidden />
@@ -570,7 +570,7 @@ export function AgentsPage() {
                     setFormError(null);
                     setView({ mode: 'edit', agentId: agent.id });
                   }}
-                  className="self-start rounded-lg border border-border-subtle px-3 py-1.5 text-xs font-medium text-fg-secondary hover:border-accent hover:text-accent"
+                  className="self-start rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:border-accent hover:text-accent"
                 >
                   Edit agent
                 </button>

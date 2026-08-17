@@ -32,13 +32,13 @@ function formatPrice(cents: number, currency: string): string {
 
 function UsageBar({ current, limit }: { current: number; limit: number | null }) {
   if (limit === null) {
-    return <p className="text-xs text-fg-muted">{current} used · unlimited</p>;
+    return <p className="text-caption text-fg-muted">{current} used · unlimited</p>;
   }
   const percent = Math.min(100, Math.round((current / Math.max(limit, 1)) * 100));
   const atLimit = current >= limit;
   return (
     <div>
-      <div className="flex items-center justify-between text-xs text-fg-secondary">
+      <div className="flex items-center justify-between text-caption text-fg-secondary">
         <span>
           {current} / {limit}
         </span>
@@ -67,13 +67,13 @@ export function BillingRoute() {
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      <h1 className="text-lg font-semibold text-fg">Billing</h1>
-      <p className="mt-1 text-sm text-fg-muted">Your real plan, subscription status, and usage against its limits.</p>
+      <h1 className="text-title font-semibold text-fg">Billing</h1>
+      <p className="mt-1 text-body text-fg-muted">Your real plan, subscription status, and usage against its limits.</p>
 
-      {error && <p className="mt-4 text-xs text-error">{error}</p>}
+      {error && <p className="mt-4 text-caption text-error">{error}</p>}
 
       {billing && !billing.subscription && (
-        <p className="mt-6 text-sm text-fg-muted">This business has no active subscription.</p>
+        <p className="mt-6 text-body text-fg-muted">This business has no active subscription.</p>
       )}
 
       {billing?.subscription && (
@@ -81,21 +81,21 @@ export function BillingRoute() {
           <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-base font-semibold text-fg">{billing.plan?.name ?? 'Unknown plan'}</p>
+                <p className="text-body-lg font-semibold text-fg">{billing.plan?.name ?? 'Unknown plan'}</p>
                 {billing.plan && (
-                  <p className="mt-0.5 text-sm text-fg-muted">
+                  <p className="mt-0.5 text-body text-fg-muted">
                     {formatPrice(billing.plan.priceMonthlyCents, billing.plan.currency)} / month
                   </p>
                 )}
               </div>
               <span
-                className={`rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_COLOR[billing.subscription.status] ?? 'bg-surface-3 text-fg-secondary'}`}
+                className={`rounded-full px-2.5 py-1 text-caption font-medium ${STATUS_COLOR[billing.subscription.status] ?? 'bg-surface-3 text-fg-secondary'}`}
               >
                 {STATUS_LABEL[billing.subscription.status] ?? billing.subscription.status}
               </span>
             </div>
 
-            <dl className="mt-4 grid grid-cols-2 gap-3 text-xs">
+            <dl className="mt-4 grid grid-cols-2 gap-3 text-caption">
               {billing.subscription.status === 'TRIALING' && billing.subscription.trialEndsAt && (
                 <div>
                   <dt className="text-fg-muted">Trial ends</dt>
@@ -118,14 +118,14 @@ export function BillingRoute() {
           </div>
 
           <div>
-            <h2 className="text-sm font-semibold text-fg">Usage</h2>
+            <h2 className="text-body font-semibold text-fg">Usage</h2>
             <div className="mt-3 space-y-4">
               {billing.entitlements.map((entitlement) => (
                 <div key={entitlement.key} className="rounded-lg border border-border-subtle bg-surface-2 p-3">
                   <div className="flex items-center justify-between">
-                    <p className="text-sm text-fg">{entitlement.label}</p>
+                    <p className="text-body text-fg">{entitlement.label}</p>
                     {!entitlement.isEnabled && (
-                      <span className="rounded-full bg-fg-muted/15 px-2 py-0.5 text-[10px] text-fg-muted">Not on this plan</span>
+                      <span className="rounded-full bg-fg-muted/15 px-2 py-0.5 text-meta text-fg-muted">Not on this plan</span>
                     )}
                   </div>
                   {entitlement.isEnabled && entitlement.current !== null && (
@@ -134,7 +134,7 @@ export function BillingRoute() {
                     </div>
                   )}
                   {entitlement.isEnabled && entitlement.current === null && entitlement.limit !== null && (
-                    <p className="mt-2 text-xs text-fg-muted">Limit: {entitlement.limit}</p>
+                    <p className="mt-2 text-caption text-fg-muted">Limit: {entitlement.limit}</p>
                   )}
                 </div>
               ))}

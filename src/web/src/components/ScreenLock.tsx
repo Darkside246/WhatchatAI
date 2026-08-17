@@ -153,10 +153,10 @@ export function ScreenLock({ children }: Props) {
               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-surface-2 text-accent">
                 <Lock size={22} strokeWidth={1.75} aria-hidden />
               </div>
-              <h2 className="text-lg font-semibold text-fg">
+              <h2 className="text-title font-semibold text-fg">
                 {showSetupForm ? 'Set up a lock PIN' : 'Workspace locked'}
               </h2>
-              <p className="text-xs text-fg-muted">
+              <p className="text-caption text-fg-muted">
                 {showSetupForm
                   ? 'Choose a 6-8 digit PIN. It is hashed on this device and never sent in the clear.'
                   : 'Enter your PIN to resume. Live messaging and AI processing keep running in the background.'}
@@ -172,7 +172,7 @@ export function ScreenLock({ children }: Props) {
                   placeholder="New PIN (6-8 digits)"
                   value={pin}
                   onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
-                  className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-center text-lg tracking-[0.3em] text-fg outline-none focus:border-accent"
+                  className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-center text-title tracking-[0.3em] text-fg outline-none focus:border-accent"
                 />
                 <input
                   type="password"
@@ -180,13 +180,13 @@ export function ScreenLock({ children }: Props) {
                   placeholder="Confirm PIN"
                   value={confirmPin}
                   onChange={(event) => setConfirmPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
-                  className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-center text-lg tracking-[0.3em] text-fg outline-none focus:border-accent"
+                  className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-center text-title tracking-[0.3em] text-fg outline-none focus:border-accent"
                 />
-                {error && <p className="text-center text-xs text-error">{error}</p>}
+                {error && <p className="text-center text-caption text-error">{error}</p>}
                 <button
                   type="submit"
                   disabled={busy}
-                  className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white transition hover:bg-accent-dim disabled:opacity-50"
+                  className="rounded-lg bg-accent px-3 py-2 text-body font-medium text-white transition hover:bg-accent-dim disabled:opacity-50"
                 >
                   {busy ? 'Saving…' : 'Set PIN and lock'}
                 </button>
@@ -201,16 +201,16 @@ export function ScreenLock({ children }: Props) {
                   placeholder="Enter PIN"
                   value={pin}
                   onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
-                  className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-center text-lg tracking-[0.3em] text-fg outline-none focus:border-accent disabled:opacity-50"
+                  className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-center text-title tracking-[0.3em] text-fg outline-none focus:border-accent disabled:opacity-50"
                 />
-                {error && <p className="text-center text-xs text-error">{error}</p>}
+                {error && <p className="text-center text-caption text-error">{error}</p>}
                 {remainingAttempts !== null && !revoked && (
-                  <p className="text-center text-[11px] text-fg-muted">{remainingAttempts} attempts remaining before lockout.</p>
+                  <p className="text-center text-meta text-fg-muted">{remainingAttempts} attempts remaining before lockout.</p>
                 )}
                 <button
                   type="submit"
                   disabled={busy || revoked || !PIN_PATTERN.test(pin)}
-                  className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white transition hover:bg-accent-dim disabled:opacity-50"
+                  className="rounded-lg bg-accent px-3 py-2 text-body font-medium text-white transition hover:bg-accent-dim disabled:opacity-50"
                 >
                   {busy ? 'Verifying…' : 'Unlock'}
                 </button>

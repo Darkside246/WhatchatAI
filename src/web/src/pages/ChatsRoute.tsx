@@ -47,7 +47,7 @@ export function ChatsRoute() {
           <CallHistoryPanel className="flex w-full shrink-0 border-r border-border-subtle md:flex md:w-80" />
           <div className="hidden min-w-0 flex-1 flex-col items-center justify-center gap-2 text-fg-muted md:flex">
             <Phone size={40} strokeWidth={1.5} aria-hidden />
-            <p className="text-sm">Select a call to view details</p>
+            <p className="text-body">Select a call to view details</p>
           </div>
         </>
       ) : (

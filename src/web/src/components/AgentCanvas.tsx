@@ -53,8 +53,8 @@ function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
 
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-fg">{agent.name}</p>
-          <p className="mt-0.5 truncate text-[11px] text-fg-muted">{agent.category.replace('_', ' ')}</p>
+          <p className="truncate text-body font-semibold text-fg">{agent.name}</p>
+          <p className="mt-0.5 truncate text-meta text-fg-muted">{agent.category.replace('_', ' ')}</p>
         </div>
         <span
           title={agent.status === 'ACTIVE' ? 'Active' : agent.status}
@@ -62,7 +62,7 @@ function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
         />
       </div>
 
-      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-fg-muted">
+      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-meta text-fg-muted">
         {restricted && (
           <span className="flex items-center gap-0.5 text-warning">
             <ShieldAlert size={10} aria-hidden />
@@ -247,8 +247,8 @@ export function AgentCanvas({ agents, onChanged }: { agents: AiAgentSummary[]; o
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
         <Bot size={22} className="text-fg-muted" aria-hidden />
-        <p className="text-sm text-fg-secondary">No agents to arrange yet.</p>
-        <p className="text-xs text-fg-muted">Create an agent first, then drag it into place here.</p>
+        <p className="text-body text-fg-secondary">No agents to arrange yet.</p>
+        <p className="text-caption text-fg-muted">Create an agent first, then drag it into place here.</p>
       </div>
     );
   }
@@ -264,23 +264,23 @@ export function AgentCanvas({ agents, onChanged }: { agents: AiAgentSummary[]; o
               if (event.key === 'Enter') void handlePreview();
             }}
             placeholder="Test a real customer message to see which agent would handle it…"
-            className="min-w-0 flex-1 rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus:border-accent focus:outline-none"
+            className="min-w-0 flex-1 rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg placeholder:text-fg-muted focus:border-accent focus:outline-none"
           />
           <button
             type="button"
             onClick={() => void handlePreview()}
             disabled={previewing || !previewText.trim()}
-            className="flex shrink-0 items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+            className="flex shrink-0 items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-body font-medium text-white hover:bg-accent-dim disabled:opacity-50"
           >
             <Play size={13} aria-hidden />
             {previewing ? 'Routing…' : 'Preview'}
           </button>
         </div>
 
-        {preview && <p className={`mt-2 text-xs ${previewTone}`}>{preview.reason}</p>}
-        {error && <p className="mt-2 text-xs text-error">{error}</p>}
+        {preview && <p className={`mt-2 text-caption ${previewTone}`}>{preview.reason}</p>}
+        {error && <p className="mt-2 text-caption text-error">{error}</p>}
 
-        <p className="mt-2 text-[11px] text-fg-muted">
+        <p className="mt-2 text-meta text-fg-muted">
           Drag tiles to arrange. Pull from the <span className="text-accent">right socket</span> to set escalation (real
           runtime behaviour), or the bottom socket to record who an agent reports to (structure only — it does not change
           which agent replies).

@@ -17,10 +17,10 @@ function StatCard({
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
       <div className="flex items-center gap-2 text-fg-muted">
         <Icon size={16} strokeWidth={1.75} aria-hidden />
-        <span className="text-xs">{label}</span>
+        <span className="text-caption">{label}</span>
       </div>
-      <p className="mt-2 text-2xl font-semibold text-fg">{value}</p>
-      {sublabel && <p className="mt-0.5 text-xs text-fg-muted">{sublabel}</p>}
+      <p className="mt-2 text-display font-semibold text-fg">{value}</p>
+      {sublabel && <p className="mt-0.5 text-caption text-fg-muted">{sublabel}</p>}
     </div>
   );
 }
@@ -30,16 +30,16 @@ function SplitBar({ label, a, aLabel, b, bLabel }: { label: string; a: number; a
   const aPercent = total > 0 ? Math.round((a / total) * 100) : 0;
   return (
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
-      <p className="text-xs text-fg-muted">{label}</p>
+      <p className="text-caption text-fg-muted">{label}</p>
       {total === 0 ? (
-        <p className="mt-2 text-sm text-fg-muted">No real replies sent yet in this period.</p>
+        <p className="mt-2 text-body text-fg-muted">No real replies sent yet in this period.</p>
       ) : (
         <>
           <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-surface-3">
             <div className="h-full bg-accent" style={{ width: `${aPercent}%` }} />
             <div className="h-full bg-fg-muted/40" style={{ width: `${100 - aPercent}%` }} />
           </div>
-          <div className="mt-2 flex items-center justify-between text-xs">
+          <div className="mt-2 flex items-center justify-between text-caption">
             <span className="text-fg-secondary">
               {aLabel}: {a}
             </span>
@@ -78,7 +78,7 @@ export function DashboardRoute() {
   if (error) {
     return (
       <div className="flex-1 p-6">
-        <p className="text-xs text-error">{error}</p>
+        <p className="text-caption text-error">{error}</p>
       </div>
     );
   }
@@ -90,8 +90,8 @@ export function DashboardRoute() {
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      <h1 className="text-lg font-semibold text-fg">Dashboard</h1>
-      <p className="mt-1 text-sm text-fg-muted">
+      <h1 className="text-title font-semibold text-fg">Dashboard</h1>
+      <p className="mt-1 text-body text-fg-muted">
         Real activity from the last {dashboard.periodDays} days - computed from your actual synced data, not estimated.
       </p>
 
@@ -122,13 +122,13 @@ export function DashboardRoute() {
         />
 
         <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
-          <p className="text-xs text-fg-muted">Calls by outcome</p>
+          <p className="text-caption text-fg-muted">Calls by outcome</p>
           {totalCalls === 0 ? (
-            <p className="mt-2 text-sm text-fg-muted">No real calls in this period.</p>
+            <p className="mt-2 text-body text-fg-muted">No real calls in this period.</p>
           ) : (
             <div className="mt-3 space-y-1.5">
               {Object.entries(dashboard.calls).map(([status, count]) => (
-                <div key={status} className="flex items-center justify-between text-xs">
+                <div key={status} className="flex items-center justify-between text-caption">
                   <span className="text-fg-secondary">{CALL_STATUS_LABEL[status] ?? status}</span>
                   <span className="text-fg-muted">{count}</span>
                 </div>

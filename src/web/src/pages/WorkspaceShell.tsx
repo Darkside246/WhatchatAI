@@ -26,7 +26,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
   return (
     <div className="flex h-full flex-col bg-surface-0">
       {sync?.syncStatus === 'failed' && (
-        <div className="shrink-0 bg-warning/10 px-4 py-1.5 text-center text-xs text-warning">
+        <div className="shrink-0 bg-warning/10 px-4 py-1.5 text-center text-caption text-warning">
           History sync did not fully complete ({sync.lastSyncError ?? 'unknown error'}). Some data may be missing.
         </div>
       )}
@@ -42,18 +42,18 @@ export function WorkspaceShell({ connection, sync }: Props) {
               type="button"
               onClick={() => setSearchOpen(true)}
               aria-label="Open global search"
-              className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-xs text-fg-muted hover:bg-surface-3"
+              className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-caption text-fg-muted hover:bg-surface-3"
             >
               <Search size={13} aria-hidden />
               <span className="hidden sm:inline">Search…</span>
-              <kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-[9px] sm:inline">⌘K</kbd>
+              <kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-meta sm:inline">⌘K</kbd>
             </button>
-            <p className="hidden text-xs text-fg-muted md:block">
+            <p className="hidden text-caption text-fg-muted md:block">
               Connected as {connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'}
             </p>
             <div className="flex items-center gap-3">
               <NotificationCenter />
-              <span className="rounded-full bg-success/15 px-2 py-0.5 text-[11px] text-success">Live</span>
+              <span className="rounded-full bg-success/15 px-2 py-0.5 text-meta text-success">Live</span>
             </div>
           </header>
 

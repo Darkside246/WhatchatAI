@@ -117,14 +117,14 @@ export function CommandPalette({ open, onOpenChange }: Props) {
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onInputKeyDown}
             placeholder="Search chats, contacts, leads, campaigns, funnels…"
-            className="w-full bg-transparent text-sm text-fg placeholder:text-fg-muted focus:outline-none"
+            className="w-full bg-transparent text-body text-fg placeholder:text-fg-muted focus:outline-none"
           />
-          <kbd className="shrink-0 rounded border border-border-subtle px-1.5 py-0.5 text-[10px] text-fg-muted">Esc</kbd>
+          <kbd className="shrink-0 rounded border border-border-subtle px-1.5 py-0.5 text-meta text-fg-muted">Esc</kbd>
         </div>
 
         <div className="max-h-96 overflow-y-auto" aria-live="polite">
           {query.trim().length >= 2 && results.length === 0 && (
-            <p className="px-3 py-6 text-center text-xs text-fg-muted">No matches.</p>
+            <p className="px-3 py-6 text-center text-caption text-fg-muted">No matches.</p>
           )}
           {results.map((result, index) => {
             const Icon = TYPE_ICON[result.type];
@@ -140,10 +140,10 @@ export function CommandPalette({ open, onOpenChange }: Props) {
               >
                 <Icon size={14} className="shrink-0 text-fg-muted" aria-hidden />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm text-fg">{result.title}</p>
-                  {result.subtitle && <p className="truncate text-xs text-fg-muted">{result.subtitle}</p>}
+                  <p className="truncate text-body text-fg">{result.title}</p>
+                  {result.subtitle && <p className="truncate text-caption text-fg-muted">{result.subtitle}</p>}
                 </div>
-                <span className="shrink-0 rounded-full bg-surface-3 px-2 py-0.5 text-[10px] text-fg-secondary">{TYPE_LABEL[result.type]}</span>
+                <span className="shrink-0 rounded-full bg-surface-3 px-2 py-0.5 text-meta text-fg-secondary">{TYPE_LABEL[result.type]}</span>
               </button>
             );
           })}

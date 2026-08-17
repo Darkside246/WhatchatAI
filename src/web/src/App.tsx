@@ -13,7 +13,7 @@ function AuthenticatedApp() {
   let content;
   if (gate.phase === 'loading') {
     content = (
-      <div className="flex h-full items-center justify-center bg-surface-0 text-sm text-gray-400">
+      <div className="flex h-full items-center justify-center bg-surface-0 text-body text-gray-400">
         Connecting to WhatchatAI backend…
       </div>
     );
@@ -33,7 +33,7 @@ export default function App() {
 
   if (auth.status === 'loading') {
     return (
-      <div className="flex h-full items-center justify-center bg-surface-0 text-sm text-gray-400">
+      <div className="flex h-full items-center justify-center bg-surface-0 text-body text-gray-400">
         Loading WhatchatAI…
       </div>
     );

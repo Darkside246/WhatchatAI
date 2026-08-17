@@ -30,15 +30,15 @@ export function SyncingPage({ connection, sync, onContinueAnyway }: Props) {
   return (
     <div className="flex min-h-full flex-col items-center justify-center gap-8 bg-surface-0 px-6 py-16 text-center">
       <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-soft text-lg font-bold text-accent">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-soft text-title font-bold text-accent">
           W
         </div>
-        <span className="text-lg font-semibold tracking-tight text-fg">WhatchatAI</span>
+        <span className="text-title font-semibold tracking-tight text-fg">WhatchatAI</span>
       </div>
 
       <div className="w-full max-w-md rounded-2xl border border-border-subtle bg-surface-2 p-8">
         <h2 className="text-xl font-semibold text-fg">Synchronizing your business data…</h2>
-        <p className="mt-2 text-sm text-fg-secondary">
+        <p className="mt-2 text-body text-fg-secondary">
           Connected as {connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? 'your account'}.
           Pulling real chats, contacts, groups, and message history from WhatsApp.
         </p>
@@ -49,29 +49,29 @@ export function SyncingPage({ connection, sync, onContinueAnyway }: Props) {
             style={{ width: progress !== null ? `${Math.min(100, Math.max(0, progress))}%` : '8%' }}
           />
         </div>
-        <p className="mt-2 text-xs text-fg-muted">
+        <p className="mt-2 text-caption text-fg-muted">
           {progress !== null ? `${Math.round(progress)}% reported by WhatsApp` : 'Waiting for the first data batch…'}
         </p>
 
         {job && (
-          <dl className="mt-6 grid grid-cols-3 gap-3 text-left text-xs text-fg-secondary">
+          <dl className="mt-6 grid grid-cols-3 gap-3 text-left text-caption text-fg-secondary">
             <div className="rounded-lg bg-surface-3 p-3">
               <dt className="text-fg-muted">Chats</dt>
-              <dd className="mt-1 text-base font-semibold text-fg">{job.chatsProcessed}</dd>
+              <dd className="mt-1 text-body-lg font-semibold text-fg">{job.chatsProcessed}</dd>
             </div>
             <div className="rounded-lg bg-surface-3 p-3">
               <dt className="text-fg-muted">Contacts</dt>
-              <dd className="mt-1 text-base font-semibold text-fg">{job.contactsProcessed}</dd>
+              <dd className="mt-1 text-body-lg font-semibold text-fg">{job.contactsProcessed}</dd>
             </div>
             <div className="rounded-lg bg-surface-3 p-3">
               <dt className="text-fg-muted">Messages</dt>
-              <dd className="mt-1 text-base font-semibold text-fg">{job.messagesProcessed}</dd>
+              <dd className="mt-1 text-body-lg font-semibold text-fg">{job.messagesProcessed}</dd>
             </div>
           </dl>
         )}
 
         {sync?.syncStatus === 'failed' && (
-          <div className="mt-6 rounded-lg bg-error/10 p-3 text-left text-xs text-error">
+          <div className="mt-6 rounded-lg bg-error/10 p-3 text-left text-caption text-error">
             <p>Sync reported an error: {sync.lastSyncError ?? 'unknown error'}.</p>
             <button
               type="button"
@@ -84,7 +84,7 @@ export function SyncingPage({ connection, sync, onContinueAnyway }: Props) {
         )}
 
         {stuckAtFullProgress && sync?.syncStatus !== 'failed' && (
-          <div className="mt-6 rounded-lg bg-warning/10 p-3 text-left text-xs text-warning">
+          <div className="mt-6 rounded-lg bg-warning/10 p-3 text-left text-caption text-warning">
             <p>WhatsApp reported 100%, but the sync hasn't finalized yet.</p>
             <button
               type="button"

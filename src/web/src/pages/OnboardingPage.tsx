@@ -37,22 +37,22 @@ export function OnboardingPage({ connection }: Props) {
     <div className="flex min-h-full flex-col lg:flex-row bg-surface-0">
       <section className="order-2 flex flex-1 flex-col justify-center gap-6 px-6 py-10 sm:px-12 lg:order-1 lg:px-16">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-soft text-lg font-bold text-accent">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-soft text-title font-bold text-accent">
             W
           </div>
-          <span className="text-lg font-semibold tracking-tight text-fg">WhatchatAI</span>
+          <span className="text-title font-semibold tracking-tight text-fg">WhatchatAI</span>
         </div>
 
         <h1 className="max-w-md text-3xl font-semibold leading-tight text-fg sm:text-4xl">
           Turn your WhatsApp into a real business operating system.
         </h1>
-        <p className="max-w-md text-base leading-relaxed text-fg-secondary">
+        <p className="max-w-md text-body-lg leading-relaxed text-fg-secondary">
           Connect your existing WhatsApp number once. WhatchatAI keeps every real conversation, contact, and
           message in sync, and gives your team AI agents, a CRM, and automation built directly around it — no
           separate inbox, no manual exports.
         </p>
 
-        <ul className="max-w-md space-y-3 text-sm text-fg-secondary">
+        <ul className="max-w-md space-y-3 text-body text-fg-secondary">
           <li className="flex gap-3">
             <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
             One real WhatsApp connection, fully synced — chats, contacts, groups, history.
@@ -76,19 +76,19 @@ export function OnboardingPage({ connection }: Props) {
             ) : (
               <div className="flex h-full w-full flex-col items-center justify-center gap-3 text-fg-muted">
                 <div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-300 border-t-transparent" />
-                <span className="text-xs">{status === 'ERROR' ? 'Failed' : 'Generating code'}</span>
+                <span className="text-caption">{status === 'ERROR' ? 'Failed' : 'Generating code'}</span>
               </div>
             )}
           </div>
 
           <div>
-            <p className="text-sm font-medium text-fg">{STATUS_COPY[status] ?? status}</p>
+            <p className="text-body font-medium text-fg">{STATUS_COPY[status] ?? status}</p>
             {connection?.lastError && status === 'ERROR' && (
-              <p className="mt-1 text-xs text-error">{connection.lastError}</p>
+              <p className="mt-1 text-caption text-error">{connection.lastError}</p>
             )}
           </div>
 
-          <ol className="w-full space-y-2 text-left text-xs text-fg-secondary">
+          <ol className="w-full space-y-2 text-left text-caption text-fg-secondary">
             <li>1. Open WhatsApp on your phone.</li>
             <li>2. Go to Settings → Linked Devices → Link a Device.</li>
             <li>3. Point your phone at this screen.</li>

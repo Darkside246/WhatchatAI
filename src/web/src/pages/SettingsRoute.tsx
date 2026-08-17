@@ -85,15 +85,15 @@ function BusinessProfileCard() {
 
   return (
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
-      <h2 className="text-sm font-semibold text-fg">Business profile</h2>
-      {error && <p className="mt-2 text-xs text-error">{error}</p>}
+      <h2 className="text-body font-semibold text-fg">Business profile</h2>
+      {error && <p className="mt-2 text-caption text-error">{error}</p>}
       {business && !editing && (
         <div className="mt-3 flex items-center justify-between">
-          <p className="text-sm text-fg">{business.name}</p>
+          <p className="text-body text-fg">{business.name}</p>
           <button
             type="button"
             onClick={() => setEditing(true)}
-            className="rounded-lg border border-border-subtle px-3 py-1.5 text-xs font-medium text-fg-secondary hover:bg-surface-3"
+            className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3"
           >
             Rename
           </button>
@@ -104,13 +104,13 @@ function BusinessProfileCard() {
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-body text-fg outline-none focus:border-accent"
           />
           <button
             type="button"
             onClick={() => void handleSave()}
             disabled={saving || !name.trim()}
-            className="rounded-lg bg-accent px-3 py-2 text-xs font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+            className="rounded-lg bg-accent px-3 py-2 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
           >
             {saving ? 'Saving…' : 'Save'}
           </button>
@@ -120,7 +120,7 @@ function BusinessProfileCard() {
               setEditing(false);
               setName(business.name);
             }}
-            className="rounded-lg px-3 py-2 text-xs text-fg-muted hover:text-fg"
+            className="rounded-lg px-3 py-2 text-caption text-fg-muted hover:text-fg"
           >
             Cancel
           </button>
@@ -198,8 +198,8 @@ function WhatsAppAccountCard({ connection }: { connection: WhatsAppConnectionSna
   return (
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-fg">WhatsApp account</h2>
-        <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_COLOR[connection.status]}`}>
+        <h2 className="text-body font-semibold text-fg">WhatsApp account</h2>
+        <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${STATUS_COLOR[connection.status]}`}>
           {connection.status.replace('_', ' ')}
         </span>
       </div>
@@ -237,9 +237,9 @@ function WhatsAppAccountCard({ connection }: { connection: WhatsAppConnectionSna
           />
         </div>
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-fg">{connection.pushName ?? '—'}</p>
-          <p className="truncate text-xs text-fg-muted">{connection.phoneNumber ?? '—'}</p>
-          {uploadingPhoto && <p className="text-[11px] text-fg-muted">Updating on WhatsApp…</p>}
+          <p className="truncate text-body font-medium text-fg">{connection.pushName ?? '—'}</p>
+          <p className="truncate text-caption text-fg-muted">{connection.phoneNumber ?? '—'}</p>
+          {uploadingPhoto && <p className="text-meta text-fg-muted">Updating on WhatsApp…</p>}
         </div>
       </div>
 
@@ -247,7 +247,7 @@ function WhatsAppAccountCard({ connection }: { connection: WhatsAppConnectionSna
         <MediaLightbox imageUrl={currentPhotoUrl} fileName={null} onClose={() => setLightboxOpen(false)} />
       )}
 
-      <dl className="mt-4 grid grid-cols-2 gap-3 text-xs">
+      <dl className="mt-4 grid grid-cols-2 gap-3 text-caption">
         <div>
           <dt className="text-fg-muted">Name</dt>
           <dd className="mt-0.5 text-fg-secondary">{connection.pushName ?? '—'}</dd>
@@ -266,8 +266,8 @@ function WhatsAppAccountCard({ connection }: { connection: WhatsAppConnectionSna
         </div>
       </dl>
 
-      {connection.lastError && <p className="mt-3 text-xs text-error">{connection.lastError}</p>}
-      {error && <p className="mt-3 text-xs text-error">{error}</p>}
+      {connection.lastError && <p className="mt-3 text-caption text-error">{connection.lastError}</p>}
+      {error && <p className="mt-3 text-caption text-error">{error}</p>}
 
       <div className="mt-4 flex gap-2">
         <button
@@ -275,7 +275,7 @@ function WhatsAppAccountCard({ connection }: { connection: WhatsAppConnectionSna
           onClick={() => void handleDisconnect()}
           disabled={busy !== null || connection.status === 'DISCONNECTED' || connection.status === 'LOGGED_OUT'}
           title="Closes the connection but keeps your session - reconnect without re-scanning"
-          className="rounded-lg border border-border-subtle px-3 py-1.5 text-xs font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
+          className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
         >
           {busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect'}
         </button>
@@ -284,7 +284,7 @@ function WhatsAppAccountCard({ connection }: { connection: WhatsAppConnectionSna
           onClick={() => void handleLogout()}
           disabled={busy !== null}
           title="Ends the session entirely - you'll need to scan a new QR code"
-          className="rounded-lg border border-error/30 px-3 py-1.5 text-xs font-medium text-error hover:bg-error/10 disabled:opacity-50"
+          className="rounded-lg border border-error/30 px-3 py-1.5 text-caption font-medium text-error hover:bg-error/10 disabled:opacity-50"
         >
           {busy === 'logout' ? 'Logging out…' : 'Log out'}
         </button>
@@ -305,8 +305,8 @@ function SecurityCard() {
 
   return (
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
-      <h2 className="text-sm font-semibold text-fg">Screen lock</h2>
-      <p className="mt-1 text-xs text-fg-muted">
+      <h2 className="text-body font-semibold text-fg">Screen lock</h2>
+      <p className="mt-1 text-caption text-fg-muted">
         {configured
           ? 'A PIN is set - the app locks automatically after 5 minutes idle, or press Alt+L any time. Live messaging, AI replies, and the CRM keep running while locked.'
           : 'No PIN set up yet. Press "Lock now" (or Alt+L) to set one.'}
@@ -314,7 +314,7 @@ function SecurityCard() {
       <button
         type="button"
         onClick={() => triggerLockNow()}
-        className="mt-3 flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-xs font-medium text-fg-secondary hover:bg-surface-3"
+        className="mt-3 flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3"
       >
         <Lock size={13} aria-hidden />
         {configured ? 'Lock now' : 'Set up a PIN'}
@@ -338,8 +338,8 @@ function ThemeCard() {
 
   return (
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
-      <h2 className="text-sm font-semibold text-fg">Theme</h2>
-      <p className="mt-1 text-xs text-fg-muted">Saved to this browser - applies instantly, everywhere in the app.</p>
+      <h2 className="text-body font-semibold text-fg">Theme</h2>
+      <p className="mt-1 text-caption text-fg-muted">Saved to this browser - applies instantly, everywhere in the app.</p>
       <div className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
         {THEMES.map((option) => {
           const [bg, accent] = THEME_SWATCHES[option.id] ?? ['#000000', '#000000'];
@@ -358,7 +358,7 @@ function ThemeCard() {
                 style={{ background: `conic-gradient(${accent} 0deg 180deg, ${bg} 180deg 360deg)` }}
                 aria-hidden
               />
-              <span className={`text-xs font-medium ${selected ? 'text-accent' : 'text-fg-secondary'}`}>{option.name}</span>
+              <span className={`text-caption font-medium ${selected ? 'text-accent' : 'text-fg-secondary'}`}>{option.name}</span>
             </button>
           );
         })}
@@ -373,8 +373,8 @@ function AccountCard() {
 
   return (
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
-      <h2 className="text-sm font-semibold text-fg">Account</h2>
-      <p className="mt-1 text-xs text-fg-muted">
+      <h2 className="text-body font-semibold text-fg">Account</h2>
+      <p className="mt-1 text-caption text-fg-muted">
         Signed in as <span className="text-fg-secondary">{auth.user?.email}</span>
         {auth.role && <> · <span className="text-fg-secondary">{auth.role}</span></>}
       </p>
@@ -385,7 +385,7 @@ function AccountCard() {
           setBusy(true);
           await auth.logout();
         }}
-        className="mt-3 flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-xs font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
+        className="mt-3 flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
       >
         <LogOut size={13} aria-hidden />
         Sign out
@@ -445,34 +445,34 @@ function SessionsCard() {
   return (
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-fg">Sessions</h2>
+        <h2 className="text-body font-semibold text-fg">Sessions</h2>
         {hasOtherSessions && (
           <button
             type="button"
             disabled={busyId === 'others'}
             onClick={handleRevokeOthers}
-            className="text-xs font-medium text-fg-secondary hover:text-fg disabled:opacity-50"
+            className="text-caption font-medium text-fg-secondary hover:text-fg disabled:opacity-50"
           >
             Sign out all other sessions
           </button>
         )}
       </div>
-      <p className="mt-1 text-xs text-fg-muted">Devices currently signed in to your account.</p>
-      {error && <p className="mt-2 text-xs text-error">{error}</p>}
+      <p className="mt-1 text-caption text-fg-muted">Devices currently signed in to your account.</p>
+      {error && <p className="mt-2 text-caption text-error">{error}</p>}
 
       <div className="mt-3 space-y-2">
-        {sessions === null && <p className="text-xs text-fg-muted">Loading…</p>}
-        {sessions?.length === 0 && <p className="text-xs text-fg-muted">No active sessions.</p>}
+        {sessions === null && <p className="text-caption text-fg-muted">Loading…</p>}
+        {sessions?.length === 0 && <p className="text-caption text-fg-muted">No active sessions.</p>}
         {sessions?.map((session) => (
           <div key={session.id} className="flex items-center justify-between gap-3 rounded-lg border border-border-subtle px-3 py-2">
             <div className="flex items-center gap-2.5 min-w-0">
               <Monitor size={15} className="shrink-0 text-fg-muted" aria-hidden />
               <div className="min-w-0">
-                <p className="truncate text-xs font-medium text-fg">
+                <p className="truncate text-caption font-medium text-fg">
                   {session.browser} on {session.os}
-                  {session.isCurrent && <span className="ml-1.5 rounded-full bg-success/15 px-1.5 py-0.5 text-[10px] font-semibold text-success">Current device</span>}
+                  {session.isCurrent && <span className="ml-1.5 rounded-full bg-success/15 px-1.5 py-0.5 text-meta font-semibold text-success">Current device</span>}
                 </p>
-                <p className="truncate text-[11px] text-fg-muted">
+                <p className="truncate text-meta text-fg-muted">
                   Last active {formatSessionTimestamp(session.lastSeenAt)}
                   {session.ipAddress ? ` · ${session.ipAddress}` : ''}
                 </p>
@@ -483,7 +483,7 @@ function SessionsCard() {
                 type="button"
                 disabled={busyId === session.id}
                 onClick={() => handleRevoke(session.id)}
-                className="shrink-0 text-xs font-medium text-error hover:underline disabled:opacity-50"
+                className="shrink-0 text-caption font-medium text-error hover:underline disabled:opacity-50"
               >
                 Sign out
               </button>
@@ -562,26 +562,26 @@ function TeamMembersCard() {
   return (
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-fg">Team</h2>
+        <h2 className="text-body font-semibold text-fg">Team</h2>
         {canManage && (
           <button
             type="button"
             onClick={() => setShowAddForm((value) => !value)}
-            className="flex items-center gap-1.5 text-xs font-medium text-accent hover:text-accent-dim"
+            className="flex items-center gap-1.5 text-caption font-medium text-accent hover:text-accent-dim"
           >
             <UserPlus size={13} aria-hidden />
             Add member
           </button>
         )}
       </div>
-      <p className="mt-1 text-xs text-fg-muted">
+      <p className="mt-1 text-caption text-fg-muted">
         No email delivery is configured yet - adding a member creates a one-time password shown here once for you to share with them directly.
       </p>
 
-      {error && <p className="mt-2 text-xs text-error">{error}</p>}
+      {error && <p className="mt-2 text-caption text-error">{error}</p>}
 
       {createdCredential && (
-        <div className="mt-3 rounded-lg border border-accent/40 bg-accent-soft p-3 text-xs text-fg">
+        <div className="mt-3 rounded-lg border border-accent/40 bg-accent-soft p-3 text-caption text-fg">
           <p className="font-medium">Account created for {createdCredential.email}</p>
           <p className="mt-1">
             Temporary password: <code className="rounded bg-surface-1 px-1.5 py-0.5 font-mono">{createdCredential.temporaryPassword}</code>
@@ -601,7 +601,7 @@ function TeamMembersCard() {
             placeholder="Full name"
             value={displayName}
             onChange={(event) => setDisplayName(event.target.value)}
-            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg outline-none focus:border-accent"
+            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent"
           />
           <input
             type="email"
@@ -609,12 +609,12 @@ function TeamMembersCard() {
             placeholder="Email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
-            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg outline-none focus:border-accent"
+            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent"
           />
           <select
             value={role}
             onChange={(event) => setRole(event.target.value as BusinessRole)}
-            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg outline-none focus:border-accent"
+            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent"
           >
             {ASSIGNABLE_ROLES.map((option) => (
               <option key={option} value={option}>
@@ -625,7 +625,7 @@ function TeamMembersCard() {
           <button
             type="submit"
             disabled={busy}
-            className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+            className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
           >
             {busy ? 'Adding…' : 'Add member'}
           </button>
@@ -633,19 +633,19 @@ function TeamMembersCard() {
       )}
 
       <div className="mt-3 space-y-2">
-        {members === null && <p className="text-xs text-fg-muted">Loading…</p>}
+        {members === null && <p className="text-caption text-fg-muted">Loading…</p>}
         {members?.map((member) => (
           <div key={member.membershipId} className="flex items-center justify-between gap-3 rounded-lg border border-border-subtle px-3 py-2">
             <div className="min-w-0">
-              <p className="truncate text-xs font-medium text-fg">{member.displayName}</p>
-              <p className="truncate text-[11px] text-fg-muted">{member.email}</p>
+              <p className="truncate text-caption font-medium text-fg">{member.displayName}</p>
+              <p className="truncate text-meta text-fg-muted">{member.email}</p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {canManage && member.role !== 'OWNER' ? (
                 <select
                   value={member.role}
                   onChange={(event) => handleRoleChange(member.membershipId, event.target.value as BusinessRole)}
-                  className="rounded-lg border border-border-subtle bg-surface-1 px-2 py-1 text-[11px] text-fg outline-none focus:border-accent"
+                  className="rounded-lg border border-border-subtle bg-surface-1 px-2 py-1 text-meta text-fg outline-none focus:border-accent"
                 >
                   {ASSIGNABLE_ROLES.map((option) => (
                     <option key={option} value={option}>
@@ -654,7 +654,7 @@ function TeamMembersCard() {
                   ))}
                 </select>
               ) : (
-                <span className="rounded-full bg-surface-3 px-2 py-0.5 text-[11px] font-medium text-fg-secondary">{member.role}</span>
+                <span className="rounded-full bg-surface-3 px-2 py-0.5 text-meta font-medium text-fg-secondary">{member.role}</span>
               )}
               {canManage && member.role !== 'OWNER' && (
                 <button
@@ -722,8 +722,8 @@ function TeamCard({ team, members, onChanged }: { team: TeamDto; members: Member
     <div className="rounded-lg border border-border-subtle p-3">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-xs font-semibold text-fg">{team.name}</p>
-          {team.description && <p className="text-[11px] text-fg-muted">{team.description}</p>}
+          <p className="text-caption font-semibold text-fg">{team.name}</p>
+          {team.description && <p className="text-meta text-fg-muted">{team.description}</p>}
         </div>
         {canManage && (
           <button type="button" onClick={handleDeleteTeam} disabled={busy} className="text-fg-muted hover:text-error">
@@ -734,7 +734,7 @@ function TeamCard({ team, members, onChanged }: { team: TeamDto; members: Member
 
       <div className="mt-2 flex flex-wrap gap-1.5">
         {team.members.map((member) => (
-          <span key={member.userId} className="flex items-center gap-1 rounded-full bg-surface-3 px-2 py-0.5 text-[11px] text-fg-secondary">
+          <span key={member.userId} className="flex items-center gap-1 rounded-full bg-surface-3 px-2 py-0.5 text-meta text-fg-secondary">
             {member.displayName}
             {canManage && (
               <button type="button" onClick={() => handleRemoveMember(member.userId)} aria-label={`Remove ${member.displayName}`}>
@@ -743,7 +743,7 @@ function TeamCard({ team, members, onChanged }: { team: TeamDto; members: Member
             )}
           </span>
         ))}
-        {team.members.length === 0 && <span className="text-[11px] text-fg-muted">No members yet.</span>}
+        {team.members.length === 0 && <span className="text-meta text-fg-muted">No members yet.</span>}
       </div>
 
       {canManage && (
@@ -753,7 +753,7 @@ function TeamCard({ team, members, onChanged }: { team: TeamDto; members: Member
               <select
                 value={selectedUserId}
                 onChange={(event) => setSelectedUserId(event.target.value)}
-                className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-2 py-1 text-[11px] text-fg outline-none focus:border-accent"
+                className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-2 py-1 text-meta text-fg outline-none focus:border-accent"
               >
                 <option value="">Select a member…</option>
                 {addableMembers.map((member) => (
@@ -762,15 +762,15 @@ function TeamCard({ team, members, onChanged }: { team: TeamDto; members: Member
                   </option>
                 ))}
               </select>
-              <button type="submit" disabled={busy || !selectedUserId} className="text-[11px] font-medium text-accent hover:text-accent-dim disabled:opacity-50">
+              <button type="submit" disabled={busy || !selectedUserId} className="text-meta font-medium text-accent hover:text-accent-dim disabled:opacity-50">
                 Add
               </button>
-              <button type="button" onClick={() => setAddingMember(false)} className="text-[11px] text-fg-muted hover:text-fg">
+              <button type="button" onClick={() => setAddingMember(false)} className="text-meta text-fg-muted hover:text-fg">
                 Cancel
               </button>
             </form>
           ) : (
-            <button type="button" onClick={() => setAddingMember(true)} className="flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-dim">
+            <button type="button" onClick={() => setAddingMember(true)} className="flex items-center gap-1 text-meta font-medium text-accent hover:text-accent-dim">
               <Plus size={11} aria-hidden />
               Add member
             </button>
@@ -824,17 +824,17 @@ function TeamsCard() {
   return (
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-fg">Teams</h2>
+        <h2 className="text-body font-semibold text-fg">Teams</h2>
         {canCreate && (
-          <button type="button" onClick={() => setShowCreateForm((v) => !v)} className="flex items-center gap-1.5 text-xs font-medium text-accent hover:text-accent-dim">
+          <button type="button" onClick={() => setShowCreateForm((v) => !v)} className="flex items-center gap-1.5 text-caption font-medium text-accent hover:text-accent-dim">
             <Users size={13} aria-hidden />
             New team
           </button>
         )}
       </div>
-      <p className="mt-1 text-xs text-fg-muted">Group teammates (Sales, Support, …) and assign conversations to a team.</p>
+      <p className="mt-1 text-caption text-fg-muted">Group teammates (Sales, Support, …) and assign conversations to a team.</p>
 
-      {error && <p className="mt-2 text-xs text-error">{error}</p>}
+      {error && <p className="mt-2 text-caption text-error">{error}</p>}
 
       {showCreateForm && canCreate && (
         <form onSubmit={handleCreate} className="mt-3 flex items-center gap-1.5">
@@ -844,17 +844,17 @@ function TeamsCard() {
             placeholder="Team name"
             value={name}
             onChange={(event) => setName(event.target.value)}
-            className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg outline-none focus:border-accent"
+            className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent"
           />
-          <button type="submit" disabled={busy} className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+          <button type="submit" disabled={busy} className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50">
             Create
           </button>
         </form>
       )}
 
       <div className="mt-3 space-y-2">
-        {teams === null && <p className="text-xs text-fg-muted">Loading…</p>}
-        {teams?.length === 0 && <p className="text-xs text-fg-muted">No teams yet.</p>}
+        {teams === null && <p className="text-caption text-fg-muted">Loading…</p>}
+        {teams?.length === 0 && <p className="text-caption text-fg-muted">No teams yet.</p>}
         {teams?.map((team) => (
           <TeamCard key={team.id} team={team} members={members} onChanged={load} />
         ))}
@@ -911,8 +911,8 @@ function AvailabilityCard() {
 
   return (
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
-      <h2 className="text-sm font-semibold text-fg">Availability</h2>
-      <p className="mt-1 text-xs text-fg-muted">Controls whether conversations can be assigned to you, and how many at once.</p>
+      <h2 className="text-body font-semibold text-fg">Availability</h2>
+      <p className="mt-1 text-caption text-fg-muted">Controls whether conversations can be assigned to you, and how many at once.</p>
 
       <div className="mt-3 flex gap-1.5">
         {(['available', 'busy', 'offline'] as const).map((option) => (
@@ -921,7 +921,7 @@ function AvailabilityCard() {
             type="button"
             disabled={busy}
             onClick={() => handleAvailabilityChange(option)}
-            className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+            className={`rounded-full px-3 py-1 text-caption font-medium transition ${
               capacity.availability === option ? AVAILABILITY_COLOR[option] : 'bg-surface-3 text-fg-muted hover:text-fg-secondary'
             }`}
           >
@@ -931,7 +931,7 @@ function AvailabilityCard() {
       </div>
 
       <div className="mt-3 flex items-center gap-2">
-        <label className="text-xs text-fg-secondary">Max active conversations</label>
+        <label className="text-caption text-fg-secondary">Max active conversations</label>
         <input
           type="number"
           min={1}
@@ -939,7 +939,7 @@ function AvailabilityCard() {
           value={maxInput}
           onChange={(event) => setMaxInput(event.target.value)}
           onBlur={handleMaxSave}
-          className="w-20 rounded-lg border border-border-subtle bg-surface-1 px-2 py-1 text-xs text-fg outline-none focus:border-accent"
+          className="w-20 rounded-lg border border-border-subtle bg-surface-1 px-2 py-1 text-caption text-fg outline-none focus:border-accent"
         />
       </div>
     </div>
@@ -949,8 +949,8 @@ function AvailabilityCard() {
 export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSnapshot | null }) {
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      <h1 className="text-lg font-semibold text-fg">Settings</h1>
-      <p className="mt-1 text-sm text-fg-muted">Only settings with a real backend - or a real, persisted client-side effect - appear here.</p>
+      <h1 className="text-title font-semibold text-fg">Settings</h1>
+      <p className="mt-1 text-body text-fg-muted">Only settings with a real backend - or a real, persisted client-side effect - appear here.</p>
 
       <div className="mt-6 max-w-2xl space-y-4">
         <ThemeCard />

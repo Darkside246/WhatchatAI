@@ -73,7 +73,7 @@ export function AlertNotifier() {
       {alerts.map((alert) => (
         <div
           key={alert.chatId}
-          className={`pointer-events-auto flex animate-pulse items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium shadow-2xl ${
+          className={`pointer-events-auto flex animate-pulse items-center gap-2 rounded-full border px-4 py-2 text-body font-medium shadow-2xl ${
             alert.urgency === 'HIGH' ? 'border-error/60 bg-error/15 text-error' : 'border-warning/60 bg-warning/15 text-warning'
           }`}
         >

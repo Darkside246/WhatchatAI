@@ -68,20 +68,20 @@ export function CallHistoryPanel({ className = '' }: Props) {
     <div className={`h-full flex-col ${className}`}>
       <div className="shrink-0 border-b border-border-subtle p-4">
         <div className="flex items-center justify-between">
-          <h1 className="text-base font-semibold text-fg">Calls</h1>
+          <h1 className="text-body-lg font-semibold text-fg">Calls</h1>
           <span
             title={connected ? 'Live updates connected' : 'Live updates unavailable - showing periodically refreshed data'}
             className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-success' : 'bg-fg-muted/50'}`}
           />
         </div>
-        <p className="mt-1 text-xs text-fg-muted">Real voice and video call events synced from WhatsApp.</p>
+        <p className="mt-1 text-caption text-fg-muted">Real voice and video call events synced from WhatsApp.</p>
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {error && <p className="p-4 text-xs text-error">{error}</p>}
-        {calls === null && !error && <p className="p-4 text-sm text-fg-muted">Loading real call history…</p>}
+        {error && <p className="p-4 text-caption text-error">{error}</p>}
+        {calls === null && !error && <p className="p-4 text-body text-fg-muted">Loading real call history…</p>}
         {calls?.length === 0 && (
-          <p className="p-4 text-sm text-fg-muted">No calls recorded yet. Real call events will appear here as they happen.</p>
+          <p className="p-4 text-body text-fg-muted">No calls recorded yet. Real call events will appear here as they happen.</p>
         )}
         {calls?.map((call) => (
           <div
@@ -90,15 +90,15 @@ export function CallHistoryPanel({ className = '' }: Props) {
           >
             <Avatar label={call.displayName} />
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-fg">{call.displayName}</p>
-              <div className="mt-0.5 flex items-center gap-1.5 text-xs text-fg-muted">
+              <p className="truncate text-body font-medium text-fg">{call.displayName}</p>
+              <div className="mt-0.5 flex items-center gap-1.5 text-caption text-fg-muted">
                 <CallDirectionIcon call={call} />
                 {call.isVideo ? <Video size={13} strokeWidth={1.75} aria-hidden /> : <PhoneIcon size={13} strokeWidth={1.75} aria-hidden />}
                 <span>{STATUS_LABEL[call.status]}</span>
                 {call.durationSeconds !== null && <span>· {formatDuration(call.durationSeconds)}</span>}
               </div>
             </div>
-            <span className="shrink-0 text-[11px] text-fg-muted">{formatTime(call.startedAt ?? call.endedAt)}</span>
+            <span className="shrink-0 text-meta text-fg-muted">{formatTime(call.startedAt ?? call.endedAt)}</span>
           </div>
         ))}
       </div>

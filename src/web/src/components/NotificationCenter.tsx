@@ -103,7 +103,7 @@ export function NotificationCenter() {
       >
         <Bell size={16} aria-hidden />
         {unreadCount > 0 && (
-          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-error px-1 text-[10px] font-semibold text-white">
+          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-error px-1 text-meta font-semibold text-white">
             {unreadCount > 9 ? '9+' : unreadCount}
           </span>
         )}
@@ -112,9 +112,9 @@ export function NotificationCenter() {
       {open && (
         <div className="absolute right-0 top-10 z-40 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-border-subtle bg-surface-2 shadow-2xl">
           <div className="flex items-center justify-between border-b border-border-subtle px-3 py-2.5">
-            <span className="text-sm font-semibold text-fg">Notifications</span>
+            <span className="text-body font-semibold text-fg">Notifications</span>
             {unreadCount > 0 && (
-              <button type="button" onClick={handleMarkAllRead} className="flex items-center gap-1 text-xs font-medium text-accent hover:text-accent-dim">
+              <button type="button" onClick={handleMarkAllRead} className="flex items-center gap-1 text-caption font-medium text-accent hover:text-accent-dim">
                 <Check size={12} aria-hidden />
                 Mark all read
               </button>
@@ -122,7 +122,7 @@ export function NotificationCenter() {
           </div>
 
           <div className="max-h-96 overflow-y-auto">
-            {notifications.length === 0 && <p className="px-3 py-6 text-center text-xs text-fg-muted">No notifications yet.</p>}
+            {notifications.length === 0 && <p className="px-3 py-6 text-center text-caption text-fg-muted">No notifications yet.</p>}
             {notifications.map((notification) => (
               <button
                 key={notification.id}
@@ -134,9 +134,9 @@ export function NotificationCenter() {
               >
                 <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${SEVERITY_DOT[notification.severity]}`} aria-hidden />
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs font-medium text-fg">{notification.title}</p>
-                  {notification.body && <p className="mt-0.5 text-xs text-fg-muted">{notification.body}</p>}
-                  <p className="mt-1 text-[10px] text-fg-muted">{formatRelativeTime(notification.createdAt)}</p>
+                  <p className="text-caption font-medium text-fg">{notification.title}</p>
+                  {notification.body && <p className="mt-0.5 text-caption text-fg-muted">{notification.body}</p>}
+                  <p className="mt-1 text-meta text-fg-muted">{formatRelativeTime(notification.createdAt)}</p>
                 </div>
               </button>
             ))}

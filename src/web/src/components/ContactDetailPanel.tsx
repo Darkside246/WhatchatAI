@@ -50,7 +50,7 @@ export function ContactDetailPanel({ onClose }: Props) {
   return (
     <div className="flex h-full w-full flex-col overflow-y-auto bg-surface-1 lg:w-80">
       <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
-        <h2 className="text-sm font-semibold text-fg">Conversation details</h2>
+        <h2 className="text-body font-semibold text-fg">Conversation details</h2>
         {onClose && (
           <button type="button" onClick={onClose} className="text-fg-muted hover:text-fg lg:hidden">
             <X size={18} aria-hidden />
@@ -58,8 +58,8 @@ export function ContactDetailPanel({ onClose }: Props) {
         )}
       </div>
 
-      {error && <p className="p-4 text-xs text-error">{error}</p>}
-      {!detail && !error && <p className="p-4 text-xs text-fg-muted">Loading real contact details…</p>}
+      {error && <p className="p-4 text-caption text-error">{error}</p>}
+      {!detail && !error && <p className="p-4 text-caption text-fg-muted">Loading real contact details…</p>}
 
       {detail && (
         <div className="flex flex-col gap-6 p-4">
@@ -77,14 +77,14 @@ export function ContactDetailPanel({ onClose }: Props) {
                 photoUrl={detail.contact?.profilePictureMediaId ? mediaUrl(detail.contact.profilePictureMediaId) : null}
               />
             </button>
-            <p className="text-sm font-medium text-fg">
+            <p className="text-body font-medium text-fg">
               {detail.contact?.displayName ??
                 detail.contact?.pushName ??
                 detail.chat.name ??
                 detail.resolvedPhoneNumber ??
                 formatIdentityFallback(detail.chat.chatJid)}
             </p>
-            <p className="text-xs text-fg-muted">
+            <p className="text-caption text-fg-muted">
               {detail.contact?.phoneNumber ?? detail.chat.phoneNumber ?? detail.resolvedPhoneNumber ?? ''}
             </p>
           </div>
@@ -98,7 +98,7 @@ export function ContactDetailPanel({ onClose }: Props) {
           )}
 
           <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">AI &amp; takeover</h3>
+            <h3 className="mb-2 text-caption font-semibold uppercase tracking-wide text-fg-muted">AI &amp; takeover</h3>
             <div className="flex flex-col gap-1.5">
               {AI_MODE_OPTIONS.map((option) => (
                 <button
@@ -106,22 +106,22 @@ export function ContactDetailPanel({ onClose }: Props) {
                   type="button"
                   disabled={savingMode}
                   onClick={() => handleModeChange(option.value)}
-                  className={`rounded-lg border px-3 py-2 text-left text-xs transition-colors disabled:opacity-50 ${
+                  className={`rounded-lg border px-3 py-2 text-left text-caption transition-colors disabled:opacity-50 ${
                     detail.chat.aiMode === option.value
                       ? 'border-accent bg-accent-soft text-accent'
                       : 'border-border-subtle bg-surface-2 text-fg-secondary hover:border-fg-muted'
                   }`}
                 >
                   <span className="font-medium">{option.label}</span>
-                  <p className="mt-0.5 text-[11px] text-fg-muted">{option.hint}</p>
+                  <p className="mt-0.5 text-meta text-fg-muted">{option.hint}</p>
                 </button>
               ))}
             </div>
           </section>
 
           <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">WhatsApp identity</h3>
-            <dl className="space-y-1.5 text-xs">
+            <h3 className="mb-2 text-caption font-semibold uppercase tracking-wide text-fg-muted">WhatsApp identity</h3>
+            <dl className="space-y-1.5 text-caption">
               <div className="flex justify-between gap-2">
                 <dt className="text-fg-muted">JID</dt>
                 <dd className="truncate text-right text-fg-secondary">{detail.chat.chatJid}</dd>
@@ -140,9 +140,9 @@ export function ContactDetailPanel({ onClose }: Props) {
           </section>
 
           <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">CRM</h3>
+            <h3 className="mb-2 text-caption font-semibold uppercase tracking-wide text-fg-muted">CRM</h3>
             {detail.crmContact ? (
-              <dl className="space-y-1.5 text-xs">
+              <dl className="space-y-1.5 text-caption">
                 <div className="flex justify-between gap-2">
                   <dt className="text-fg-muted">Stage</dt>
                   <dd className="text-fg-secondary">{detail.crmContact.stage ?? 'Not set'}</dd>
@@ -156,14 +156,14 @@ export function ContactDetailPanel({ onClose }: Props) {
             {detail.crmContact && detail.crmContact.tags.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {detail.crmContact.tags.map((tag) => (
-                  <span key={tag} className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-fg-secondary">
+                  <span key={tag} className="rounded-full bg-surface-2 px-2 py-0.5 text-meta font-medium text-fg-secondary">
                     {tag}
                   </span>
                 ))}
               </div>
             )}
             {!detail.crmContact && (
-              <p className="text-xs text-fg-muted">No CRM record for this conversation yet.</p>
+              <p className="text-caption text-fg-muted">No CRM record for this conversation yet.</p>
             )}
           </section>
         </div>

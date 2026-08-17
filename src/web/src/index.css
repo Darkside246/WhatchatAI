@@ -41,6 +41,40 @@
      isn't a success/warning/error state, so it gets its own token rather
      than being forced into one of those three. */
   --color-info: #38bdf8;
+
+  /*
+   * TYPE SCALE.
+   *
+   * Six steps, each with a paired line-height, named for the job rather than
+   * the size. Before this the app used nine different sizes including
+   * text-[9px], text-[10px] and text-[11px] - three near-identical values
+   * that read as sloppiness rather than hierarchy, and 9px is genuinely too
+   * small to be legible. Those three collapse into one 'meta' step.
+   *
+   * Rule for new code: never write an arbitrary text-[Npx]. If a size seems
+   * missing, the hierarchy is wrong, not the scale.
+   */
+  --text-meta: 0.6875rem;        /* 11px - timestamps, badge text, helper lines */
+  --text-meta--line-height: 1rem;
+  --text-caption: 0.75rem;       /* 12px - secondary labels, dense table text */
+  --text-caption--line-height: 1.125rem;
+  --text-body: 0.875rem;         /* 14px - the default reading size */
+  --text-body--line-height: 1.375rem;
+  --text-body-lg: 1rem;          /* 16px - emphasised body, form inputs on mobile */
+  --text-body-lg--line-height: 1.5rem;
+  --text-title: 1.125rem;        /* 18px - page and section titles */
+  --text-title--line-height: 1.625rem;
+  --text-display: 1.5rem;        /* 24px - single hero figure per screen */
+  --text-display--line-height: 2rem;
+
+  /*
+   * CONTROL HEIGHTS. Buttons, inputs and selects sitting on the same row
+   * must share a height, or the row looks broken however carefully the
+   * padding is tuned. These are the only three permitted.
+   */
+  --spacing-control-sm: 2rem;    /* 32px - dense toolbars */
+  --spacing-control: 2.25rem;    /* 36px - the default */
+  --spacing-control-lg: 2.75rem; /* 44px - primary actions, and the minimum comfortable touch target */
 }
 
 /*
@@ -179,4 +213,77 @@ body {
   color: var(--color-fg);
   -webkit-font-smoothing: antialiased;
   transition: background-color 200ms ease, color 200ms ease;
+}
+
+/*
+ * COMPONENT LAYER - the symmetry rules.
+ *
+ * A row of controls looks broken when a button is 34px and the select beside
+ * it is 38px, however carefully each one's padding was chosen. These classes
+ * fix the height and let padding follow, so anything sharing a row lines up
+ * by construction rather than by coincidence.
+ *
+ * They set geometry only - never colour - so every theme keeps working and
+ * components keep choosing their own surface/accent tokens.
+ */
+@layer components {
+  .control {
+    height: var(--spacing-control);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding-inline: 0.75rem;
+    border-radius: 0.5rem;
+    font-size: var(--text-body);
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .control-sm {
+    height: var(--spacing-control-sm);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding-inline: 0.625rem;
+    border-radius: 0.5rem;
+    font-size: var(--text-caption);
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .control-lg {
+    height: var(--spacing-control-lg);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding-inline: 1rem;
+    border-radius: 0.625rem;
+    font-size: var(--text-body);
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  /*
+   * Text inputs need the same height as buttons but must NOT be nowrap or
+   * inline-flex, so they get their own rule rather than sharing .control.
+   */
+  .field {
+    height: var(--spacing-control);
+    width: 100%;
+    padding-inline: 0.75rem;
+    border-radius: 0.5rem;
+    font-size: var(--text-body);
+  }
+
+  /*
+   * The overflow guard. A flex child defaults to min-width:auto, so a long
+   * unbroken string (an email address, a JID, a customer name) pushes its
+   * container wider instead of truncating - which is what makes text spill
+   * out of cards on narrow screens. Every truncating flex child needs this.
+   */
+  .min-w-0-safe {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
 }

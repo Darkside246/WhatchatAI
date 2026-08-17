@@ -39,7 +39,7 @@ function AiSuggestPanel({ kind, onPick }: { kind: 'campaign_message' | 'status_c
 
   if (!open) {
     return (
-      <button type="button" onClick={() => setOpen(true)} className="flex items-center gap-1 self-start text-xs font-medium text-accent hover:text-accent-dim">
+      <button type="button" onClick={() => setOpen(true)} className="flex items-center gap-1 self-start text-caption font-medium text-accent hover:text-accent-dim">
         <Sparkles size={12} aria-hidden />
         Suggest with AI
       </button>
@@ -54,13 +54,13 @@ function AiSuggestPanel({ kind, onPick }: { kind: 'campaign_message' | 'status_c
           placeholder="What's this about? (e.g. weekend sale, 20% off)"
           value={context}
           onChange={(event) => setContext(event.target.value)}
-          className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-2 py-1.5 text-xs text-fg outline-none focus:border-accent"
+          className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-2 py-1.5 text-caption text-fg outline-none focus:border-accent"
         />
-        <button type="button" disabled={busy || !context.trim()} onClick={handleGenerate} className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+        <button type="button" disabled={busy || !context.trim()} onClick={handleGenerate} className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50">
           {busy ? 'Thinking…' : 'Generate'}
         </button>
       </div>
-      {note && <p className="mt-2 text-xs text-fg-muted">{note}</p>}
+      {note && <p className="mt-2 text-caption text-fg-muted">{note}</p>}
       {suggestions && (
         <div className="mt-2 space-y-1.5">
           {suggestions.map((suggestion, index) => (
@@ -71,7 +71,7 @@ function AiSuggestPanel({ kind, onPick }: { kind: 'campaign_message' | 'status_c
                 onPick(suggestion);
                 setOpen(false);
               }}
-              className="block w-full rounded-lg border border-border-subtle bg-surface-1 px-2 py-1.5 text-left text-xs text-fg-secondary hover:border-accent hover:text-fg"
+              className="block w-full rounded-lg border border-border-subtle bg-surface-1 px-2 py-1.5 text-left text-caption text-fg-secondary hover:border-accent hover:text-fg"
             >
               {suggestion}
             </button>
@@ -170,31 +170,31 @@ function NewCampaignForm({ onCreated, onCancel }: { onCreated: (campaignId: stri
 
   return (
     <div className="mx-auto max-w-2xl">
-      <button type="button" onClick={onCancel} className="mb-4 flex items-center gap-1.5 text-xs font-medium text-fg-muted hover:text-fg">
+      <button type="button" onClick={onCancel} className="mb-4 flex items-center gap-1.5 text-caption font-medium text-fg-muted hover:text-fg">
         <ArrowLeft size={13} aria-hidden />
         Back to campaigns
       </button>
 
-      <h2 className="text-base font-semibold text-fg">New campaign</h2>
-      <p className="mt-1 text-xs text-fg-muted">
+      <h2 className="text-body-lg font-semibold text-fg">New campaign</h2>
+      <p className="mt-1 text-caption text-fg-muted">
         Only sent to real contacts you already have an open WhatsApp conversation with - never cold outreach.
       </p>
 
       <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-4">
-        <label className="flex flex-col gap-1 text-sm text-fg-secondary">
+        <label className="flex flex-col gap-1 text-body text-fg-secondary">
           Campaign name
           <input
             type="text"
             required
             value={name}
             onChange={(event) => setName(event.target.value)}
-            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-body text-fg outline-none focus:border-accent"
           />
         </label>
 
         <AiSuggestPanel kind="campaign_message" onPick={(text) => setMessageText(text)} />
 
-        <label className="flex flex-col gap-1 text-sm text-fg-secondary">
+        <label className="flex flex-col gap-1 text-body text-fg-secondary">
           Message
           <textarea
             required
@@ -202,23 +202,23 @@ function NewCampaignForm({ onCreated, onCancel }: { onCreated: (campaignId: stri
             maxLength={4000}
             value={messageText}
             onChange={(event) => setMessageText(event.target.value)}
-            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-body text-fg outline-none focus:border-accent"
           />
         </label>
 
         <div>
           <div className="flex items-center justify-between">
-            <span className="text-sm text-fg-secondary">Recipients ({selectedIds.size} selected)</span>
+            <span className="text-body text-fg-secondary">Recipients ({selectedIds.size} selected)</span>
             {recipients && recipients.length > 0 && (
-              <button type="button" onClick={toggleAll} className="text-xs font-medium text-accent hover:text-accent-dim">
+              <button type="button" onClick={toggleAll} className="text-caption font-medium text-accent hover:text-accent-dim">
                 {selectedIds.size === recipients.length ? 'Deselect all' : 'Select all'}
               </button>
             )}
           </div>
           <div className="mt-2 max-h-64 overflow-y-auto rounded-lg border border-border-subtle">
-            {recipients === null && <p className="p-3 text-xs text-fg-muted">Loading contacts…</p>}
+            {recipients === null && <p className="p-3 text-caption text-fg-muted">Loading contacts…</p>}
             {recipients?.length === 0 && (
-              <p className="p-3 text-xs text-fg-muted">No contacts with an existing conversation yet - nothing eligible to message.</p>
+              <p className="p-3 text-caption text-fg-muted">No contacts with an existing conversation yet - nothing eligible to message.</p>
             )}
             {recipients?.map((recipient) => (
               <label key={recipient.crmContactId} className="flex items-center gap-2.5 border-b border-border-subtle px-3 py-2 last:border-b-0 hover:bg-surface-2">
@@ -228,19 +228,19 @@ function NewCampaignForm({ onCreated, onCancel }: { onCreated: (campaignId: stri
                   onChange={() => toggleRecipient(recipient.crmContactId)}
                   className="h-3.5 w-3.5"
                 />
-                <span className="text-xs text-fg">{recipient.displayName}</span>
-                {recipient.phoneNumber && <span className="text-[11px] text-fg-muted">{recipient.phoneNumber}</span>}
+                <span className="text-caption text-fg">{recipient.displayName}</span>
+                {recipient.phoneNumber && <span className="text-meta text-fg-muted">{recipient.phoneNumber}</span>}
               </label>
             ))}
           </div>
         </div>
 
-        {error && <p className="text-xs text-error">{error}</p>}
+        {error && <p className="text-caption text-error">{error}</p>}
 
         <button
           type="submit"
           disabled={busy}
-          className="self-start rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+          className="self-start rounded-lg bg-accent px-4 py-2 text-body font-medium text-white hover:bg-accent-dim disabled:opacity-50"
         >
           {busy ? 'Creating…' : 'Create draft'}
         </button>
@@ -302,32 +302,32 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
     }
   }
 
-  if (!detail) return <p className="text-xs text-fg-muted">Loading…</p>;
+  if (!detail) return <p className="text-caption text-fg-muted">Loading…</p>;
   const { campaign, recipients, counts } = detail;
 
   return (
     <div className="mx-auto max-w-2xl">
-      <button type="button" onClick={onBack} className="mb-4 flex items-center gap-1.5 text-xs font-medium text-fg-muted hover:text-fg">
+      <button type="button" onClick={onBack} className="mb-4 flex items-center gap-1.5 text-caption font-medium text-fg-muted hover:text-fg">
         <ArrowLeft size={13} aria-hidden />
         Back to campaigns
       </button>
 
       <div className="flex items-center justify-between">
-        <h2 className="text-base font-semibold text-fg">{campaign.name}</h2>
-        <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_COLOR[campaign.status]}`}>{STATUS_LABEL[campaign.status]}</span>
+        <h2 className="text-body-lg font-semibold text-fg">{campaign.name}</h2>
+        <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${STATUS_COLOR[campaign.status]}`}>{STATUS_LABEL[campaign.status]}</span>
       </div>
-      <p className="mt-2 whitespace-pre-wrap rounded-lg border border-border-subtle bg-surface-2 p-3 text-sm text-fg-secondary">{campaign.messageText}</p>
+      <p className="mt-2 whitespace-pre-wrap rounded-lg border border-border-subtle bg-surface-2 p-3 text-body text-fg-secondary">{campaign.messageText}</p>
 
       <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-6">
         {(['total', 'queued', 'sent', 'delivered', 'read', 'failed'] as const).map((key) => (
           <div key={key} className="rounded-lg border border-border-subtle bg-surface-2 p-2 text-center">
-            <p className="text-lg font-semibold text-fg">{counts[key]}</p>
-            <p className="text-[10px] uppercase tracking-wide text-fg-muted">{key}</p>
+            <p className="text-title font-semibold text-fg">{counts[key]}</p>
+            <p className="text-meta uppercase tracking-wide text-fg-muted">{key}</p>
           </div>
         ))}
       </div>
 
-      {error && <p className="mt-3 text-xs text-error">{error}</p>}
+      {error && <p className="mt-3 text-caption text-error">{error}</p>}
 
       <div className="mt-4 flex flex-wrap gap-2">
         {campaign.status === 'DRAFT' && (
@@ -335,7 +335,7 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
             type="button"
             disabled={busy}
             onClick={() => handleAction(() => api.submitCampaignForReview(campaign.id))}
-            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
           >
             <Check size={13} aria-hidden />
             Submit for review
@@ -346,7 +346,7 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
             type="button"
             disabled={busy}
             onClick={() => handleAction(() => api.approveCampaign(campaign.id))}
-            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
           >
             <Check size={13} aria-hidden />
             Approve
@@ -357,7 +357,7 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
             type="button"
             disabled={busy}
             onClick={() => handleAction(() => api.sendCampaign(campaign.id))}
-            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
           >
             <Send size={13} aria-hidden />
             Send now
@@ -371,7 +371,7 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
             disabled={busy}
             onClick={() => void handleRecall()}
             title="Issues WhatsApp's real delete-for-everyone for each message this campaign sent"
-            className="flex items-center gap-1.5 rounded-lg border border-error/40 px-3 py-1.5 text-xs font-medium text-error hover:bg-error/10 disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg border border-error/40 px-3 py-1.5 text-caption font-medium text-error hover:bg-error/10 disabled:opacity-50"
           >
             <Trash2 size={13} aria-hidden />
             Delete from WhatsApp
@@ -382,7 +382,7 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
             type="button"
             disabled={busy}
             onClick={() => handleAction(() => api.cancelCampaign(campaign.id))}
-            className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-xs font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
           >
             <X size={13} aria-hidden />
             Cancel
@@ -391,7 +391,7 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
       </div>
 
       {recallResult && (
-        <div className="mt-3 rounded-lg border border-border-subtle bg-surface-2 p-3 text-xs text-fg-secondary">
+        <div className="mt-3 rounded-lg border border-border-subtle bg-surface-2 p-3 text-caption text-fg-secondary">
           <p>
             Delete-for-everyone queued for <span className="font-semibold text-fg">{recallResult.queued}</span>{' '}
             {recallResult.queued === 1 ? 'message' : 'messages'}. WhatsApp has been asked - that is not a guarantee every
@@ -405,15 +405,15 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
         </div>
       )}
 
-      <h3 className="mt-6 text-sm font-semibold text-fg">Recipients ({recipients.length})</h3>
+      <h3 className="mt-6 text-body font-semibold text-fg">Recipients ({recipients.length})</h3>
       <div className="mt-2 rounded-lg border border-border-subtle">
         {recipients.map((recipient) => (
           <div key={recipient.id} className="flex items-center justify-between border-b border-border-subtle px-3 py-2 last:border-b-0">
             <div>
-              <p className="text-xs font-medium text-fg">{recipient.displayName}</p>
-              {recipient.phoneNumber && <p className="text-[11px] text-fg-muted">{recipient.phoneNumber}</p>}
+              <p className="text-caption font-medium text-fg">{recipient.displayName}</p>
+              {recipient.phoneNumber && <p className="text-meta text-fg-muted">{recipient.phoneNumber}</p>}
             </div>
-            <span className="text-xs text-fg-secondary">{recipient.status ? RECIPIENT_STATUS_LABEL[recipient.status] ?? recipient.status : 'Not yet sent'}</span>
+            <span className="text-caption text-fg-secondary">{recipient.status ? RECIPIENT_STATUS_LABEL[recipient.status] ?? recipient.status : 'Not yet sent'}</span>
           </div>
         ))}
       </div>
@@ -461,13 +461,13 @@ function CampaignsTab({ initialCampaignId }: { initialCampaignId: string | null 
       <div className="mx-auto max-w-2xl">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-lg font-semibold text-fg">Campaigns</h1>
-            <p className="mt-1 text-sm text-fg-muted">Real WhatsApp broadcasts to contacts you already have a conversation with.</p>
+            <h1 className="text-title font-semibold text-fg">Campaigns</h1>
+            <p className="mt-1 text-body text-fg-muted">Real WhatsApp broadcasts to contacts you already have a conversation with.</p>
           </div>
           <button
             type="button"
             onClick={() => setView({ mode: 'new' })}
-            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-dim"
+            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-body font-medium text-white hover:bg-accent-dim"
           >
             <Megaphone size={14} aria-hidden />
             New campaign
@@ -475,12 +475,12 @@ function CampaignsTab({ initialCampaignId }: { initialCampaignId: string | null 
         </div>
 
         <div className="mt-4 space-y-2">
-          {campaigns === null && <p className="text-xs text-fg-muted">Loading…</p>}
+          {campaigns === null && <p className="text-caption text-fg-muted">Loading…</p>}
           {campaigns?.length === 0 && (
             <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-border-subtle p-10 text-center">
               <Users size={22} className="text-fg-muted" aria-hidden />
-              <p className="text-sm text-fg-secondary">No campaigns yet.</p>
-              <p className="text-xs text-fg-muted">Create one to message contacts you already have an open conversation with.</p>
+              <p className="text-body text-fg-secondary">No campaigns yet.</p>
+              <p className="text-caption text-fg-muted">Create one to message contacts you already have an open conversation with.</p>
             </div>
           )}
           {campaigns?.map((campaign) => (
@@ -491,12 +491,12 @@ function CampaignsTab({ initialCampaignId }: { initialCampaignId: string | null 
               className="flex w-full items-center justify-between rounded-xl border border-border-subtle bg-surface-2 p-4 text-left hover:bg-surface-3"
             >
               <div>
-                <p className="text-sm font-medium text-fg">{campaign.name}</p>
-                <p className="mt-0.5 text-xs text-fg-muted">
+                <p className="text-body font-medium text-fg">{campaign.name}</p>
+                <p className="mt-0.5 text-caption text-fg-muted">
                   {campaign.counts.total} recipients · {formatDate(campaign.createdAt)}
                 </p>
               </div>
-              <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_COLOR[campaign.status]}`}>{STATUS_LABEL[campaign.status]}</span>
+              <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${STATUS_COLOR[campaign.status]}`}>{STATUS_LABEL[campaign.status]}</span>
             </button>
           ))}
         </div>
@@ -575,13 +575,13 @@ function NewStatusForm({ onCreated, onCancel }: { onCreated: () => void; onCance
 
   return (
     <div className="mx-auto max-w-xl">
-      <button type="button" onClick={onCancel} className="mb-4 flex items-center gap-1.5 text-xs font-medium text-fg-muted hover:text-fg">
+      <button type="button" onClick={onCancel} className="mb-4 flex items-center gap-1.5 text-caption font-medium text-fg-muted hover:text-fg">
         <ArrowLeft size={13} aria-hidden />
         Back to Status
       </button>
 
-      <h2 className="text-base font-semibold text-fg">Schedule a Status</h2>
-      <p className="mt-1 text-xs text-fg-muted">Posts to WhatsApp Status, visible to your real saved contacts, at the time you choose.</p>
+      <h2 className="text-body-lg font-semibold text-fg">Schedule a Status</h2>
+      <p className="mt-1 text-caption text-fg-muted">Posts to WhatsApp Status, visible to your real saved contacts, at the time you choose.</p>
 
       <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-4">
         <div className="flex gap-1.5">
@@ -590,7 +590,7 @@ function NewStatusForm({ onCreated, onCancel }: { onCreated: () => void; onCance
               key={option}
               type="button"
               onClick={() => setStatusType(option)}
-              className={`rounded-full px-3 py-1 text-xs font-medium capitalize ${
+              className={`rounded-full px-3 py-1 text-caption font-medium capitalize ${
                 statusType === option ? 'bg-accent text-white' : 'bg-surface-3 text-fg-muted hover:text-fg-secondary'
               }`}
             >
@@ -610,9 +610,9 @@ function NewStatusForm({ onCreated, onCancel }: { onCreated: () => void; onCance
               placeholder="What's on your mind?"
               value={textContent}
               onChange={(event) => setTextContent(event.target.value)}
-              className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+              className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-body text-fg outline-none focus:border-accent"
             />
-            <label className="flex items-center gap-2 text-xs text-fg-secondary">
+            <label className="flex items-center gap-2 text-caption text-fg-secondary">
               Background
               <input type="color" value={backgroundColor} onChange={(event) => setBackgroundColor(event.target.value)} className="h-7 w-10 rounded border border-border-subtle" />
             </label>
@@ -624,32 +624,32 @@ function NewStatusForm({ onCreated, onCancel }: { onCreated: () => void; onCance
               required
               accept={statusType === 'image' ? 'image/*' : 'video/*'}
               onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-              className="text-xs text-fg-secondary"
+              className="text-caption text-fg-secondary"
             />
             <input
               type="text"
               placeholder="Caption (optional)"
               value={caption}
               onChange={(event) => setCaption(event.target.value)}
-              className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+              className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-body text-fg outline-none focus:border-accent"
             />
           </>
         )}
 
-        <label className="flex flex-col gap-1 text-sm text-fg-secondary">
+        <label className="flex flex-col gap-1 text-body text-fg-secondary">
           Publish at
           <input
             type="datetime-local"
             required
             value={scheduledAt}
             onChange={(event) => setScheduledAt(event.target.value)}
-            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-body text-fg outline-none focus:border-accent"
           />
         </label>
 
-        {error && <p className="text-xs text-error">{error}</p>}
+        {error && <p className="text-caption text-error">{error}</p>}
 
-        <button type="submit" disabled={busy} className="self-start rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+        <button type="submit" disabled={busy} className="self-start rounded-lg bg-accent px-4 py-2 text-body font-medium text-white hover:bg-accent-dim disabled:opacity-50">
           {busy ? 'Scheduling…' : 'Schedule'}
         </button>
       </form>
@@ -715,36 +715,36 @@ function StatusSchedulerTab() {
       <div className="mx-auto max-w-2xl">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-lg font-semibold text-fg">Status</h1>
-            <p className="mt-1 text-sm text-fg-muted">Real, scheduled WhatsApp Status posts - published automatically at the time you choose.</p>
+            <h1 className="text-title font-semibold text-fg">Status</h1>
+            <p className="mt-1 text-body text-fg-muted">Real, scheduled WhatsApp Status posts - published automatically at the time you choose.</p>
           </div>
           <button
             type="button"
             onClick={() => setCreating(true)}
-            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-dim"
+            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-body font-medium text-white hover:bg-accent-dim"
           >
             <CalendarClock size={14} aria-hidden />
             Schedule Status
           </button>
         </div>
 
-        {statusError && <p className="mt-3 text-xs text-error">{statusError}</p>}
+        {statusError && <p className="mt-3 text-caption text-error">{statusError}</p>}
 
         <div className="mt-4 space-y-2">
-          {statuses === null && <p className="text-xs text-fg-muted">Loading…</p>}
+          {statuses === null && <p className="text-caption text-fg-muted">Loading…</p>}
           {statuses?.length === 0 && (
             <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-border-subtle p-10 text-center">
               <ImageIcon size={22} className="text-fg-muted" aria-hidden />
-              <p className="text-sm text-fg-secondary">Nothing scheduled yet.</p>
+              <p className="text-body text-fg-secondary">Nothing scheduled yet.</p>
             </div>
           )}
           {statuses?.map((status) => (
             <div key={status.id} className="flex items-center justify-between rounded-xl border border-border-subtle bg-surface-2 p-4">
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-fg capitalize">
+                <p className="truncate text-body font-medium text-fg capitalize">
                   {status.statusType} Status{status.textContent ? `: ${status.textContent.slice(0, 40)}` : ''}
                 </p>
-                <p className="mt-0.5 text-xs text-fg-muted">
+                <p className="mt-0.5 text-caption text-fg-muted">
                   {formatDate(status.scheduledAt)}
                   {status.lastError ? ` · ${status.lastError}` : ''}
                   {status.revokeStatus === 'requested' ? ' · asking WhatsApp to delete this…' : ''}
@@ -753,7 +753,7 @@ function StatusSchedulerTab() {
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${SCHEDULED_STATUS_COLOR[status.status]}`}>{SCHEDULED_STATUS_LABEL[status.status]}</span>
+                <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${SCHEDULED_STATUS_COLOR[status.status]}`}>{SCHEDULED_STATUS_LABEL[status.status]}</span>
                 {status.status === 'SCHEDULED' && (
                   <button
                     type="button"
@@ -801,14 +801,14 @@ export function MarketingRoute() {
         <button
           type="button"
           onClick={() => setTab('campaigns')}
-          className={`rounded-t-lg px-3 py-2 text-sm font-medium ${tab === 'campaigns' ? 'border-b-2 border-accent text-accent' : 'text-fg-muted hover:text-fg-secondary'}`}
+          className={`rounded-t-lg px-3 py-2 text-body font-medium ${tab === 'campaigns' ? 'border-b-2 border-accent text-accent' : 'text-fg-muted hover:text-fg-secondary'}`}
         >
           Campaigns
         </button>
         <button
           type="button"
           onClick={() => setTab('status')}
-          className={`rounded-t-lg px-3 py-2 text-sm font-medium ${tab === 'status' ? 'border-b-2 border-accent text-accent' : 'text-fg-muted hover:text-fg-secondary'}`}
+          className={`rounded-t-lg px-3 py-2 text-body font-medium ${tab === 'status' ? 'border-b-2 border-accent text-accent' : 'text-fg-muted hover:text-fg-secondary'}`}
         >
           Status
         </button>

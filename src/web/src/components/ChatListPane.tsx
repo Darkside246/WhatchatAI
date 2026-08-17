@@ -98,19 +98,19 @@ function ChatRow({
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
-          <p className="truncate text-sm font-medium text-fg">{chat.displayName}</p>
-          <span className="shrink-0 text-[11px] text-fg-muted">{formatTime(chat.lastMessageAt)}</span>
+          <p className="truncate text-body font-medium text-fg">{chat.displayName}</p>
+          <span className="shrink-0 text-meta text-fg-muted">{formatTime(chat.lastMessageAt)}</span>
         </div>
         <div className="mt-0.5 flex items-center gap-1.5">
           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${AI_MODE_DOT[chat.aiMode]}`} />
           {MediaIcon && <MediaIcon size={12} className="shrink-0 text-fg-muted" aria-hidden />}
-          <p className="truncate text-xs text-fg-muted">{chat.lastMessagePreview ?? 'No messages yet'}</p>
+          <p className="truncate text-caption text-fg-muted">{chat.lastMessagePreview ?? 'No messages yet'}</p>
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         {chat.isPinned && <Pin size={12} className="text-fg-muted" aria-label="Pinned" />}
         {chat.unreadCount > 0 && (
-          <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-unread px-1.5 text-[11px] font-semibold text-white">
+          <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-unread px-1.5 text-meta font-semibold text-white">
             {chat.unreadCount}
           </span>
         )}
@@ -168,7 +168,7 @@ export function ChatListPane({ className = '' }: Props) {
     <div className={`h-full flex-col ${className}`}>
       <div className="shrink-0 border-b border-border-subtle p-4">
         <div className="flex items-center justify-between">
-          <h1 className="text-base font-semibold text-fg">Chats</h1>
+          <h1 className="text-body-lg font-semibold text-fg">Chats</h1>
           <span
             title={connected ? 'Live updates connected' : 'Live updates unavailable - showing periodically refreshed data'}
             className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-success' : 'bg-fg-muted/50'}`}
@@ -179,7 +179,7 @@ export function ChatListPane({ className = '' }: Props) {
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           placeholder="Search or start a new chat"
-          className="mt-3 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus:border-accent focus:outline-none"
+          className="mt-3 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg placeholder:text-fg-muted focus:border-accent focus:outline-none"
         />
         <div className="mt-3 flex gap-1.5">
           {FILTER_PILLS.map((pill) => (
@@ -187,7 +187,7 @@ export function ChatListPane({ className = '' }: Props) {
               key={pill.value}
               type="button"
               onClick={() => setFilter(pill.value)}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+              className={`rounded-full px-3 py-1 text-caption font-medium transition-colors ${
                 filter === pill.value ? 'bg-accent-soft text-accent' : 'bg-surface-2 text-fg-secondary hover:bg-surface-3'
               }`}
             >
@@ -198,12 +198,12 @@ export function ChatListPane({ className = '' }: Props) {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {error && <p className="p-4 text-xs text-error">{error}</p>}
+        {error && <p className="p-4 text-caption text-error">{error}</p>}
         {chats && chats.length === 0 && (
-          <p className="p-4 text-sm text-fg-muted">No conversations yet. Real chats will appear here as WhatsApp syncs.</p>
+          <p className="p-4 text-body text-fg-muted">No conversations yet. Real chats will appear here as WhatsApp syncs.</p>
         )}
         {chats && chats.length > 0 && filtered.length === 0 && (
-          <p className="p-4 text-sm text-fg-muted">No chats match this filter.</p>
+          <p className="p-4 text-body text-fg-muted">No chats match this filter.</p>
         )}
         {active.map((chat) => (
           <ChatRow key={chat.id} chat={chat} onOpenPhoto={setLightboxUrl} />
@@ -213,8 +213,8 @@ export function ChatListPane({ className = '' }: Props) {
           <>
             <div className="flex items-center gap-2 border-b border-border-subtle/60 bg-surface-2/50 px-4 py-2">
               <Archive size={13} className="text-fg-muted" aria-hidden />
-              <span className="text-xs font-medium text-fg-secondary">Archived</span>
-              <span className="text-[11px] text-fg-muted">{archived.length}</span>
+              <span className="text-caption font-medium text-fg-secondary">Archived</span>
+              <span className="text-meta text-fg-muted">{archived.length}</span>
             </div>
             {archived.map((chat) => (
               <ChatRow key={chat.id} chat={chat} onOpenPhoto={setLightboxUrl} />

@@ -27,7 +27,7 @@ const NAV_ITEMS: { to: string; label: string; icon: LucideIcon; implemented: boo
 export function SaasNavRail() {
   return (
     <nav className="hidden w-16 shrink-0 flex-col items-center gap-1 border-r border-border-subtle bg-surface-1 py-4 md:flex">
-      <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg bg-accent-soft text-sm font-bold text-accent">
+      <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg bg-accent-soft text-body font-bold text-accent">
         W
       </div>
       {NAV_ITEMS.map((item) => (

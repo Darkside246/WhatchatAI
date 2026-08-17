@@ -96,14 +96,14 @@ function ContactDetailCard({
     <div className="flex-1 overflow-y-auto p-6">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold text-fg">{contact.displayName}</h2>
-          <p className="mt-0.5 text-xs text-fg-muted">{contact.phoneNumber ?? 'No phone number on file'}</p>
+          <h2 className="text-body-lg font-semibold text-fg">{contact.displayName}</h2>
+          <p className="mt-0.5 text-caption text-fg-muted">{contact.phoneNumber ?? 'No phone number on file'}</p>
         </div>
         <button
           type="button"
           onClick={() => void handleCreateLead()}
           disabled={creatingLead || leadCreated}
-          className="shrink-0 rounded-lg border border-border-subtle px-3 py-1.5 text-xs font-medium text-fg-secondary hover:bg-surface-2 disabled:opacity-50"
+          className="shrink-0 rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-2 disabled:opacity-50"
         >
           {leadCreated ? 'Lead created — see Pipeline' : creatingLead ? 'Creating…' : '+ Create lead'}
         </button>
@@ -111,7 +111,7 @@ function ContactDetailCard({
 
       <div className="mt-5 space-y-3 max-w-md">
         <div>
-          <label className="text-xs font-medium text-fg-secondary" htmlFor="crm-stage">
+          <label className="text-caption font-medium text-fg-secondary" htmlFor="crm-stage">
             Stage
           </label>
           <input
@@ -120,7 +120,7 @@ function ContactDetailCard({
             value={stage}
             onChange={(e) => setStage(e.target.value)}
             placeholder="new_enquiry"
-            className="mt-1 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            className="mt-1 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg outline-none focus:border-accent"
           />
           <datalist id="crm-stage-options">
             {STAGE_OPTIONS.map((s) => (
@@ -129,7 +129,7 @@ function ContactDetailCard({
           </datalist>
         </div>
         <div>
-          <label className="text-xs font-medium text-fg-secondary" htmlFor="crm-lead-status">
+          <label className="text-caption font-medium text-fg-secondary" htmlFor="crm-lead-status">
             Lead status
           </label>
           <input
@@ -138,7 +138,7 @@ function ContactDetailCard({
             value={leadStatus}
             onChange={(e) => setLeadStatus(e.target.value)}
             placeholder="open"
-            className="mt-1 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            className="mt-1 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg outline-none focus:border-accent"
           />
           <datalist id="crm-lead-status-options">
             {LEAD_STATUS_OPTIONS.map((s) => (
@@ -147,7 +147,7 @@ function ContactDetailCard({
           </datalist>
         </div>
         <div>
-          <label className="text-xs font-medium text-fg-secondary" htmlFor="crm-tags">
+          <label className="text-caption font-medium text-fg-secondary" htmlFor="crm-tags">
             Tags (comma separated)
           </label>
           <input
@@ -155,11 +155,11 @@ function ContactDetailCard({
             value={tagsInput}
             onChange={(e) => setTagsInput(e.target.value)}
             placeholder="vip, follow-up"
-            className="mt-1 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            className="mt-1 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg outline-none focus:border-accent"
           />
         </div>
         <div>
-          <label className="text-xs font-medium text-fg-secondary" htmlFor="crm-notes">
+          <label className="text-caption font-medium text-fg-secondary" htmlFor="crm-notes">
             Notes
           </label>
           <textarea
@@ -167,15 +167,15 @@ function ContactDetailCard({
             rows={4}
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            className="mt-1 w-full resize-none rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            className="mt-1 w-full resize-none rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg outline-none focus:border-accent"
           />
         </div>
-        {error && <p className="text-xs text-error">{error}</p>}
+        {error && <p className="text-caption text-error">{error}</p>}
         <button
           type="button"
           onClick={() => void handleSave()}
           disabled={saving}
-          className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+          className="rounded-lg bg-accent px-3 py-2 text-body font-medium text-white hover:bg-accent-dim disabled:opacity-50"
         >
           {saving ? 'Saving…' : 'Save'}
         </button>
@@ -212,9 +212,9 @@ function ContactsTab({ focusContactId }: { focusContactId: string | null }) {
       <div
         className={`w-full shrink-0 overflow-y-auto border-r border-border-subtle md:flex md:w-80 ${selectedId ? 'hidden' : 'flex'} flex-col`}
       >
-        {error && <p className="p-4 text-xs text-error">{error}</p>}
+        {error && <p className="p-4 text-caption text-error">{error}</p>}
         {contacts && contacts.length === 0 && (
-          <p className="p-4 text-sm text-fg-muted">
+          <p className="p-4 text-body text-fg-muted">
             No CRM contacts yet. A profile is created automatically the first time you open a chat in the Inbox.
           </p>
         )}
@@ -227,13 +227,13 @@ function ContactsTab({ focusContactId }: { focusContactId: string | null }) {
               selectedId === contact.id ? 'bg-accent-soft' : 'hover:bg-surface-2'
             }`}
           >
-            <p className="truncate text-sm font-medium text-fg">{contact.displayName}</p>
+            <p className="truncate text-body font-medium text-fg">{contact.displayName}</p>
             <div className="flex items-center gap-1.5">
               {contact.stage && (
-                <span className="rounded-full bg-surface-3 px-2 py-0.5 text-[10px] text-fg-secondary">{contact.stage}</span>
+                <span className="rounded-full bg-surface-3 px-2 py-0.5 text-meta text-fg-secondary">{contact.stage}</span>
               )}
               {contact.leadStatus && (
-                <span className="rounded-full bg-surface-3 px-2 py-0.5 text-[10px] text-fg-secondary">{contact.leadStatus}</span>
+                <span className="rounded-full bg-surface-3 px-2 py-0.5 text-meta text-fg-secondary">{contact.leadStatus}</span>
               )}
             </div>
           </button>
@@ -245,7 +245,7 @@ function ContactsTab({ focusContactId }: { focusContactId: string | null }) {
           <button
             type="button"
             onClick={() => setSelectedId(null)}
-            className="flex shrink-0 items-center gap-1.5 border-b border-border-subtle px-4 py-2.5 text-xs font-medium text-fg-secondary hover:text-fg md:hidden"
+            className="flex shrink-0 items-center gap-1.5 border-b border-border-subtle px-4 py-2.5 text-caption font-medium text-fg-secondary hover:text-fg md:hidden"
           >
             ← Back to contacts
           </button>
@@ -256,7 +256,7 @@ function ContactsTab({ focusContactId }: { focusContactId: string | null }) {
           />
         </div>
       ) : (
-        <div className="hidden flex-1 items-center justify-center text-sm text-fg-muted md:flex">Select a contact</div>
+        <div className="hidden flex-1 items-center justify-center text-body text-fg-muted md:flex">Select a contact</div>
       )}
     </div>
   );
@@ -287,9 +287,9 @@ function LeadCard({
 
   return (
     <div className={`rounded-xl border bg-surface-2 p-3 ${highlighted ? 'border-accent ring-1 ring-accent' : 'border-border-subtle'}`}>
-      <p className="text-sm font-medium text-fg">{lead.displayName}</p>
-      {lead.nextAction && <p className="mt-1 text-xs text-fg-secondary">Next: {lead.nextAction}</p>}
-      <div className="mt-2 flex items-center justify-between text-[11px] text-fg-muted">
+      <p className="text-body font-medium text-fg">{lead.displayName}</p>
+      {lead.nextAction && <p className="mt-1 text-caption text-fg-secondary">Next: {lead.nextAction}</p>}
+      <div className="mt-2 flex items-center justify-between text-meta text-fg-muted">
         <span>{formatMoney(lead.value)}</span>
         {lead.score !== null && <span>Score {lead.score}</span>}
       </div>
@@ -300,7 +300,7 @@ function LeadCard({
             type="button"
             disabled={busy}
             onClick={() => void move(s)}
-            className="rounded-full bg-surface-3 px-2 py-0.5 text-[10px] text-fg-secondary hover:bg-surface-1 disabled:opacity-50"
+            className="rounded-full bg-surface-3 px-2 py-0.5 text-meta text-fg-secondary hover:bg-surface-1 disabled:opacity-50"
           >
             → {PIPELINE_LABEL[s]}
           </button>
@@ -328,10 +328,10 @@ function LeadsTab({ focusLeadId }: { focusLeadId: string | null }) {
     setLeads((prev) => prev?.map((l) => (l.id === updated.id ? updated : l)) ?? prev);
   }
 
-  if (error) return <p className="p-6 text-xs text-error">{error}</p>;
+  if (error) return <p className="p-6 text-caption text-error">{error}</p>;
   if (leads && leads.length === 0) {
     return (
-      <p className="p-6 text-sm text-fg-muted">
+      <p className="p-6 text-body text-fg-muted">
         No leads yet. Create one from a CRM contact once real conversations have qualified prospects to track.
       </p>
     );
@@ -342,10 +342,10 @@ function LeadsTab({ focusLeadId }: { focusLeadId: string | null }) {
       {PIPELINE_STATUSES.map((status) => (
         <div key={status} className="w-64 shrink-0">
           <div className="mb-2 flex items-center gap-2 px-1">
-            <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${PIPELINE_COLOR[status]}`}>
+            <span className={`rounded-full px-2 py-0.5 text-meta font-medium ${PIPELINE_COLOR[status]}`}>
               {PIPELINE_LABEL[status]}
             </span>
-            <span className="text-xs text-fg-muted">{leads?.filter((l) => l.status === status).length ?? 0}</span>
+            <span className="text-caption text-fg-muted">{leads?.filter((l) => l.status === status).length ?? 0}</span>
           </div>
           <div className="space-y-2">
             {leads?.filter((l) => l.status === status).map((lead) => (
@@ -371,13 +371,13 @@ export function CrmRoute() {
   return (
     <div className="flex h-full flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-1 border-b border-border-subtle px-4 py-3">
-        <h1 className="mr-4 text-base font-semibold text-fg">CRM &amp; Leads</h1>
+        <h1 className="mr-4 text-body-lg font-semibold text-fg">CRM &amp; Leads</h1>
         {(['contacts', 'leads'] as const).map((value) => (
           <button
             key={value}
             type="button"
             onClick={() => setTab(value)}
-            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+            className={`rounded-full px-3 py-1 text-caption font-medium transition-colors ${
               tab === value ? 'bg-accent-soft text-accent' : 'bg-surface-2 text-fg-secondary hover:bg-surface-3'
             }`}
           >
