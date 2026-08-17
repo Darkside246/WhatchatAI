@@ -2,8 +2,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
+import { WhatsAppContactRepository } from '../src/repositories/whatsappContactRepository.js';
 import { AiAgentRepository } from '../src/repositories/aiAgentRepository.js';
 import { workspaceService, isEntitlementDeniedError, isChatNotFoundError } from '../src/services/workspaceService.js';
+import { register } from '../src/services/authService.js';
+import { listNotifications } from '../src/services/notificationService.js';
 import { createTestAccount, createTestBusiness, createTestSubscription, resetDatabase } from './helpers.js';
 
 describe('workspaceService.listChats (real Postgres timestamptz -> string mapping)', () => {
@@ -289,5 +292,67 @@ describe('workspaceService.updateAccountProfilePicture (pushes to WhatsApp itsel
     await expect(
       workspaceService.updateAccountProfilePicture(businessId, '00000000-0000-0000-0000-000000000000', fakeJpeg, 'image/jpeg'),
     ).rejects.toThrow();
+  });
+});
+
+describe('workspaceService real notification triggers (HUMAN_HANDOFF and NEW_LEAD)', () => {
+  let businessId: string;
+  let accountId: string;
+  let ownerId: string;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    const owner = await register(
+      { email: 'owner@example.com', password: 'correcthorsebatterystaple', displayName: 'Owner' },
+      { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' },
+    );
+    businessId = owner.business.id;
+    ownerId = owner.user.id;
+    accountId = await createTestAccount(businessId);
+  });
+
+  it('setAiMode(...,"HUMAN_TAKEOVER") dispatches a real HUMAN_HANDOFF notification, but only on the real transition', async () => {
+    const chatRepository = new WhatsAppChatRepository(pool);
+    const chat = await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550009999@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+
+    await workspaceService.setAiMode(businessId, accountId, chat.id, 'HUMAN_TAKEOVER');
+    const { notifications } = await listNotifications(businessId, ownerId);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.type).toBe('HUMAN_HANDOFF');
+    expect(notifications[0]?.targetId).toBe(chat.id);
+
+    // Setting it again (already HUMAN_TAKEOVER) must not create a duplicate.
+    await workspaceService.setAiMode(businessId, accountId, chat.id, 'HUMAN_TAKEOVER');
+    const after = await listNotifications(businessId, ownerId);
+    expect(after.notifications).toHaveLength(1);
+  });
+
+  it('createLead dispatches a real NEW_LEAD notification', async () => {
+    const contactRepository = new WhatsAppContactRepository(pool);
+    const contact = await contactRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      whatsappJid: '15550008888@s.whatsapp.net',
+      jidKind: 'individual',
+      phoneNumber: '+15550008888',
+      pushName: 'Prospect',
+    });
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO crm_contacts (business_id, whatsapp_contact_id, source, stage) VALUES ($1, $2, 'whatsapp_inbound', 'new_enquiry') RETURNING id`,
+      [businessId, contact.id],
+    );
+    const crmContactId = rows[0]!.id;
+
+    const lead = await workspaceService.createLead(businessId, { crmContactId, source: 'whatsapp_inbound' });
+    const { notifications } = await listNotifications(businessId, ownerId);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.type).toBe('NEW_LEAD');
+    expect(notifications[0]?.targetId).toBe(lead.id);
   });
 });

@@ -34,6 +34,13 @@ import {
 } from '../services/securityLockService.js';
 import { listHumanTakeoverAlerts } from '../services/securityAlertService.js';
 import {
+  listNotifications,
+  markNotificationRead,
+  markNotificationDismissed,
+  markAllNotificationsRead,
+  isNotificationNotFoundError,
+} from '../services/notificationService.js';
+import {
   isRegistrationOpen,
   register,
   login,
@@ -788,6 +795,45 @@ app.get('/api/workspace/statuses', requireWorkspaceContext, async (_req, res) =>
   };
   const statuses = await workspaceService.listStatuses(businessId, whatsappAccountId);
   return res.status(200).json({ statuses });
+});
+
+// Notifications don't require an active WhatsApp connection (requireWorkspaceContext) -
+// a signed-in user should still see e.g. a stale HUMAN_HANDOFF notification while
+// reconnecting - so these sit directly behind the blanket /api/workspace requireAuth only.
+app.get('/api/workspace/notifications', async (_req, res) => {
+  const { businessId, userId } = res.locals.auth as AuthContext;
+  const limitParam = Number(_req.query.limit);
+  const limit = Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 50;
+  const result = await listNotifications(businessId, userId, limit);
+  return res.status(200).json(result);
+});
+
+app.patch('/api/workspace/notifications/:id/read', async (req, res) => {
+  const { userId } = res.locals.auth as AuthContext;
+  try {
+    const notification = await markNotificationRead(userId, String(req.params.id ?? ''));
+    return res.status(200).json({ notification });
+  } catch (error) {
+    if (isNotificationNotFoundError(error)) return res.status(404).json({ error: 'NOTIFICATION_NOT_FOUND' });
+    throw error;
+  }
+});
+
+app.patch('/api/workspace/notifications/:id/dismiss', async (req, res) => {
+  const { userId } = res.locals.auth as AuthContext;
+  try {
+    const notification = await markNotificationDismissed(userId, String(req.params.id ?? ''));
+    return res.status(200).json({ notification });
+  } catch (error) {
+    if (isNotificationNotFoundError(error)) return res.status(404).json({ error: 'NOTIFICATION_NOT_FOUND' });
+    throw error;
+  }
+});
+
+app.post('/api/workspace/notifications/read-all', async (_req, res) => {
+  const { businessId, userId } = res.locals.auth as AuthContext;
+  const updatedCount = await markAllNotificationsRead(businessId, userId);
+  return res.status(200).json({ updatedCount });
 });
 
 /**

@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import type { SyncStatusResponse, WhatsAppConnectionSnapshot } from '../lib/api.js';
 import { SaasNavRail, SaasNavBottomBar } from '../components/SaasNavRail.js';
+import { NotificationCenter } from '../components/NotificationCenter.js';
 import { ChatsRoute } from './ChatsRoute.js';
 import { AgentsPage } from './AgentsPage.js';
 import { CrmRoute } from './CrmRoute.js';
@@ -27,11 +28,14 @@ export function WorkspaceShell({ connection, sync }: Props) {
         <SaasNavRail />
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="hidden shrink-0 items-center justify-between border-b border-border-subtle bg-surface-1 px-4 py-2 lg:flex">
-            <p className="text-xs text-fg-muted">
+          <header className="flex shrink-0 items-center justify-between border-b border-border-subtle bg-surface-1 px-4 py-2">
+            <p className="hidden text-xs text-fg-muted sm:block">
               Connected as {connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'}
             </p>
-            <span className="rounded-full bg-success/15 px-2 py-0.5 text-[11px] text-success">Live</span>
+            <div className="flex items-center gap-3">
+              <NotificationCenter />
+              <span className="rounded-full bg-success/15 px-2 py-0.5 text-[11px] text-success">Live</span>
+            </div>
           </header>
 
           <div className="flex min-h-0 flex-1">

@@ -241,6 +241,35 @@ export interface MemberDto {
   joinedAt: string;
 }
 
+export type NotificationType =
+  | 'HUMAN_HANDOFF'
+  | 'NEW_MESSAGE'
+  | 'NEW_LEAD'
+  | 'MENTION'
+  | 'ASSIGNMENT'
+  | 'AI_FAILURE'
+  | 'AUTOMATION_FAILURE'
+  | 'SYNC_FAILURE'
+  | 'PAYMENT_ISSUE'
+  | 'CALL'
+  | 'STATUS'
+  | 'SLA_BREACH'
+  | 'CAMPAIGN_FAILURE'
+  | 'SYSTEM';
+
+export interface NotificationDto {
+  id: string;
+  type: NotificationType;
+  severity: 'info' | 'warning' | 'critical';
+  title: string;
+  body: string | null;
+  targetType: string | null;
+  targetId: string | null;
+  createdAt: string;
+  readAt: string | null;
+  dismissedAt: string | null;
+}
+
 export interface AiAgentSummary {
   id: string;
   name: string;
@@ -483,4 +512,11 @@ export const api = {
   updateMemberRole: (membershipId: string, role: BusinessRole) =>
     request<{ member: MemberDto }>(`/workspace/members/${membershipId}/role`, { method: 'PATCH', body: JSON.stringify({ role }) }),
   removeMember: (membershipId: string) => request<{ status: string }>(`/workspace/members/${membershipId}`, { method: 'DELETE' }),
+
+  listNotifications: () => request<{ notifications: NotificationDto[]; unreadCount: number }>('/workspace/notifications'),
+  markNotificationRead: (id: string) =>
+    request<{ notification: NotificationDto }>(`/workspace/notifications/${id}/read`, { method: 'PATCH' }),
+  dismissNotification: (id: string) =>
+    request<{ notification: NotificationDto }>(`/workspace/notifications/${id}/dismiss`, { method: 'PATCH' }),
+  markAllNotificationsRead: () => request<{ updatedCount: number }>('/workspace/notifications/read-all', { method: 'POST' }),
 };

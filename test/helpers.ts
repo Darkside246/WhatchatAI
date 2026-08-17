@@ -5,6 +5,7 @@ import { PlanRepository } from '../src/repositories/planRepository.js';
 import { SubscriptionRepository } from '../src/repositories/subscriptionRepository.js';
 
 const TABLES = [
+  'notifications',
   'auth_login_attempts',
   'sessions',
   'user_preferences',

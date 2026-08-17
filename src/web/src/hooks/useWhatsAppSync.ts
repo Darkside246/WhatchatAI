@@ -12,7 +12,8 @@ export type RealtimeEvent =
   | { type: 'media.updated'; businessId: string; mediaId: string; messageId: string; chatId: string }
   | { type: 'status.media.updated'; businessId: string; mediaId: string; statusId: string }
   | { type: 'message.reaction'; businessId: string; chatId: string; messageId: string }
-  | { type: 'presence.updated'; businessId: string; contactJid: string };
+  | { type: 'presence.updated'; businessId: string; contactJid: string }
+  | { type: 'notification.created'; businessId: string; userId: string; notificationId: string };
 
 export interface WhatsAppSyncState {
   /** The real socket state - never assume live updates are flowing without checking this. */

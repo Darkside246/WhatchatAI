@@ -24,6 +24,7 @@ import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { describeMessageType } from '../domain/whatsapp/messagePreview.js';
 import { whatsappConnectionService } from './whatsappConnectionService.js';
 import { enqueueContactProfilePictureSync, storeAndAttachAccountProfilePicture } from './profilePictureSyncService.js';
+import { notifyBusiness } from './notificationService.js';
 import type {
   CallStatus,
   CallType,
@@ -563,7 +564,33 @@ export class WorkspaceService {
     if (!chat || chat.businessId !== businessId || chat.whatsappAccountId !== whatsappAccountId) {
       throw this.notFound();
     }
-    return this.chatRepository.setAiMode(chatId, aiMode);
+    const updated = await this.chatRepository.setAiMode(chatId, aiMode);
+
+    // Real handoff notification - fires whenever a chat actually transitions
+    // INTO human-takeover (never on a redundant re-set of the same mode),
+    // regardless of whether a human flipped it manually or a future
+    // automatic classifier (Chatwoot gap audit section 27) does it later.
+    // Awaited (unlike the profile-picture sync elsewhere in this file,
+    // which is a slow external network call) - this is a fast local insert,
+    // and a caller reading notifications right after this call returns
+    // should always see it.
+    if (aiMode === 'HUMAN_TAKEOVER' && chat.aiMode !== 'HUMAN_TAKEOVER') {
+      try {
+        await notifyBusiness({
+          businessId,
+          type: 'HUMAN_HANDOFF',
+          severity: 'critical',
+          title: 'A conversation needs a human',
+          body: chat.phoneNumber ? `WhatsApp conversation with +${chat.phoneNumber} needs your attention.` : 'A WhatsApp conversation needs your attention.',
+          targetType: 'chat',
+          targetId: chatId,
+        });
+      } catch (error) {
+        console.error('[WorkspaceService] Failed to dispatch HUMAN_HANDOFF notification:', error);
+      }
+    }
+
+    return updated;
   }
 
   /**
@@ -824,7 +851,23 @@ export class WorkspaceService {
   async createLead(businessId: string, input: CreateLeadInput) {
     const crmContact = await this.crmContactRepository.findByIdForBusiness(businessId, input.crmContactId);
     if (!crmContact) throw this.crmContactNotFound();
-    return this.leadRepository.create({ businessId, ...input });
+    const lead = await this.leadRepository.create({ businessId, ...input });
+
+    try {
+      await notifyBusiness({
+        businessId,
+        type: 'NEW_LEAD',
+        severity: 'info',
+        title: 'New lead created',
+        body: input.source ? `Sourced from ${input.source}.` : null,
+        targetType: 'lead',
+        targetId: lead.id,
+      });
+    } catch (error) {
+      console.error('[WorkspaceService] Failed to dispatch NEW_LEAD notification:', error);
+    }
+
+    return lead;
   }
 
   async updateLead(businessId: string, leadId: string, input: UpdateLeadInput): Promise<LeadRecord> {
