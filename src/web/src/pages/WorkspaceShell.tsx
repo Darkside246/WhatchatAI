@@ -12,6 +12,7 @@ import { BillingRoute } from './BillingRoute.js';
 import { SettingsRoute } from './SettingsRoute.js';
 import { DashboardRoute } from './DashboardRoute.js';
 import { MarketingRoute } from './MarketingRoute.js';
+import { EmailRoute } from './EmailRoute.js';
 import { FunnelsRoute } from './FunnelsRoute.js';
 
 interface Props {
@@ -66,6 +67,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
               <Route path="/crm" element={<CrmRoute />} />
               <Route path="/automations" element={<FunnelsRoute />} />
               <Route path="/marketing" element={<MarketingRoute />} />
+              <Route path="/email" element={<EmailRoute />} />
               <Route path="/billing" element={<BillingRoute />} />
               <Route path="/settings" element={<SettingsRoute connection={connection} />} />
               <Route path="*" element={<Navigate to="/chats" replace />} />

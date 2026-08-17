@@ -25,7 +25,12 @@ export type SecurityEventType =
   | 'agent_updated'
   | 'message_revoke_requested'
   | 'campaign_recalled'
-  | 'status_revoke_requested';
+  | 'status_revoke_requested'
+  | 'email_drafted'
+  | 'email_approved'
+  | 'email_sent'
+  | 'email_cancelled'
+  | 'email_settings_updated';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 

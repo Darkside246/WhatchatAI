@@ -114,6 +114,7 @@ import { scheduledStatusPublishWorker } from '../queue/workers/scheduledStatusPu
 // Same process affinity as the workers above: revoking a message needs the
 // live Baileys socket, which only exists in whichever process connected.
 import { messageRevocationWorker } from '../queue/workers/messageRevocationWorker.js';
+import { emailSendWorker } from '../queue/workers/emailSendWorker.js';
 // Same reasoning - a WAIT-node resume may itself send a real WhatsApp message.
 import { funnelAdvanceWorker } from '../queue/workers/funnelAdvanceWorker.js';
 import {
@@ -142,6 +143,22 @@ import {
   isInvalidScheduledStatusError,
 } from '../services/scheduledStatusService.js';
 import { getAiEngineStatus } from '../services/aiEngineStatusService.js';
+import {
+  createDraft as createEmailDraft,
+  listEmails,
+  getEmail,
+  updateDraft as updateEmailDraft,
+  approveAndSend as approveAndSendEmail,
+  cancelEmail,
+  getEmailCapabilities,
+  getSettings as getEmailSettings,
+  updateSettings as updateEmailSettings,
+  draftWithAi as draftEmailWithAi,
+  isEmailNotFoundError,
+  isInvalidEmailError,
+  isEmailNotApprovableError,
+} from '../services/emailService.js';
+import { EMAIL_KINDS } from '../repositories/emailMessageRepository.js';
 import {
   revokeMessage,
   recallCampaign,
@@ -1043,6 +1060,167 @@ app.post(
   },
 );
 
+/**
+ * Email. Every route here sits AFTER the `app.use('/api/workspace',
+ * requireAuth)` mount above - see test/aiEngineStatus.test.ts, which fails
+ * if one is ever added before it.
+ *
+ * The approval boundary is deliberate: drafting needs 'email.draft',
+ * releasing to a real customer needs 'email.send'. An AGENT role holds the
+ * former and not the latter.
+ */
+function emailErrorResponse(error: unknown, res: Response): Response | null {
+  if (isEmailNotFoundError(error)) return res.status(404).json({ error: 'EMAIL_NOT_FOUND' });
+  if (isInvalidEmailError(error)) return res.status(400).json({ error: 'INVALID_EMAIL', message: error.message });
+  if (isEmailNotApprovableError(error)) return res.status(409).json({ error: 'EMAIL_NOT_APPROVABLE', message: error.message });
+  return null;
+}
+
+app.get('/api/workspace/email/capabilities', requirePermission('email.view'), async (_req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  return res.status(200).json(await getEmailCapabilities(businessId));
+});
+
+app.get('/api/workspace/email/settings', requirePermission('email.view'), async (_req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  return res.status(200).json({ settings: await getEmailSettings(businessId) });
+});
+
+const emailSettingsSchema = z.object({
+  fromEmail: z.string().trim().min(3).max(320),
+  fromName: z.string().trim().max(200).nullish(),
+  replyToEmail: z.string().trim().max(320).nullish(),
+});
+
+app.put('/api/workspace/email/settings', requirePermission('settings.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = emailSettingsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_EMAIL_SETTINGS', details: parsed.error.flatten() });
+  try {
+    const settings = await updateEmailSettings(auth.businessId, auth.userId, parsed.data);
+    return res.status(200).json({ settings });
+  } catch (error) {
+    const handled = emailErrorResponse(error, res);
+    if (handled) return handled;
+    throw error;
+  }
+});
+
+app.get('/api/workspace/email', requirePermission('email.view'), async (req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  const statusParam = typeof req.query.status === 'string' ? req.query.status : undefined;
+  const status = statusParam && ['draft', 'approved', 'sending', 'sent', 'failed', 'cancelled'].includes(statusParam)
+    ? (statusParam as 'draft' | 'approved' | 'sending' | 'sent' | 'failed' | 'cancelled')
+    : undefined;
+  return res.status(200).json({ emails: await listEmails(businessId, status) });
+});
+
+app.get('/api/workspace/email/:id', requirePermission('email.view'), async (req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  try {
+    return res.status(200).json({ email: await getEmail(businessId, String(req.params.id ?? '')) });
+  } catch (error) {
+    const handled = emailErrorResponse(error, res);
+    if (handled) return handled;
+    throw error;
+  }
+});
+
+const createEmailSchema = z.object({
+  kind: z.enum(EMAIL_KINDS),
+  toEmail: z.string().trim().min(3).max(320),
+  toName: z.string().trim().max(200).nullish(),
+  subject: z.string().trim().min(1).max(200),
+  bodyText: z.string().min(1).max(5000),
+  chatId: z.string().uuid().nullish(),
+  crmContactId: z.string().uuid().nullish(),
+});
+
+app.post('/api/workspace/email', requirePermission('email.draft'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = createEmailSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_EMAIL', details: parsed.error.flatten() });
+  try {
+    const email = await createEmailDraft(auth.businessId, auth.userId, parsed.data);
+    return res.status(201).json({ email });
+  } catch (error) {
+    const handled = emailErrorResponse(error, res);
+    if (handled) return handled;
+    throw error;
+  }
+});
+
+const aiDraftSchema = z.object({
+  agentId: z.string().uuid(),
+  kind: z.enum(EMAIL_KINDS),
+  toEmail: z.string().trim().min(3).max(320),
+  toName: z.string().trim().max(200).nullish(),
+  instruction: z.string().trim().min(1).max(2000),
+  facts: z.string().trim().max(4000).nullish(),
+  chatId: z.string().uuid().nullish(),
+  crmContactId: z.string().uuid().nullish(),
+});
+
+app.post('/api/workspace/email/ai-draft', expensiveActionLimiter, requirePermission('email.draft'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = aiDraftSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_EMAIL', details: parsed.error.flatten() });
+  try {
+    // Always returns a DRAFT. There is deliberately no "draft and send".
+    const result = await draftEmailWithAi(auth.businessId, auth.userId, parsed.data);
+    return res.status(result.status === 'drafted' ? 201 : 200).json(result);
+  } catch (error) {
+    const handled = emailErrorResponse(error, res);
+    if (handled) return handled;
+    throw error;
+  }
+});
+
+const updateEmailSchema = z.object({
+  toEmail: z.string().trim().min(3).max(320),
+  toName: z.string().trim().max(200).nullish(),
+  subject: z.string().trim().min(1).max(200),
+  bodyText: z.string().min(1).max(5000),
+});
+
+app.patch('/api/workspace/email/:id', requirePermission('email.draft'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = updateEmailSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_EMAIL', details: parsed.error.flatten() });
+  try {
+    const email = await updateEmailDraft(auth.businessId, String(req.params.id ?? ''), parsed.data);
+    return res.status(200).json({ email });
+  } catch (error) {
+    const handled = emailErrorResponse(error, res);
+    if (handled) return handled;
+    throw error;
+  }
+});
+
+app.post('/api/workspace/email/:id/approve', requirePermission('email.send'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  try {
+    const email = await approveAndSendEmail(auth.businessId, String(req.params.id ?? ''), auth.userId);
+    return res.status(202).json({ email });
+  } catch (error) {
+    const handled = emailErrorResponse(error, res);
+    if (handled) return handled;
+    throw error;
+  }
+});
+
+app.post('/api/workspace/email/:id/cancel', requirePermission('email.draft'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  try {
+    const email = await cancelEmail(auth.businessId, String(req.params.id ?? ''), auth.userId);
+    return res.status(200).json({ email });
+  } catch (error) {
+    const handled = emailErrorResponse(error, res);
+    if (handled) return handled;
+    throw error;
+  }
+});
+
 app.get('/api/workspace/funnels', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const funnels = await listFunnels(businessId);
@@ -1860,6 +2038,7 @@ async function shutdown(signal: string): Promise<void> {
   await outboundMessagesWorker.close();
   await scheduledStatusPublishWorker.close();
   await messageRevocationWorker.close();
+  await emailSendWorker.close();
   await funnelAdvanceWorker.close();
   process.exit(0);
 }

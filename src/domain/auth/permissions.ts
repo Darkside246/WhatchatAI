@@ -33,6 +33,12 @@ export const PERMISSIONS = [
   'users.manage',
   'settings.manage',
   'audit.view',
+  // Email is split into three because approving-and-sending is a genuinely
+  // higher-trust act than drafting: an AI-drafted email is only ever sent by
+  // someone holding email.send.
+  'email.view',
+  'email.draft',
+  'email.send',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -74,6 +80,9 @@ const ROLE_PERMISSIONS: Record<BusinessRole, readonly Permission[]> = {
     'reports.view',
     'reports.export',
     'team.manage',
+    'email.view',
+    'email.draft',
+    'email.send',
   ],
   SUPERVISOR: [
     'whatsapp.view',
@@ -89,8 +98,25 @@ const ROLE_PERMISSIONS: Record<BusinessRole, readonly Permission[]> = {
     'marketing.view',
     'reports.view',
     'team.manage',
+    'email.view',
+    'email.draft',
+    'email.send',
   ],
-  AGENT: ['whatsapp.view', 'whatsapp.send', 'contacts.view', 'contacts.edit', 'crm.view', 'crm.edit', 'leads.view', 'leads.edit', 'ai.view'],
+  // Deliberately no 'email.send': an agent can prepare an email but a
+  // supervisor or above releases it to a real customer.
+  AGENT: [
+    'whatsapp.view',
+    'whatsapp.send',
+    'contacts.view',
+    'contacts.edit',
+    'crm.view',
+    'crm.edit',
+    'leads.view',
+    'leads.edit',
+    'ai.view',
+    'email.view',
+    'email.draft',
+  ],
   MARKETING: [
     'whatsapp.view',
     'contacts.view',
@@ -101,7 +127,7 @@ const ROLE_PERMISSIONS: Record<BusinessRole, readonly Permission[]> = {
     'marketing.schedule',
     'reports.view',
   ],
-  VIEWER: ['whatsapp.view', 'contacts.view', 'crm.view', 'leads.view', 'reports.view'],
+  VIEWER: ['whatsapp.view', 'contacts.view', 'crm.view', 'leads.view', 'reports.view', 'email.view'],
 };
 
 export function hasPermission(role: BusinessRole, permission: Permission): boolean {

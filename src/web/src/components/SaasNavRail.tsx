@@ -6,6 +6,7 @@ import {
   Contact,
   Zap,
   Megaphone,
+  Mail,
   CreditCard,
   Settings,
   type LucideIcon,
@@ -18,6 +19,7 @@ const NAV_ITEMS: { to: string; label: string; icon: LucideIcon; implemented: boo
   { to: '/crm', label: 'CRM & Leads', icon: Contact, implemented: true },
   { to: '/automations', label: 'Automations', icon: Zap, implemented: false },
   { to: '/marketing', label: 'Marketing', icon: Megaphone, implemented: false },
+  { to: '/email', label: 'Email', icon: Mail, implemented: true },
   { to: '/billing', label: 'Billing', icon: CreditCard, implemented: true },
   { to: '/settings', label: 'Settings', icon: Settings, implemented: true },
 ];

@@ -389,6 +389,45 @@ export interface AiEnginesDto {
   canGenerate: boolean;
 }
 
+export const EMAIL_KINDS = ['custom', 'order_update', 'appointment', 'receipt', 'invoice', 'general_update'] as const;
+export type EmailKind = (typeof EMAIL_KINDS)[number];
+export type EmailStatus = 'draft' | 'approved' | 'sending' | 'sent' | 'failed' | 'cancelled';
+
+export interface EmailMessageDto {
+  id: string;
+  kind: EmailKind;
+  toEmail: string;
+  toName: string | null;
+  subject: string;
+  bodyText: string;
+  status: EmailStatus;
+  createdBy: string | null;
+  /** Set when an AI agent wrote the draft. A person still has to approve it. */
+  draftedByAgentId: string | null;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  sentAt: string | null;
+  provider: string | null;
+  providerMessageId: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EmailCapabilitiesDto {
+  providerConfigured: boolean;
+  senderConfigured: boolean;
+  provider: string;
+  reason?: string;
+}
+
+export interface EmailSettingsDto {
+  businessId: string;
+  fromEmail: string;
+  fromName: string | null;
+  replyToEmail: string | null;
+}
+
 export interface ScheduledStatusDto {
   id: string;
   businessId: string;
@@ -876,6 +915,37 @@ export const api = {
     request<{ status: 'requested' }>(`/workspace/scheduled-statuses/${id}/revoke`, { method: 'POST' }),
 
   getAiEngines: () => request<AiEnginesDto>('/workspace/ai-engines'),
+
+  getEmailCapabilities: () => request<EmailCapabilitiesDto>('/workspace/email/capabilities'),
+  getEmailSettings: () => request<{ settings: EmailSettingsDto | null }>('/workspace/email/settings'),
+  updateEmailSettings: (input: { fromEmail: string; fromName?: string | null; replyToEmail?: string | null }) =>
+    request<{ settings: EmailSettingsDto }>('/workspace/email/settings', { method: 'PUT', body: JSON.stringify(input) }),
+  listEmails: (status?: EmailStatus) =>
+    request<{ emails: EmailMessageDto[] }>(`/workspace/email${status ? `?status=${status}` : ''}`),
+  createEmailDraft: (input: {
+    kind: EmailKind;
+    toEmail: string;
+    toName?: string | null;
+    subject: string;
+    bodyText: string;
+  }) => request<{ email: EmailMessageDto }>('/workspace/email', { method: 'POST', body: JSON.stringify(input) }),
+  updateEmailDraft: (id: string, input: { toEmail: string; toName?: string | null; subject: string; bodyText: string }) =>
+    request<{ email: EmailMessageDto }>(`/workspace/email/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  /** The only path to sending. Requires the email.send permission server-side. */
+  approveEmail: (id: string) => request<{ email: EmailMessageDto }>(`/workspace/email/${id}/approve`, { method: 'POST' }),
+  cancelEmail: (id: string) => request<{ email: EmailMessageDto }>(`/workspace/email/${id}/cancel`, { method: 'POST' }),
+  aiDraftEmail: (input: {
+    agentId: string;
+    kind: EmailKind;
+    toEmail: string;
+    toName?: string | null;
+    instruction: string;
+    facts?: string | null;
+  }) =>
+    request<{ status: 'drafted'; email: EmailMessageDto } | { status: 'unavailable'; reason: string }>(
+      '/workspace/email/ai-draft',
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
 
   listScheduledStatuses: () => request<{ statuses: ScheduledStatusDto[] }>('/workspace/scheduled-statuses'),
   createScheduledStatus: (input: {
