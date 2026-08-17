@@ -178,6 +178,26 @@ function formatPresence(presence: WorkspacePresence | null): string | null {
 
 const QUICK_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥'];
 
+/**
+ * Plain Unicode emoji - no image assets, no external emoji service, and
+ * nothing fabricated: these are literal characters inserted into the real
+ * draft the composer already sends through the real outbound pipeline.
+ */
+const EMOJI_CATEGORIES: { label: string; emojis: string[] }[] = [
+  {
+    label: 'Smileys',
+    emojis: ['😀', '😃', '😄', '😁', '😆', '😅', '😂', '🤣', '😊', '😇', '🙂', '😉', '😍', '🥰', '😘', '😋', '😎', '🥳', '🤩', '🥺', '😭', '😤', '😡', '🤯'],
+  },
+  {
+    label: 'Gestures & people',
+    emojis: ['👍', '👎', '👏', '🙌', '🤝', '✌️', '🤞', '🤙', '👊', '✊', '👋', '💪', '🙏', '❤️', '🔥', '✨', '🎉', '💯', '🚀'],
+  },
+  {
+    label: 'Objects & food',
+    emojis: ['☕', '🍕', '🍔', '🍦', '🏖️', '✈️', '💻', '📱', '📸', '🎮', '💡', '📌', '🔑', '🎁', '🏆', '⚽', '🏀', '🎵', '🎧'],
+  },
+];
+
 /** A real, human-readable stand-in for a non-text message's preview - never the raw internal type name (e.g. `[unknown]`, `[system]`) verbatim. */
 const MESSAGE_TYPE_LABELS: Record<string, string> = {
   image: 'Photo',
@@ -323,6 +343,7 @@ export function ChatThread({ onOpenDetail }: Props) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const [lightbox, setLightbox] = useState<{ url: string; fileName: string | null } | null>(null);
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
@@ -433,6 +454,7 @@ export function ChatThread({ onOpenDetail }: Props) {
     setModeError(null);
     setDraft('');
     setSendError(null);
+    setEmojiPickerOpen(false);
     setReactionPickerFor(null);
     setReactionError(null);
     void load(chatId);
@@ -492,6 +514,7 @@ export function ChatThread({ onOpenDetail }: Props) {
     const text = draft.trim();
     if (!chatId || !text || sending) return;
     setDraft('');
+    setEmojiPickerOpen(false);
     await dispatchSend(chatId, { messageType: 'text', text });
   }
 
@@ -730,8 +753,36 @@ export function ChatThread({ onOpenDetail }: Props) {
         ))}
       </div>
 
-      <div className="shrink-0 border-t border-border-subtle bg-surface-1 p-3">
+      <div className="relative shrink-0 border-t border-border-subtle bg-surface-1 p-3">
         {sendError && <p className="mb-2 text-xs text-error">{sendError}</p>}
+
+        {emojiPickerOpen && (
+          <div
+            role="dialog"
+            aria-label="Insert emoji"
+            className="absolute bottom-full left-3 z-30 mb-2 max-h-72 w-[min(20rem,calc(100vw-1.5rem))] overflow-y-auto rounded-xl border border-border-subtle bg-surface-2 p-3 shadow-2xl"
+          >
+            {EMOJI_CATEGORIES.map((category) => (
+              <div key={category.label} className="mb-3 last:mb-0">
+                <p className="mb-1.5 text-[11px] font-semibold text-fg-muted">{category.label}</p>
+                <div className="grid grid-cols-8 gap-1">
+                  {category.emojis.map((emoji) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      aria-label={`Insert ${emoji}`}
+                      onClick={() => setDraft((previous) => previous + emoji)}
+                      className="rounded p-1 text-lg transition-transform hover:scale-125 hover:bg-surface-3"
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-2 px-3 py-2 transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
           <input
             ref={fileInputRef}
@@ -739,6 +790,16 @@ export function ChatThread({ onOpenDetail }: Props) {
             className="hidden"
             onChange={(event) => void handleFileSelected(event)}
           />
+          <button
+            type="button"
+            disabled={sending}
+            onClick={() => setEmojiPickerOpen((open) => !open)}
+            aria-label="Insert emoji"
+            aria-expanded={emojiPickerOpen}
+            className={`disabled:cursor-not-allowed disabled:opacity-50 ${emojiPickerOpen ? 'text-accent' : 'text-fg-muted hover:text-fg'}`}
+          >
+            <SmilePlus size={18} strokeWidth={1.75} aria-hidden />
+          </button>
           <button
             type="button"
             disabled={sending}
