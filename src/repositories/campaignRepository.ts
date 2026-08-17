@@ -171,6 +171,16 @@ export class CampaignRepository {
     return rows.map(toCampaignRecord);
   }
 
+  /** In-flight campaigns (not yet cancelled/completed/failed) - the real usage a "max active campaigns" entitlement caps. */
+  async countInFlightByBusiness(businessId: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      `SELECT count(*)::int AS count FROM campaigns
+       WHERE business_id = $1 AND status NOT IN ('CANCELLED', 'COMPLETED', 'FAILED')`,
+      [businessId],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
   async updateDraft(id: string, name: string, messageText: string): Promise<CampaignRecord | null> {
     const { rows } = await this.db.query<CampaignRow>(
       `UPDATE campaigns SET name = $2, message_text = $3, updated_at = now() WHERE id = $1 RETURNING *`,

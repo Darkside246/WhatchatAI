@@ -28,6 +28,7 @@ import { notifyBusiness, notifyUser } from './notificationService.js';
 import { BusinessMembershipRepository } from '../repositories/businessMembershipRepository.js';
 import { TeamRepository } from '../repositories/teamRepository.js';
 import { AgentCapacityRepository } from '../repositories/agentCapacityRepository.js';
+import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import type {
   CallStatus,
   CallType,
@@ -284,6 +285,7 @@ export class WorkspaceService {
   private readonly membershipRepository = new BusinessMembershipRepository(pool);
   private readonly teamRepository = new TeamRepository(pool);
   private readonly capacityRepository = new AgentCapacityRepository(pool);
+  private readonly securityAuditLogRepository = new SecurityAuditLogRepository(pool);
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
@@ -657,6 +659,14 @@ export class WorkspaceService {
     const updated = await this.chatRepository.setAssignment(chatId, input.assigneeUserId, input.assigneeTeamId);
 
     const assignmentChanged = chat.assigneeUserId !== input.assigneeUserId || chat.assigneeTeamId !== input.assigneeTeamId;
+    if (assignmentChanged) {
+      await this.securityAuditLogRepository.record({
+        businessId,
+        whatsappAccountId,
+        eventType: 'chat_assigned',
+        rawMetadata: { chatId, assigneeUserId: input.assigneeUserId, assigneeTeamId: input.assigneeTeamId },
+      });
+    }
     if (assignmentChanged && input.assigneeUserId) {
       try {
         await notifyUser(input.assigneeUserId, {

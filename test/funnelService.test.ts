@@ -14,6 +14,7 @@ import {
   isAlreadyEnrolledError,
 } from '../src/services/funnelService.js';
 import { createTestAccount, resetDatabase } from './helpers.js';
+import { isEntitlementDeniedError } from '../src/services/workspaceService.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
 
@@ -52,6 +53,22 @@ describe('funnelService (real step execution, real backend actions only)', () =>
       await replaceFunnelSteps(businessId, funnel.id, [{ nodeType: 'MESSAGE', config: { text: 'Edited' } }]);
     } catch (error) {
       expect(isInvalidFunnelStepError(error)).toBe(true);
+    }
+  });
+
+  it('enforces the real per-plan max_active_funnels entitlement - a new business defaults to the Starter plan (limit 1)', async () => {
+    const first = await createFunnel(businessId, accountId, ownerId, 'Funnel 1', null);
+    await replaceFunnelSteps(businessId, first.id, [{ nodeType: 'MESSAGE', config: { text: 'Hi' } }]);
+    await setFunnelActive(businessId, first.id, true);
+
+    const second = await createFunnel(businessId, accountId, ownerId, 'Funnel 2', null);
+    await replaceFunnelSteps(businessId, second.id, [{ nodeType: 'MESSAGE', config: { text: 'Hi' } }]);
+    await expect(setFunnelActive(businessId, second.id, true)).rejects.toThrow();
+    try {
+      await setFunnelActive(businessId, second.id, true);
+    } catch (error) {
+      expect(isEntitlementDeniedError(error)).toBe(true);
+      if (isEntitlementDeniedError(error)) expect(error.reason).toBe('ENTITLEMENT_LIMIT_REACHED');
     }
   });
 

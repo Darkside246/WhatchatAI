@@ -3,11 +3,13 @@ import { TeamRepository, type TeamRecord, type TeamMemberRecord } from '../repos
 import { BusinessMembershipRepository } from '../repositories/businessMembershipRepository.js';
 import { AgentCapacityRepository, type AgentCapacityRecord, type AgentAvailability } from '../repositories/agentCapacityRepository.js';
 import { WhatsAppChatRepository } from '../repositories/whatsappChatRepository.js';
+import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 
 const teamRepository = new TeamRepository(pool);
 const membershipRepository = new BusinessMembershipRepository(pool);
 const capacityRepository = new AgentCapacityRepository(pool);
 const chatRepository = new WhatsAppChatRepository(pool);
+const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
 
 export class TeamNotFoundError extends Error {}
 export class DuplicateTeamNameError extends Error {}
@@ -25,7 +27,9 @@ export interface TeamWithMembers extends TeamRecord {
 
 export async function createTeam(businessId: string, name: string, description: string | null): Promise<TeamRecord> {
   try {
-    return await teamRepository.create(businessId, name.trim(), description);
+    const team = await teamRepository.create(businessId, name.trim(), description);
+    await securityAuditLogRepository.record({ businessId, eventType: 'team_created', rawMetadata: { teamId: team.id } });
+    return team;
   } catch (error) {
     if (error instanceof Error && 'code' in error && (error as { code?: string }).code === '23505') {
       throw new DuplicateTeamNameError(`A team named "${name}" already exists.`);

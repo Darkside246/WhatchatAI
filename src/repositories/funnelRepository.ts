@@ -143,6 +143,15 @@ export class FunnelRepository {
     return rows.map(toDefinitionRecord);
   }
 
+  /** Currently-active funnels - the real usage a "max active funnels" entitlement caps. */
+  async countActiveByBusiness(businessId: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      'SELECT count(*)::int AS count FROM funnel_definitions WHERE business_id = $1 AND is_active = true',
+      [businessId],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
   async setActive(id: string, isActive: boolean): Promise<FunnelDefinitionRecord | null> {
     const { rows } = await this.db.query<FunnelDefinitionRow>(
       'UPDATE funnel_definitions SET is_active = $2, updated_at = now() WHERE id = $1 RETURNING *',

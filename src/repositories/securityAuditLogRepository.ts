@@ -9,7 +9,19 @@ export type SecurityEventType =
   | 'lock_unlock_success'
   | 'lock_unlock_failure'
   | 'lock_throttled'
-  | 'lock_revoked';
+  | 'lock_revoked'
+  | 'campaign_created'
+  | 'campaign_approved'
+  | 'campaign_sent'
+  | 'campaign_cancelled'
+  | 'funnel_created'
+  | 'funnel_activated'
+  | 'funnel_deactivated'
+  | 'funnel_enrolled'
+  | 'team_created'
+  | 'chat_assigned'
+  | 'member_created'
+  | 'member_role_changed';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 

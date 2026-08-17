@@ -3,6 +3,8 @@ import { PlanRepository } from '../repositories/planRepository.js';
 import { SubscriptionRepository } from '../repositories/subscriptionRepository.js';
 import { AiAgentRepository } from '../repositories/aiAgentRepository.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
+import { CampaignRepository } from '../repositories/campaignRepository.js';
+import { FunnelRepository } from '../repositories/funnelRepository.js';
 
 export type EntitlementDenialReason =
   | 'NO_ACTIVE_SUBSCRIPTION'
@@ -26,12 +28,16 @@ export class EntitlementService {
   private readonly subscriptionRepository: SubscriptionRepository;
   private readonly aiAgentRepository: AiAgentRepository;
   private readonly accountRepository: WhatsAppAccountRepository;
+  private readonly campaignRepository: CampaignRepository;
+  private readonly funnelRepository: FunnelRepository;
 
   constructor(private readonly db: Queryable) {
     this.planRepository = new PlanRepository(db);
     this.subscriptionRepository = new SubscriptionRepository(db);
     this.aiAgentRepository = new AiAgentRepository(db);
     this.accountRepository = new WhatsAppAccountRepository(db);
+    this.campaignRepository = new CampaignRepository(db);
+    this.funnelRepository = new FunnelRepository(db);
   }
 
   async canCreateAgent(businessId: string): Promise<EntitlementCheckResult> {
@@ -43,6 +49,18 @@ export class EntitlementService {
   async canConnectWhatsAppAccount(businessId: string): Promise<EntitlementCheckResult> {
     return this.checkCountLimit(businessId, 'max_whatsapp_accounts', () =>
       this.accountRepository.countByBusiness(businessId),
+    );
+  }
+
+  async canCreateCampaign(businessId: string): Promise<EntitlementCheckResult> {
+    return this.checkCountLimit(businessId, 'max_active_campaigns', () =>
+      this.campaignRepository.countInFlightByBusiness(businessId),
+    );
+  }
+
+  async canActivateFunnel(businessId: string): Promise<EntitlementCheckResult> {
+    return this.checkCountLimit(businessId, 'max_active_funnels', () =>
+      this.funnelRepository.countActiveByBusiness(businessId),
     );
   }
 

@@ -19,6 +19,7 @@ import {
   isCampaignNotFoundError,
 } from '../src/services/campaignService.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
+import { isEntitlementDeniedError } from '../src/services/workspaceService.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
 const crmContactRepository = new CrmContactRepository(pool);
@@ -100,6 +101,22 @@ describe('campaignService (real eligibility, real status machine, real send pipe
     const detail = await getCampaign(businessId, result.campaign.id);
     expect(detail.recipients).toHaveLength(1);
     expect(detail.recipients[0]?.crmContactId).toBe(eligibleId);
+  });
+
+  it('enforces the real per-plan max_active_campaigns entitlement - a new business defaults to the Starter plan (limit 1)', async () => {
+    const first = await makeEligibleContact(businessId, accountId, '15559990010@s.whatsapp.net', 'First');
+    await createCampaign(businessId, accountId, ownerId, { name: 'Campaign 1', messageText: 'Hi', crmContactIds: [first] });
+
+    const second = await makeEligibleContact(businessId, accountId, '15559990011@s.whatsapp.net', 'Second');
+    await expect(
+      createCampaign(businessId, accountId, ownerId, { name: 'Campaign 2', messageText: 'Hi', crmContactIds: [second] }),
+    ).rejects.toThrow();
+    try {
+      await createCampaign(businessId, accountId, ownerId, { name: 'Campaign 2', messageText: 'Hi', crmContactIds: [second] });
+    } catch (error) {
+      expect(isEntitlementDeniedError(error)).toBe(true);
+      if (isEntitlementDeniedError(error)) expect(error.reason).toBe('ENTITLEMENT_LIMIT_REACHED');
+    }
   });
 
   it('rejects a campaign where none of the requested contacts are eligible', async () => {

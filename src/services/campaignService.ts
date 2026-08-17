@@ -6,8 +6,13 @@ import {
   type CampaignStatus,
 } from '../repositories/campaignRepository.js';
 import { whatsappOutboundMessageService } from './whatsappOutboundMessageService.js';
+import { EntitlementService } from './entitlementService.js';
+import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
+import { type EntitlementDeniedError } from './workspaceService.js';
 
 const campaignRepository = new CampaignRepository(pool);
+const entitlementService = new EntitlementService(pool);
+const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
 
 export class CampaignNotFoundError extends Error {}
 export class InvalidCampaignStatusError extends Error {}
@@ -15,10 +20,10 @@ export class NoEligibleRecipientsError extends Error {}
 export class TooManyRecipientsError extends Error {}
 
 /**
- * A conservative, hardcoded safety ceiling until per-plan campaign
- * entitlements exist (Chatwoot gap audit section 18/35 - real future work,
- * not implemented yet). Keeps this feature firmly in the "small recipient
- * sends" shape the directive scoped it to, not a mass-blast tool.
+ * A hard, plan-independent safety ceiling on top of the real per-plan
+ * "max_active_campaigns" entitlement enforced below - keeps this feature
+ * firmly in the "small recipient sends" shape the directive scoped it to,
+ * not a mass-blast tool, even on an unlimited enterprise plan.
  */
 const MAX_RECIPIENTS_PER_CAMPAIGN = 100;
 
@@ -68,6 +73,16 @@ export async function createCampaign(
     throw new TooManyRecipientsError(`A campaign can target at most ${MAX_RECIPIENTS_PER_CAMPAIGN} recipients (requested ${requestedIds.length}).`);
   }
 
+  const entitlementCheck = await entitlementService.canCreateCampaign(businessId);
+  if (!entitlementCheck.allowed) {
+    const error = new Error(`Campaign creation denied: ${entitlementCheck.reason}`) as EntitlementDeniedError;
+    error.code = 'ENTITLEMENT_DENIED';
+    error.reason = entitlementCheck.reason as EntitlementDeniedError['reason'];
+    error.limit = entitlementCheck.limit;
+    error.current = entitlementCheck.current;
+    throw error;
+  }
+
   const eligible = await campaignRepository.listEligibleRecipients(businessId, whatsappAccountId);
   const eligibleById = new Map(eligible.map((recipient) => [recipient.crmContactId, recipient]));
 
@@ -85,6 +100,13 @@ export async function createCampaign(
       return { crmContactId: recipient.crmContactId, chatId: recipient.chatId };
     }),
   );
+
+  await securityAuditLogRepository.record({
+    businessId,
+    whatsappAccountId,
+    eventType: 'campaign_created',
+    rawMetadata: { campaignId: campaign.id, recipientCount: toAdd.length },
+  });
 
   return { campaign, requestedCount: requestedIds.length, addedCount: toAdd.length, skippedCrmContactIds: skipped };
 }
@@ -157,6 +179,12 @@ export async function approveCampaign(businessId: string, campaignId: string, ap
   requireStatus(campaign, ['REVIEW']);
   const updated = await campaignRepository.updateStatus(campaignId, 'APPROVED', { approvedBy, approvedAt: true });
   if (!updated) throw new CampaignNotFoundError('Campaign not found.');
+  await securityAuditLogRepository.record({
+    businessId,
+    whatsappAccountId: campaign.whatsappAccountId,
+    eventType: 'campaign_approved',
+    rawMetadata: { campaignId, approvedBy },
+  });
   return updated;
 }
 
@@ -175,6 +203,13 @@ export async function sendCampaign(businessId: string, campaignId: string): Prom
 
   const running = await campaignRepository.updateStatus(campaignId, 'RUNNING', { sentAt: true });
   if (!running) throw new CampaignNotFoundError('Campaign not found.');
+
+  await securityAuditLogRepository.record({
+    businessId,
+    whatsappAccountId: campaign.whatsappAccountId,
+    eventType: 'campaign_sent',
+    rawMetadata: { campaignId, recipientCount: pending.length },
+  });
 
   let index = 0;
   for (const recipient of pending) {
@@ -205,6 +240,12 @@ export async function cancelCampaign(businessId: string, campaignId: string): Pr
   requireStatus(campaign, ['DRAFT', 'REVIEW', 'APPROVED']);
   const updated = await campaignRepository.updateStatus(campaignId, 'CANCELLED');
   if (!updated) throw new CampaignNotFoundError('Campaign not found.');
+  await securityAuditLogRepository.record({
+    businessId,
+    whatsappAccountId: campaign.whatsappAccountId,
+    eventType: 'campaign_cancelled',
+    rawMetadata: { campaignId },
+  });
   return updated;
 }
 

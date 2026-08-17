@@ -5,10 +5,12 @@ import { BusinessMembershipRepository, type MembershipWithUser } from '../reposi
 import { UserPreferenceRepository } from '../repositories/userPreferenceRepository.js';
 import { hashPassword } from './passwordHashService.js';
 import type { BusinessRole } from '../domain/auth/permissions.js';
+import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 
 const userRepository = new UserRepository(pool);
 const membershipRepository = new BusinessMembershipRepository(pool);
 const preferenceRepository = new UserPreferenceRepository(pool);
+const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
 
 export class EmailAlreadyRegisteredError extends Error {}
 export class MembershipNotFoundError extends Error {}
@@ -81,6 +83,12 @@ export async function createMember(
   await preferenceRepository.ensureDefault(user.id);
   const membership = await membershipRepository.create(businessId, user.id, input.role, invitedBy);
 
+  await securityAuditLogRepository.record({
+    businessId,
+    eventType: 'member_created',
+    rawMetadata: { membershipId: membership.id, role: input.role, invitedBy },
+  });
+
   return {
     member: toSummary({ ...membership, email: user.email, displayName: user.displayName }),
     temporaryPassword,
@@ -101,6 +109,13 @@ export async function updateMemberRole(businessId: string, membershipId: string,
   if (!updated) throw new MembershipNotFoundError('Member not found.');
   const user = await userRepository.findById(updated.userId);
   if (!user) throw new MembershipNotFoundError('Member not found.');
+
+  await securityAuditLogRepository.record({
+    businessId,
+    eventType: 'member_role_changed',
+    rawMetadata: { membershipId, fromRole: membership.role, toRole: role },
+  });
+
   return toSummary({ ...updated, email: user.email, displayName: user.displayName });
 }
 

@@ -8,14 +8,18 @@ import {
 } from '../repositories/funnelRepository.js';
 import { CrmContactRepository } from '../repositories/crmContactRepository.js';
 import { WhatsAppChatRepository } from '../repositories/whatsappChatRepository.js';
-import { workspaceService } from './workspaceService.js';
+import { workspaceService, type EntitlementDeniedError } from './workspaceService.js';
 import { notifyUser } from './notificationService.js';
 import { whatsappOutboundMessageService } from './whatsappOutboundMessageService.js';
 import { enqueueFunnelAdvance } from '../queue/queues/funnelAdvanceQueue.js';
+import { EntitlementService } from './entitlementService.js';
+import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 
 const funnelRepository = new FunnelRepository(pool);
 const crmContactRepository = new CrmContactRepository(pool);
 const chatRepository = new WhatsAppChatRepository(pool);
+const entitlementService = new EntitlementService(pool);
+const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
 
 export class FunnelNotFoundError extends Error {}
 export class InvalidFunnelStepError extends Error {}
@@ -29,7 +33,14 @@ async function requireOwnFunnel(businessId: string, funnelId: string): Promise<F
 }
 
 export async function createFunnel(businessId: string, whatsappAccountId: string, createdBy: string, name: string, description: string | null): Promise<FunnelDefinitionRecord> {
-  return funnelRepository.create({ businessId, whatsappAccountId, createdBy, name: name.trim(), description });
+  const funnel = await funnelRepository.create({ businessId, whatsappAccountId, createdBy, name: name.trim(), description });
+  await securityAuditLogRepository.record({
+    businessId,
+    whatsappAccountId,
+    eventType: 'funnel_created',
+    rawMetadata: { funnelId: funnel.id },
+  });
+  return funnel;
 }
 
 export async function listFunnels(businessId: string): Promise<(FunnelDefinitionRecord & { stepCount: number; counts: Awaited<ReturnType<typeof funnelRepository.getInstanceCounts>> })[]> {
@@ -76,8 +87,24 @@ export async function setFunnelActive(businessId: string, funnelId: string, isAc
   if (isActive) {
     const steps = await funnelRepository.listSteps(funnelId);
     if (steps.length === 0) throw new InvalidFunnelStepError('A funnel needs at least one step before it can be activated.');
+
+    const entitlementCheck = await entitlementService.canActivateFunnel(businessId);
+    if (!entitlementCheck.allowed) {
+      const error = new Error(`Funnel activation denied: ${entitlementCheck.reason}`) as EntitlementDeniedError;
+      error.code = 'ENTITLEMENT_DENIED';
+      error.reason = entitlementCheck.reason as EntitlementDeniedError['reason'];
+      error.limit = entitlementCheck.limit;
+      error.current = entitlementCheck.current;
+      throw error;
+    }
   }
   const updated = await funnelRepository.setActive(funnelId, isActive);
+  await securityAuditLogRepository.record({
+    businessId,
+    whatsappAccountId: funnel.whatsappAccountId,
+    eventType: isActive ? 'funnel_activated' : 'funnel_deactivated',
+    rawMetadata: { funnelId },
+  });
   return updated ?? funnel;
 }
 
@@ -156,6 +183,12 @@ export async function enrollContact(businessId: string, funnelId: string, crmCon
   if (!chatId) throw new InvalidFunnelStepError('This contact has no existing WhatsApp conversation to run the funnel through.');
 
   const instance = await funnelRepository.createInstance({ funnelId, businessId, crmContactId, chatId });
+  await securityAuditLogRepository.record({
+    businessId,
+    whatsappAccountId: funnel.whatsappAccountId,
+    eventType: 'funnel_enrolled',
+    rawMetadata: { funnelId, instanceId: instance.id },
+  });
   await runFromPosition(instance);
   return (await funnelRepository.findInstanceById(instance.id)) ?? instance;
 }

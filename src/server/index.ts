@@ -728,6 +728,17 @@ app.post('/api/workspace/campaigns', requireWorkspaceContext, requirePermission(
   } catch (error) {
     if (isNoEligibleRecipientsError(error)) return res.status(400).json({ error: 'NO_ELIGIBLE_RECIPIENTS', message: error.message });
     if (isTooManyRecipientsError(error)) return res.status(400).json({ error: 'TOO_MANY_RECIPIENTS', message: error.message });
+    if (isEntitlementDeniedError(error)) {
+      const message =
+        error.reason === 'NO_ACTIVE_SUBSCRIPTION'
+          ? 'This business has no active subscription.'
+          : error.reason === 'ENTITLEMENT_DISABLED'
+            ? 'Campaigns are not enabled on this plan.'
+            : `Active campaign limit reached for this plan (${error.current}/${error.limit}).`;
+      return res
+        .status(403)
+        .json({ error: 'ENTITLEMENT_DENIED', reason: error.reason, limit: error.limit, current: error.current, message });
+    }
     throw error;
   }
 });
@@ -959,6 +970,17 @@ app.post('/api/workspace/funnels/:funnelId/activate', requireWorkspaceContext, r
   } catch (error) {
     if (isFunnelNotFoundError(error)) return res.status(404).json({ error: 'FUNNEL_NOT_FOUND' });
     if (isInvalidFunnelStepError(error)) return res.status(400).json({ error: 'INVALID_STEP', message: error.message });
+    if (isEntitlementDeniedError(error)) {
+      const message =
+        error.reason === 'NO_ACTIVE_SUBSCRIPTION'
+          ? 'This business has no active subscription.'
+          : error.reason === 'ENTITLEMENT_DISABLED'
+            ? 'Funnels are not enabled on this plan.'
+            : `Active funnel limit reached for this plan (${error.current}/${error.limit}).`;
+      return res
+        .status(403)
+        .json({ error: 'ENTITLEMENT_DENIED', reason: error.reason, limit: error.limit, current: error.current, message });
+    }
     throw error;
   }
 });
