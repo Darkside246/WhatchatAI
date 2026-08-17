@@ -18,8 +18,10 @@ import { whatsappMessagePersistenceService } from '../../services/whatsappMessag
 import { runSentinel } from '../../security/sentinel/sentinel.js';
 import { gatherAiHandoffContext } from '../../services/aiContextGathererService.js';
 import { generateAiReply } from '../../services/aiReplyService.js';
+import { routeInboundMessage, resolveEscalationAgent } from '../../services/agentRoutingService.js';
 import { whatsappOutboundMessageService } from '../../services/whatsappOutboundMessageService.js';
-import { AiAgentRepository } from '../../repositories/aiAgentRepository.js';
+import { WhatsAppChatRepository } from '../../repositories/whatsappChatRepository.js';
+import { notifyBusiness } from '../../services/notificationService.js';
 import { publishRealtimeEvent } from '../../realtime/pubsub.js';
 import { pool } from '../../db/pool.js';
 import { WhatsAppMessageRepository } from '../../repositories/whatsappMessageRepository.js';
@@ -106,18 +108,57 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
       queryText: result.message.textContent as string,
     });
 
-    // Single-agent-per-business v1 scope - no agent-to-conversation routing
-    // exists yet (see migration 022's own comment). No active agent
-    // configured is a real, honest outcome: skip, don't fabricate a reply.
-    const agent = await aiAgentRepository.findActiveForBusiness(businessId);
-    if (!agent) {
-      console.log(
-        `[IncomingMessagesWorker] AI handoff for chat ${result.chat.id}: no active AI agent configured for business ${businessId}, skipping auto-reply.`,
-      );
+    // Real multi-agent routing: which of this business's active agents should
+    // take this message, decided from the operator's own keyword/priority
+    // configuration. 'no_agent' is an honest outcome - skip, never fabricate.
+    const decision = await routeInboundMessage(businessId, result.message.textContent as string);
+
+    if (decision.outcome === 'no_agent') {
+      console.log(`[IncomingMessagesWorker] AI handoff for chat ${result.chat.id}: ${decision.reason}`);
       return;
     }
 
-    const reply = await generateAiReply(agent, context);
+    // A blocked keyword is a hard stop: no AI reply at all. The chat is moved
+    // to HUMAN_TAKEOVER so the AI cannot pick it back up on the next message,
+    // and the team is notified - silently dropping it would leave a real
+    // customer waiting on a reply that never comes.
+    if (decision.outcome === 'escalate_to_human') {
+      console.warn(`[IncomingMessagesWorker] Chat ${result.chat.id}: ${decision.reason}`);
+      await chatRepository.setAiMode(result.chat.id, 'HUMAN_TAKEOVER');
+      await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId: result.chat.id });
+      await notifyBusiness({
+        businessId,
+        type: 'HUMAN_HANDOFF',
+        severity: 'warning',
+        title: 'A conversation needs a human',
+        body: `A blocked keyword ("${decision.matchedKeyword}") matched, so no AI reply was sent.`,
+        targetType: 'chat',
+        targetId: result.chat.id,
+      }).catch((error) => {
+        console.error('[IncomingMessagesWorker] Failed to dispatch HUMAN_HANDOFF notification:', error);
+      });
+      return;
+    }
+
+    const agent = decision.agent;
+    console.log(`[IncomingMessagesWorker] Chat ${result.chat.id}: ${decision.reason}`);
+
+    let reply = await generateAiReply(agent, context);
+
+    // A real escalation hop: if the selected agent could not produce a reply
+    // and the operator configured someone to escalate to, try that agent
+    // once. Exactly one hop - never a chain that could loop between two
+    // agents pointing at each other.
+    if (reply.status !== 'generated') {
+      const escalationAgent = await resolveEscalationAgent(agent);
+      if (escalationAgent) {
+        console.log(
+          `[IncomingMessagesWorker] Chat ${result.chat.id}: agent "${agent.name}" could not reply (${reply.reason}); escalating to "${escalationAgent.name}".`,
+        );
+        reply = await generateAiReply(escalationAgent, context);
+      }
+    }
+
     if (reply.status !== 'generated') {
       console.log(`[IncomingMessagesWorker] AI reply unavailable for chat ${result.chat.id}: ${reply.reason}`);
       return;
@@ -133,6 +174,9 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
       messageType: 'text',
       text: reply.text,
       requestedBy: 'ai',
+      // The operator's real configured pacing, so replies do not land
+      // unnaturally fast. 0 dispatches immediately.
+      ...(agent.responseDelaySeconds > 0 ? { delayMs: agent.responseDelaySeconds * 1000 } : {}),
     });
     console.log(`[IncomingMessagesWorker] AI reply queued for chat ${result.chat.id} (agent ${agent.id}).`);
   }
@@ -147,7 +191,7 @@ const mediaRepository = new WhatsAppMediaRepository(pool);
 const reactionRepository = new WhatsAppMessageReactionRepository(pool);
 const presenceRepository = new WhatsAppPresenceRepository(pool);
 const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
-const aiAgentRepository = new AiAgentRepository(pool);
+const chatRepository = new WhatsAppChatRepository(pool);
 
 // Configurable, not hardcoded: operators can raise/lower this per deployment.
 const MAX_MEDIA_DOWNLOAD_BYTES = Number(process.env.MEDIA_MAX_DOWNLOAD_BYTES ?? 100 * 1024 * 1024);
