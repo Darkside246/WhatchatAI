@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api, mediaUrl, ApiError, type WorkspaceBusiness, type WhatsAppConnectionSnapshot } from '../lib/api.js';
 import { Avatar } from '../components/Avatar.js';
+import { useTheme } from '../hooks/useTheme.js';
+import { THEMES } from '../theme.js';
 
 const STATUS_COLOR: Record<WhatsAppConnectionSnapshot['status'], string> = {
   CONNECTED: 'bg-success/15 text-success',
@@ -193,13 +195,58 @@ function WhatsAppAccountCard({ connection }: { connection: WhatsAppConnectionSna
   );
 }
 
+/** Representative (background, accent) swatch pair per theme - matches index.css's [data-theme] token overrides exactly. */
+const THEME_SWATCHES: Record<string, [string, string]> = {
+  sleek: ['#f0f2f5', '#4f46e5'],
+  dark: ['#0c1317', '#00a884'],
+  light: ['#d1d7db', '#00a884'],
+  midnight: ['#000000', '#238636'],
+  forest: ['#0a1612', '#2ec4b6'],
+  sunset: ['#140c1a', '#d946ef'],
+};
+
+function ThemeCard() {
+  const { theme, setTheme } = useTheme();
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      <h2 className="text-sm font-semibold text-fg">Theme</h2>
+      <p className="mt-1 text-xs text-fg-muted">Saved to this browser - applies instantly, everywhere in the app.</p>
+      <div className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+        {THEMES.map((option) => {
+          const [bg, accent] = THEME_SWATCHES[option.id] ?? ['#000000', '#000000'];
+          const selected = theme === option.id;
+          return (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => setTheme(option.id)}
+              className={`flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                selected ? 'border-accent bg-accent-soft' : 'border-border-subtle hover:bg-surface-3'
+              }`}
+            >
+              <span
+                className="h-7 w-7 shrink-0 rounded-full border border-border-subtle"
+                style={{ background: `conic-gradient(${accent} 0deg 180deg, ${bg} 180deg 360deg)` }}
+                aria-hidden
+              />
+              <span className={`text-xs font-medium ${selected ? 'text-accent' : 'text-fg-secondary'}`}>{option.name}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSnapshot | null }) {
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <h1 className="text-lg font-semibold text-fg">Settings</h1>
-      <p className="mt-1 text-sm text-fg-muted">Only settings with a real backend appear here.</p>
+      <p className="mt-1 text-sm text-fg-muted">Only settings with a real backend - or a real, persisted client-side effect - appear here.</p>
 
       <div className="mt-6 max-w-2xl space-y-4">
+        <ThemeCard />
         <BusinessProfileCard />
         <WhatsAppAccountCard connection={connection} />
       </div>

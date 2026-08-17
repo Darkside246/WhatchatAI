@@ -43,6 +43,131 @@
   --color-info: #38bdf8;
 }
 
+/*
+ * Selectable themes, layered on top of the base ("Sleek Interface") tokens
+ * above via [data-theme] attribute overrides on <html> - every component
+ * already styles itself from these same custom-property names (bg-surface-0,
+ * text-fg, bg-message-out, ...), so swapping a theme never touches component
+ * code, only which real hex values those names resolve to. Palette values
+ * match the WhatChat reference app's own theme engine exactly.
+ */
+[data-theme='dark'] {
+  --color-surface-0: #0c1317;
+  --color-surface-1: #111b21;
+  --color-surface-2: #202c33;
+  --color-surface-3: #2a3942;
+  --color-border-subtle: #222d34;
+  --color-accent: #00a884;
+  --color-accent-dim: #00876b;
+  --color-accent-soft: #00a8841f;
+  --color-message-out: #005c4b;
+  --color-message-out-fg: #e9edef;
+  --color-message-in: #202c33;
+  --color-fg: #e9edef;
+  --color-fg-secondary: #8696a0;
+  --color-fg-muted: #667781;
+  --color-success: #00a884;
+  --color-unread: #00a884;
+}
+
+[data-theme='light'] {
+  --color-surface-0: #d1d7db;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #f0f2f5;
+  --color-surface-3: #ffffff;
+  --color-border-subtle: #e9edef;
+  --color-accent: #00a884;
+  --color-accent-dim: #00876b;
+  --color-accent-soft: #00a8841f;
+  --color-message-out: #d9fdd3;
+  --color-message-out-fg: #111b21;
+  --color-message-in: #ffffff;
+  --color-fg: #111b21;
+  --color-fg-secondary: #667781;
+  --color-fg-muted: #8696a0;
+  --color-success: #00a884;
+  --color-unread: #00a884;
+}
+
+[data-theme='midnight'] {
+  --color-surface-0: #000000;
+  --color-surface-1: #05070a;
+  --color-surface-2: #0b0f14;
+  --color-surface-3: #131b24;
+  --color-border-subtle: #1b232c;
+  --color-accent: #238636;
+  --color-accent-dim: #1a6929;
+  --color-accent-soft: #2386361f;
+  --color-message-out: #0d3830;
+  --color-message-out-fg: #f0f6fc;
+  --color-message-in: #121820;
+  --color-fg: #f0f6fc;
+  --color-fg-secondary: #7d8590;
+  --color-fg-muted: #484f58;
+  --color-success: #238636;
+  --color-unread: #238636;
+}
+
+[data-theme='forest'] {
+  --color-surface-0: #0a1612;
+  --color-surface-1: #0f201b;
+  --color-surface-2: #172e27;
+  --color-surface-3: #1c3d34;
+  --color-border-subtle: #204237;
+  --color-accent: #2ec4b6;
+  --color-accent-dim: #24a297;
+  --color-accent-soft: #2ec4b61f;
+  --color-message-out: #1b4d3e;
+  --color-message-out-fg: #e2f1ec;
+  --color-message-in: #1a332c;
+  --color-fg: #e2f1ec;
+  --color-fg-secondary: #7aa597;
+  --color-fg-muted: #50766a;
+  --color-success: #2ec4b6;
+  --color-unread: #2ec4b6;
+}
+
+[data-theme='sunset'] {
+  --color-surface-0: #140c1a;
+  --color-surface-1: #1e1226;
+  --color-surface-2: #2a1a36;
+  --color-surface-3: #341f42;
+  --color-border-subtle: #3c254c;
+  --color-accent: #d946ef;
+  --color-accent-dim: #b52fc7;
+  --color-accent-soft: #d946ef1f;
+  --color-message-out: #5a2360;
+  --color-message-out-fg: #faedf9;
+  --color-message-in: #2b1b36;
+  --color-fg: #faedf9;
+  --color-fg-secondary: #9d84a6;
+  --color-fg-muted: #6f5779;
+  --color-success: #d946ef;
+  --color-unread: #d946ef;
+}
+
+/* Chat area doodle pattern - subtle, theme-appropriate dot texture behind messages, matching the WhatChat reference app exactly. */
+.chat-sleek-bg {
+  background-image: radial-gradient(rgba(99, 102, 241, 0.035) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.chat-doodle-bg {
+  background-image:
+    radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    radial-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: 0 0, 16px 16px;
+}
+
+.chat-doodle-light-bg {
+  background-image:
+    radial-gradient(rgba(0, 0, 0, 0.05) 1px, transparent 1px),
+    radial-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: 0 0, 16px 16px;
+}
+
 html,
 body,
 #root {
@@ -53,4 +178,5 @@ body {
   background-color: var(--color-surface-0);
   color: var(--color-fg);
   -webkit-font-smoothing: antialiased;
+  transition: background-color 200ms ease, color 200ms ease;
 }

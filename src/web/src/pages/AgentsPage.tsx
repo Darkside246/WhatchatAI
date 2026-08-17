@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { api, ApiError, type AiAgentSummary } from '../lib/api.js';
+import { ToggleSwitch } from '../components/ToggleSwitch.js';
 
 const EMPTY_FORM = { name: '', persona: '', tone: '', language: '', systemInstruction: '' };
 
@@ -177,29 +178,24 @@ export function AgentsPage() {
               </span>
             </div>
             <p className="mt-2 text-xs text-fg-muted">{agent.persona ?? 'No persona set.'}</p>
-            <button
-              type="button"
-              onClick={() => void handleToggleStatus(agent)}
-              disabled={togglingId === agent.id || agent.status === 'ARCHIVED'}
-              title={
-                agent.status === 'ACTIVE'
-                  ? 'Stops this agent from auto-replying to any chat in this business - human takeover for every conversation at once.'
-                  : 'Lets this agent auto-reply again wherever a chat is set to AI Active.'
-              }
-              className={`mt-3 w-full rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
-                agent.status === 'ACTIVE'
-                  ? 'border-warning/30 text-warning hover:bg-warning/10'
-                  : 'border-accent/30 text-accent hover:bg-accent-soft'
-              }`}
-            >
-              {togglingId === agent.id
-                ? 'Updating…'
-                : agent.status === 'ACTIVE'
-                  ? 'Pause agent (disable everywhere)'
-                  : agent.status === 'PAUSED'
-                    ? 'Activate agent'
-                    : 'Archived'}
-            </button>
+            <div className="mt-3 flex items-center justify-between border-t border-border-subtle pt-3">
+              <div>
+                <p className="text-xs font-medium text-fg">{agent.status === 'ACTIVE' ? 'Replying' : 'Paused'}</p>
+                <p className="text-[11px] text-fg-muted">
+                  {agent.status === 'ACTIVE'
+                    ? 'Auto-replies wherever a chat is set to AI Active.'
+                    : agent.status === 'PAUSED'
+                      ? 'Silent everywhere - human takeover for every chat at once.'
+                      : 'Archived.'}
+                </p>
+              </div>
+              <ToggleSwitch
+                checked={agent.status === 'ACTIVE'}
+                onChange={() => void handleToggleStatus(agent)}
+                disabled={togglingId === agent.id || agent.status === 'ARCHIVED'}
+                label={agent.status === 'ACTIVE' ? `Turn off ${agent.name}` : `Turn on ${agent.name}`}
+              />
+            </div>
           </div>
         ))}
       </div>

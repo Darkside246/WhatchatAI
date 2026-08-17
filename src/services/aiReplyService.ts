@@ -88,10 +88,14 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
       config: {
         systemInstruction: buildSystemInstruction(agent, context),
         temperature: 0.6,
-        // Flash-tier models reason internally before answering, and those
-        // thinking tokens draw from the same budget as the visible reply -
-        // left unset, a real reply can be cut off mid-word once that budget
-        // runs out before the model finishes writing the answer itself.
+        // A short WhatsApp reply doesn't need the model to reason before
+        // answering, and those internal "thinking" tokens draw from the
+        // same budget as the visible reply - left enabled, a real reply
+        // could still be cut off mid-word even with a generous
+        // maxOutputTokens. thinkingBudget: 0 is the SDK's own documented
+        // way to disable it outright, removing the failure mode entirely
+        // rather than just making it less likely.
+        thinkingConfig: { thinkingBudget: 0 },
         maxOutputTokens: 1024,
       },
     });

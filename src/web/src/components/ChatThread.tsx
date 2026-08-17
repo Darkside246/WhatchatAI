@@ -26,6 +26,8 @@ import {
   type SendMessageBody,
 } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
+import { useTheme } from '../hooks/useTheme.js';
+import { THEMES } from '../theme.js';
 import { Avatar } from './Avatar.js';
 
 type AiMode = WorkspaceChatDetail['chat']['aiMode'];
@@ -223,15 +225,13 @@ function DeliveryTicks({ status }: { status: WorkspaceMessage['status'] }) {
   return null;
 }
 
-// WhatsApp-style subtle doodle background, as an inline SVG data URI - no external asset dependency.
-const DOODLE_BACKGROUND =
-  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Cg fill='none' stroke='%23111b21' stroke-opacity='0.04' stroke-width='1.2'%3E%3Ccircle cx='20' cy='20' r='10'/%3E%3Cpath d='M55 15 L70 30 M70 15 L55 30'/%3E%3Crect x='45' y='55' width='16' height='16' rx='3'/%3E%3Cpath d='M10 70 Q20 60 30 70 T50 70'/%3E%3C/g%3E%3C/svg%3E\")";
-
 interface Props {
   onOpenDetail?: () => void;
 }
 
 export function ChatThread({ onOpenDetail }: Props) {
+  const { theme } = useTheme();
+  const doodleClass = THEMES.find((t) => t.id === theme)?.doodleClass ?? 'chat-sleek-bg';
   const { chatId } = useParams<{ chatId: string }>();
   const [messages, setMessages] = useState<WorkspaceMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -487,7 +487,7 @@ export function ChatThread({ onOpenDetail }: Props) {
         </button>
       </div>
 
-      <div className="flex-1 space-y-2 overflow-y-auto bg-surface-0 px-4 py-4" style={{ backgroundImage: DOODLE_BACKGROUND }}>
+      <div className={`flex-1 space-y-2 overflow-y-auto bg-surface-0 px-4 py-4 ${doodleClass}`}>
         {error && <p className="text-xs text-error">{error}</p>}
         {messages === null && !error && <p className="text-xs text-fg-muted">Loading real message history…</p>}
         {messages?.length === 0 && <p className="text-xs text-fg-muted">No messages persisted for this chat yet.</p>}
