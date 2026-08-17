@@ -11,16 +11,25 @@ interface Props {
   className?: string;
   /** A real, non-expired WhatsApp status exists for this contact right now - renders the WhatsApp-style dashed status ring. */
   hasActiveStatus?: boolean;
+  /** The real, authenticated media URL for this contact/account's downloaded profile picture - never a raw WhatsApp CDN link, never a placeholder. */
+  photoUrl?: string | null;
 }
 
 /**
- * A real avatar has no upstream source yet (no profile-picture sync is
- * built) - this renders the actual first letter of whatever real identity
- * string the caller has, never a stock image or placeholder person icon.
+ * Renders the real downloaded profile picture when one exists; otherwise
+ * falls back to the actual first letter of whatever real identity string
+ * the caller has - never a stock image or placeholder person icon.
  */
-export function Avatar({ label, size = 'md', className = '', hasActiveStatus = false }: Props) {
+export function Avatar({ label, size = 'md', className = '', hasActiveStatus = false, photoUrl = null }: Props) {
   const initial = label.trim().slice(0, 1).toUpperCase() || '?';
-  const circle = (
+  const circle = photoUrl ? (
+    <img
+      src={photoUrl}
+      alt=""
+      className={`shrink-0 rounded-full object-cover ring-2 ring-surface-1 ${SIZES[size]}`}
+      aria-hidden
+    />
+  ) : (
     <div
       className={`flex shrink-0 items-center justify-center rounded-full bg-surface-3 font-semibold text-fg-secondary ring-2 ring-surface-1 ${SIZES[size]}`}
       aria-hidden

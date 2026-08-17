@@ -10,6 +10,8 @@ export interface WhatsAppConnectionSnapshot {
   lastDisconnectAt: string | null;
   lastError: string | null;
   reconnectAttempt: number;
+  /** This account's own real, downloaded profile picture media row - null until a sync has actually succeeded. */
+  avatarMediaId: string | null;
 }
 
 export interface SyncStatusResponse {
@@ -38,6 +40,8 @@ export interface WorkspaceChatSummary {
   aiMode: 'AI_ACTIVE' | 'AI_PAUSED' | 'HUMAN_TAKEOVER';
   /** A real, non-expired status exists for this chat's JID right now - WhatsApp's own "status ring" signal. */
   hasActiveStatus: boolean;
+  /** This contact's real, downloaded profile picture media row - null for groups and until a sync has actually succeeded. */
+  avatarMediaId: string | null;
 }
 
 export interface WorkspaceMedia {
@@ -216,6 +220,8 @@ export interface WorkspaceContact {
   displayName: string | null;
   pushName: string | null;
   aboutText: string | null;
+  /** This contact's real, downloaded profile picture media row - null until a sync has actually succeeded. */
+  profilePictureMediaId: string | null;
 }
 
 export interface WorkspaceCrmContact {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { api, ApiError, type WorkspaceBusiness, type WhatsAppConnectionSnapshot } from '../lib/api.js';
+import { api, mediaUrl, ApiError, type WorkspaceBusiness, type WhatsAppConnectionSnapshot } from '../lib/api.js';
+import { Avatar } from '../components/Avatar.js';
 
 const STATUS_COLOR: Record<WhatsAppConnectionSnapshot['status'], string> = {
   CONNECTED: 'bg-success/15 text-success',
@@ -133,6 +134,17 @@ function WhatsAppAccountCard({ connection }: { connection: WhatsAppConnectionSna
         <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_COLOR[connection.status]}`}>
           {connection.status.replace('_', ' ')}
         </span>
+      </div>
+
+      <div className="mt-4 flex items-center gap-3">
+        <Avatar
+          label={connection.pushName ?? connection.phoneNumber ?? '?'}
+          photoUrl={connection.avatarMediaId ? mediaUrl(connection.avatarMediaId) : null}
+        />
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-fg">{connection.pushName ?? '—'}</p>
+          <p className="truncate text-xs text-fg-muted">{connection.phoneNumber ?? '—'}</p>
+        </div>
       </div>
 
       <dl className="mt-4 grid grid-cols-2 gap-3 text-xs">

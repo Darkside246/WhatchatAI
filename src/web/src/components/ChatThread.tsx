@@ -434,7 +434,11 @@ export function ChatThread({ onOpenDetail }: Props) {
         </Link>
         {detail ? (
           <>
-            <Avatar label={headerName} size="sm" />
+            <Avatar
+              label={headerName}
+              size="sm"
+              photoUrl={detail.contact?.profilePictureMediaId ? mediaUrl(detail.contact.profilePictureMediaId) : null}
+            />
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium text-fg">{headerName}</p>
               {presenceLabel ? (

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { api, type WorkspaceChatSummary } from '../lib/api.js';
+import { api, mediaUrl, type WorkspaceChatSummary } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
 import { Avatar } from './Avatar.js';
 
@@ -121,7 +121,11 @@ export function ChatListPane({ className = '' }: Props) {
               }`
             }
           >
-            <Avatar label={chat.displayName} hasActiveStatus={chat.hasActiveStatus} />
+            <Avatar
+              label={chat.displayName}
+              hasActiveStatus={chat.hasActiveStatus}
+              photoUrl={chat.avatarMediaId ? mediaUrl(chat.avatarMediaId) : null}
+            />
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
                 <p className="truncate text-sm font-medium text-fg">{chat.displayName}</p>

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { X } from 'lucide-react';
-import { api, type WorkspaceChatDetail } from '../lib/api.js';
+import { api, mediaUrl, type WorkspaceChatDetail } from '../lib/api.js';
 import { Avatar } from './Avatar.js';
 
 const AI_MODE_OPTIONS: { value: WorkspaceChatDetail['chat']['aiMode']; label: string; hint: string }[] = [
@@ -61,7 +61,11 @@ export function ContactDetailPanel({ onClose }: Props) {
       {detail && (
         <div className="flex flex-col gap-6 p-4">
           <div className="flex flex-col items-center gap-2 text-center">
-            <Avatar label={detail.contact?.displayName ?? detail.chat.name ?? detail.chat.chatJid} size="lg" />
+            <Avatar
+              label={detail.contact?.displayName ?? detail.chat.name ?? detail.chat.chatJid}
+              size="lg"
+              photoUrl={detail.contact?.profilePictureMediaId ? mediaUrl(detail.contact.profilePictureMediaId) : null}
+            />
             <p className="text-sm font-medium text-fg">
               {detail.contact?.displayName ??
                 detail.contact?.pushName ??

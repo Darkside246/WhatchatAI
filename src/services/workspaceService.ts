@@ -43,6 +43,8 @@ export interface WorkspaceChatSummary {
   aiMode: ChatAiMode;
   /** A real, non-expired status exists for this chat's JID right now - WhatsApp's own "status ring" signal. */
   hasActiveStatus: boolean;
+  /** This contact's real, downloaded profile picture media row - null for groups and until a sync has actually succeeded. */
+  avatarMediaId: string | null;
 }
 
 export interface WorkspaceCallSummary {
@@ -266,6 +268,7 @@ export class WorkspaceService {
 
       let displayName = chat.name ?? chat.chatJid;
       let phoneNumber = chat.phoneNumber;
+      let avatarMediaId: string | null = null;
 
       if (chat.contactId) {
         const contact = await this.contactRepository.findById(chat.contactId);
@@ -279,6 +282,7 @@ export class WorkspaceService {
             whatsappJid: contact.whatsappJid,
           });
           phoneNumber = contact.phoneNumber;
+          avatarMediaId = contact.profilePictureMediaId;
         }
       }
 
@@ -311,6 +315,7 @@ export class WorkspaceService {
         lastMessagePreview,
         aiMode: chat.aiMode,
         hasActiveStatus: activeStatusJids.has(chat.chatJid),
+        avatarMediaId,
       });
     }
 

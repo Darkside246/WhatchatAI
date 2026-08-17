@@ -48,6 +48,8 @@ export interface WhatsAppConnectionSnapshot {
   lastDisconnectAt: string | null;
   lastError: string | null;
   reconnectAttempt: number;
+  /** This account's own real, downloaded profile picture media row - null until a sync has actually succeeded. */
+  avatarMediaId: string | null;
 }
 
 const DEFAULT_SESSION_DIR = path.resolve(
@@ -75,6 +77,7 @@ export class WhatsAppConnectionService {
     lastDisconnectAt: null,
     lastError: null,
     reconnectAttempt: 0,
+    avatarMediaId: null,
   };
 
   getSnapshot(): WhatsAppConnectionSnapshot {
@@ -405,6 +408,7 @@ export class WhatsAppConnectionService {
           lastDisconnectAt: null,
           lastError: null,
           reconnectAttempt: 0,
+          avatarMediaId: null,
         };
 
         if (jid) {
@@ -478,6 +482,10 @@ export class WhatsAppConnectionService {
       });
       this.businessId = business.id;
       this.persistedAccountId = account.id;
+      // Reflects whatever's already real in the DB (a prior sync from an
+      // earlier connection) - never fabricated, and correctly still null
+      // when no photo has ever been fetched for this account.
+      this.snapshot = { ...this.snapshot, avatarMediaId: account.profilePictureMediaId };
 
       await this.connectionEventRepository.record({
         businessId: business.id,
@@ -491,8 +499,16 @@ export class WhatsAppConnectionService {
 
       // Best-effort, never blocks the connection itself - "my profile photo"
       // is a real fetch+download, so it can genuinely fail (no photo set,
-      // slow network) without that being a connection problem.
-      void syncAccountProfilePicture(business.id, account.id, jid);
+      // slow network) without that being a connection problem. Once it
+      // actually succeeds, reflect the real result in the live snapshot too
+      // - but only if this is still the same connected account.
+      void syncAccountProfilePicture(business.id, account.id, jid).then(async () => {
+        if (this.persistedAccountId !== account.id) return;
+        const refreshed = await this.accountRepository.findById(account.id);
+        if (refreshed?.profilePictureMediaId) {
+          this.snapshot = { ...this.snapshot, avatarMediaId: refreshed.profilePictureMediaId };
+        }
+      });
 
       // "initial" sync only ever kicks off once per account, not on every
       // reconnect. A sync abandoned mid-run (dev-server restart, crash)
