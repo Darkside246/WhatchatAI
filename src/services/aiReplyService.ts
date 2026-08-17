@@ -1,4 +1,5 @@
 import { getGeminiClient } from './geminiClient.js';
+import * as gooseService from './gooseService.js';
 import type { AiAgentRecord } from '../repositories/aiAgentRepository.js';
 import type { AiHandoffContext } from './aiContextGathererService.js';
 
@@ -70,6 +71,38 @@ function toContents(history: AiHandoffContext['conversationHistory']) {
  * inbound message is already safely persisted, so a reply is best-effort on
  * top of that, never a reason to break ingestion.
  */
+/**
+ * Real Goose failover, only ever attempted after a genuine Gemini failure.
+ * Never fabricates availability: if GOOSE_SERVICE_URL isn't configured,
+ * the composed reason honestly says so while still preserving the
+ * original Gemini failure reason as a substring (existing callers match
+ * on e.g. "GEMINI_API_KEY" in the returned reason).
+ */
+async function tryGooseFallback(
+  geminiReason: string,
+  agent: AiAgentRecord,
+  context: AiHandoffContext,
+  contents: ReturnType<typeof toContents>,
+): Promise<AiReplyResult> {
+  if (!gooseService.getCapabilities().configured) {
+    return { status: 'unavailable', reason: `Gemini unavailable (${geminiReason}); Goose fallback not configured` };
+  }
+
+  const gooseResult = await gooseService.generateResponse({
+    systemInstruction: buildSystemInstruction(agent, context),
+    contents,
+  });
+
+  if (gooseResult.status === 'generated') {
+    return { status: 'generated', text: gooseResult.text.slice(0, MAX_REPLY_CHARS) };
+  }
+
+  return {
+    status: 'unavailable',
+    reason: `Gemini unavailable (${geminiReason}); Goose fallback also unavailable (${gooseResult.reason})`,
+  };
+}
+
 export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffContext): Promise<AiReplyResult> {
   const contents = toContents(context.conversationHistory);
   if (contents.length === 0) {
@@ -77,7 +110,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
   }
 
   const genAi = getGeminiClient();
-  if (!genAi) return { status: 'unavailable', reason: 'GEMINI_API_KEY is not configured' };
+  if (!genAi) return tryGooseFallback('GEMINI_API_KEY is not configured', agent, context, contents);
 
   const model = process.env.GEMINI_REPLY_MODEL || process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 
@@ -101,13 +134,11 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
     });
 
     const text = response.text?.trim();
-    if (!text) return { status: 'unavailable', reason: 'Reply model returned an empty response' };
+    if (!text) return tryGooseFallback('Reply model returned an empty response', agent, context, contents);
 
     return { status: 'generated', text: text.slice(0, MAX_REPLY_CHARS) };
   } catch (error) {
-    return {
-      status: 'unavailable',
-      reason: `Reply model call failed: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    const reason = `Reply model call failed: ${error instanceof Error ? error.message : String(error)}`;
+    return tryGooseFallback(reason, agent, context, contents);
   }
 }

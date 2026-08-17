@@ -9,6 +9,7 @@ import { attachWebSocketServer } from '../realtime/wsServer.js';
 import { publishRealtimeEvent } from '../realtime/pubsub.js';
 import { whatsappConnectionService } from '../services/whatsappConnectionService.js';
 import { whatsappMessageIngestionService } from '../services/whatsappMessageIngestionService.js';
+import * as gooseService from '../services/gooseService.js';
 import {
   workspaceService,
   isChatNotFoundError,
@@ -158,6 +159,16 @@ app.get('/api/health/ai', (_req, res) => {
     model: process.env.GEMINI_MODEL ?? 'gemini-3.5-flash-lite',
     apiKeyConfigured: configured,
   });
+});
+
+app.get('/api/health/goose', async (_req, res) => {
+  const capabilities = gooseService.getCapabilities();
+  if (!capabilities.configured) {
+    res.status(200).json({ status: 'not_configured', reason: 'GOOSE_SERVICE_URL is not configured' });
+    return;
+  }
+  const health = await gooseService.healthCheck();
+  res.status(health.status === 'available' ? 200 : 503).json(health);
 });
 
 app.get('/api/health/database', async (_req, res) => {
