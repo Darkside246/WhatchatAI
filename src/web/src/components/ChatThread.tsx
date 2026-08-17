@@ -20,11 +20,14 @@ import {
 import {
   api,
   mediaUrl,
+  ApiError,
   type WorkspaceMessage,
   type WorkspaceMedia,
   type WorkspaceChatDetail,
   type WorkspacePresence,
   type SendMessageBody,
+  type MemberDto,
+  type TeamDto,
 } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
 import { formatIdentityFallback } from '../lib/identity.js';
@@ -82,6 +85,72 @@ function AiModeControl({
       {saving && <span className="text-[10px] text-fg-muted">Saving…</span>}
       {!saving && mode === 'AI_PAUSED' && <span className="text-[10px] text-warning">AI Paused</span>}
       {!saving && error && <span className="text-[10px] text-error">{error}</span>}
+    </div>
+  );
+}
+
+/**
+ * Real human-to-human conversation assignment - a separate axis from
+ * AiModeControl's AI-vs-human toggle. Every change calls the real
+ * assignment API (which enforces real agent capacity server-side); a
+ * capacity rejection is shown honestly rather than silently reverted.
+ */
+function AssigneeControl({
+  assigneeUserId,
+  assigneeTeamId,
+  members,
+  teams,
+  saving,
+  error,
+  onSelect,
+}: {
+  assigneeUserId: string | null;
+  assigneeTeamId: string | null;
+  members: MemberDto[];
+  teams: TeamDto[];
+  saving: boolean;
+  error: string | null;
+  onSelect: (input: { assigneeUserId: string | null; assigneeTeamId: string | null }) => void;
+}) {
+  const value = assigneeUserId ? `user:${assigneeUserId}` : assigneeTeamId ? `team:${assigneeTeamId}` : '';
+
+  function handleChange(event: ChangeEvent<HTMLSelectElement>) {
+    const raw = event.target.value;
+    if (!raw) return onSelect({ assigneeUserId: null, assigneeTeamId: null });
+    const [kind, id] = raw.split(':');
+    if (kind === 'user') return onSelect({ assigneeUserId: id ?? null, assigneeTeamId: null });
+    if (kind === 'team') return onSelect({ assigneeUserId: null, assigneeTeamId: id ?? null });
+  }
+
+  return (
+    <div className="hidden shrink-0 flex-col items-end gap-1 md:flex">
+      <select
+        value={value}
+        disabled={saving}
+        onChange={handleChange}
+        className="rounded-full border border-border-subtle bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-fg-secondary outline-none focus:border-accent disabled:opacity-50"
+      >
+        <option value="">Unassigned</option>
+        {members.length > 0 && (
+          <optgroup label="People">
+            {members.map((member) => (
+              <option key={member.userId} value={`user:${member.userId}`}>
+                {member.displayName}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        {teams.length > 0 && (
+          <optgroup label="Teams">
+            {teams.map((team) => (
+              <option key={team.id} value={`team:${team.id}`}>
+                {team.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
+      </select>
+      {error && <span className="text-[10px] text-error">{error}</span>}
     </div>
   );
 }
@@ -257,7 +326,20 @@ export function ChatThread({ onOpenDetail }: Props) {
   const [lightbox, setLightbox] = useState<{ url: string; fileName: string | null } | null>(null);
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
+  const [members, setMembers] = useState<MemberDto[]>([]);
+  const [teams, setTeams] = useState<TeamDto[]>([]);
+  const [savingAssignee, setSavingAssignee] = useState(false);
+  const [assigneeError, setAssigneeError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    Promise.all([api.listMembers(), api.listTeams()])
+      .then(([membersResult, teamsResult]) => {
+        setMembers(membersResult.members);
+        setTeams(teamsResult.teams);
+      })
+      .catch(() => undefined);
+  }, []);
 
   async function load(currentChatId: string) {
     try {
@@ -303,6 +385,27 @@ export function ChatThread({ onOpenDetail }: Props) {
       if (targetChatId === chatId) setModeError(err instanceof Error ? err.message : 'Failed to update AI mode.');
     } finally {
       if (targetChatId === chatId) setSavingMode(false);
+    }
+  }
+
+  async function handleAssigneeSelect(input: { assigneeUserId: string | null; assigneeTeamId: string | null }) {
+    if (!chatId || !detail || savingAssignee) return;
+    const targetChatId = chatId;
+    setSavingAssignee(true);
+    setAssigneeError(null);
+    try {
+      const result = await api.assignChat(targetChatId, input);
+      if (targetChatId === chatId) {
+        setDetail((current) =>
+          current
+            ? { ...current, chat: { ...current.chat, assigneeUserId: result.chat.assigneeUserId, assigneeTeamId: result.chat.assigneeTeamId } }
+            : current,
+        );
+      }
+    } catch (err) {
+      if (targetChatId === chatId) setAssigneeError(err instanceof ApiError ? err.message : 'Failed to update assignment.');
+    } finally {
+      if (targetChatId === chatId) setSavingAssignee(false);
     }
   }
 
@@ -517,6 +620,15 @@ export function ChatThread({ onOpenDetail }: Props) {
                 )
               )}
             </div>
+            <AssigneeControl
+              assigneeUserId={detail.chat.assigneeUserId}
+              assigneeTeamId={detail.chat.assigneeTeamId}
+              members={members}
+              teams={teams}
+              saving={savingAssignee}
+              error={assigneeError}
+              onSelect={handleAssigneeSelect}
+            />
             <AiModeControl mode={detail.chat.aiMode} saving={savingMode} error={modeError} onSelect={handleModeSelect} />
           </>
         ) : (

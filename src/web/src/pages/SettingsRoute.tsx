@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Camera, Lock, LogOut, Monitor, Trash2, UserPlus } from 'lucide-react';
+import { Camera, Lock, LogOut, Monitor, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
 import {
   api,
   mediaUrl,
@@ -10,6 +10,9 @@ import {
   type AuthSessionDto,
   type MemberDto,
   type BusinessRole,
+  type TeamDto,
+  type AgentCapacityDto,
+  type AgentAvailability,
 } from '../lib/api.js';
 import { Avatar } from '../components/Avatar.js';
 import { MediaLightbox } from '../components/MediaLightbox.js';
@@ -671,6 +674,278 @@ function TeamMembersCard() {
   );
 }
 
+function TeamCard({ team, members, onChanged }: { team: TeamDto; members: MemberDto[]; onChanged: () => void }) {
+  const auth = useAuth();
+  const canManage = auth.role === 'OWNER' || auth.role === 'ADMIN' || auth.role === 'MANAGER' || auth.role === 'SUPERVISOR';
+  const [addingMember, setAddingMember] = useState(false);
+  const [selectedUserId, setSelectedUserId] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const memberIds = new Set(team.members.map((m) => m.userId));
+  const addableMembers = members.filter((m) => !memberIds.has(m.userId));
+
+  async function handleAddMember(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedUserId) return;
+    setBusy(true);
+    try {
+      await api.addTeamMember(team.id, selectedUserId);
+      setSelectedUserId('');
+      setAddingMember(false);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRemoveMember(userId: string) {
+    setBusy(true);
+    try {
+      await api.removeTeamMember(team.id, userId);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDeleteTeam() {
+    setBusy(true);
+    try {
+      await api.deleteTeam(team.id);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-border-subtle p-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-xs font-semibold text-fg">{team.name}</p>
+          {team.description && <p className="text-[11px] text-fg-muted">{team.description}</p>}
+        </div>
+        {canManage && (
+          <button type="button" onClick={handleDeleteTeam} disabled={busy} className="text-fg-muted hover:text-error">
+            <Trash2 size={13} aria-hidden />
+          </button>
+        )}
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {team.members.map((member) => (
+          <span key={member.userId} className="flex items-center gap-1 rounded-full bg-surface-3 px-2 py-0.5 text-[11px] text-fg-secondary">
+            {member.displayName}
+            {canManage && (
+              <button type="button" onClick={() => handleRemoveMember(member.userId)} aria-label={`Remove ${member.displayName}`}>
+                <X size={11} aria-hidden className="text-fg-muted hover:text-error" />
+              </button>
+            )}
+          </span>
+        ))}
+        {team.members.length === 0 && <span className="text-[11px] text-fg-muted">No members yet.</span>}
+      </div>
+
+      {canManage && (
+        <div className="mt-2">
+          {addingMember ? (
+            <form onSubmit={handleAddMember} className="flex items-center gap-1.5">
+              <select
+                value={selectedUserId}
+                onChange={(event) => setSelectedUserId(event.target.value)}
+                className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-2 py-1 text-[11px] text-fg outline-none focus:border-accent"
+              >
+                <option value="">Select a member…</option>
+                {addableMembers.map((member) => (
+                  <option key={member.userId} value={member.userId}>
+                    {member.displayName}
+                  </option>
+                ))}
+              </select>
+              <button type="submit" disabled={busy || !selectedUserId} className="text-[11px] font-medium text-accent hover:text-accent-dim disabled:opacity-50">
+                Add
+              </button>
+              <button type="button" onClick={() => setAddingMember(false)} className="text-[11px] text-fg-muted hover:text-fg">
+                Cancel
+              </button>
+            </form>
+          ) : (
+            <button type="button" onClick={() => setAddingMember(true)} className="flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-dim">
+              <Plus size={11} aria-hidden />
+              Add member
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TeamsCard() {
+  const auth = useAuth();
+  const canCreate = auth.role === 'OWNER' || auth.role === 'ADMIN' || auth.role === 'MANAGER' || auth.role === 'SUPERVISOR';
+  const [teams, setTeams] = useState<TeamDto[] | null>(null);
+  const [members, setMembers] = useState<MemberDto[]>([]);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    try {
+      const [teamsResult, membersResult] = await Promise.all([api.listTeams(), api.listMembers()]);
+      setTeams(teamsResult.teams);
+      setMembers(membersResult.members);
+    } catch {
+      setError('Could not load teams.');
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function handleCreate(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.createTeam(name.trim(), null);
+      setName('');
+      setShowCreateForm(false);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not create that team.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-fg">Teams</h2>
+        {canCreate && (
+          <button type="button" onClick={() => setShowCreateForm((v) => !v)} className="flex items-center gap-1.5 text-xs font-medium text-accent hover:text-accent-dim">
+            <Users size={13} aria-hidden />
+            New team
+          </button>
+        )}
+      </div>
+      <p className="mt-1 text-xs text-fg-muted">Group teammates (Sales, Support, …) and assign conversations to a team.</p>
+
+      {error && <p className="mt-2 text-xs text-error">{error}</p>}
+
+      {showCreateForm && canCreate && (
+        <form onSubmit={handleCreate} className="mt-3 flex items-center gap-1.5">
+          <input
+            type="text"
+            required
+            placeholder="Team name"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg outline-none focus:border-accent"
+          />
+          <button type="submit" disabled={busy} className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+            Create
+          </button>
+        </form>
+      )}
+
+      <div className="mt-3 space-y-2">
+        {teams === null && <p className="text-xs text-fg-muted">Loading…</p>}
+        {teams?.length === 0 && <p className="text-xs text-fg-muted">No teams yet.</p>}
+        {teams?.map((team) => (
+          <TeamCard key={team.id} team={team} members={members} onChanged={load} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const AVAILABILITY_LABEL: Record<AgentAvailability, string> = { available: 'Available', busy: 'Busy', offline: 'Offline' };
+const AVAILABILITY_COLOR: Record<AgentAvailability, string> = {
+  available: 'bg-success/15 text-success',
+  busy: 'bg-warning/15 text-warning',
+  offline: 'bg-fg-muted/15 text-fg-muted',
+};
+
+function AvailabilityCard() {
+  const [capacity, setCapacity] = useState<AgentCapacityDto | null>(null);
+  const [maxInput, setMaxInput] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api
+      .getMyCapacity()
+      .then((result) => {
+        setCapacity(result.capacity);
+        setMaxInput(String(result.capacity.maxActiveConversations));
+      })
+      .catch(() => undefined);
+  }, []);
+
+  async function handleAvailabilityChange(availability: AgentAvailability) {
+    setBusy(true);
+    try {
+      const result = await api.updateMyCapacity({ availability });
+      setCapacity(result.capacity);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleMaxSave() {
+    const parsed = Number(maxInput);
+    if (!Number.isFinite(parsed) || parsed < 1) return;
+    setBusy(true);
+    try {
+      const result = await api.updateMyCapacity({ maxActiveConversations: Math.round(parsed) });
+      setCapacity(result.capacity);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!capacity) return null;
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      <h2 className="text-sm font-semibold text-fg">Availability</h2>
+      <p className="mt-1 text-xs text-fg-muted">Controls whether conversations can be assigned to you, and how many at once.</p>
+
+      <div className="mt-3 flex gap-1.5">
+        {(['available', 'busy', 'offline'] as const).map((option) => (
+          <button
+            key={option}
+            type="button"
+            disabled={busy}
+            onClick={() => handleAvailabilityChange(option)}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+              capacity.availability === option ? AVAILABILITY_COLOR[option] : 'bg-surface-3 text-fg-muted hover:text-fg-secondary'
+            }`}
+          >
+            {AVAILABILITY_LABEL[option]}
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-3 flex items-center gap-2">
+        <label className="text-xs text-fg-secondary">Max active conversations</label>
+        <input
+          type="number"
+          min={1}
+          max={1000}
+          value={maxInput}
+          onChange={(event) => setMaxInput(event.target.value)}
+          onBlur={handleMaxSave}
+          className="w-20 rounded-lg border border-border-subtle bg-surface-1 px-2 py-1 text-xs text-fg outline-none focus:border-accent"
+        />
+      </div>
+    </div>
+  );
+}
+
 export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSnapshot | null }) {
   return (
     <div className="flex-1 overflow-y-auto p-6">
@@ -683,6 +958,8 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
         <WhatsAppAccountCard connection={connection} />
         <AccountCard />
         <TeamMembersCard />
+        <TeamsCard />
+        <AvailabilityCard />
         <SessionsCard />
         <SecurityCard />
       </div>

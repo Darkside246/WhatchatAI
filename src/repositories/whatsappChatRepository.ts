@@ -23,6 +23,8 @@ export interface WhatsAppChatRecord {
   lastMessageId: string | null;
   lastMessageAt: string | null;
   aiMode: ChatAiMode;
+  assigneeUserId: string | null;
+  assigneeTeamId: string | null;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -47,6 +49,8 @@ interface ChatRow {
   last_message_id: string | null;
   last_message_at: string | null;
   ai_mode: ChatAiMode;
+  assignee_user_id: string | null;
+  assignee_team_id: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -72,6 +76,8 @@ function toRecord(row: ChatRow): WhatsAppChatRecord {
     lastMessageId: row.last_message_id,
     lastMessageAt: row.last_message_at,
     aiMode: row.ai_mode,
+    assigneeUserId: row.assignee_user_id,
+    assigneeTeamId: row.assignee_team_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
@@ -230,6 +236,29 @@ export class WhatsAppChatRepository {
       [id, aiMode],
     );
     return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /** Human assignment belongs to the specific conversation, same as ai_mode - never a separate table. */
+  async setAssignment(id: string, assigneeUserId: string | null, assigneeTeamId: string | null): Promise<WhatsAppChatRecord | null> {
+    const { rows } = await this.db.query<ChatRow>(
+      'UPDATE whatsapp_chats SET assignee_user_id = $2, assignee_team_id = $3, updated_at = now() WHERE id = $1 RETURNING *',
+      [id, assigneeUserId, assigneeTeamId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
+   * The honest capacity signal available today: how many non-deleted chats
+   * are currently assigned to this user. There is no resolve/snooze state
+   * yet (Chatwoot gap audit section 2), so "active" really means "still
+   * assigned," not "still open" in the support-desk sense.
+   */
+  async countAssignedToUser(businessId: string, userId: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM whatsapp_chats WHERE business_id = $1 AND assignee_user_id = $2 AND deleted_at IS NULL`,
+      [businessId, userId],
+    );
+    return Number(rows[0]?.count ?? '0');
   }
 
   /**

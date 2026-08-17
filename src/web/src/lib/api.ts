@@ -257,6 +257,42 @@ export type NotificationType =
   | 'CAMPAIGN_FAILURE'
   | 'SYSTEM';
 
+export interface TeamMemberDto {
+  id: string;
+  teamId: string;
+  userId: string;
+  email: string;
+  displayName: string;
+  createdAt: string;
+}
+
+export interface TeamDto {
+  id: string;
+  businessId: string;
+  name: string;
+  description: string | null;
+  createdAt: string;
+  updatedAt: string;
+  members: TeamMemberDto[];
+}
+
+export type AgentAvailability = 'available' | 'busy' | 'offline';
+
+export interface AgentCapacityDto {
+  userId: string;
+  businessId: string;
+  maxActiveConversations: number;
+  availability: AgentAvailability;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CapacitySummaryDto extends AgentCapacityDto {
+  email: string;
+  displayName: string;
+  currentAssignedCount: number;
+}
+
 export interface NotificationDto {
   id: string;
   type: NotificationType;
@@ -311,6 +347,8 @@ export interface WorkspaceChatDetailRecord {
   name: string | null;
   phoneNumber: string | null;
   aiMode: WorkspaceChatSummary['aiMode'];
+  assigneeUserId: string | null;
+  assigneeTeamId: string | null;
 }
 
 export interface WorkspacePresence {
@@ -519,4 +557,26 @@ export const api = {
   dismissNotification: (id: string) =>
     request<{ notification: NotificationDto }>(`/workspace/notifications/${id}/dismiss`, { method: 'PATCH' }),
   markAllNotificationsRead: () => request<{ updatedCount: number }>('/workspace/notifications/read-all', { method: 'POST' }),
+
+  listTeams: () => request<{ teams: TeamDto[] }>('/workspace/teams'),
+  createTeam: (name: string, description: string | null) =>
+    request<{ team: TeamDto }>('/workspace/teams', { method: 'POST', body: JSON.stringify({ name, description }) }),
+  updateTeam: (teamId: string, input: { name?: string; description?: string | null }) =>
+    request<{ team: TeamDto }>(`/workspace/teams/${teamId}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  deleteTeam: (teamId: string) => request<{ status: string }>(`/workspace/teams/${teamId}`, { method: 'DELETE' }),
+  addTeamMember: (teamId: string, userId: string) =>
+    request<{ members: TeamMemberDto[] }>(`/workspace/teams/${teamId}/members`, { method: 'POST', body: JSON.stringify({ userId }) }),
+  removeTeamMember: (teamId: string, userId: string) =>
+    request<{ members: TeamMemberDto[] }>(`/workspace/teams/${teamId}/members/${userId}`, { method: 'DELETE' }),
+
+  listCapacity: () => request<{ capacity: CapacitySummaryDto[] }>('/workspace/capacity'),
+  getMyCapacity: () => request<{ capacity: AgentCapacityDto }>('/workspace/capacity/me'),
+  updateMyCapacity: (input: { maxActiveConversations?: number; availability?: AgentAvailability }) =>
+    request<{ capacity: AgentCapacityDto }>('/workspace/capacity/me', { method: 'PATCH', body: JSON.stringify(input) }),
+
+  assignChat: (chatId: string, input: { assigneeUserId: string | null; assigneeTeamId: string | null }) =>
+    request<{ chat: WorkspaceChatDetailRecord }>(`/workspace/chats/${chatId}/assignment`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
 };

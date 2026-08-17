@@ -24,7 +24,10 @@ import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { describeMessageType } from '../domain/whatsapp/messagePreview.js';
 import { whatsappConnectionService } from './whatsappConnectionService.js';
 import { enqueueContactProfilePictureSync, storeAndAttachAccountProfilePicture } from './profilePictureSyncService.js';
-import { notifyBusiness } from './notificationService.js';
+import { notifyBusiness, notifyUser } from './notificationService.js';
+import { BusinessMembershipRepository } from '../repositories/businessMembershipRepository.js';
+import { TeamRepository } from '../repositories/teamRepository.js';
+import { AgentCapacityRepository } from '../repositories/agentCapacityRepository.js';
 import type {
   CallStatus,
   CallType,
@@ -147,6 +150,24 @@ export function isLeadNotFoundError(error: unknown): error is LeadNotFoundError 
   return error instanceof Error && (error as LeadNotFoundError).code === 'LEAD_NOT_FOUND';
 }
 
+export interface CapacityExceededError extends Error {
+  code: 'CAPACITY_EXCEEDED';
+  limit: number;
+  current: number;
+}
+
+export function isCapacityExceededError(error: unknown): error is CapacityExceededError {
+  return error instanceof Error && (error as CapacityExceededError).code === 'CAPACITY_EXCEEDED';
+}
+
+export interface InvalidAssignmentError extends Error {
+  code: 'INVALID_ASSIGNMENT';
+}
+
+export function isInvalidAssignmentError(error: unknown): error is InvalidAssignmentError {
+  return error instanceof Error && (error as InvalidAssignmentError).code === 'INVALID_ASSIGNMENT';
+}
+
 export interface WorkspaceCrmContactSummary {
   id: string;
   whatsappContactId: string | null;
@@ -260,6 +281,9 @@ export class WorkspaceService {
   private readonly presenceRepository = new WhatsAppPresenceRepository(pool);
   private readonly reactionRepository = new WhatsAppMessageReactionRepository(pool);
   private readonly outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
+  private readonly membershipRepository = new BusinessMembershipRepository(pool);
+  private readonly teamRepository = new TeamRepository(pool);
+  private readonly capacityRepository = new AgentCapacityRepository(pool);
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
@@ -591,6 +615,79 @@ export class WorkspaceService {
     }
 
     return updated;
+  }
+
+  /**
+   * Real human-to-human conversation assignment - the axis separate from
+   * ai_mode's AI-vs-human toggle. Enforces real agent capacity (never lets
+   * a chat land on someone already at their configured limit) and
+   * validates the target is an actual active member of this business, not
+   * an arbitrary user id from another tenant.
+   */
+  async assignChat(
+    businessId: string,
+    whatsappAccountId: string,
+    chatId: string,
+    input: { assigneeUserId: string | null; assigneeTeamId: string | null },
+  ) {
+    const chat = await this.chatRepository.findById(chatId);
+    if (!chat || chat.businessId !== businessId || chat.whatsappAccountId !== whatsappAccountId) {
+      throw this.notFound();
+    }
+
+    if (input.assigneeTeamId) {
+      const team = await this.teamRepository.findById(input.assigneeTeamId);
+      if (!team || team.businessId !== businessId) throw this.invalidAssignment();
+    }
+
+    if (input.assigneeUserId) {
+      const membership = await this.membershipRepository.findByUserAndBusiness(input.assigneeUserId, businessId);
+      if (!membership || membership.status !== 'active') throw this.invalidAssignment();
+
+      // Reassigning a chat that's already theirs never counts against their limit.
+      if (chat.assigneeUserId !== input.assigneeUserId) {
+        const capacity = await this.capacityRepository.ensureDefault(businessId, input.assigneeUserId);
+        const currentCount = await this.chatRepository.countAssignedToUser(businessId, input.assigneeUserId);
+        if (currentCount >= capacity.maxActiveConversations) {
+          throw this.capacityExceeded(capacity.maxActiveConversations, currentCount);
+        }
+      }
+    }
+
+    const updated = await this.chatRepository.setAssignment(chatId, input.assigneeUserId, input.assigneeTeamId);
+
+    const assignmentChanged = chat.assigneeUserId !== input.assigneeUserId || chat.assigneeTeamId !== input.assigneeTeamId;
+    if (assignmentChanged && input.assigneeUserId) {
+      try {
+        await notifyUser(input.assigneeUserId, {
+          businessId,
+          type: 'ASSIGNMENT',
+          severity: 'info',
+          title: 'A conversation was assigned to you',
+          body: chat.phoneNumber ? `WhatsApp conversation with +${chat.phoneNumber}.` : null,
+          targetType: 'chat',
+          targetId: chatId,
+        });
+      } catch (error) {
+        console.error('[WorkspaceService] Failed to dispatch ASSIGNMENT notification:', error);
+      }
+    }
+
+    return updated;
+  }
+
+  private capacityExceeded(limit: number, current: number): CapacityExceededError {
+    const error = new Error(`Agent is already at capacity (${current}/${limit} active conversations).`) as CapacityExceededError;
+    error.code = 'CAPACITY_EXCEEDED';
+    error.limit = limit;
+    error.current = current;
+    return error;
+  }
+
+  private invalidAssignment(): InvalidAssignmentError {
+    const error = new Error('Assignee is not a valid team or business member for this conversation.') as InvalidAssignmentError;
+    error.code = 'INVALID_ASSIGNMENT';
+    return error;
   }
 
   /**

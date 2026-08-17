@@ -5,6 +5,9 @@ import { PlanRepository } from '../src/repositories/planRepository.js';
 import { SubscriptionRepository } from '../src/repositories/subscriptionRepository.js';
 
 const TABLES = [
+  'agent_capacity',
+  'team_members',
+  'teams',
   'notifications',
   'auth_login_attempts',
   'sessions',

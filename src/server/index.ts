@@ -41,6 +41,21 @@ import {
   isNotificationNotFoundError,
 } from '../services/notificationService.js';
 import {
+  createTeam,
+  listTeams,
+  updateTeam,
+  deleteTeam,
+  addTeamMember,
+  removeTeamMember,
+  getMyCapacity,
+  updateMyCapacity,
+  listCapacity,
+  isTeamNotFoundError,
+  isDuplicateTeamNameError,
+  isUserNotBusinessMemberError,
+} from '../services/teamService.js';
+import { isCapacityExceededError, isInvalidAssignmentError } from '../services/workspaceService.js';
+import {
   isRegistrationOpen,
   register,
   login,
@@ -254,6 +269,106 @@ app.delete('/api/workspace/members/:membershipId', requireAuth, requirePermissio
     if (isCannotModifyOwnerError(error)) return res.status(403).json({ error: 'CANNOT_MODIFY_OWNER', message: error.message });
     throw error;
   }
+});
+
+const createTeamSchema = z.object({ name: z.string().trim().min(1).max(200), description: z.string().trim().max(2000).nullish() });
+
+app.get('/api/workspace/teams', requireAuth, async (_req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  const teams = await listTeams(businessId);
+  return res.status(200).json({ teams });
+});
+
+app.post('/api/workspace/teams', requireAuth, requirePermission('team.manage'), async (req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  const parsed = createTeamSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_TEAM', details: parsed.error.flatten() });
+  try {
+    const team = await createTeam(businessId, parsed.data.name, parsed.data.description ?? null);
+    return res.status(201).json({ team });
+  } catch (error) {
+    if (isDuplicateTeamNameError(error)) return res.status(409).json({ error: 'DUPLICATE_TEAM_NAME', message: error.message });
+    throw error;
+  }
+});
+
+const updateTeamSchema = z.object({ name: z.string().trim().min(1).max(200).optional(), description: z.string().trim().max(2000).nullish() });
+
+app.patch('/api/workspace/teams/:teamId', requireAuth, requirePermission('team.manage'), async (req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  const parsed = updateTeamSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_TEAM' });
+  try {
+    const team = await updateTeam(businessId, String(req.params.teamId ?? ''), { name: parsed.data.name, description: parsed.data.description ?? null });
+    return res.status(200).json({ team });
+  } catch (error) {
+    if (isTeamNotFoundError(error)) return res.status(404).json({ error: 'TEAM_NOT_FOUND' });
+    if (isDuplicateTeamNameError(error)) return res.status(409).json({ error: 'DUPLICATE_TEAM_NAME', message: error.message });
+    throw error;
+  }
+});
+
+app.delete('/api/workspace/teams/:teamId', requireAuth, requirePermission('team.manage'), async (req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  try {
+    await deleteTeam(businessId, String(req.params.teamId ?? ''));
+    return res.status(200).json({ status: 'deleted' });
+  } catch (error) {
+    if (isTeamNotFoundError(error)) return res.status(404).json({ error: 'TEAM_NOT_FOUND' });
+    throw error;
+  }
+});
+
+const addTeamMemberSchema = z.object({ userId: z.string().uuid() });
+
+app.post('/api/workspace/teams/:teamId/members', requireAuth, requirePermission('team.manage'), async (req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  const parsed = addTeamMemberSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_TEAM_MEMBER' });
+  try {
+    const members = await addTeamMember(businessId, String(req.params.teamId ?? ''), parsed.data.userId);
+    return res.status(200).json({ members });
+  } catch (error) {
+    if (isTeamNotFoundError(error)) return res.status(404).json({ error: 'TEAM_NOT_FOUND' });
+    if (isUserNotBusinessMemberError(error)) return res.status(400).json({ error: 'NOT_A_BUSINESS_MEMBER', message: error.message });
+    throw error;
+  }
+});
+
+app.delete('/api/workspace/teams/:teamId/members/:userId', requireAuth, requirePermission('team.manage'), async (req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  try {
+    const members = await removeTeamMember(businessId, String(req.params.teamId ?? ''), String(req.params.userId ?? ''));
+    return res.status(200).json({ members });
+  } catch (error) {
+    if (isTeamNotFoundError(error)) return res.status(404).json({ error: 'TEAM_NOT_FOUND' });
+    throw error;
+  }
+});
+
+app.get('/api/workspace/capacity', requireAuth, async (_req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  const capacity = await listCapacity(businessId);
+  return res.status(200).json({ capacity });
+});
+
+app.get('/api/workspace/capacity/me', requireAuth, async (_req, res) => {
+  const { businessId, userId } = res.locals.auth as AuthContext;
+  const capacity = await getMyCapacity(businessId, userId);
+  return res.status(200).json({ capacity });
+});
+
+const updateCapacitySchema = z.object({
+  maxActiveConversations: z.number().int().min(1).max(1000).optional(),
+  availability: z.enum(['available', 'busy', 'offline']).optional(),
+});
+
+app.patch('/api/workspace/capacity/me', requireAuth, async (req, res) => {
+  const { businessId, userId } = res.locals.auth as AuthContext;
+  const parsed = updateCapacitySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_CAPACITY' });
+  const capacity = await updateMyCapacity(businessId, userId, parsed.data);
+  return res.status(200).json({ capacity });
 });
 
 // Every /api/whatsapp/* route below requires a real, valid session - see
@@ -501,6 +616,28 @@ app.patch('/api/workspace/chats/:chatId/ai-mode', requireWorkspaceContext, async
     return res.status(200).json({ chat });
   } catch (error) {
     if (isChatNotFoundError(error)) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
+    throw error;
+  }
+});
+
+const assignChatSchema = z.object({
+  assigneeUserId: z.string().uuid().nullable(),
+  assigneeTeamId: z.string().uuid().nullable(),
+});
+
+app.patch('/api/workspace/chats/:chatId/assignment', requireWorkspaceContext, async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = assignChatSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_ASSIGNMENT_PAYLOAD' });
+  try {
+    const chat = await workspaceService.assignChat(businessId, whatsappAccountId, String(req.params.chatId ?? ''), parsed.data);
+    return res.status(200).json({ chat });
+  } catch (error) {
+    if (isChatNotFoundError(error)) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
+    if (isInvalidAssignmentError(error)) return res.status(400).json({ error: 'INVALID_ASSIGNMENT', message: error.message });
+    if (isCapacityExceededError(error)) {
+      return res.status(409).json({ error: 'CAPACITY_EXCEEDED', message: error.message, limit: error.limit, current: error.current });
+    }
     throw error;
   }
 });

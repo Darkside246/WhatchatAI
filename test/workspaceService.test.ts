@@ -4,8 +4,16 @@ import { WhatsAppChatRepository } from '../src/repositories/whatsappChatReposito
 import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
 import { WhatsAppContactRepository } from '../src/repositories/whatsappContactRepository.js';
 import { AiAgentRepository } from '../src/repositories/aiAgentRepository.js';
-import { workspaceService, isEntitlementDeniedError, isChatNotFoundError } from '../src/services/workspaceService.js';
+import {
+  workspaceService,
+  isEntitlementDeniedError,
+  isChatNotFoundError,
+  isCapacityExceededError,
+  isInvalidAssignmentError,
+} from '../src/services/workspaceService.js';
 import { register } from '../src/services/authService.js';
+import { createMember } from '../src/services/workspaceMemberService.js';
+import { createTeam, updateMyCapacity } from '../src/services/teamService.js';
 import { listNotifications } from '../src/services/notificationService.js';
 import { createTestAccount, createTestBusiness, createTestSubscription, resetDatabase } from './helpers.js';
 
@@ -354,5 +362,125 @@ describe('workspaceService real notification triggers (HUMAN_HANDOFF and NEW_LEA
     expect(notifications).toHaveLength(1);
     expect(notifications[0]?.type).toBe('NEW_LEAD');
     expect(notifications[0]?.targetId).toBe(lead.id);
+  });
+});
+
+describe('workspaceService.assignChat (real assignment, real capacity enforcement, real tenant isolation)', () => {
+  let businessId: string;
+  let accountId: string;
+  let ownerId: string;
+  let agentId: string;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    const owner = await register(
+      { email: 'owner@example.com', password: 'correcthorsebatterystaple', displayName: 'Owner' },
+      { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' },
+    );
+    businessId = owner.business.id;
+    ownerId = owner.user.id;
+    accountId = await createTestAccount(businessId);
+    const created = await createMember(businessId, ownerId, { email: 'agent@example.com', displayName: 'Agent', role: 'AGENT' });
+    agentId = created.member.userId;
+  });
+
+  async function makeChat(jid: string) {
+    const chatRepository = new WhatsAppChatRepository(pool);
+    return chatRepository.upsertFromWhatsApp({ businessId, whatsappAccountId: accountId, chatJid: jid, jidKind: 'individual', chatType: 'individual' });
+  }
+
+  it('assigns a chat to a real active business member and dispatches a real ASSIGNMENT notification', async () => {
+    const chat = await makeChat('15551110001@s.whatsapp.net');
+    const updated = await workspaceService.assignChat(businessId, accountId, chat.id, { assigneeUserId: agentId, assigneeTeamId: null });
+    expect(updated?.assigneeUserId).toBe(agentId);
+
+    const { notifications } = await listNotifications(businessId, agentId);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.type).toBe('ASSIGNMENT');
+  });
+
+  it('assigns a chat to a real team belonging to this business, and rejects a team from another business', async () => {
+    const team = await createTeam(businessId, 'Support', null);
+    const chat = await makeChat('15551110002@s.whatsapp.net');
+    const updated = await workspaceService.assignChat(businessId, accountId, chat.id, { assigneeUserId: null, assigneeTeamId: team.id });
+    expect(updated?.assigneeTeamId).toBe(team.id);
+
+    const otherBusinessId = await createTestBusiness('Other Business');
+    const otherTeam = await createTeam(otherBusinessId, 'Sales', null);
+    await expect(
+      workspaceService.assignChat(businessId, accountId, chat.id, { assigneeUserId: null, assigneeTeamId: otherTeam.id }),
+    ).rejects.toThrow();
+    try {
+      await workspaceService.assignChat(businessId, accountId, chat.id, { assigneeUserId: null, assigneeTeamId: otherTeam.id });
+    } catch (error) {
+      expect(isInvalidAssignmentError(error)).toBe(true);
+    }
+  });
+
+  it('rejects assigning to a user who is not an active member of this business', async () => {
+    const chat = await makeChat('15551110003@s.whatsapp.net');
+    await expect(
+      workspaceService.assignChat(businessId, accountId, chat.id, { assigneeUserId: '00000000-0000-0000-0000-000000000000', assigneeTeamId: null }),
+    ).rejects.toThrow();
+    try {
+      await workspaceService.assignChat(businessId, accountId, chat.id, { assigneeUserId: '00000000-0000-0000-0000-000000000000', assigneeTeamId: null });
+    } catch (error) {
+      expect(isInvalidAssignmentError(error)).toBe(true);
+    }
+  });
+
+  it('enforces real agent capacity - refuses a chat once the assignee is already at their configured limit', async () => {
+    await updateMyCapacity(businessId, agentId, { maxActiveConversations: 1 });
+
+    const first = await makeChat('15551110004@s.whatsapp.net');
+    await workspaceService.assignChat(businessId, accountId, first.id, { assigneeUserId: agentId, assigneeTeamId: null });
+
+    const second = await makeChat('15551110005@s.whatsapp.net');
+    await expect(
+      workspaceService.assignChat(businessId, accountId, second.id, { assigneeUserId: agentId, assigneeTeamId: null }),
+    ).rejects.toThrow();
+    try {
+      await workspaceService.assignChat(businessId, accountId, second.id, { assigneeUserId: agentId, assigneeTeamId: null });
+    } catch (error) {
+      expect(isCapacityExceededError(error)).toBe(true);
+      if (isCapacityExceededError(error)) {
+        expect(error.limit).toBe(1);
+        expect(error.current).toBe(1);
+      }
+    }
+  });
+
+  it('re-assigning a chat that is already theirs never counts against capacity (no-op reassignment)', async () => {
+    await updateMyCapacity(businessId, agentId, { maxActiveConversations: 1 });
+    const chat = await makeChat('15551110006@s.whatsapp.net');
+    await workspaceService.assignChat(businessId, accountId, chat.id, { assigneeUserId: agentId, assigneeTeamId: null });
+
+    // Reassigning the SAME chat to the SAME agent must not be blocked by their own capacity.
+    await expect(
+      workspaceService.assignChat(businessId, accountId, chat.id, { assigneeUserId: agentId, assigneeTeamId: null }),
+    ).resolves.toBeTruthy();
+  });
+
+  it('unassigning (both null) always succeeds and never dispatches an ASSIGNMENT notification', async () => {
+    const chat = await makeChat('15551110007@s.whatsapp.net');
+    await workspaceService.assignChat(businessId, accountId, chat.id, { assigneeUserId: agentId, assigneeTeamId: null });
+    const unassigned = await workspaceService.assignChat(businessId, accountId, chat.id, { assigneeUserId: null, assigneeTeamId: null });
+    expect(unassigned?.assigneeUserId).toBeNull();
+
+    const { notifications } = await listNotifications(businessId, agentId);
+    expect(notifications).toHaveLength(1); // only the original assignment notification, nothing for the unassign
+  });
+
+  it('throws not-found for a chat belonging to a different business', async () => {
+    const otherBusinessId = await createTestBusiness('Other Business');
+    const chat = await makeChat('15551110008@s.whatsapp.net');
+    await expect(
+      workspaceService.assignChat(otherBusinessId, accountId, chat.id, { assigneeUserId: null, assigneeTeamId: null }),
+    ).rejects.toThrow();
+    try {
+      await workspaceService.assignChat(otherBusinessId, accountId, chat.id, { assigneeUserId: null, assigneeTeamId: null });
+    } catch (error) {
+      expect(isChatNotFoundError(error)).toBe(true);
+    }
   });
 });
