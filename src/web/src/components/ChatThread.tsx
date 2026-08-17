@@ -18,6 +18,7 @@ import {
   SmilePlus,
   Sparkles,
   Lock,
+  Trash2,
 } from 'lucide-react';
 import {
   api,
@@ -354,6 +355,30 @@ function DeliveryTicks({ status }: { status: WorkspaceMessage['status'] }) {
   return null;
 }
 
+/**
+ * WhatsApp only offers "delete for everyone" for a limited period after
+ * sending, and the server enforces the same window. Mirroring it here means
+ * we never offer a button that is guaranteed to be refused.
+ */
+const DELETE_FOR_EVERYONE_WINDOW_MS = 2 * 24 * 60 * 60 * 1000 + 12 * 60 * 60 * 1000;
+
+function canDeleteForEveryone(timestamp: string): boolean {
+  const sentAt = new Date(timestamp).getTime();
+  if (Number.isNaN(sentAt)) return false;
+  return Date.now() - sentAt <= DELETE_FOR_EVERYONE_WINDOW_MS;
+}
+
+/**
+ * Deliberately careful wording. We can say WhatsApp was asked, and that it
+ * accepted - we cannot say the message is gone from every recipient's phone,
+ * so the UI never claims that.
+ */
+function revokeLabel(message: WorkspaceMessage): string {
+  if (message.revokeStatus === 'requested') return 'Asking WhatsApp to delete this for everyone…';
+  if (message.revokeStatus === 'revoke_sent') return 'Delete-for-everyone sent to WhatsApp';
+  return `Delete failed${message.revokeError ? `: ${message.revokeError}` : ''}`;
+}
+
 interface Props {
   onOpenDetail?: () => void;
 }
@@ -375,6 +400,8 @@ export function ChatThread({ onOpenDetail }: Props) {
   const [lightbox, setLightbox] = useState<{ url: string; fileName: string | null } | null>(null);
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
+  const [revoking, setRevoking] = useState<string | null>(null);
   const [members, setMembers] = useState<MemberDto[]>([]);
   const [teams, setTeams] = useState<TeamDto[]>([]);
   const [savingAssignee, setSavingAssignee] = useState(false);
@@ -472,6 +499,28 @@ export function ChatThread({ onOpenDetail }: Props) {
       await api.sendReaction(messageId, emoji);
     } catch (err) {
       setReactionError(err instanceof Error ? err.message : 'Failed to send reaction.');
+    }
+  }
+
+  /**
+   * Real WhatsApp "delete for everyone". We deliberately do not remove the
+   * bubble locally on click: the message is only marked once WhatsApp has
+   * actually been asked, and the bubble then reports what we truly know -
+   * that the instruction was sent, not that every device dropped it.
+   */
+  async function handleRevoke(messageId: string) {
+    if (!window.confirm('Delete this message for everyone on WhatsApp? Recipients who already read it may still have seen it.')) return;
+    setRevokeError(null);
+    setRevoking(messageId);
+    try {
+      await api.revokeMessage(messageId);
+      setMessages((current) =>
+        current?.map((message) => (message.id === messageId ? { ...message, revokeStatus: 'requested' as const } : message)) ?? current,
+      );
+    } catch (err) {
+      setRevokeError(err instanceof Error ? err.message : 'Could not delete that message.');
+    } finally {
+      setRevoking(null);
     }
   }
 
@@ -731,6 +780,7 @@ export function ChatThread({ onOpenDetail }: Props) {
       <div className={`flex-1 space-y-2 overflow-y-auto bg-surface-0 px-4 py-4 ${doodleClass}`}>
         {error && <p className="text-xs text-error">{error}</p>}
         {reactionError && <p className="text-xs text-error">{reactionError}</p>}
+        {revokeError && <p className="text-xs text-error">{revokeError}</p>}
         {messages === null && !error && <p className="text-xs text-fg-muted">Loading real message history…</p>}
         {messages?.length === 0 && <p className="text-xs text-fg-muted">No messages persisted for this chat yet.</p>}
 
@@ -777,6 +827,18 @@ export function ChatThread({ onOpenDetail }: Props) {
               >
                 <SmilePlus size={13} aria-hidden />
               </button>
+
+              {message.fromMe && message.revokeStatus === 'none' && canDeleteForEveryone(message.timestamp) && (
+                <button
+                  type="button"
+                  onClick={() => void handleRevoke(message.id)}
+                  disabled={revoking === message.id}
+                  title="Delete for everyone on WhatsApp"
+                  className="absolute -top-3 -left-11 z-10 rounded-full border border-border-subtle bg-surface-1 p-1 text-fg-secondary opacity-0 shadow-sm transition-opacity hover:text-error disabled:opacity-50 group-hover:opacity-100"
+                >
+                  {revoking === message.id ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <Trash2 size={13} aria-hidden />}
+                </button>
+              )}
 
               {reactionPickerFor === message.id && (
                 <>
@@ -826,6 +888,12 @@ export function ChatThread({ onOpenDetail }: Props) {
                     </span>
                   ))}
                 </div>
+              )}
+              {message.revokeStatus !== 'none' && (
+                <p className="mt-1 flex items-center gap-1 text-[10px] italic opacity-80">
+                  <Trash2 size={10} aria-hidden />
+                  {revokeLabel(message)}
+                </p>
               )}
               <div className="mt-1 flex items-center justify-end gap-1 text-[10px] opacity-80">
                 {message.isHistorical && <span title="Synced from history">history</span>}

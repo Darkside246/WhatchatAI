@@ -18,6 +18,10 @@ export interface WhatsAppMessageRecord {
   caption: string | null;
   timestamp: string;
   fromMe: boolean;
+  /** Real WhatsApp delete-for-everyone state. 'revoke_sent' means WhatsApp accepted the instruction - NOT that every recipient device removed it. */
+  revokeStatus: 'none' | 'requested' | 'revoke_sent' | 'failed';
+  revokeSentAt: string | null;
+  revokeError: string | null;
   isHistorical: boolean;
   status: MessageStatus;
   hasMedia: boolean;
@@ -44,6 +48,9 @@ interface MessageRow {
   caption: string | null;
   timestamp: string;
   from_me: boolean;
+  revoke_status: 'none' | 'requested' | 'revoke_sent' | 'failed';
+  revoke_sent_at: string | null;
+  revoke_error: string | null;
   is_historical: boolean;
   status: MessageStatus;
   has_media: boolean;
@@ -81,6 +88,9 @@ async function toRecord(row: MessageRow, wasInserted: boolean): Promise<WhatsApp
     caption: row.caption,
     timestamp: row.timestamp,
     fromMe: row.from_me,
+    revokeStatus: row.revoke_status ?? 'none',
+    revokeSentAt: row.revoke_sent_at ?? null,
+    revokeError: row.revoke_error ?? null,
     isHistorical: row.is_historical,
     status: row.status,
     hasMedia: row.has_media,
@@ -185,6 +195,54 @@ export class WhatsAppMessageRepository {
 
   async updateStatus(id: string, status: MessageStatus): Promise<void> {
     await this.db.query('UPDATE whatsapp_messages SET status = $2, updated_at = now() WHERE id = $1', [id, status]);
+  }
+
+  /**
+   * Marks a message as queued for WhatsApp's real delete-for-everyone.
+   *
+   * Returns false when the row is not in a revocable state - either it is not
+   * ours to revoke, or a revoke is already in flight/done. Callers must not
+   * enqueue a job when this returns false, which is what keeps a double-click
+   * from sending two revoke instructions.
+   */
+  async markRevokeRequested(id: string, businessId: string, requestedBy: string | null): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      `UPDATE whatsapp_messages
+         SET revoke_status = 'requested',
+             revoke_requested_at = now(),
+             revoke_requested_by = $3,
+             revoke_error = NULL,
+             updated_at = now()
+       WHERE id = $1
+         AND business_id = $2
+         AND from_me = true
+         AND revoke_status IN ('none', 'failed')`,
+      [id, businessId, requestedBy],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  /**
+   * WhatsApp accepted the revoke instruction. Deliberately NOT called
+   * "markDeleted": we know the instruction was sent, not that every recipient
+   * device removed the message.
+   */
+  async markRevokeSent(id: string): Promise<void> {
+    await this.db.query(
+      `UPDATE whatsapp_messages
+         SET revoke_status = 'revoke_sent', revoke_sent_at = now(), revoke_error = NULL, updated_at = now()
+       WHERE id = $1`,
+      [id],
+    );
+  }
+
+  async markRevokeFailed(id: string, reason: string): Promise<void> {
+    await this.db.query(
+      `UPDATE whatsapp_messages
+         SET revoke_status = 'failed', revoke_error = $2, updated_at = now()
+       WHERE id = $1`,
+      [id, reason.slice(0, 500)],
+    );
   }
 
   async attachMedia(id: string, mediaId: string): Promise<void> {

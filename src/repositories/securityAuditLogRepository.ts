@@ -22,7 +22,10 @@ export type SecurityEventType =
   | 'chat_assigned'
   | 'member_created'
   | 'member_role_changed'
-  | 'agent_updated';
+  | 'agent_updated'
+  | 'message_revoke_requested'
+  | 'campaign_recalled'
+  | 'status_revoke_requested';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 

@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Megaphone, Send, Check, X, Users, CalendarClock, Image as ImageIcon, Sparkles } from 'lucide-react';
+import { ArrowLeft, Megaphone, Send, Check, X, Users, CalendarClock, Image as ImageIcon, Sparkles, Trash2 } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -253,6 +253,28 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
   const [detail, setDetail] = useState<CampaignDetailDto | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recallResult, setRecallResult] = useState<{ queued: number; skipped: { messageId: string; reason: string }[] } | null>(null);
+
+  /**
+   * Real delete-for-everyone across the campaign's delivered messages. The
+   * result is reported exactly as the server returned it - how many revoke
+   * instructions were queued and which messages were genuinely skipped -
+   * rather than a blanket "campaign deleted".
+   */
+  async function handleRecall() {
+    if (!window.confirm('Delete this campaign\u2019s messages for everyone on WhatsApp? Anyone who already read them may still have seen them.')) return;
+    setBusy(true);
+    setError(null);
+    setRecallResult(null);
+    try {
+      setRecallResult(await api.recallCampaign(campaignId));
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'The recall failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function load() {
     try {
@@ -341,6 +363,20 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
             Send now
           </button>
         )}
+        {/* Only offered once messages have genuinely gone out - counts.queued is what has not been sent yet. */}
+        {(campaign.status === 'RUNNING' || campaign.status === 'COMPLETED' || campaign.status === 'PAUSED') &&
+          counts.total > counts.queued && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void handleRecall()}
+            title="Issues WhatsApp's real delete-for-everyone for each message this campaign sent"
+            className="flex items-center gap-1.5 rounded-lg border border-error/40 px-3 py-1.5 text-xs font-medium text-error hover:bg-error/10 disabled:opacity-50"
+          >
+            <Trash2 size={13} aria-hidden />
+            Delete from WhatsApp
+          </button>
+        )}
         {(campaign.status === 'DRAFT' || campaign.status === 'REVIEW' || campaign.status === 'APPROVED') && (
           <button
             type="button"
@@ -353,6 +389,21 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
           </button>
         )}
       </div>
+
+      {recallResult && (
+        <div className="mt-3 rounded-lg border border-border-subtle bg-surface-2 p-3 text-xs text-fg-secondary">
+          <p>
+            Delete-for-everyone queued for <span className="font-semibold text-fg">{recallResult.queued}</span>{' '}
+            {recallResult.queued === 1 ? 'message' : 'messages'}. WhatsApp has been asked - that is not a guarantee every
+            recipient&rsquo;s device removed it.
+          </p>
+          {recallResult.skipped.length > 0 && (
+            <p className="mt-1 text-fg-muted">
+              {recallResult.skipped.length} skipped ({recallResult.skipped[0]?.reason}).
+            </p>
+          )}
+        </div>
+      )}
 
       <h3 className="mt-6 text-sm font-semibold text-fg">Recipients ({recipients.length})</h3>
       <div className="mt-2 rounded-lg border border-border-subtle">
@@ -624,11 +675,28 @@ function StatusSchedulerTab() {
     if (!creating) void load();
   }, [creating]);
 
+  const [statusError, setStatusError] = useState<string | null>(null);
+
   async function handleCancel(id: string) {
     setBusyId(id);
     try {
       await api.cancelScheduledStatus(id);
       await load();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  /** Real recall of a post already live on WhatsApp - only offered when we hold the key WhatsApp gave us at publish time. */
+  async function handleDeleteFromWhatsApp(id: string) {
+    if (!window.confirm('Delete this Status from WhatsApp? People who already viewed it may still have seen it.')) return;
+    setBusyId(id);
+    setStatusError(null);
+    try {
+      await api.revokeScheduledStatus(id);
+      await load();
+    } catch (err) {
+      setStatusError(err instanceof ApiError ? err.message : 'Could not delete that Status.');
     } finally {
       setBusyId(null);
     }
@@ -660,6 +728,8 @@ function StatusSchedulerTab() {
           </button>
         </div>
 
+        {statusError && <p className="mt-3 text-xs text-error">{statusError}</p>}
+
         <div className="mt-4 space-y-2">
           {statuses === null && <p className="text-xs text-fg-muted">Loading…</p>}
           {statuses?.length === 0 && (
@@ -677,6 +747,9 @@ function StatusSchedulerTab() {
                 <p className="mt-0.5 text-xs text-fg-muted">
                   {formatDate(status.scheduledAt)}
                   {status.lastError ? ` · ${status.lastError}` : ''}
+                  {status.revokeStatus === 'requested' ? ' · asking WhatsApp to delete this…' : ''}
+                  {status.revokeStatus === 'revoke_sent' ? ' · delete sent to WhatsApp' : ''}
+                  {status.revokeStatus === 'failed' ? ` · delete failed${status.revokeError ? `: ${status.revokeError}` : ''}` : ''}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -690,6 +763,18 @@ function StatusSchedulerTab() {
                     className="text-fg-muted hover:text-error"
                   >
                     <X size={14} aria-hidden />
+                  </button>
+                )}
+                {status.status === 'PUBLISHED' && status.publishedWhatsappMessageId && status.revokeStatus === 'none' && (
+                  <button
+                    type="button"
+                    disabled={busyId === status.id}
+                    onClick={() => void handleDeleteFromWhatsApp(status.id)}
+                    aria-label="Delete this Status from WhatsApp"
+                    title="Delete this Status from WhatsApp"
+                    className="text-fg-muted hover:text-error disabled:opacity-50"
+                  >
+                    <Trash2 size={14} aria-hidden />
                   </button>
                 )}
               </div>

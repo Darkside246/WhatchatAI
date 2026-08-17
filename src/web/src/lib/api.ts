@@ -86,6 +86,14 @@ export interface WorkspaceMessage {
   reactions: WorkspaceReaction[];
   /** True only when the AI reply pipeline sent this message - never inferred, read from the real dispatch record. */
   aiGenerated: boolean;
+  /**
+   * Real delete-for-everyone state. 'revoke_sent' means WhatsApp accepted the
+   * instruction - it is NOT a guarantee every recipient's device dropped it,
+   * and the UI must not word it as one.
+   */
+  revokeStatus: 'none' | 'requested' | 'revoke_sent' | 'failed';
+  revokeSentAt: string | null;
+  revokeError: string | null;
 }
 
 export interface OutboundMessageDto {
@@ -377,6 +385,11 @@ export interface ScheduledStatusDto {
   status: ScheduledStatusState;
   publishedAt: string | null;
   lastError: string | null;
+  /** NULL means we hold no WhatsApp key for this post, so it genuinely cannot be recalled. */
+  publishedWhatsappMessageId: string | null;
+  revokeStatus: 'none' | 'requested' | 'revoke_sent' | 'failed';
+  revokeSentAt: string | null;
+  revokeError: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -827,6 +840,21 @@ export const api = {
   approveCampaign: (campaignId: string) => request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/approve`, { method: 'POST' }),
   sendCampaign: (campaignId: string) => request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/send`, { method: 'POST' }),
   cancelCampaign: (campaignId: string) => request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/cancel`, { method: 'POST' }),
+
+  /**
+   * Real WhatsApp delete-for-everyone. A 202 means the instruction was
+   * queued for WhatsApp, not that recipients' devices have already dropped
+   * the message - keep any wording you attach to these honest.
+   */
+  revokeMessage: (messageId: string) =>
+    request<{ status: 'requested' }>(`/workspace/messages/${messageId}/revoke`, { method: 'POST' }),
+  recallCampaign: (campaignId: string) =>
+    request<{ queued: number; skipped: { messageId: string; reason: string }[] }>(
+      `/workspace/campaigns/${campaignId}/recall`,
+      { method: 'POST' },
+    ),
+  revokeScheduledStatus: (id: string) =>
+    request<{ status: 'requested' }>(`/workspace/scheduled-statuses/${id}/revoke`, { method: 'POST' }),
 
   listScheduledStatuses: () => request<{ statuses: ScheduledStatusDto[] }>('/workspace/scheduled-statuses'),
   createScheduledStatus: (input: {

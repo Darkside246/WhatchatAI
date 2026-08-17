@@ -111,6 +111,9 @@ import { outboundMessagesWorker } from '../queue/workers/outboundDispatchWorker.
 // Same reasoning as outboundMessagesWorker above - real status@broadcast
 // publishing needs the live socket that only exists in this process.
 import { scheduledStatusPublishWorker } from '../queue/workers/scheduledStatusPublishWorker.js';
+// Same process affinity as the workers above: revoking a message needs the
+// live Baileys socket, which only exists in whichever process connected.
+import { messageRevocationWorker } from '../queue/workers/messageRevocationWorker.js';
 // Same reasoning - a WAIT-node resume may itself send a real WhatsApp message.
 import { funnelAdvanceWorker } from '../queue/workers/funnelAdvanceWorker.js';
 import {
@@ -138,6 +141,13 @@ import {
   isScheduledStatusNotFoundError,
   isInvalidScheduledStatusError,
 } from '../services/scheduledStatusService.js';
+import {
+  revokeMessage,
+  recallCampaign,
+  revokeScheduledStatus,
+  isRevocationNotFoundError,
+  isNotRevocableError,
+} from '../services/messageRevocationService.js';
 import type { Request, Response, NextFunction } from 'express';
 
 const app = express();
@@ -957,6 +967,72 @@ app.post(
   scheduledStatusActionHandler((businessId, id) => cancelScheduledStatus(businessId, id)),
 );
 
+/**
+ * Delete-from-WhatsApp. These issue WhatsApp's real "delete for everyone",
+ * the same action the phone offers. A 202 means the instruction was queued
+ * and WhatsApp will be asked - it is deliberately not a claim that every
+ * recipient device has already dropped the message.
+ */
+function revocationErrorResponse(error: unknown, res: Response): Response | null {
+  if (isRevocationNotFoundError(error)) return res.status(404).json({ error: 'NOT_FOUND' });
+  if (isNotRevocableError(error)) return res.status(409).json({ error: 'NOT_REVOCABLE', message: error.message });
+  return null;
+}
+
+app.post(
+  '/api/workspace/messages/:messageId/revoke',
+  requireWorkspaceContext,
+  requirePermission('whatsapp.send'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const auth = res.locals.auth as AuthContext;
+    try {
+      await revokeMessage(businessId, String(req.params.messageId ?? ''), auth.userId);
+      return res.status(202).json({ status: 'requested' });
+    } catch (error) {
+      const handled = revocationErrorResponse(error, res);
+      if (handled) return handled;
+      throw error;
+    }
+  },
+);
+
+app.post(
+  '/api/workspace/campaigns/:campaignId/recall',
+  requireWorkspaceContext,
+  requirePermission('marketing.send'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const auth = res.locals.auth as AuthContext;
+    try {
+      const outcome = await recallCampaign(businessId, String(req.params.campaignId ?? ''), auth.userId);
+      return res.status(202).json(outcome);
+    } catch (error) {
+      const handled = revocationErrorResponse(error, res);
+      if (handled) return handled;
+      throw error;
+    }
+  },
+);
+
+app.post(
+  '/api/workspace/scheduled-statuses/:id/revoke',
+  requireWorkspaceContext,
+  requirePermission('marketing.send'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const auth = res.locals.auth as AuthContext;
+    try {
+      await revokeScheduledStatus(businessId, String(req.params.id ?? ''), auth.userId);
+      return res.status(202).json({ status: 'requested' });
+    } catch (error) {
+      const handled = revocationErrorResponse(error, res);
+      if (handled) return handled;
+      throw error;
+    }
+  },
+);
+
 app.get('/api/workspace/funnels', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const funnels = await listFunnels(businessId);
@@ -1773,6 +1849,7 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`[WhatchatAI] Received ${signal}, closing outbound dispatch worker...`);
   await outboundMessagesWorker.close();
   await scheduledStatusPublishWorker.close();
+  await messageRevocationWorker.close();
   await funnelAdvanceWorker.close();
   process.exit(0);
 }

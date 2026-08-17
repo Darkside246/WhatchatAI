@@ -282,6 +282,27 @@ export class CampaignRepository {
     await this.db.query('UPDATE campaign_recipients SET outbound_message_id = $2 WHERE id = $1', [recipientId, outboundMessageId]);
   }
 
+  /**
+   * The real whatsapp_messages rows a campaign actually put on WhatsApp and
+   * that are still revocable. Recipients that never got sent, or whose
+   * revoke already ran, are excluded - a recall must not claim to have
+   * touched a message that was never delivered in the first place.
+   */
+  async listRevocableMessageIds(campaignId: string): Promise<{ messageId: string; whatsappAccountId: string }[]> {
+    const { rows } = await this.db.query<{ id: string; whatsapp_account_id: string }>(
+      `SELECT wm.id, wm.whatsapp_account_id
+       FROM campaign_recipients cr
+       JOIN whatsapp_outbound_messages om ON om.id = cr.outbound_message_id
+       JOIN whatsapp_messages wm ON wm.id = om.message_id
+       WHERE cr.campaign_id = $1
+         AND wm.from_me = true
+         AND wm.revoke_status IN ('none', 'failed')
+       ORDER BY cr.created_at`,
+      [campaignId],
+    );
+    return rows.map((row) => ({ messageId: row.id, whatsappAccountId: row.whatsapp_account_id }));
+  }
+
   /** Real, live counts by status - computed the same way listRecipients derives status, never a separately maintained counter. */
   async getStatusCounts(campaignId: string): Promise<{ total: number; queued: number; sent: number; delivered: number; read: number; failed: number }> {
     const { rows } = await this.db.query<{

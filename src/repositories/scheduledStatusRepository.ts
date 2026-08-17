@@ -19,6 +19,12 @@ export interface ScheduledStatusRecord {
   status: ScheduledStatusState;
   publishedAt: string | null;
   lastError: string | null;
+  /** The real WhatsApp message key returned at publish time. NULL means this post cannot be recalled. */
+  publishedWhatsappMessageId: string | null;
+  /** 'revoke_sent' means WhatsApp accepted the recall instruction, not that every viewer's device dropped it. */
+  revokeStatus: 'none' | 'requested' | 'revoke_sent' | 'failed';
+  revokeSentAt: string | null;
+  revokeError: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -38,6 +44,10 @@ interface ScheduledStatusRow {
   status: ScheduledStatusState;
   published_at: string | null;
   last_error: string | null;
+  published_whatsapp_message_id: string | null;
+  revoke_status: 'none' | 'requested' | 'revoke_sent' | 'failed';
+  revoke_sent_at: string | null;
+  revoke_error: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -58,6 +68,10 @@ function toRecord(row: ScheduledStatusRow): ScheduledStatusRecord {
     status: row.status,
     publishedAt: row.published_at,
     lastError: row.last_error,
+    publishedWhatsappMessageId: row.published_whatsapp_message_id ?? null,
+    revokeStatus: row.revoke_status ?? 'none',
+    revokeSentAt: row.revoke_sent_at ?? null,
+    revokeError: row.revoke_error ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -148,5 +162,48 @@ export class ScheduledStatusRepository {
       [id, status, extra.publishedAt ?? false, extra.lastError ?? null],
     );
     return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /** Records the real WhatsApp key the publish returned - the only thing that makes a later recall possible. */
+  async recordPublishedMessageId(id: string, whatsappMessageId: string): Promise<void> {
+    await this.db.query('UPDATE scheduled_statuses SET published_whatsapp_message_id = $2, updated_at = now() WHERE id = $1', [
+      id,
+      whatsappMessageId,
+    ]);
+  }
+
+  /**
+   * Claims a published status for recall. Returns false when it is not
+   * recallable - never published, no stored key, or a recall already ran -
+   * so the caller must not enqueue a job.
+   */
+  async markRevokeRequested(id: string, businessId: string): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      `UPDATE scheduled_statuses
+         SET revoke_status = 'requested', revoke_error = NULL, updated_at = now()
+       WHERE id = $1
+         AND business_id = $2
+         AND status = 'PUBLISHED'
+         AND published_whatsapp_message_id IS NOT NULL
+         AND revoke_status IN ('none', 'failed')`,
+      [id, businessId],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  async markRevokeSent(id: string): Promise<void> {
+    await this.db.query(
+      `UPDATE scheduled_statuses
+         SET revoke_status = 'revoke_sent', revoke_sent_at = now(), revoke_error = NULL, updated_at = now()
+       WHERE id = $1`,
+      [id],
+    );
+  }
+
+  async markRevokeFailed(id: string, reason: string): Promise<void> {
+    await this.db.query(
+      `UPDATE scheduled_statuses SET revoke_status = 'failed', revoke_error = $2, updated_at = now() WHERE id = $1`,
+      [id, reason.slice(0, 500)],
+    );
   }
 }

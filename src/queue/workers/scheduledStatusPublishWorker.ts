@@ -56,11 +56,18 @@ async function processScheduledStatus(job: Job<ScheduledStatusJobData>): Promise
 
   const statusJidList = await contactRepository.listIndividualJidsForAccount(record.businessId, record.whatsappAccountId);
   const content = await buildStatusContent(record);
-  await socket.sendMessage('status@broadcast', content, {
+  const sent = await socket.sendMessage('status@broadcast', content, {
     statusJidList,
     broadcast: true,
     ...(record.backgroundColor ? { backgroundColor: record.backgroundColor } : {}),
   });
+
+  // The key WhatsApp assigned is the only handle a later recall can use. If
+  // Baileys returned no key we still publish honestly, but the status will
+  // correctly report itself as not recallable.
+  if (sent?.key?.id) {
+    await scheduledStatusRepository.recordPublishedMessageId(record.id, sent.key.id);
+  }
 
   await scheduledStatusRepository.updateStatus(record.id, 'PUBLISHED', { publishedAt: true });
 }
