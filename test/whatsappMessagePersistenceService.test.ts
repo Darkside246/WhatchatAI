@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { whatsappMessagePersistenceService } from '../src/services/whatsappMessagePersistenceService.js';
+import { WhatsAppJidMappingRepository } from '../src/repositories/whatsappJidMappingRepository.js';
 import type { IngestedWhatsAppMessage } from '../src/services/whatsappMessageIngestionService.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 
@@ -111,6 +112,43 @@ describe('WhatsAppMessagePersistenceService', () => {
 
     expect(result.chat.chatJid).toBe('234471341175024@lid');
     expect(result.chat.phoneNumber).toBeNull();
+  });
+
+  it('persists a real LID<->phone mapping the moment a message carries one, not just during a contacts/history sync', async () => {
+    await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({
+        messageId: 'WA-LID-ALT',
+        remoteJid: '234471341175024@lid',
+        jidKind: 'lid',
+        phoneNumber: '+12462451422',
+        remoteJidAlt: '12462451422@s.whatsapp.net',
+      }),
+    });
+
+    const mapping = await new WhatsAppJidMappingRepository(pool).findByLid(businessId, accountId, '234471341175024@lid');
+    expect(mapping).not.toBeNull();
+    expect(mapping?.phoneNumber).toBe('+12462451422');
+    expect(mapping?.phoneJid).toBe('12462451422@s.whatsapp.net');
+  });
+
+  it('never writes a mapping when the message carries no alt jid - it never guesses one', async () => {
+    await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({
+        messageId: 'WA-LID-NO-ALT',
+        remoteJid: '999888777@lid',
+        jidKind: 'lid',
+        phoneNumber: null,
+      }),
+    });
+
+    const mapping = await new WhatsAppJidMappingRepository(pool).findByLid(businessId, accountId, '999888777@lid');
+    expect(mapping).toBeNull();
   });
 
   it('creates media metadata for media messages without fabricating a download', async () => {

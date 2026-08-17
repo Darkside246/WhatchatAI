@@ -69,7 +69,15 @@ export class WhatsAppSyncService {
     this.activeSyncJobs.set(whatsappAccountId, job.id);
   }
 
-  async ingestContacts(businessId: string, whatsappAccountId: string, contacts: Contact[]): Promise<number> {
+  /**
+   * Shared by both contacts.upsert (full Contact[] - initial sync and new
+   * contacts) and contacts.update (Partial<Contact>[] - a saved contact's
+   * name/verification changing later). Every field read here is already
+   * optional-chained/nullish-coalesced, so a partial update naturally only
+   * overwrites the fields it actually carries (see
+   * WhatsAppContactRepository.upsertFromWhatsApp's own COALESCE semantics).
+   */
+  async ingestContacts(businessId: string, whatsappAccountId: string, contacts: Partial<Contact>[]): Promise<number> {
     let processed = 0;
     for (const contact of contacts) {
       const jid = contact.id;

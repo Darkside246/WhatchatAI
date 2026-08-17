@@ -4,9 +4,11 @@ import { WhatsAppContactRepository } from '../repositories/whatsappContactReposi
 import { WhatsAppChatRepository } from '../repositories/whatsappChatRepository.js';
 import { WhatsAppMessageRepository, type WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { WhatsAppMediaRepository, type WhatsAppMediaRecord } from '../repositories/whatsappMediaRepository.js';
+import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMappingRepository.js';
 import type { WhatsAppChatRecord } from '../repositories/whatsappChatRepository.js';
 import type { MediaType, MessageType } from '../domain/whatsapp/types.js';
 import { chatTypeFromJidKind } from '../domain/whatsapp/chatType.js';
+import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { enqueueMediaDownload } from '../queue/queues/realtimeEventsQueue.js';
 import type {
   IngestedWhatsAppMessage,
@@ -82,6 +84,27 @@ export class WhatsAppMessagePersistenceService {
     return result;
   }
 
+  /**
+   * Persists a real LID<->phone pairing the instant it's ever seen on a
+   * message key - never called for a non-LID jid or when Baileys didn't
+   * attach an alt jid, so this only ever writes mappings Baileys itself
+   * supplied, matching the one existing writer of this table
+   * (whatsappSyncService's own doc comment on the same guarantee).
+   */
+  private async captureJidMapping(
+    jidMappingRepo: WhatsAppJidMappingRepository,
+    businessId: string,
+    whatsappAccountId: string,
+    jid: string,
+    jidKind: ReturnType<typeof classifyJid>,
+    altJid: string | null,
+  ): Promise<void> {
+    if (jidKind !== 'lid' || !altJid) return;
+    const phoneNumber = derivePhoneNumber(jid, jidKind, altJid);
+    if (!phoneNumber) return;
+    await jidMappingRepo.upsert(businessId, whatsappAccountId, jid, altJid, phoneNumber, 'baileys_alt_jid', 'high');
+  }
+
   private async persistWithClient(
     client: PoolClient,
     input: PersistIngestedMessageInput,
@@ -91,6 +114,25 @@ export class WhatsAppMessagePersistenceService {
     const chatRepo = new WhatsAppChatRepository(client);
     const messageRepo = new WhatsAppMessageRepository(client);
     const mediaRepo = new WhatsAppMediaRepository(client);
+    const jidMappingRepo = new WhatsAppJidMappingRepository(client);
+
+    // A real LID-to-phone pairing can arrive on ANY message, not just
+    // during a contacts/history sync - Baileys attaches it directly to the
+    // message key whenever it knows one. Captured here, on every message,
+    // so a contact that never appears in a contacts.upsert payload (an
+    // unsaved sender, a strict-privacy account) still gets a resolvable
+    // mapping the moment it first messages this account.
+    await this.captureJidMapping(jidMappingRepo, businessId, whatsappAccountId, ingested.remoteJid, ingested.jidKind, ingested.remoteJidAlt);
+    if (ingested.participant) {
+      await this.captureJidMapping(
+        jidMappingRepo,
+        businessId,
+        whatsappAccountId,
+        ingested.participant,
+        classifyJid(ingested.participant),
+        ingested.participantAlt,
+      );
+    }
 
     const chatType = chatTypeFromJidKind(ingested.jidKind);
     let contactId: string | null = null;

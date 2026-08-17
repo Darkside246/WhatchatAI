@@ -44,6 +44,20 @@ describe('WhatsAppSyncService (real Phase 3 sync, real Postgres)', () => {
     expect(lidWithoutMapping?.phoneNumber).toBeNull(); // never fabricated
   });
 
+  it('accepts a partial contacts.update-shaped payload (no phoneNumber/verifiedName fields at all) and updates the existing contact', async () => {
+    await sync.ingestContacts(businessId, accountId, [{ id: '15550002222@s.whatsapp.net', name: 'Original Name' }]);
+
+    // Baileys' real contacts.update event type is Partial<Contact>[] - only
+    // the fields that actually changed, never a full re-send of everything.
+    const partialUpdate: Partial<Contact>[] = [{ id: '15550002222@s.whatsapp.net', name: 'Renamed' }];
+    const processed = await sync.ingestContacts(businessId, accountId, partialUpdate);
+    expect(processed).toBe(1);
+
+    const contactRepo = new WhatsAppContactRepository(pool);
+    const updated = await contactRepo.findByJid(businessId, accountId, '15550002222@s.whatsapp.net');
+    expect(updated?.displayName).toBe('Renamed');
+  });
+
   it('ingests real chats and links individual chats to their real contact', async () => {
     await sync.ingestContacts(businessId, accountId, [{ id: '15550002222@s.whatsapp.net', name: 'Jane' }]);
     const chats: Chat[] = [

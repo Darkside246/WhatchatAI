@@ -21,6 +21,7 @@ import { WhatsAppMessageReactionRepository } from '../repositories/whatsappMessa
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import type { WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { classifyJid } from '../domain/whatsapp/jid.js';
+import { describeMessageType } from '../domain/whatsapp/messagePreview.js';
 import type {
   CallStatus,
   CallType,
@@ -303,7 +304,7 @@ export class WorkspaceService {
       let lastMessagePreview: string | null = null;
       if (chat.lastMessageId) {
         const lastMessage = await this.messageRepository.findById(chat.lastMessageId);
-        lastMessagePreview = lastMessage?.textContent ?? (lastMessage ? `[${lastMessage.messageType}]` : null);
+        lastMessagePreview = lastMessage?.textContent ?? (lastMessage ? describeMessageType(lastMessage.messageType) : null);
       }
 
       summaries.push({

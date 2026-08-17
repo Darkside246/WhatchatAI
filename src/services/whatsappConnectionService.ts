@@ -277,6 +277,17 @@ export class WhatsAppConnectionService {
       });
     });
 
+    // A saved contact's real name (or LID/phone pairing) can change after
+    // the initial sync - without this, a rename on the sender's phone, or a
+    // late-arriving verified-business name, never reaches this app.
+    socket.ev.on('contacts.update', (contacts) => {
+      this.withSyncContext((businessId, accountId) => {
+        void whatsappSyncService.ingestContacts(businessId, accountId, contacts).catch((error) => {
+          console.error('[Sync] Failed to ingest contacts.update:', error);
+        });
+      });
+    });
+
     socket.ev.on('chats.upsert', (chats) => {
       this.withSyncContext((businessId, accountId) => {
         void whatsappSyncService.ingestChats(businessId, accountId, chats).catch((error) => {

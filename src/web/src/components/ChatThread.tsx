@@ -102,11 +102,32 @@ function formatPresence(presence: WorkspacePresence | null): string | null {
   return null;
 }
 
+/** A real, human-readable stand-in for a non-text message's preview - never the raw internal type name (e.g. `[unknown]`, `[system]`) verbatim. */
+const MESSAGE_TYPE_LABELS: Record<string, string> = {
+  image: 'Photo',
+  audio: 'Audio',
+  voice_note: 'Voice message',
+  video: 'Video',
+  document: 'Document',
+  spreadsheet: 'Spreadsheet',
+  sticker: 'Sticker',
+  location: 'Location',
+  contact: 'Contact card',
+  contacts: 'Contact cards',
+  reaction: 'Reaction',
+  poll: 'Poll',
+  poll_response: 'Poll response',
+  button: 'Button message',
+  interactive: 'Interactive message',
+  system: 'System message',
+  call_event: 'Call',
+  unknown: 'Message',
+};
+
 function messageBody(message: WorkspaceMessage): string {
   if (message.textContent) return message.textContent;
   if (message.caption) return message.caption;
-  if (message.hasMedia) return `[${message.messageType}]`;
-  return `[${message.messageType}]`;
+  return MESSAGE_TYPE_LABELS[message.messageType] ?? 'Message';
 }
 
 /** Real reactor rows grouped into WhatsApp-style "emoji count" badges - never fabricated, empty when none exist. */

@@ -34,6 +34,15 @@ export interface IngestedWhatsAppMessage {
   jidKind: WhatsAppJidKind;
   phoneNumber: string | null;
   participant: string | null;
+  /**
+   * The real @s.whatsapp.net counterpart Baileys itself attached to this
+   * message's key when remoteJid/participant is a @lid - the only
+   * authoritative source for a LID-to-phone mapping outside of a full
+   * contacts/history sync. Null whenever Baileys didn't supply one, never
+   * a guess.
+   */
+  remoteJidAlt: string | null;
+  participantAlt: string | null;
   fromMe: boolean;
   pushName: string | null;
   isLive: boolean;
@@ -315,6 +324,8 @@ export class WhatsAppMessageIngestionService {
       jidKind,
       phoneNumber: derivePhoneNumber(remoteJid, jidKind, key.remoteJidAlt ?? null),
       participant: key.participant ?? null,
+      remoteJidAlt: key.remoteJidAlt ?? null,
+      participantAlt: key.participantAlt ?? null,
       fromMe: Boolean(key.fromMe),
       pushName: message.pushName ?? null,
       isLive: upsertType === 'notify',
