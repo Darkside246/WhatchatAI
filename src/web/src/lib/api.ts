@@ -37,6 +37,11 @@ export interface WorkspaceChatSummary {
   unreadCount: number;
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
+  /** Real persisted message type of the last message - drives the media icon, never guessed from preview text. */
+  lastMessageType: string | null;
+  /** Real WhatsApp chat flags synced from Baileys - false until a sync actually reports them. */
+  isPinned: boolean;
+  isArchived: boolean;
   aiMode: 'AI_ACTIVE' | 'AI_PAUSED' | 'HUMAN_TAKEOVER';
   /** A real, non-expired status exists for this chat's JID right now - WhatsApp's own "status ring" signal. */
   hasActiveStatus: boolean;

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { api, mediaUrl, type WorkspaceChatSummary } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
+import { Pin, Mic, Image as ImageIcon, Video, FileText, Sticker, MapPin, UserSquare, Archive } from 'lucide-react';
 import { Avatar } from './Avatar.js';
 import { MediaLightbox } from './MediaLightbox.js';
 
@@ -22,6 +23,23 @@ const FILTER_PILLS: { value: FilterPill; label: string }[] = [
   { value: 'groups', label: 'Groups' },
 ];
 
+/**
+ * Maps the real persisted message_type of the last message to its icon.
+ * Anything without a genuine icon (plain text, or a type we do not model)
+ * simply gets none - never a stand-in glyph implying media that is not
+ * actually there.
+ */
+const LAST_MESSAGE_ICON: Record<string, typeof Mic> = {
+  image: ImageIcon,
+  video: Video,
+  audio: Mic,
+  voice_note: Mic,
+  document: FileText,
+  sticker: Sticker,
+  location: MapPin,
+  contact: UserSquare,
+};
+
 function formatTime(iso: string | null): string {
   if (!iso) return '';
   const date = new Date(iso);
@@ -35,6 +53,70 @@ const FALLBACK_POLL_MS = 8000;
 
 interface Props {
   className?: string;
+}
+
+
+/**
+ * One conversation row. Extracted so the active and archived sections render
+ * identically - the only difference between them is the real is_archived
+ * flag that decides which list a chat lands in.
+ */
+function ChatRow({
+  chat,
+  onOpenPhoto,
+}: {
+  chat: WorkspaceChatSummary;
+  onOpenPhoto: (url: string) => void;
+}) {
+  const MediaIcon = chat.lastMessageType ? LAST_MESSAGE_ICON[chat.lastMessageType] : undefined;
+
+  return (
+    <NavLink
+      to={`/chats/${chat.id}`}
+      className={({ isActive }) =>
+        `flex w-full items-center gap-3 border-b border-r-4 border-border-subtle/60 px-4 py-3 text-left transition-colors ${
+          isActive ? 'border-r-accent bg-accent-soft' : 'border-r-transparent hover:bg-surface-2'
+        }`
+      }
+    >
+      <span
+        role="button"
+        tabIndex={chat.avatarMediaId ? 0 : -1}
+        title={chat.avatarMediaId ? 'View photo' : undefined}
+        onClick={(event) => {
+          if (!chat.avatarMediaId) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onOpenPhoto(mediaUrl(chat.avatarMediaId));
+        }}
+      >
+        <Avatar
+          label={chat.displayName}
+          statusCount={chat.activeStatusCount}
+          photoUrl={chat.avatarMediaId ? mediaUrl(chat.avatarMediaId) : null}
+        />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-2">
+          <p className="truncate text-sm font-medium text-fg">{chat.displayName}</p>
+          <span className="shrink-0 text-[11px] text-fg-muted">{formatTime(chat.lastMessageAt)}</span>
+        </div>
+        <div className="mt-0.5 flex items-center gap-1.5">
+          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${AI_MODE_DOT[chat.aiMode]}`} />
+          {MediaIcon && <MediaIcon size={12} className="shrink-0 text-fg-muted" aria-hidden />}
+          <p className="truncate text-xs text-fg-muted">{chat.lastMessagePreview ?? 'No messages yet'}</p>
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        {chat.isPinned && <Pin size={12} className="text-fg-muted" aria-label="Pinned" />}
+        {chat.unreadCount > 0 && (
+          <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-unread px-1.5 text-[11px] font-semibold text-white">
+            {chat.unreadCount}
+          </span>
+        )}
+      </div>
+    </NavLink>
+  );
 }
 
 export function ChatListPane({ className = '' }: Props) {
@@ -71,6 +153,16 @@ export function ChatListPane({ className = '' }: Props) {
       if (filter === 'groups') return chat.chatType === 'group';
       return true;
     });
+
+  // Pinned first, mirroring WhatsApp's own ordering - driven by the real
+  // is_pinned flag synced from the connected account, never a local
+  // preference invented here. Archived chats are split out entirely rather
+  // than being sorted among the active ones.
+  const active = filtered
+    .filter((chat) => !chat.isArchived)
+    .slice()
+    .sort((a, b) => Number(b.isPinned) - Number(a.isPinned));
+  const archived = filtered.filter((chat) => chat.isArchived);
 
   return (
     <div className={`h-full flex-col ${className}`}>
@@ -113,50 +205,22 @@ export function ChatListPane({ className = '' }: Props) {
         {chats && chats.length > 0 && filtered.length === 0 && (
           <p className="p-4 text-sm text-fg-muted">No chats match this filter.</p>
         )}
-        {filtered.map((chat) => (
-          <NavLink
-            key={chat.id}
-            to={`/chats/${chat.id}`}
-            className={({ isActive }) =>
-              `flex w-full items-center gap-3 border-b border-r-4 border-border-subtle/60 px-4 py-3 text-left transition-colors ${
-                isActive ? 'border-r-accent bg-accent-soft' : 'border-r-transparent hover:bg-surface-2'
-              }`
-            }
-          >
-            <span
-              role="button"
-              tabIndex={chat.avatarMediaId ? 0 : -1}
-              title={chat.avatarMediaId ? 'View photo' : undefined}
-              onClick={(event) => {
-                if (!chat.avatarMediaId) return;
-                event.preventDefault();
-                event.stopPropagation();
-                setLightboxUrl(mediaUrl(chat.avatarMediaId));
-              }}
-            >
-              <Avatar
-                label={chat.displayName}
-                statusCount={chat.activeStatusCount}
-                photoUrl={chat.avatarMediaId ? mediaUrl(chat.avatarMediaId) : null}
-              />
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center justify-between gap-2">
-                <p className="truncate text-sm font-medium text-fg">{chat.displayName}</p>
-                <span className="shrink-0 text-[11px] text-fg-muted">{formatTime(chat.lastMessageAt)}</span>
-              </div>
-              <div className="mt-0.5 flex items-center gap-1.5">
-                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${AI_MODE_DOT[chat.aiMode]}`} />
-                <p className="truncate text-xs text-fg-muted">{chat.lastMessagePreview ?? 'No messages yet'}</p>
-              </div>
-            </div>
-            {chat.unreadCount > 0 && (
-              <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-unread px-1.5 text-[11px] font-semibold text-white">
-                {chat.unreadCount}
-              </span>
-            )}
-          </NavLink>
+        {active.map((chat) => (
+          <ChatRow key={chat.id} chat={chat} onOpenPhoto={setLightboxUrl} />
         ))}
+
+        {archived.length > 0 && (
+          <>
+            <div className="flex items-center gap-2 border-b border-border-subtle/60 bg-surface-2/50 px-4 py-2">
+              <Archive size={13} className="text-fg-muted" aria-hidden />
+              <span className="text-xs font-medium text-fg-secondary">Archived</span>
+              <span className="text-[11px] text-fg-muted">{archived.length}</span>
+            </div>
+            {archived.map((chat) => (
+              <ChatRow key={chat.id} chat={chat} onOpenPhoto={setLightboxUrl} />
+            ))}
+          </>
+        )}
       </div>
 
       {lightboxUrl && <MediaLightbox imageUrl={lightboxUrl} fileName={null} onClose={() => setLightboxUrl(null)} />}

@@ -48,6 +48,11 @@ export interface WorkspaceChatSummary {
   unreadCount: number;
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
+  /** The real persisted message type of the last message - drives the media icon in the list row, never guessed from the preview text. */
+  lastMessageType: string | null;
+  /** Real WhatsApp chat flags, synced from Baileys (chat.pinned / chat.archived). Null in the DB until a sync has actually reported them, surfaced as false. */
+  isPinned: boolean;
+  isArchived: boolean;
   aiMode: ChatAiMode;
   /** A real, non-expired status exists for this chat's JID right now - WhatsApp's own "status ring" signal. */
   hasActiveStatus: boolean;
@@ -335,9 +340,11 @@ export class WorkspaceService {
       const displayName = resolveDisplayName(nameSources);
 
       let lastMessagePreview: string | null = null;
+      let lastMessageType: string | null = null;
       if (chat.lastMessageId) {
         const lastMessage = await this.messageRepository.findById(chat.lastMessageId);
         lastMessagePreview = lastMessage?.textContent ?? (lastMessage ? describeMessageType(lastMessage.messageType) : null);
+        lastMessageType = lastMessage?.messageType ?? null;
       }
 
       summaries.push({
@@ -349,6 +356,9 @@ export class WorkspaceService {
         unreadCount: chat.unreadCount,
         lastMessageAt: chat.lastMessageAt,
         lastMessagePreview,
+        lastMessageType,
+        isPinned: chat.isPinned ?? false,
+        isArchived: chat.isArchived ?? false,
         aiMode: chat.aiMode,
         hasActiveStatus: activeStatusCounts.has(chat.chatJid),
         activeStatusCount: activeStatusCounts.get(chat.chatJid) ?? 0,
