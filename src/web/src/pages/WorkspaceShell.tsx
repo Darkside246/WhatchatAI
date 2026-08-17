@@ -4,6 +4,7 @@ import { SaasNavRail, SaasNavBottomBar } from '../components/SaasNavRail.js';
 import { ChatsRoute } from './ChatsRoute.js';
 import { AgentsPage } from './AgentsPage.js';
 import { CrmRoute } from './CrmRoute.js';
+import { BillingRoute } from './BillingRoute.js';
 import { PlaceholderPage } from './PlaceholderPage.js';
 
 interface Props {
@@ -55,10 +56,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
                 path="/marketing"
                 element={<PlaceholderPage title="Marketing" description="Campaigns and broadcast tools are not built yet." />}
               />
-              <Route
-                path="/billing"
-                element={<PlaceholderPage title="Billing" description="Subscription and billing management UI is not built yet." />}
-              />
+              <Route path="/billing" element={<BillingRoute />} />
               <Route
                 path="/settings"
                 element={<PlaceholderPage title="Settings" description="Only settings with a real backend will appear here." />}

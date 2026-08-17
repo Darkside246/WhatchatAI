@@ -141,6 +141,14 @@ export class WhatsAppAccountRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  async countByBusiness(businessId: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      `SELECT count(*)::int AS count FROM whatsapp_accounts WHERE business_id = $1 AND deleted_at IS NULL`,
+      [businessId],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
   async markSyncStarted(id: string): Promise<void> {
     await this.db.query(
       `UPDATE whatsapp_accounts

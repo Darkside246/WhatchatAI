@@ -9,6 +9,8 @@ import { CrmContactRepository, type UpdateCrmContactInput } from '../repositorie
 import { LeadRepository, type UpdateLeadInput, type LeadRecord } from '../repositories/leadRepository.js';
 import { AiAgentRepository } from '../repositories/aiAgentRepository.js';
 import { EntitlementService, type EntitlementDenialReason } from './entitlementService.js';
+import { SubscriptionRepository } from '../repositories/subscriptionRepository.js';
+import { PlanRepository } from '../repositories/planRepository.js';
 import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMappingRepository.js';
 import { WhatsAppCallRepository } from '../repositories/whatsappCallRepository.js';
 import { WhatsAppStatusRepository } from '../repositories/whatsappStatusRepository.js';
@@ -26,7 +28,7 @@ import type {
   MessageDirection,
   PresenceState,
 } from '../domain/whatsapp/types.js';
-import type { LeadStatus } from '../domain/platform/types.js';
+import type { LeadStatus, SubscriptionStatus } from '../domain/platform/types.js';
 
 export interface WorkspaceChatSummary {
   id: string;
@@ -175,6 +177,39 @@ export interface CreateLeadInput {
   notes?: string | null | undefined;
 }
 
+export interface WorkspaceBillingEntitlement {
+  key: string;
+  label: string;
+  isEnabled: boolean;
+  limit: number | null;
+  /** Null when no real, counted usage source exists for this entitlement yet - never a fabricated number. */
+  current: number | null;
+}
+
+export interface WorkspaceBillingOverview {
+  plan: {
+    name: string;
+    planKey: string;
+    priceMonthlyCents: number;
+    currency: string;
+  } | null;
+  subscription: {
+    status: SubscriptionStatus;
+    currentPeriodStart: string | null;
+    currentPeriodEnd: string | null;
+    trialEndsAt: string | null;
+    cancelledAt: string | null;
+  } | null;
+  entitlements: WorkspaceBillingEntitlement[];
+}
+
+const BILLING_ENTITLEMENT_LABELS: Record<string, string> = {
+  max_ai_agents: 'AI Agents',
+  max_whatsapp_accounts: 'WhatsApp Accounts',
+  max_users: 'Team Members',
+  advanced_analytics: 'Advanced Analytics',
+};
+
 export interface CreateAgentInput {
   name: string;
   description?: string | null | undefined;
@@ -198,6 +233,8 @@ export class WorkspaceService {
   private readonly leadRepository = new LeadRepository(pool);
   private readonly agentRepository = new AiAgentRepository(pool);
   private readonly entitlementService = new EntitlementService(pool);
+  private readonly subscriptionRepository = new SubscriptionRepository(pool);
+  private readonly planRepository = new PlanRepository(pool);
   private readonly jidMappingRepository = new WhatsAppJidMappingRepository(pool);
   private readonly callRepository = new WhatsAppCallRepository(pool);
   private readonly statusRepository = new WhatsAppStatusRepository(pool);
@@ -507,6 +544,51 @@ export class WorkspaceService {
       throw error;
     }
     return this.agentRepository.create({ businessId, ...input });
+  }
+
+  /**
+   * Real subscription/plan/usage state, not a fabricated billing dashboard.
+   * `current` is only ever populated for entitlements that have a real,
+   * counted backing source (agents, WhatsApp accounts) - an entitlement
+   * like max_users has no user/auth system yet, so its usage stays null
+   * rather than inventing a number.
+   */
+  async getBillingOverview(businessId: string): Promise<WorkspaceBillingOverview> {
+    const subscription = await this.subscriptionRepository.findLiveByBusiness(businessId);
+    if (!subscription) return { plan: null, subscription: null, entitlements: [] };
+
+    const subscriptionSummary = {
+      status: subscription.status,
+      currentPeriodStart: subscription.currentPeriodStart,
+      currentPeriodEnd: subscription.currentPeriodEnd,
+      trialEndsAt: subscription.trialEndsAt,
+      cancelledAt: subscription.cancelledAt,
+    };
+
+    const plan = await this.planRepository.findById(subscription.planId);
+    if (!plan) return { plan: null, subscription: subscriptionSummary, entitlements: [] };
+
+    const countByKey: Record<string, () => Promise<number>> = {
+      max_ai_agents: () => this.agentRepository.countActiveByBusiness(businessId),
+      max_whatsapp_accounts: () => this.accountRepository.countByBusiness(businessId),
+    };
+
+    const entitlementRows = await this.planRepository.listEntitlements(plan.id);
+    const entitlements: WorkspaceBillingEntitlement[] = await Promise.all(
+      entitlementRows.map(async (row) => ({
+        key: row.entitlementKey,
+        label: BILLING_ENTITLEMENT_LABELS[row.entitlementKey] ?? row.entitlementKey,
+        isEnabled: row.isEnabled,
+        limit: row.limitValue,
+        current: countByKey[row.entitlementKey] ? await countByKey[row.entitlementKey]!() : null,
+      })),
+    );
+
+    return {
+      plan: { name: plan.name, planKey: plan.planKey, priceMonthlyCents: plan.priceMonthlyCents, currency: plan.currency },
+      subscription: subscriptionSummary,
+      entitlements,
+    };
   }
 
   private crmContactNotFound(): CrmContactNotFoundError {

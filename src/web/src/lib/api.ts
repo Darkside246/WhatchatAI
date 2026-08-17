@@ -156,6 +156,31 @@ export interface UpdateLeadBody {
   notes: string | null;
 }
 
+export interface WorkspaceBillingEntitlement {
+  key: string;
+  label: string;
+  isEnabled: boolean;
+  limit: number | null;
+  current: number | null;
+}
+
+export interface WorkspaceBillingOverview {
+  plan: {
+    name: string;
+    planKey: string;
+    priceMonthlyCents: number;
+    currency: string;
+  } | null;
+  subscription: {
+    status: 'ACTIVE' | 'TRIALING' | 'PAST_DUE' | 'PAUSED' | 'CANCELLED' | 'EXPIRED';
+    currentPeriodStart: string | null;
+    currentPeriodEnd: string | null;
+    trialEndsAt: string | null;
+    cancelledAt: string | null;
+  } | null;
+  entitlements: WorkspaceBillingEntitlement[];
+}
+
 export interface AiAgentSummary {
   id: string;
   name: string;
@@ -316,6 +341,7 @@ export const api = {
   setAiMode: (chatId: string, aiMode: WorkspaceChatSummary['aiMode']) =>
     request(`/workspace/chats/${chatId}/ai-mode`, { method: 'PATCH', body: JSON.stringify({ aiMode }) }),
   markChatRead: (chatId: string) => request(`/workspace/chats/${chatId}/read`, { method: 'POST' }),
+  getBilling: () => request<WorkspaceBillingOverview>('/workspace/billing'),
   listAgents: () => request<{ agents: AiAgentSummary[] }>('/workspace/agents'),
   createAgent: (body: CreateAgentBody) =>
     request<{ agent: AiAgentSummary }>('/workspace/agents', { method: 'POST', body: JSON.stringify(body) }),

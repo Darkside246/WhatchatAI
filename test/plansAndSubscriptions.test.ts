@@ -79,4 +79,11 @@ describe('Plans and subscriptions', () => {
     const updated = await subscriptions.findById(subscription.id);
     expect(updated?.status).toBe('ACTIVE');
   });
+
+  it('PlanRepository.findById reads a real seeded plan by id, mirroring findByKey', async () => {
+    const starter = await plans.findByKey('starter');
+    const byId = await plans.findById(starter!.id);
+    expect(byId?.planKey).toBe('starter');
+    expect(byId?.priceMonthlyCents).toBe(starter!.priceMonthlyCents);
+  });
 });

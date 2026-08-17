@@ -2,6 +2,7 @@ import type { Queryable } from '../repositories/types.js';
 import { PlanRepository } from '../repositories/planRepository.js';
 import { SubscriptionRepository } from '../repositories/subscriptionRepository.js';
 import { AiAgentRepository } from '../repositories/aiAgentRepository.js';
+import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
 
 export type EntitlementDenialReason =
   | 'NO_ACTIVE_SUBSCRIPTION'
@@ -24,11 +25,13 @@ export class EntitlementService {
   private readonly planRepository: PlanRepository;
   private readonly subscriptionRepository: SubscriptionRepository;
   private readonly aiAgentRepository: AiAgentRepository;
+  private readonly accountRepository: WhatsAppAccountRepository;
 
   constructor(private readonly db: Queryable) {
     this.planRepository = new PlanRepository(db);
     this.subscriptionRepository = new SubscriptionRepository(db);
     this.aiAgentRepository = new AiAgentRepository(db);
+    this.accountRepository = new WhatsAppAccountRepository(db);
   }
 
   async canCreateAgent(businessId: string): Promise<EntitlementCheckResult> {
@@ -38,13 +41,9 @@ export class EntitlementService {
   }
 
   async canConnectWhatsAppAccount(businessId: string): Promise<EntitlementCheckResult> {
-    return this.checkCountLimit(businessId, 'max_whatsapp_accounts', async () => {
-      const { rows } = await this.db.query<{ count: string }>(
-        `SELECT count(*)::int AS count FROM whatsapp_accounts WHERE business_id = $1 AND deleted_at IS NULL`,
-        [businessId],
-      );
-      return Number(rows[0]?.count ?? 0);
-    });
+    return this.checkCountLimit(businessId, 'max_whatsapp_accounts', () =>
+      this.accountRepository.countByBusiness(businessId),
+    );
   }
 
   private async checkCountLimit(

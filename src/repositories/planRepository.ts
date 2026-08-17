@@ -64,6 +64,11 @@ function toEntitlement(row: PlanEntitlementRow): PlanEntitlementRecord {
 export class PlanRepository {
   constructor(private readonly db: Queryable) {}
 
+  async findById(id: string): Promise<PlanRecord | null> {
+    const { rows } = await this.db.query<PlanRow>('SELECT * FROM plans WHERE id = $1', [id]);
+    return rows[0] ? toPlan(rows[0]) : null;
+  }
+
   async findByKey(planKey: string): Promise<PlanRecord | null> {
     const { rows } = await this.db.query<PlanRow>('SELECT * FROM plans WHERE plan_key = $1 AND is_active = true', [
       planKey,
