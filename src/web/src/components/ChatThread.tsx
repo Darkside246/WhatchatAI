@@ -27,6 +27,7 @@ import {
   type SendMessageBody,
 } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
+import { formatIdentityFallback } from '../lib/identity.js';
 import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
 import { Avatar } from './Avatar.js';
@@ -472,10 +473,8 @@ export function ChatThread({ onOpenDetail }: Props) {
     detail?.contact?.pushName ??
     detail?.chat.name ??
     detail?.resolvedPhoneNumber ??
-    detail?.chat.chatJid ??
-    '';
-  const headerSecondary =
-    detail?.contact?.phoneNumber ?? detail?.chat.phoneNumber ?? detail?.resolvedPhoneNumber ?? detail?.chat.chatJid ?? '';
+    (detail ? formatIdentityFallback(detail.chat.chatJid) : '');
+  const headerSecondary = detail?.contact?.phoneNumber ?? detail?.chat.phoneNumber ?? detail?.resolvedPhoneNumber ?? '';
   // Real presence.update events only, never inferred - mirrors WhatsApp's own
   // header behavior of showing "online"/"last seen" in place of the phone
   // number when a genuine presence signal exists for this contact.
@@ -489,11 +488,22 @@ export function ChatThread({ onOpenDetail }: Props) {
         </Link>
         {detail ? (
           <>
-            <Avatar
-              label={headerName}
-              size="sm"
-              photoUrl={detail.contact?.profilePictureMediaId ? mediaUrl(detail.contact.profilePictureMediaId) : null}
-            />
+            <button
+              type="button"
+              onClick={() =>
+                detail.contact?.profilePictureMediaId &&
+                setLightbox({ url: mediaUrl(detail.contact.profilePictureMediaId), fileName: null })
+              }
+              disabled={!detail.contact?.profilePictureMediaId}
+              className="disabled:cursor-default"
+              title={detail.contact?.profilePictureMediaId ? 'View photo' : undefined}
+            >
+              <Avatar
+                label={headerName}
+                size="sm"
+                photoUrl={detail.contact?.profilePictureMediaId ? mediaUrl(detail.contact.profilePictureMediaId) : null}
+              />
+            </button>
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium text-fg">{headerName}</p>
               {presenceLabel ? (

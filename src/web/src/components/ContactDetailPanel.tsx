@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { X } from 'lucide-react';
 import { api, mediaUrl, type WorkspaceChatDetail } from '../lib/api.js';
+import { formatIdentityFallback } from '../lib/identity.js';
 import { Avatar } from './Avatar.js';
+import { MediaLightbox } from './MediaLightbox.js';
 
 const AI_MODE_OPTIONS: { value: WorkspaceChatDetail['chat']['aiMode']; label: string; hint: string }[] = [
   { value: 'AI_ACTIVE', label: 'AI Active', hint: 'The AI agent responds automatically.' },
@@ -19,6 +21,7 @@ export function ContactDetailPanel({ onClose }: Props) {
   const [detail, setDetail] = useState<WorkspaceChatDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savingMode, setSavingMode] = useState(false);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
 
   useEffect(() => {
     if (!chatId) return;
@@ -61,22 +64,38 @@ export function ContactDetailPanel({ onClose }: Props) {
       {detail && (
         <div className="flex flex-col gap-6 p-4">
           <div className="flex flex-col items-center gap-2 text-center">
-            <Avatar
-              label={detail.contact?.displayName ?? detail.chat.name ?? detail.chat.chatJid}
-              size="lg"
-              photoUrl={detail.contact?.profilePictureMediaId ? mediaUrl(detail.contact.profilePictureMediaId) : null}
-            />
+            <button
+              type="button"
+              onClick={() => detail.contact?.profilePictureMediaId && setLightboxOpen(true)}
+              disabled={!detail.contact?.profilePictureMediaId}
+              className="disabled:cursor-default"
+              title={detail.contact?.profilePictureMediaId ? 'View photo' : undefined}
+            >
+              <Avatar
+                label={detail.contact?.displayName ?? detail.chat.name ?? formatIdentityFallback(detail.chat.chatJid)}
+                size="lg"
+                photoUrl={detail.contact?.profilePictureMediaId ? mediaUrl(detail.contact.profilePictureMediaId) : null}
+              />
+            </button>
             <p className="text-sm font-medium text-fg">
               {detail.contact?.displayName ??
                 detail.contact?.pushName ??
                 detail.chat.name ??
                 detail.resolvedPhoneNumber ??
-                detail.chat.chatJid}
+                formatIdentityFallback(detail.chat.chatJid)}
             </p>
             <p className="text-xs text-fg-muted">
-              {detail.contact?.phoneNumber ?? detail.chat.phoneNumber ?? detail.resolvedPhoneNumber ?? detail.chat.chatJid}
+              {detail.contact?.phoneNumber ?? detail.chat.phoneNumber ?? detail.resolvedPhoneNumber ?? ''}
             </p>
           </div>
+
+          {lightboxOpen && detail.contact?.profilePictureMediaId && (
+            <MediaLightbox
+              imageUrl={mediaUrl(detail.contact.profilePictureMediaId)}
+              fileName={null}
+              onClose={() => setLightboxOpen(false)}
+            />
+          )}
 
           <section>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">AI &amp; takeover</h3>

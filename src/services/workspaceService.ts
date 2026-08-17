@@ -1,5 +1,5 @@
 import { pool } from '../db/pool.js';
-import { resolveDisplayName } from '../domain/whatsapp/displayName.js';
+import { resolveDisplayName, type ContactNameSources } from '../domain/whatsapp/displayName.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
 import { BusinessRepository, type BusinessRecord } from '../repositories/businessRepository.js';
 import { WhatsAppChatRepository, type ChatAiMode } from '../repositories/whatsappChatRepository.js';
@@ -20,7 +20,7 @@ import { WhatsAppPresenceRepository } from '../repositories/whatsappPresenceRepo
 import { WhatsAppMessageReactionRepository } from '../repositories/whatsappMessageReactionRepository.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import type { WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
-import { classifyJid } from '../domain/whatsapp/jid.js';
+import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { describeMessageType } from '../domain/whatsapp/messagePreview.js';
 import { whatsappConnectionService } from './whatsappConnectionService.js';
 import type {
@@ -270,37 +270,34 @@ export class WorkspaceService {
       // individual/group chats only, here.
       if (chat.chatType !== 'individual' && chat.chatType !== 'group') continue;
 
-      let displayName = chat.name ?? chat.chatJid;
       let phoneNumber = chat.phoneNumber;
       let avatarMediaId: string | null = null;
+      let nameSources: ContactNameSources = { displayName: chat.name, whatsappJid: chat.chatJid };
 
-      if (chat.contactId) {
-        const contact = await this.contactRepository.findById(chat.contactId);
-        if (contact) {
-          displayName = resolveDisplayName({
-            verifiedName: contact.verifiedName,
-            businessName: contact.businessName,
-            displayName: contact.displayName ?? chat.name,
-            pushName: contact.pushName,
-            phoneNumber: contact.phoneNumber,
-            whatsappJid: contact.whatsappJid,
-          });
-          phoneNumber = contact.phoneNumber;
-          avatarMediaId = contact.profilePictureMediaId;
-        }
+      const contact = chat.contactId ? await this.contactRepository.findById(chat.contactId) : null;
+      if (contact) {
+        nameSources = {
+          verifiedName: contact.verifiedName,
+          businessName: contact.businessName,
+          displayName: contact.displayName ?? chat.name,
+          pushName: contact.pushName,
+          phoneNumber: contact.phoneNumber,
+          whatsappJid: contact.whatsappJid,
+        };
+        phoneNumber = contact.phoneNumber;
+        avatarMediaId = contact.profilePictureMediaId;
       }
 
-      // A `@lid` chat identity carries no phone number of its own - WhatsApp
-      // supplies the real phone-based JID separately (via contacts.upsert /
-      // lidPnMappings during sync), persisted in whatsapp_jid_mappings. Only
-      // fall back to it when nothing better was already resolved.
+      // A `@lid` chat identity carries no phone number of its own - resolved
+      // (and persisted for next time) before displayName is computed, so a
+      // freshly-found mapping actually reaches resolveDisplayName's phone
+      // number tier instead of arriving too late to matter.
       if (chat.jidKind === 'lid' && !phoneNumber) {
-        const mapping = await this.jidMappingRepository.findByLid(businessId, whatsappAccountId, chat.chatJid);
-        if (mapping?.phoneNumber) {
-          phoneNumber = mapping.phoneNumber;
-          if (displayName === chat.chatJid) displayName = mapping.phoneNumber;
-        }
+        phoneNumber = await this.resolveAndPersistLidPhoneNumber(businessId, whatsappAccountId, chat.chatJid);
+        if (phoneNumber) nameSources = { ...nameSources, phoneNumber };
       }
+
+      const displayName = resolveDisplayName(nameSources);
 
       let lastMessagePreview: string | null = null;
       if (chat.lastMessageId) {
@@ -441,6 +438,34 @@ export class WorkspaceService {
     return error;
   }
 
+  /**
+   * A `@lid` chat identity carries no phone number of its own. Checks the
+   * real, already-persisted mapping first (whatsapp_jid_mappings, built from
+   * contacts/history sync and every message's own alt-key fields); only
+   * falls through to a live query against Baileys' own signal store
+   * (which persists every LID<->phone pairing it has ever learned, even
+   * for a LID that predates this account's connection) when the local
+   * table genuinely has nothing yet. A live hit is persisted immediately,
+   * so this is a one-time cost per LID, not a repeated live query.
+   */
+  private async resolveAndPersistLidPhoneNumber(
+    businessId: string,
+    whatsappAccountId: string,
+    lidJid: string,
+  ): Promise<string | null> {
+    const localMapping = await this.jidMappingRepository.findByLid(businessId, whatsappAccountId, lidJid);
+    if (localMapping?.phoneNumber) return localMapping.phoneNumber;
+
+    const livePn = await whatsappConnectionService.resolvePhoneNumberForLid(lidJid);
+    if (!livePn) return null;
+
+    const phoneNumber = derivePhoneNumber(livePn, classifyJid(livePn), null);
+    if (!phoneNumber) return null;
+
+    await this.jidMappingRepository.upsert(businessId, whatsappAccountId, lidJid, livePn, phoneNumber, 'baileys_alt_jid', 'high');
+    return phoneNumber;
+  }
+
   async getChatDetail(businessId: string, whatsappAccountId: string, chatId: string) {
     const chat = await this.chatRepository.findById(chatId);
     if (!chat || chat.businessId !== businessId || chat.whatsappAccountId !== whatsappAccountId) {
@@ -454,8 +479,7 @@ export class WorkspaceService {
 
     let resolvedPhoneNumber = contact?.phoneNumber ?? chat.phoneNumber ?? null;
     if (chat.jidKind === 'lid' && !resolvedPhoneNumber) {
-      const mapping = await this.jidMappingRepository.findByLid(businessId, whatsappAccountId, chat.chatJid);
-      resolvedPhoneNumber = mapping?.phoneNumber ?? null;
+      resolvedPhoneNumber = await this.resolveAndPersistLidPhoneNumber(businessId, whatsappAccountId, chat.chatJid);
     }
 
     // Presence is a per-JID concept - a group has no single "online" state, so this stays honestly null for groups.

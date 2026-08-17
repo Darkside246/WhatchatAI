@@ -30,6 +30,11 @@ export function derivePhoneNumber(
   }
 
   if (!source) return null;
-  const digits = (source.split('@')[0] ?? '').replace(/\D/g, '');
+  // The user part can carry a ":device" suffix (multi-device JIDs, and the
+  // raw signal-store lookup this also feeds) - stripping non-digits without
+  // dropping that first would silently fold the device index into the
+  // phone number itself.
+  const userPart = (source.split('@')[0] ?? '').split(':')[0] ?? '';
+  const digits = userPart.replace(/\D/g, '');
   return digits ? `+${digits}` : null;
 }

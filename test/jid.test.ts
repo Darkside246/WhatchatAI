@@ -34,4 +34,9 @@ describe('JID classification and phone derivation', () => {
   it('never returns a phone number for a group JID', () => {
     expect(derivePhoneNumber('12345-67890@g.us', 'group', null)).toBeNull();
   });
+
+  it('strips a ":device" suffix instead of folding its digits into the phone number (regression: signal-store lookups return user:device@s.whatsapp.net)', () => {
+    expect(derivePhoneNumber('15550001111:0@s.whatsapp.net', 'individual', null)).toBe('+15550001111');
+    expect(derivePhoneNumber('234471341175024@lid', 'lid', '12462451422:5@s.whatsapp.net')).toBe('+12462451422');
+  });
 });

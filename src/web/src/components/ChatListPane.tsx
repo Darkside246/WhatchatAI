@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom';
 import { api, mediaUrl, type WorkspaceChatSummary } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
 import { Avatar } from './Avatar.js';
+import { MediaLightbox } from './MediaLightbox.js';
 
 const AI_MODE_DOT: Record<WorkspaceChatSummary['aiMode'], string> = {
   AI_ACTIVE: 'bg-accent',
@@ -41,6 +42,7 @@ export function ChatListPane({ className = '' }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<FilterPill>('all');
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -121,11 +123,23 @@ export function ChatListPane({ className = '' }: Props) {
               }`
             }
           >
-            <Avatar
-              label={chat.displayName}
-              statusCount={chat.activeStatusCount}
-              photoUrl={chat.avatarMediaId ? mediaUrl(chat.avatarMediaId) : null}
-            />
+            <span
+              role="button"
+              tabIndex={chat.avatarMediaId ? 0 : -1}
+              title={chat.avatarMediaId ? 'View photo' : undefined}
+              onClick={(event) => {
+                if (!chat.avatarMediaId) return;
+                event.preventDefault();
+                event.stopPropagation();
+                setLightboxUrl(mediaUrl(chat.avatarMediaId));
+              }}
+            >
+              <Avatar
+                label={chat.displayName}
+                statusCount={chat.activeStatusCount}
+                photoUrl={chat.avatarMediaId ? mediaUrl(chat.avatarMediaId) : null}
+              />
+            </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
                 <p className="truncate text-sm font-medium text-fg">{chat.displayName}</p>
@@ -144,6 +158,8 @@ export function ChatListPane({ className = '' }: Props) {
           </NavLink>
         ))}
       </div>
+
+      {lightboxUrl && <MediaLightbox imageUrl={lightboxUrl} fileName={null} onClose={() => setLightboxUrl(null)} />}
     </div>
   );
 }

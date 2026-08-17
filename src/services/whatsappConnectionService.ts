@@ -143,6 +143,25 @@ export class WhatsAppConnectionService {
   }
 
   /**
+   * Baileys' own signal store already persists every LID<->phone pairing it
+   * has ever learned (from history sync, live messages, or a prior USync
+   * lookup) - this queries that real store directly rather than waiting for
+   * one to arrive via a message's own alt-key fields, which is how a LID
+   * that predates this account's connection (no message received since)
+   * still resolves. Returns null - never a guess - when the store genuinely
+   * has no mapping for this LID yet.
+   */
+  async resolvePhoneNumberForLid(lidJid: string): Promise<string | null> {
+    if (!this.isReady() || !this.socket) return null;
+    try {
+      const pn = await this.socket.signalRepository.lidMapping.getPNForLID(lidJid);
+      return pn ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * A real reaction send - `react` is a regular AnyMessageContent variant
    * Baileys accepts via sendMessage, not a separate ad-hoc protocol call.
    * An empty `emoji` string is WhatsApp's own convention for removing a
