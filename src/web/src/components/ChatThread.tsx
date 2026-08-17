@@ -16,6 +16,7 @@ import {
   Bot,
   User as UserIcon,
   SmilePlus,
+  Sparkles,
 } from 'lucide-react';
 import {
   api,
@@ -157,6 +158,31 @@ function AssigneeControl({
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
+/**
+ * Date separators are derived entirely from each message's real persisted
+ * timestamp - "Today"/"Yesterday" are computed against the viewer's own
+ * clock, never stored or fabricated.
+ */
+function dayKey(iso: string): string {
+  return new Date(iso).toDateString();
+}
+
+function formatDaySeparator(iso: string): string {
+  const date = new Date(iso);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+
+  if (date.toDateString() === today.toDateString()) return 'Today';
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return date.toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    ...(date.getFullYear() === today.getFullYear() ? {} : { year: 'numeric' }),
+  });
 }
 
 /** Only ever reflects a real, received presence.update event - never inferred from message activity. */
@@ -344,6 +370,7 @@ export function ChatThread({ onOpenDetail }: Props) {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
+  const [replySuggestions, setReplySuggestions] = useState<string[]>([]);
   const [lightbox, setLightbox] = useState<{ url: string; fileName: string | null } | null>(null);
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
@@ -455,6 +482,7 @@ export function ChatThread({ onOpenDetail }: Props) {
     setDraft('');
     setSendError(null);
     setEmojiPickerOpen(false);
+    setReplySuggestions([]);
     setReactionPickerFor(null);
     setReactionError(null);
     void load(chatId);
@@ -463,6 +491,38 @@ export function ChatThread({ onOpenDetail }: Props) {
     const timer = setInterval(() => void load(chatId), 6000);
     return () => clearInterval(timer);
   }, [chatId]);
+
+  /**
+   * Real Gemini-drafted replies, fetched only when the newest real message
+   * came from the customer and the agent hasn't started typing. The endpoint
+   * always answers 200 with an honest status, so an "unavailable" outcome
+   * (no key configured, nothing usable to reply to) simply leaves the bar
+   * hidden rather than showing an error or a canned fallback list.
+   */
+  useEffect(() => {
+    if (!chatId || !messages || messages.length === 0 || draft.trim()) return;
+    const newestWithText = messages.find((message) => Boolean(message.textContent));
+    if (!newestWithText || newestWithText.fromMe) {
+      setReplySuggestions([]);
+      return;
+    }
+
+    let cancelled = false;
+    api
+      .getReplySuggestions(chatId)
+      .then((result) => {
+        if (!cancelled) setReplySuggestions(result.status === 'ok' ? result.suggestions : []);
+      })
+      .catch(() => {
+        // An optional assist must never surface as an error in the thread.
+        if (!cancelled) setReplySuggestions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Keyed on the newest message so suggestions refresh when the customer
+    // replies, not on every 6s poll that returns the same conversation.
+  }, [chatId, messages?.[0]?.id]);
 
   // The send endpoint returns 202 the instant a send is queued, not once it
   // actually succeeds or fails - real dispatch happens asynchronously.
@@ -515,6 +575,7 @@ export function ChatThread({ onOpenDetail }: Props) {
     if (!chatId || !text || sending) return;
     setDraft('');
     setEmojiPickerOpen(false);
+    setReplySuggestions([]);
     await dispatchSend(chatId, { messageType: 'text', text });
   }
 
@@ -671,8 +732,16 @@ export function ChatThread({ onOpenDetail }: Props) {
         {reactionError && <p className="text-xs text-error">{reactionError}</p>}
         {messages === null && !error && <p className="text-xs text-fg-muted">Loading real message history…</p>}
         {messages?.length === 0 && <p className="text-xs text-fg-muted">No messages persisted for this chat yet.</p>}
-        {messages?.map((message) => (
-          <div key={message.id} className={`group relative flex ${message.fromMe ? 'justify-end' : 'justify-start'}`}>
+        {messages?.map((message, index) => (
+          <div key={message.id}>
+            {(index === 0 || dayKey(messages[index - 1]!.timestamp) !== dayKey(message.timestamp)) && (
+              <div className="flex justify-center py-2">
+                <span className="rounded-lg bg-surface-2 px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-fg-muted shadow-sm">
+                  {formatDaySeparator(message.timestamp)}
+                </span>
+              </div>
+            )}
+            <div className={`group relative flex ${message.fromMe ? 'justify-end' : 'justify-start'}`}>
             <div
               className={`relative max-w-[75%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
                 message.fromMe ? 'rounded-tr-sm bg-message-out text-message-out-fg' : 'rounded-tl-sm bg-message-in text-fg'
@@ -749,9 +818,32 @@ export function ChatThread({ onOpenDetail }: Props) {
                 {message.fromMe && <DeliveryTicks status={message.status} />}
               </div>
             </div>
+            </div>
           </div>
         ))}
       </div>
+
+      {replySuggestions.length > 0 && (
+        <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-t border-border-subtle bg-surface-2/60 px-4 py-2">
+          <span className="flex shrink-0 items-center gap-1.5 text-[11px] font-semibold text-accent">
+            <Sparkles size={13} aria-hidden />
+            <span className="hidden sm:inline">AI drafts</span>
+          </span>
+          {replySuggestions.map((suggestion) => (
+            <button
+              key={suggestion}
+              type="button"
+              onClick={() => {
+                setDraft(suggestion);
+                setReplySuggestions([]);
+              }}
+              className="shrink-0 whitespace-nowrap rounded-full border border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg-secondary shadow-sm transition-colors hover:border-accent hover:text-accent"
+            >
+              {suggestion}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="relative shrink-0 border-t border-border-subtle bg-surface-1 p-3">
         {sendError && <p className="mb-2 text-xs text-error">{sendError}</p>}

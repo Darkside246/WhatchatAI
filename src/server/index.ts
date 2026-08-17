@@ -14,6 +14,7 @@ import { whatsappMessageIngestionService } from '../services/whatsappMessageInge
 import * as gooseService from '../services/gooseService.js';
 import { globalSearch } from '../services/globalSearchService.js';
 import { isInlineSafeMime } from '../domain/whatsapp/mediaCompatibility.js';
+import { suggestReplies } from '../services/replySuggestionService.js';
 import {
   workspaceService,
   isChatNotFoundError,
@@ -1147,6 +1148,32 @@ app.post('/api/workspace/chats/:chatId/read', requireWorkspaceContext, async (re
     throw error;
   }
 });
+
+/**
+ * Real Gemini-drafted reply suggestions for the agent to pick from. Always
+ * 200: `status` carries the honest outcome so the UI can simply hide the
+ * bar when suggestions are genuinely unavailable, rather than surfacing an
+ * error for something that is only ever an optional assist.
+ */
+app.get(
+  '/api/workspace/chats/:chatId/reply-suggestions',
+  requireWorkspaceContext,
+  requirePermission('whatsapp.send'),
+  expensiveActionLimiter,
+  async (req, res) => {
+    const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
+      businessId: string;
+      whatsappAccountId: string;
+    };
+    try {
+      const result = await suggestReplies(businessId, whatsappAccountId, String(req.params.chatId ?? ''));
+      return res.status(200).json(result);
+    } catch (error) {
+      if (isChatNotFoundError(error)) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
+      throw error;
+    }
+  },
+);
 
 app.get('/api/workspace/search', requireWorkspaceContext, async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };

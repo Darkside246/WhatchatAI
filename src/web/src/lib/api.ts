@@ -576,6 +576,12 @@ export interface WorkspaceCallSummary {
   durationSeconds: number | null;
 }
 
+export interface ReplySuggestionResult {
+  status: 'ok' | 'unavailable';
+  reason?: string;
+  suggestions: string[];
+}
+
 export interface GlobalSearchResult {
   type: 'chat' | 'contact' | 'lead' | 'campaign' | 'funnel';
   id: string;
@@ -786,6 +792,9 @@ export const api = {
 
   suggestMarketingCopy: (input: { kind: 'campaign_message' | 'status_caption' | 'follow_up'; businessContext: string; count?: number }) =>
     request<MarketingCopySuggestionResult>('/workspace/marketing/ai-suggest', { method: 'POST', body: JSON.stringify(input) }),
+
+  getReplySuggestions: (chatId: string) =>
+    request<ReplySuggestionResult>(`/workspace/chats/${chatId}/reply-suggestions`),
 
   globalSearch: (query: string) => request<{ results: GlobalSearchResult[] }>(`/workspace/search?q=${encodeURIComponent(query)}`),
 };
