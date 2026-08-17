@@ -8,6 +8,7 @@ import { CrmRoute } from './CrmRoute.js';
 import { BillingRoute } from './BillingRoute.js';
 import { SettingsRoute } from './SettingsRoute.js';
 import { DashboardRoute } from './DashboardRoute.js';
+import { MarketingRoute } from './MarketingRoute.js';
 import { PlaceholderPage } from './PlaceholderPage.js';
 
 interface Props {
@@ -50,10 +51,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
                 path="/automations"
                 element={<PlaceholderPage title="Automations" description="The no-code automation builder is not built yet." />}
               />
-              <Route
-                path="/marketing"
-                element={<PlaceholderPage title="Marketing" description="Campaigns and broadcast tools are not built yet." />}
-              />
+              <Route path="/marketing" element={<MarketingRoute />} />
               <Route path="/billing" element={<BillingRoute />} />
               <Route path="/settings" element={<SettingsRoute connection={connection} />} />
               <Route path="*" element={<Navigate to="/chats" replace />} />

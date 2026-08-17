@@ -56,6 +56,21 @@ import {
 } from '../services/teamService.js';
 import { isCapacityExceededError, isInvalidAssignmentError } from '../services/workspaceService.js';
 import {
+  createCampaign,
+  listCampaigns,
+  getCampaign,
+  updateDraftCampaign,
+  submitCampaignForReview,
+  approveCampaign,
+  sendCampaign,
+  cancelCampaign,
+  listEligibleCampaignRecipients,
+  isCampaignNotFoundError,
+  isInvalidCampaignStatusError,
+  isNoEligibleRecipientsError,
+  isTooManyRecipientsError,
+} from '../services/campaignService.js';
+import {
   isRegistrationOpen,
   register,
   login,
@@ -641,6 +656,115 @@ app.patch('/api/workspace/chats/:chatId/assignment', requireWorkspaceContext, as
     throw error;
   }
 });
+
+app.get('/api/workspace/campaigns/eligible-recipients', requireWorkspaceContext, async (_req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const recipients = await listEligibleCampaignRecipients(businessId, whatsappAccountId);
+  return res.status(200).json({ recipients });
+});
+
+app.get('/api/workspace/campaigns', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const campaigns = await listCampaigns(businessId);
+  return res.status(200).json({ campaigns });
+});
+
+const createCampaignSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  messageText: z.string().trim().min(1).max(4000),
+  crmContactIds: z.array(z.string().uuid()).min(1),
+});
+
+app.post('/api/workspace/campaigns', requireWorkspaceContext, requirePermission('marketing.create'), async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const auth = res.locals.auth as AuthContext;
+  const parsed = createCampaignSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_CAMPAIGN', details: parsed.error.flatten() });
+  try {
+    const result = await createCampaign(businessId, whatsappAccountId, auth.userId, parsed.data);
+    return res.status(201).json(result);
+  } catch (error) {
+    if (isNoEligibleRecipientsError(error)) return res.status(400).json({ error: 'NO_ELIGIBLE_RECIPIENTS', message: error.message });
+    if (isTooManyRecipientsError(error)) return res.status(400).json({ error: 'TOO_MANY_RECIPIENTS', message: error.message });
+    throw error;
+  }
+});
+
+app.get('/api/workspace/campaigns/:campaignId', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    const detail = await getCampaign(businessId, String(req.params.campaignId ?? ''));
+    return res.status(200).json(detail);
+  } catch (error) {
+    if (isCampaignNotFoundError(error)) return res.status(404).json({ error: 'CAMPAIGN_NOT_FOUND' });
+    throw error;
+  }
+});
+
+const updateCampaignSchema = z.object({ name: z.string().trim().min(1).max(200), messageText: z.string().trim().min(1).max(4000) });
+
+app.patch('/api/workspace/campaigns/:campaignId', requireWorkspaceContext, requirePermission('marketing.create'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = updateCampaignSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_CAMPAIGN' });
+  try {
+    const campaign = await updateDraftCampaign(businessId, String(req.params.campaignId ?? ''), parsed.data);
+    return res.status(200).json({ campaign });
+  } catch (error) {
+    if (isCampaignNotFoundError(error)) return res.status(404).json({ error: 'CAMPAIGN_NOT_FOUND' });
+    if (isInvalidCampaignStatusError(error)) return res.status(409).json({ error: 'INVALID_CAMPAIGN_STATUS', message: error.message });
+    throw error;
+  }
+});
+
+function campaignActionHandler(action: (businessId: string, campaignId: string) => Promise<unknown>) {
+  return async (req: Request, res: Response) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    try {
+      const campaign = await action(businessId, String(req.params.campaignId ?? ''));
+      return res.status(200).json({ campaign });
+    } catch (error) {
+      if (isCampaignNotFoundError(error)) return res.status(404).json({ error: 'CAMPAIGN_NOT_FOUND' });
+      if (isInvalidCampaignStatusError(error)) return res.status(409).json({ error: 'INVALID_CAMPAIGN_STATUS', message: error.message });
+      if (isNoEligibleRecipientsError(error)) return res.status(400).json({ error: 'NO_ELIGIBLE_RECIPIENTS', message: error.message });
+      throw error;
+    }
+  };
+}
+
+app.post(
+  '/api/workspace/campaigns/:campaignId/submit-review',
+  requireWorkspaceContext,
+  requirePermission('marketing.create'),
+  campaignActionHandler((businessId, campaignId) => submitCampaignForReview(businessId, campaignId)),
+);
+
+app.post('/api/workspace/campaigns/:campaignId/approve', requireWorkspaceContext, requirePermission('marketing.send'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const auth = res.locals.auth as AuthContext;
+  try {
+    const campaign = await approveCampaign(businessId, String(req.params.campaignId ?? ''), auth.userId);
+    return res.status(200).json({ campaign });
+  } catch (error) {
+    if (isCampaignNotFoundError(error)) return res.status(404).json({ error: 'CAMPAIGN_NOT_FOUND' });
+    if (isInvalidCampaignStatusError(error)) return res.status(409).json({ error: 'INVALID_CAMPAIGN_STATUS', message: error.message });
+    throw error;
+  }
+});
+
+app.post(
+  '/api/workspace/campaigns/:campaignId/send',
+  requireWorkspaceContext,
+  requirePermission('marketing.send'),
+  campaignActionHandler((businessId, campaignId) => sendCampaign(businessId, campaignId)),
+);
+
+app.post(
+  '/api/workspace/campaigns/:campaignId/cancel',
+  requireWorkspaceContext,
+  requirePermission('marketing.create'),
+  campaignActionHandler((businessId, campaignId) => cancelCampaign(businessId, campaignId)),
+);
 
 const reactionSchema = z.object({ emoji: z.string().max(8) });
 

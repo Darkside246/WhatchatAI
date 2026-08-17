@@ -31,6 +31,8 @@ export interface SendOutboundMessageInput {
   mediaFileName?: string;
   /** Defaults to 'human' when omitted - set explicitly to 'ai' by the AI reply pipeline. */
   requestedBy?: string;
+  /** Staggers real dispatch (BullMQ job delay) - set by campaign sends, never by a normal composer send. */
+  delayMs?: number;
 }
 
 /** WhatsApp's own outbound media ceiling is well above this - kept conservative for a v1 base64-JSON upload path. */
@@ -88,7 +90,7 @@ export class WhatsAppOutboundMessageService {
     // returning a pre-existing row (the idempotency-key conflict path)
     // means a send for this exact request was already queued/dispatched.
     if (record.wasCreated) {
-      await enqueueOutboundMessage({ outboundMessageId: record.id });
+      await enqueueOutboundMessage({ outboundMessageId: record.id }, input.delayMs);
     }
 
     return record;

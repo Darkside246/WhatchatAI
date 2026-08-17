@@ -14,6 +14,7 @@ export interface CrmContactRecord {
   customerValue: number | null;
   followUpDate: string | null;
   customFields: Record<string, unknown>;
+  optedOutOfCampaigns: boolean;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -33,6 +34,7 @@ interface CrmContactRow {
   customer_value: string | null;
   follow_up_date: string | null;
   custom_fields: Record<string, unknown>;
+  opted_out_of_campaigns: boolean;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -53,6 +55,7 @@ function toRecord(row: CrmContactRow): CrmContactRecord {
     customerValue: row.customer_value === null ? null : Number(row.customer_value),
     followUpDate: row.follow_up_date,
     customFields: row.custom_fields,
+    optedOutOfCampaigns: row.opted_out_of_campaigns,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
@@ -177,6 +180,17 @@ export class CrmContactRepository {
        WHERE id = $1 AND business_id = $2 AND deleted_at IS NULL
        RETURNING *`,
       [id, businessId, input.stage, input.leadStatus, input.notes, JSON.stringify(input.tags)],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /** The real, enforced do-not-contact flag for campaigns - independent of stage/lead status. */
+  async setOptedOut(businessId: string, id: string, optedOut: boolean): Promise<CrmContactRecord | null> {
+    const { rows } = await this.db.query<CrmContactRow>(
+      `UPDATE crm_contacts SET opted_out_of_campaigns = $3, updated_at = now()
+       WHERE id = $1 AND business_id = $2 AND deleted_at IS NULL
+       RETURNING *`,
+      [id, businessId, optedOut],
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }

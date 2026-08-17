@@ -25,6 +25,11 @@ export const outboundMessagesQueue = new Queue<OutboundMessageJobData>(OUTBOUND_
   },
 });
 
-export function enqueueOutboundMessage(data: OutboundMessageJobData): Promise<unknown> {
-  return outboundMessagesQueue.add('send', data);
+/**
+ * delayMs staggers dispatch (real BullMQ job delay, not a blocking
+ * server-side sleep) - used by campaign sends so recipients aren't all
+ * messaged in the same instant, never by a normal 1:1 composer send.
+ */
+export function enqueueOutboundMessage(data: OutboundMessageJobData, delayMs?: number): Promise<unknown> {
+  return outboundMessagesQueue.add('send', data, delayMs ? { delay: delayMs } : {});
 }

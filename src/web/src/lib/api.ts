@@ -293,6 +293,67 @@ export interface CapacitySummaryDto extends AgentCapacityDto {
   currentAssignedCount: number;
 }
 
+export const CAMPAIGN_STATUSES = ['DRAFT', 'REVIEW', 'APPROVED', 'SCHEDULED', 'RUNNING', 'COMPLETED', 'PAUSED', 'CANCELLED', 'FAILED'] as const;
+export type CampaignStatus = (typeof CAMPAIGN_STATUSES)[number];
+
+export interface CampaignCounts {
+  total: number;
+  queued: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  failed: number;
+}
+
+export interface CampaignDto {
+  id: string;
+  businessId: string;
+  whatsappAccountId: string;
+  createdBy: string;
+  name: string;
+  messageText: string;
+  status: CampaignStatus;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  sentAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  counts: CampaignCounts;
+}
+
+export interface CampaignRecipientDto {
+  id: string;
+  campaignId: string;
+  crmContactId: string;
+  chatId: string;
+  outboundMessageId: string | null;
+  displayName: string;
+  phoneNumber: string | null;
+  status: 'queued' | 'sending' | 'sent' | 'delivered' | 'read' | 'played' | 'failed' | null;
+  createdAt: string;
+}
+
+export interface CampaignDetailDto {
+  campaign: Omit<CampaignDto, 'counts'>;
+  recipients: CampaignRecipientDto[];
+  counts: CampaignCounts;
+}
+
+export interface EligibleRecipientDto {
+  crmContactId: string;
+  chatId: string;
+  displayName: string;
+  phoneNumber: string | null;
+}
+
+export interface CreateCampaignResultDto {
+  campaign: Omit<CampaignDto, 'counts'>;
+  requestedCount: number;
+  addedCount: number;
+  skippedCrmContactIds: string[];
+}
+
 export interface NotificationDto {
   id: string;
   type: NotificationType;
@@ -579,4 +640,17 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(input),
     }),
+
+  listEligibleCampaignRecipients: () => request<{ recipients: EligibleRecipientDto[] }>('/workspace/campaigns/eligible-recipients'),
+  listCampaigns: () => request<{ campaigns: CampaignDto[] }>('/workspace/campaigns'),
+  createCampaign: (input: { name: string; messageText: string; crmContactIds: string[] }) =>
+    request<CreateCampaignResultDto>('/workspace/campaigns', { method: 'POST', body: JSON.stringify(input) }),
+  getCampaign: (campaignId: string) => request<CampaignDetailDto>(`/workspace/campaigns/${campaignId}`),
+  updateCampaign: (campaignId: string, input: { name: string; messageText: string }) =>
+    request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  submitCampaignForReview: (campaignId: string) =>
+    request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/submit-review`, { method: 'POST' }),
+  approveCampaign: (campaignId: string) => request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/approve`, { method: 'POST' }),
+  sendCampaign: (campaignId: string) => request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/send`, { method: 'POST' }),
+  cancelCampaign: (campaignId: string) => request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/cancel`, { method: 'POST' }),
 };
