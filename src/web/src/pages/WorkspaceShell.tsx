@@ -40,6 +40,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
             <button
               type="button"
               onClick={() => setSearchOpen(true)}
+              aria-label="Open global search"
               className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-xs text-fg-muted hover:bg-surface-3"
             >
               <Search size={13} aria-hidden />

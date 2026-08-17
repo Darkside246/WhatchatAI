@@ -682,7 +682,13 @@ function StatusSchedulerTab() {
               <div className="flex shrink-0 items-center gap-2">
                 <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${SCHEDULED_STATUS_COLOR[status.status]}`}>{SCHEDULED_STATUS_LABEL[status.status]}</span>
                 {status.status === 'SCHEDULED' && (
-                  <button type="button" disabled={busyId === status.id} onClick={() => handleCancel(status.id)} className="text-fg-muted hover:text-error">
+                  <button
+                    type="button"
+                    disabled={busyId === status.id}
+                    onClick={() => handleCancel(status.id)}
+                    aria-label="Cancel scheduled status"
+                    className="text-fg-muted hover:text-error"
+                  >
                     <X size={14} aria-hidden />
                   </button>
                 )}

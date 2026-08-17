@@ -209,7 +209,9 @@ function ContactsTab({ focusContactId }: { focusContactId: string | null }) {
 
   return (
     <div className="flex h-full flex-1">
-      <div className="w-80 shrink-0 overflow-y-auto border-r border-border-subtle">
+      <div
+        className={`w-full shrink-0 overflow-y-auto border-r border-border-subtle md:flex md:w-80 ${selectedId ? 'hidden' : 'flex'} flex-col`}
+      >
         {error && <p className="p-4 text-xs text-error">{error}</p>}
         {contacts && contacts.length === 0 && (
           <p className="p-4 text-sm text-fg-muted">
@@ -239,13 +241,22 @@ function ContactsTab({ focusContactId }: { focusContactId: string | null }) {
       </div>
 
       {selected ? (
-        <ContactDetailCard
-          key={selected.id}
-          contact={selected}
-          onSaved={(updated) => setContacts((prev) => prev?.map((c) => (c.id === updated.id ? updated : c)) ?? prev)}
-        />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <button
+            type="button"
+            onClick={() => setSelectedId(null)}
+            className="flex shrink-0 items-center gap-1.5 border-b border-border-subtle px-4 py-2.5 text-xs font-medium text-fg-secondary hover:text-fg md:hidden"
+          >
+            ← Back to contacts
+          </button>
+          <ContactDetailCard
+            key={selected.id}
+            contact={selected}
+            onSaved={(updated) => setContacts((prev) => prev?.map((c) => (c.id === updated.id ? updated : c)) ?? prev)}
+          />
+        </div>
       ) : (
-        <div className="flex flex-1 items-center justify-center text-sm text-fg-muted">Select a contact</div>
+        <div className="hidden flex-1 items-center justify-center text-sm text-fg-muted md:flex">Select a contact</div>
       )}
     </div>
   );

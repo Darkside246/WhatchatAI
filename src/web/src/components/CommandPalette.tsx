@@ -101,6 +101,9 @@ export function CommandPalette({ open, onOpenChange }: Props) {
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 pt-[12vh]" onClick={() => onOpenChange(false)}>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Global search"
         className="w-full max-w-lg overflow-hidden rounded-xl border border-border-subtle bg-surface-2 shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
@@ -109,6 +112,7 @@ export function CommandPalette({ open, onOpenChange }: Props) {
           <input
             ref={inputRef}
             type="text"
+            aria-label="Search chats, contacts, leads, campaigns, and funnels"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onInputKeyDown}
@@ -118,7 +122,7 @@ export function CommandPalette({ open, onOpenChange }: Props) {
           <kbd className="shrink-0 rounded border border-border-subtle px-1.5 py-0.5 text-[10px] text-fg-muted">Esc</kbd>
         </div>
 
-        <div className="max-h-96 overflow-y-auto">
+        <div className="max-h-96 overflow-y-auto" aria-live="polite">
           {query.trim().length >= 2 && results.length === 0 && (
             <p className="px-3 py-6 text-center text-xs text-fg-muted">No matches.</p>
           )}

@@ -69,13 +69,25 @@ function StepEditorRow({
           ))}
         </select>
         <div className="flex shrink-0 items-center gap-1">
-          <button type="button" disabled={index === 0} onClick={() => onMove(-1)} className="text-fg-muted hover:text-fg disabled:opacity-30">
+          <button
+            type="button"
+            disabled={index === 0}
+            onClick={() => onMove(-1)}
+            aria-label="Move step up"
+            className="text-fg-muted hover:text-fg disabled:opacity-30"
+          >
             <ArrowUp size={13} aria-hidden />
           </button>
-          <button type="button" disabled={index === total - 1} onClick={() => onMove(1)} className="text-fg-muted hover:text-fg disabled:opacity-30">
+          <button
+            type="button"
+            disabled={index === total - 1}
+            onClick={() => onMove(1)}
+            aria-label="Move step down"
+            className="text-fg-muted hover:text-fg disabled:opacity-30"
+          >
             <ArrowDown size={13} aria-hidden />
           </button>
-          <button type="button" onClick={onRemove} className="text-fg-muted hover:text-error">
+          <button type="button" onClick={onRemove} aria-label="Remove step" className="text-fg-muted hover:text-error">
             <Trash2 size={13} aria-hidden />
           </button>
         </div>
