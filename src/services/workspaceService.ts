@@ -247,6 +247,22 @@ export interface WorkspaceBillingOverview {
   entitlements: WorkspaceBillingEntitlement[];
 }
 
+export interface WorkspacePlanCatalogueEntry {
+  planKey: string;
+  name: string;
+  priceMonthlyCents: number;
+  currency: string;
+  isCurrent: boolean;
+  entitlements: { key: string; label: string; isEnabled: boolean; limit: number | null }[];
+}
+
+export interface WorkspacePlanCatalogue {
+  plans: WorkspacePlanCatalogueEntry[];
+  /** False until a real payment provider exists - the UI must not offer an upgrade it cannot perform. */
+  selfServeChangeAvailable: boolean;
+  selfServeUnavailableReason?: string;
+}
+
 const BILLING_ENTITLEMENT_LABELS: Record<string, string> = {
   max_ai_agents: 'AI Agents',
   max_whatsapp_accounts: 'WhatsApp Accounts',
@@ -921,6 +937,47 @@ export class WorkspaceService {
       plan: { name: plan.name, planKey: plan.planKey, priceMonthlyCents: plan.priceMonthlyCents, currency: plan.currency },
       subscription: subscriptionSummary,
       entitlements,
+    };
+  }
+
+  /**
+   * The real plan catalogue, straight from the plans table with each plan's
+   * real entitlement rows - so the comparison a customer sees is the same
+   * data the EntitlementService actually enforces, never a marketing table
+   * maintained separately and free to drift.
+   */
+  async getPlanCatalogue(businessId: string): Promise<WorkspacePlanCatalogue> {
+    const subscription = await this.subscriptionRepository.findLiveByBusiness(businessId);
+    const plans = await this.planRepository.listActive();
+
+    const entries = await Promise.all(
+      plans.map(async (plan) => {
+        const entitlementRows = await this.planRepository.listEntitlements(plan.id);
+        return {
+          planKey: plan.planKey,
+          name: plan.name,
+          priceMonthlyCents: plan.priceMonthlyCents,
+          currency: plan.currency,
+          isCurrent: subscription?.planId === plan.id,
+          entitlements: entitlementRows.map((row) => ({
+            key: row.entitlementKey,
+            label: BILLING_ENTITLEMENT_LABELS[row.entitlementKey] ?? row.entitlementKey,
+            isEnabled: row.isEnabled,
+            limit: row.limitValue,
+          })),
+        };
+      }),
+    );
+
+    return {
+      plans: entries,
+      /*
+       * No payment provider is wired up, so a plan genuinely cannot be
+       * changed from this screen. The UI must say so rather than showing an
+       * Upgrade button that silently does nothing.
+       */
+      selfServeChangeAvailable: false,
+      selfServeUnavailableReason: 'No payment provider is connected yet, so plan changes are handled manually.',
     };
   }
 

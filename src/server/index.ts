@@ -622,6 +622,11 @@ app.use('/api/workspace', requireAuth);
  * Which engine can actually answer a customer right now. Workspace-scoped
  * because it is operator-facing status, not a public liveness probe.
  */
+app.get('/api/workspace/billing/plans', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  return res.status(200).json(await workspaceService.getPlanCatalogue(businessId));
+});
+
 app.get('/api/workspace/ai-engines', requireWorkspaceContext, async (_req, res) => {
   return res.status(200).json(await getAiEngineStatus());
 });

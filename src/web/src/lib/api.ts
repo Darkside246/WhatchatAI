@@ -208,6 +208,22 @@ export interface WorkspaceBillingOverview {
   entitlements: WorkspaceBillingEntitlement[];
 }
 
+export interface PlanCatalogueEntryDto {
+  planKey: string;
+  name: string;
+  priceMonthlyCents: number;
+  currency: string;
+  isCurrent: boolean;
+  entitlements: { key: string; label: string; isEnabled: boolean; limit: number | null }[];
+}
+
+export interface PlanCatalogueDto {
+  plans: PlanCatalogueEntryDto[];
+  /** False until a real payment provider exists. The UI must not offer an upgrade it cannot perform. */
+  selfServeChangeAvailable: boolean;
+  selfServeUnavailableReason?: string;
+}
+
 export interface WorkspaceBusiness {
   id: string;
   name: string;
@@ -775,6 +791,7 @@ export const api = {
   sendReaction: (messageId: string, emoji: string) =>
     request(`/workspace/messages/${messageId}/reactions`, { method: 'POST', body: JSON.stringify({ emoji }) }),
   getBilling: () => request<WorkspaceBillingOverview>('/workspace/billing'),
+  getPlanCatalogue: () => request<PlanCatalogueDto>('/workspace/billing/plans'),
   getDashboard: () => request<WorkspaceDashboardOverview>('/workspace/dashboard'),
   getBusiness: () => request<{ business: WorkspaceBusiness }>('/workspace/business'),
   updateBusiness: (name: string) =>
