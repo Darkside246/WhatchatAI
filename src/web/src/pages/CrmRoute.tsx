@@ -43,6 +43,7 @@ function ContactDetailCard({
   const [stage, setStage] = useState(contact.stage ?? '');
   const [leadStatus, setLeadStatus] = useState(contact.leadStatus ?? '');
   const [notes, setNotes] = useState(contact.notes ?? '');
+  const [email, setEmail] = useState(contact.email ?? '');
   const [tagsInput, setTagsInput] = useState(contact.tags.join(', '));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,6 +54,7 @@ function ContactDetailCard({
     setStage(contact.stage ?? '');
     setLeadStatus(contact.leadStatus ?? '');
     setNotes(contact.notes ?? '');
+    setEmail(contact.email ?? '');
     setTagsInput(contact.tags.join(', '));
     setLeadCreated(false);
   }, [contact.id]);
@@ -83,6 +85,7 @@ function ContactDetailCard({
         leadStatus: leadStatus.trim() || null,
         notes: notes.trim() || null,
         tags,
+        email: email.trim() || null,
       });
       onSaved(crmContact);
     } catch (err) {
@@ -157,6 +160,23 @@ function ContactDetailCard({
             placeholder="vip, follow-up"
             className="mt-1 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg outline-none focus:border-accent"
           />
+        </div>
+        <div>
+          <label className="text-caption font-medium text-fg-secondary" htmlFor="crm-email">
+            Email
+          </label>
+          <input
+            id="crm-email"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Needed before this contact can be emailed"
+            className="mt-1 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg outline-none focus:border-accent"
+          />
+          {/* WhatsApp never supplies an address, so this is only ever what
+              someone typed - and email automations skip contacts without one
+              rather than guessing. */}
+          <p className="mt-1 text-meta text-fg-muted">WhatsApp does not provide email addresses, so this is entered by hand.</p>
         </div>
         <div>
           <label className="text-caption font-medium text-fg-secondary" htmlFor="crm-notes">

@@ -23,6 +23,7 @@ const NODE_LABEL: Record<FunnelNodeType, string> = {
   REMOVE_TAG: 'Remove tag',
   UPDATE_STAGE: 'Update CRM stage',
   NOTIFY_USER: 'Notify a teammate',
+  SEND_EMAIL: 'Send an email',
 };
 
 interface EditableStep {
@@ -102,6 +103,29 @@ function StepEditorRow({
             onChange={(event) => setConfig('text', event.target.value)}
             className="w-full rounded-lg border border-border-subtle bg-surface-1 px-2 py-1 text-caption text-fg outline-none focus:border-accent"
           />
+        )}
+        {step.nodeType === 'SEND_EMAIL' && (
+          <div className="space-y-2">
+            <input
+              placeholder="Subject"
+              value={typeof step.config.subject === 'string' ? step.config.subject : ''}
+              onChange={(event) => setConfig('subject', event.target.value)}
+              className="w-full rounded-lg border border-border-subtle bg-surface-1 px-2 py-1 text-caption text-fg outline-none focus:border-accent"
+            />
+            <textarea
+              rows={3}
+              placeholder="Email body"
+              value={typeof step.config.bodyText === 'string' ? step.config.bodyText : ''}
+              onChange={(event) => setConfig('bodyText', event.target.value)}
+              className="w-full rounded-lg border border-border-subtle bg-surface-1 px-2 py-1 text-caption text-fg outline-none focus:border-accent"
+            />
+            {/* Two real constraints, said before the funnel is activated
+                rather than discovered when a step fails. */}
+            <p className="text-meta text-fg-muted">
+              Goes to the contact&rsquo;s email address in the CRM — contacts without one are skipped with an error, never
+              guessed. Activating this funnel counts as your approval for this exact text; it is not AI-generated.
+            </p>
+          </div>
         )}
         {step.nodeType === 'WAIT' && (
           <label className="flex items-center gap-2 text-caption text-fg-secondary">

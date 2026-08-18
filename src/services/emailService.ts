@@ -407,6 +407,71 @@ export async function draftWithAi(
   }
 }
 
+/**
+ * The one path by which an automation may send email.
+ *
+ * Deliberately separate from approveAndSend so the human-approval route
+ * stays exactly as strict as it was. What makes this legitimate is narrow
+ * and worth stating: the body is static text a person wrote into a funnel
+ * step and then explicitly activated, so it carries no untrusted customer
+ * input and no AI generation. The approval is attributed to that person,
+ * and the audit records that it came from a funnel rather than from a click.
+ *
+ * If sending is not configured, the row is left as a draft for a human -
+ * an automation must not silently drop a message it promised to send.
+ */
+export async function sendFunnelEmail(input: {
+  businessId: string;
+  authorisedBy: string;
+  funnelId: string;
+  crmContactId: string;
+  chatId: string;
+  toEmail: string;
+  subject: string;
+  bodyText: string;
+}): Promise<EmailMessageRecord> {
+  if (!emailProvider.isPlausibleEmail(input.toEmail)) {
+    throw new InvalidEmailError(`"${input.toEmail}" is not a valid email address.`);
+  }
+
+  const draft = await emailRepository.createDraft({
+    businessId: input.businessId,
+    createdBy: input.authorisedBy,
+    kind: 'general_update',
+    toEmail: input.toEmail.trim(),
+    toName: null,
+    subject: input.subject.trim().slice(0, MAX_SUBJECT_CHARS),
+    bodyText: input.bodyText.slice(0, MAX_BODY_CHARS),
+    chatId: input.chatId,
+    crmContactId: input.crmContactId,
+  });
+
+  await securityAuditLogRepository.record({
+    businessId: input.businessId,
+    eventType: 'email_drafted',
+    rawMetadata: { emailMessageId: draft.id, source: 'funnel', funnelId: input.funnelId, authorisedBy: input.authorisedBy },
+  });
+
+  const capabilities = await getEmailCapabilities(input.businessId);
+  if (!capabilities.providerConfigured || !capabilities.senderConfigured) {
+    // Left as a draft on purpose: a human can see it waiting and send it
+    // once email is set up, instead of it vanishing.
+    return draft;
+  }
+
+  const approved = await emailRepository.approve(input.businessId, draft.id, input.authorisedBy);
+  if (!approved) return draft;
+
+  await securityAuditLogRepository.record({
+    businessId: input.businessId,
+    eventType: 'email_approved',
+    rawMetadata: { emailMessageId: draft.id, approvedBy: input.authorisedBy, source: 'funnel', funnelId: input.funnelId },
+  });
+
+  await enqueueEmailSend({ emailMessageId: draft.id, businessId: input.businessId });
+  return approved;
+}
+
 export function isEmailNotFoundError(error: unknown): error is EmailNotFoundError {
   return error instanceof EmailNotFoundError;
 }

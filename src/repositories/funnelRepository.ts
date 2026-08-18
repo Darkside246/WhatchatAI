@@ -10,6 +10,7 @@ export const FUNNEL_NODE_TYPES = [
   'REMOVE_TAG',
   'UPDATE_STAGE',
   'NOTIFY_USER',
+  'SEND_EMAIL',
 ] as const;
 export type FunnelNodeType = (typeof FUNNEL_NODE_TYPES)[number];
 

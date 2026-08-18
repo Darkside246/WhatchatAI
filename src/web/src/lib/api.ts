@@ -127,6 +127,8 @@ export interface WorkspaceCrmContactSummary {
   whatsappContactId: string | null;
   displayName: string;
   phoneNumber: string | null;
+  /** Null until someone enters one - WhatsApp does not provide an email address. */
+  email: string | null;
   source: string | null;
   stage: string | null;
   leadStatus: string | null;
@@ -140,6 +142,8 @@ export interface UpdateCrmContactBody {
   leadStatus: string | null;
   notes: string | null;
   tags: string[];
+  /** Omit to keep the stored address; null clears it. */
+  email?: string | null;
 }
 
 export type LeadStatusValue = 'NEW' | 'QUALIFIED' | 'ENGAGED' | 'WON' | 'LOST';
@@ -500,6 +504,7 @@ export const FUNNEL_NODE_TYPES = [
   'CONDITION',
   'ASSIGN_HUMAN',
   'ASSIGN_TEAM',
+  'SEND_EMAIL',
   'ADD_TAG',
   'REMOVE_TAG',
   'UPDATE_STAGE',

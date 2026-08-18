@@ -1738,6 +1738,8 @@ const updateCrmContactSchema = z.object({
   leadStatus: z.string().trim().min(1).nullable(),
   notes: z.string().trim().nullable(),
   tags: z.array(z.string().trim().min(1)),
+  /** Omit to leave the stored address alone; null clears it. */
+  email: z.string().trim().max(320).nullish(),
 });
 
 app.patch('/api/workspace/crm-contacts/:id', requireWorkspaceContext, requirePermission('crm.edit'), async (req, res) => {

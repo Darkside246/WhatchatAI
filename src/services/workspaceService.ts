@@ -179,6 +179,8 @@ export interface WorkspaceCrmContactSummary {
   whatsappContactId: string | null;
   displayName: string;
   phoneNumber: string | null;
+  /** Null until a person actually enters one - WhatsApp does not supply it. */
+  email: string | null;
   source: string | null;
   stage: string | null;
   leadStatus: string | null;
@@ -1010,6 +1012,7 @@ export class WorkspaceService {
         : 'Unknown contact',
       phoneNumber: row.phoneNumber,
       source: row.source,
+      email: row.email,
       stage: row.stage,
       leadStatus: row.leadStatus,
       tags: row.tags,

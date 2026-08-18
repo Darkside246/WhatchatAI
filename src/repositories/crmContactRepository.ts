@@ -4,6 +4,8 @@ export interface CrmContactRecord {
   id: string;
   businessId: string;
   whatsappContactId: string | null;
+  /** Only ever a real address someone entered - WhatsApp does not provide one, and nothing here derives it. */
+  email: string | null;
   source: string | null;
   stage: string | null;
   leadStatus: string | null;
@@ -24,6 +26,7 @@ interface CrmContactRow {
   id: string;
   business_id: string;
   whatsapp_contact_id: string | null;
+  email: string | null;
   source: string | null;
   stage: string | null;
   lead_status: string | null;
@@ -45,6 +48,7 @@ function toRecord(row: CrmContactRow): CrmContactRecord {
     id: row.id,
     businessId: row.business_id,
     whatsappContactId: row.whatsapp_contact_id,
+    email: row.email,
     source: row.source,
     stage: row.stage,
     leadStatus: row.lead_status,
@@ -108,6 +112,8 @@ export interface UpdateCrmContactInput {
   leadStatus: string | null;
   notes: string | null;
   tags: string[];
+  /** undefined leaves the stored address untouched; null clears it. */
+  email?: string | null | undefined;
 }
 
 export class CrmContactRepository {
@@ -176,10 +182,22 @@ export class CrmContactRepository {
   /** Tenant-scoped write - a crm_contact id from another business is never editable through this. */
   async update(businessId: string, id: string, input: UpdateCrmContactInput): Promise<CrmContactRecord | null> {
     const { rows } = await this.db.query<CrmContactRow>(
-      `UPDATE crm_contacts SET stage = $3, lead_status = $4, notes = $5, tags = $6::jsonb, updated_at = now()
+      `UPDATE crm_contacts SET
+         stage = $3, lead_status = $4, notes = $5, tags = $6::jsonb,
+         email = CASE WHEN $8 THEN $7 ELSE email END,
+         updated_at = now()
        WHERE id = $1 AND business_id = $2 AND deleted_at IS NULL
        RETURNING *`,
-      [id, businessId, input.stage, input.leadStatus, input.notes, JSON.stringify(input.tags)],
+      [
+        id,
+        businessId,
+        input.stage,
+        input.leadStatus,
+        input.notes,
+        JSON.stringify(input.tags),
+        input.email ?? null,
+        input.email !== undefined,
+      ],
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }

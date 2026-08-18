@@ -12,6 +12,7 @@ import { workspaceService, type EntitlementDeniedError } from './workspaceServic
 import { notifyUser } from './notificationService.js';
 import { whatsappOutboundMessageService } from './whatsappOutboundMessageService.js';
 import { enqueueFunnelAdvance } from '../queue/queues/funnelAdvanceQueue.js';
+import { sendFunnelEmail } from './emailService.js';
 import { EntitlementService } from './entitlementService.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 
@@ -146,6 +147,10 @@ function validateStep(step: FunnelStepInput, stepCount: number): void {
       break;
     case 'NOTIFY_USER':
       if (typeof c.userId !== 'string' || typeof c.title !== 'string') throw new InvalidFunnelStepError('NOTIFY_USER step requires config.userId and config.title');
+      break;
+    case 'SEND_EMAIL':
+      if (typeof c.subject !== 'string' || !c.subject.trim()) throw new InvalidFunnelStepError('SEND_EMAIL step requires config.subject');
+      if (typeof c.bodyText !== 'string' || !c.bodyText.trim()) throw new InvalidFunnelStepError('SEND_EMAIL step requires config.bodyText');
       break;
   }
 }
@@ -286,6 +291,41 @@ async function runFromPosition(instance: FunnelInstanceRecord): Promise<void> {
             body: typeof step.config.body === 'string' ? step.config.body : null,
             targetType: 'funnel_instance',
             targetId: instance.id,
+          });
+          break;
+        }
+        case 'SEND_EMAIL': {
+          /*
+           * The approval boundary is respected, not bypassed.
+           *
+           * A funnel's email body is static text a person wrote and then
+           * explicitly activated - it is never AI-generated and never
+           * derived from a customer's message, so the untrusted-input risk
+           * the approval gate exists for does not apply. The approval is
+           * therefore attributed to the person who authored and activated
+           * this funnel, and the audit trail records that it came from a
+           * funnel rather than from someone clicking approve.
+           *
+           * If the contact has no email address, this fails honestly. It
+           * does NOT guess one from their name or phone number.
+           */
+          const contact = await crmContactRepository.findByIdForBusiness(instance.businessId, instance.crmContactId);
+          if (!contact?.email) {
+            throw new Error('This contact has no email address, so the SEND_EMAIL step cannot run.');
+          }
+
+          const funnel = await funnelRepository.findByIdForBusiness(instance.businessId, instance.funnelId);
+          if (!funnel) throw new FunnelNotFoundError('Funnel not found.');
+
+          await sendFunnelEmail({
+            businessId: instance.businessId,
+            authorisedBy: funnel.createdBy,
+            funnelId: funnel.id,
+            crmContactId: instance.crmContactId,
+            chatId: instance.chatId,
+            toEmail: contact.email,
+            subject: String(step.config.subject),
+            bodyText: String(step.config.bodyText),
           });
           break;
         }
