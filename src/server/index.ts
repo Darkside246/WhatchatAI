@@ -143,6 +143,7 @@ import {
   isInvalidScheduledStatusError,
 } from '../services/scheduledStatusService.js';
 import { getAiEngineStatus } from '../services/aiEngineStatusService.js';
+import { getGooseSettings, updateGooseSettings, testGooseSettings } from '../services/gooseSettingsService.js';
 import {
   createDraft as createEmailDraft,
   listEmails,
@@ -152,7 +153,8 @@ import {
   cancelEmail,
   getEmailCapabilities,
   getSettings as getEmailSettings,
-  updateSettings as updateEmailSettings,
+  updateEmailSettings,
+  sendTestEmail,
   draftWithAi as draftEmailWithAi,
   isEmailNotFoundError,
   isInvalidEmailError,
@@ -1091,10 +1093,22 @@ app.get('/api/workspace/email/settings', requirePermission('email.view'), async 
   return res.status(200).json({ settings: await getEmailSettings(businessId) });
 });
 
+/**
+ * Secrets are optional on purpose: omitting one keeps whatever is stored, so
+ * the form can be saved without the existing key ever being sent back to the
+ * browser. An empty string clears it.
+ */
 const emailSettingsSchema = z.object({
+  provider: z.enum(['resend', 'smtp']),
   fromEmail: z.string().trim().min(3).max(320),
   fromName: z.string().trim().max(200).nullish(),
   replyToEmail: z.string().trim().max(320).nullish(),
+  resendApiKey: z.string().max(500).optional(),
+  smtpHost: z.string().trim().max(255).nullish(),
+  smtpPort: z.number().int().min(1).max(65535).nullish(),
+  smtpSecure: z.boolean().optional(),
+  smtpUsername: z.string().trim().max(255).nullish(),
+  smtpPassword: z.string().max(500).optional(),
 });
 
 app.put('/api/workspace/email/settings', requirePermission('settings.manage'), async (req, res) => {
@@ -1109,6 +1123,53 @@ app.put('/api/workspace/email/settings', requirePermission('settings.manage'), a
     if (handled) return handled;
     throw error;
   }
+});
+
+const emailTestSchema = z.object({ toEmail: z.string().trim().min(3).max(320) });
+
+app.post('/api/workspace/email/test', expensiveActionLimiter, requirePermission('settings.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = emailTestSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_EMAIL', details: parsed.error.flatten() });
+  try {
+    // Sends a real message through the real transport - the only way to know
+    // the settings work rather than merely look complete.
+    return res.status(200).json(await sendTestEmail(auth.businessId, auth.userId, parsed.data.toEmail));
+  } catch (error) {
+    const handled = emailErrorResponse(error, res);
+    if (handled) return handled;
+    throw error;
+  }
+});
+
+app.get('/api/workspace/integrations/goose', requirePermission('settings.manage'), async (_req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  return res.status(200).json(await getGooseSettings(businessId));
+});
+
+const gooseSettingsSchema = z.object({
+  isEnabled: z.boolean(),
+  serviceUrl: z.string().trim().max(500).nullish(),
+  apiKey: z.string().max(500).optional(),
+});
+
+app.put('/api/workspace/integrations/goose', requirePermission('settings.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = gooseSettingsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_GOOSE_SETTINGS', details: parsed.error.flatten() });
+  try {
+    return res.status(200).json(await updateGooseSettings(auth.businessId, auth.userId, parsed.data));
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('INVALID:')) {
+      return res.status(400).json({ error: 'INVALID_GOOSE_SETTINGS', message: error.message.replace('INVALID:', '').trim() });
+    }
+    throw error;
+  }
+});
+
+app.post('/api/workspace/integrations/goose/test', expensiveActionLimiter, requirePermission('settings.manage'), async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  return res.status(200).json(await testGooseSettings(auth.businessId, auth.userId));
 });
 
 app.get('/api/workspace/email', requirePermission('email.view'), async (req, res) => {

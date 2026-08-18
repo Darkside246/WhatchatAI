@@ -15,6 +15,7 @@ import {
   type AgentAvailability,
 } from '../lib/api.js';
 import { Avatar } from '../components/Avatar.js';
+import { IntegrationSettingsPanel } from '../components/IntegrationSettingsPanel.js';
 import { MediaLightbox } from '../components/MediaLightbox.js';
 import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
@@ -956,6 +957,7 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
         <ThemeCard />
         <BusinessProfileCard />
         <WhatsAppAccountCard connection={connection} />
+        <IntegrationSettingsPanel />
         <AccountCard />
         <TeamMembersCard />
         <TeamsCard />

@@ -1,5 +1,7 @@
 import { getGeminiClient } from './geminiClient.js';
 import * as gooseService from './gooseService.js';
+import { IntegrationSettingsRepository } from '../repositories/integrationSettingsRepository.js';
+import { pool } from '../db/pool.js';
 import { ADVICE_RESTRICTED_CATEGORIES, type AiAgentRecord } from '../repositories/aiAgentRepository.js';
 import type { AiHandoffContext } from './aiContextGathererService.js';
 
@@ -107,13 +109,34 @@ async function tryGooseFallback(
   context: AiHandoffContext,
   contents: ReturnType<typeof toContents>,
 ): Promise<AiReplyResult> {
-  if (!gooseService.getCapabilities().configured) {
+  /*
+   * Workspace settings win over the environment, and a workspace that has
+   * switched the failover off is honoured even if the env var is still set.
+   *
+   * The lookup is guarded because this whole function exists to FAIL SAFE.
+   * It is already on the path where Gemini has failed; letting a database
+   * hiccup throw from here would turn a graceful "AI unavailable" into an
+   * unhandled error in the reply worker. A failed lookup degrades to "no
+   * workspace endpoint", which is the honest reading of "we could not
+   * confirm one".
+   */
+  const settings = await new IntegrationSettingsRepository(pool)
+    .getGooseResolved(agent.businessId)
+    .catch(() => null);
+  const workspaceEndpoint =
+    settings?.isEnabled && settings.serviceUrl ? { serviceUrl: settings.serviceUrl, apiKey: settings.apiKey } : undefined;
+
+  if (settings && !settings.isEnabled) {
+    return { status: 'unavailable', reason: `Gemini unavailable (${geminiReason}); Goose failover is turned off for this workspace` };
+  }
+  if (!workspaceEndpoint && !gooseService.getCapabilities().configured) {
     return { status: 'unavailable', reason: `Gemini unavailable (${geminiReason}); Goose fallback not configured` };
   }
 
   const gooseResult = await gooseService.generateResponse({
     systemInstruction: buildSystemInstruction(agent, context),
     contents,
+    endpoint: workspaceEndpoint,
   });
 
   if (gooseResult.status === 'generated') {

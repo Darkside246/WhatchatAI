@@ -8,6 +8,12 @@ export interface GooseHealth {
 export interface GooseGenerateInput {
   systemInstruction: string;
   contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>;
+  /**
+   * Workspace-configured endpoint. When present it overrides
+   * GOOSE_SERVICE_URL, so a value saved in Settings genuinely takes effect
+   * rather than being shadowed by the server's environment.
+   */
+  endpoint?: { serviceUrl: string; apiKey: string | null } | undefined;
 }
 
 export type GooseGenerateResult = { status: 'generated'; text: string } | { status: 'unavailable'; reason: string };
@@ -57,8 +63,8 @@ export function getCapabilities(): { configured: boolean; url: string | undefine
  * check getCapabilities()/healthCheck() first.
  */
 export async function generateResponse(input: GooseGenerateInput): Promise<GooseGenerateResult> {
-  const url = getServiceUrl();
-  if (!url) return { status: 'unavailable', reason: 'GOOSE_SERVICE_URL is not configured' };
+  const url = input.endpoint?.serviceUrl ?? getServiceUrl();
+  if (!url) return { status: 'unavailable', reason: 'No Goose service URL is configured' };
 
   try {
     const controller = new AbortController();
@@ -67,7 +73,10 @@ export async function generateResponse(input: GooseGenerateInput): Promise<Goose
     try {
       response = await fetch(`${url.replace(/\/$/, '')}/generate`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          ...(input.endpoint?.apiKey ? { authorization: `Bearer ${input.endpoint.apiKey}` } : {}),
+        },
         body: JSON.stringify({ systemInstruction: input.systemInstruction, contents: input.contents }),
         signal: controller.signal,
       });

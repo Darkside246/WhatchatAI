@@ -5,9 +5,12 @@ import { pool } from '../../db/pool.js';
 import { EmailMessageRepository } from '../../repositories/emailMessageRepository.js';
 import { SecurityAuditLogRepository } from '../../repositories/securityAuditLogRepository.js';
 import * as emailProvider from '../../services/emailProviderService.js';
+import { resolveTransport } from '../../services/emailService.js';
+import { IntegrationSettingsRepository } from '../../repositories/integrationSettingsRepository.js';
 
 const emailRepository = new EmailMessageRepository(pool);
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
+const integrationSettingsRepository = new IntegrationSettingsRepository(pool);
 
 /**
  * Sends one approved email.
@@ -38,16 +41,25 @@ async function processJob(job: Job<EmailSendJobData>): Promise<void> {
     return;
   }
 
-  const settings = await emailRepository.getSettings(email.businessId);
-  if (!settings) {
+  const settings = await integrationSettingsRepository.getEmailResolved(email.businessId);
+  if (!settings?.fromEmail) {
     await emailRepository.markFailed(emailMessageId, 'No sender identity configured for this workspace');
+    return;
+  }
+
+  // Resolved fresh here rather than captured at approval time, so a
+  // corrected credential takes effect on the retry instead of the send
+  // failing forever on settings the operator has already fixed.
+  const resolved = await resolveTransport(settings);
+  if (!resolved) {
+    await emailRepository.markFailed(emailMessageId, 'No usable mail transport is configured for this workspace');
     return;
   }
 
   // Claim it. If another job already moved it out of 'approved', stop.
   if (!(await emailRepository.markSending(emailMessageId))) return;
 
-  const result = await emailProvider.sendEmail({
+  const result = await emailProvider.sendEmail(resolved.transport, {
     fromEmail: settings.fromEmail,
     fromName: settings.fromName,
     replyToEmail: settings.replyToEmail,
@@ -71,12 +83,6 @@ async function processJob(job: Job<EmailSendJobData>): Promise<void> {
       },
     });
     console.log(`[EmailSendWorker] Sent email ${emailMessageId} via ${result.provider}`);
-    return;
-  }
-
-  // Not configured is terminal - retrying cannot conjure an API key.
-  if (result.status === 'not_configured') {
-    await emailRepository.markFailed(emailMessageId, result.reason);
     return;
   }
 

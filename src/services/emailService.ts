@@ -6,6 +6,10 @@ import {
   type EmailStatus,
   type BusinessEmailSettingsRecord,
 } from '../repositories/emailMessageRepository.js';
+import {
+  IntegrationSettingsRepository,
+  type EmailSettingsResolved,
+} from '../repositories/integrationSettingsRepository.js';
 import { AiAgentRepository } from '../repositories/aiAgentRepository.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { enqueueEmailSend } from '../queue/queues/emailSendQueue.js';
@@ -13,6 +17,7 @@ import * as emailProvider from './emailProviderService.js';
 import { getGeminiClient } from './geminiClient.js';
 
 const emailRepository = new EmailMessageRepository(pool);
+const integrationSettingsRepository = new IntegrationSettingsRepository(pool);
 const agentRepository = new AiAgentRepository(pool);
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
 
@@ -24,24 +29,74 @@ const MAX_SUBJECT_CHARS = 200;
 const MAX_BODY_CHARS = 5000;
 
 export interface EmailCapabilities {
-  /** Whether a provider key exists. Sending genuinely cannot happen without it. */
+  /** Whether a usable transport exists. Sending genuinely cannot happen without one. */
   providerConfigured: boolean;
   /** Whether this workspace has set a sender identity. */
   senderConfigured: boolean;
   provider: emailProvider.EmailProviderName;
+  /**
+   * Where the credential actually came from. Reported so an operator can
+   * tell whether the value in effect is the one they typed into Settings or
+   * one left in the server's environment.
+   */
+  credentialSource: 'workspace' | 'environment' | 'none';
   reason?: string;
 }
 
+/**
+ * Resolves the transport this workspace would genuinely send through.
+ *
+ * Precedence: settings saved in the app win over environment variables.
+ * Returns null - never a partially-built transport - when the configuration
+ * could not actually send, so callers cannot accidentally proceed.
+ */
+export async function resolveTransport(
+  settings: EmailSettingsResolved | null,
+): Promise<{ transport: emailProvider.EmailTransport; source: 'workspace' | 'environment' } | null> {
+  if (settings?.provider === 'smtp') {
+    if (!settings.smtpHost || !settings.smtpPort) return null;
+    return {
+      transport: {
+        kind: 'smtp',
+        host: settings.smtpHost,
+        port: settings.smtpPort,
+        secure: settings.smtpSecure,
+        username: settings.smtpUsername,
+        password: settings.smtpPassword,
+      },
+      source: 'workspace',
+    };
+  }
+
+  if (settings?.resendApiKey) {
+    return { transport: { kind: 'resend', apiKey: settings.resendApiKey }, source: 'workspace' };
+  }
+
+  const environmentKey = emailProvider.environmentResendApiKey();
+  if (environmentKey) return { transport: { kind: 'resend', apiKey: environmentKey }, source: 'environment' };
+
+  return null;
+}
+
 export async function getEmailCapabilities(businessId: string): Promise<EmailCapabilities> {
-  const capabilities = emailProvider.getCapabilities();
-  const settings = await emailRepository.getSettings(businessId);
+  const settings = await integrationSettingsRepository.getEmailResolved(businessId);
+  const resolved = await resolveTransport(settings);
+
   const reasons: string[] = [];
-  if (!capabilities.configured) reasons.push(capabilities.reason ?? 'Email provider is not configured');
-  if (!settings) reasons.push('No sender address is configured for this workspace');
+  if (!resolved) {
+    reasons.push(
+      settings?.provider === 'smtp'
+        ? 'SMTP host and port are not configured'
+        : 'No Resend API key is configured, in this workspace or the server environment',
+    );
+  }
+  if (!settings?.fromEmail) reasons.push('No sender address is configured for this workspace');
+
   return {
-    providerConfigured: capabilities.configured,
-    senderConfigured: settings !== null,
-    provider: capabilities.provider,
+    providerConfigured: resolved !== null,
+    senderConfigured: Boolean(settings?.fromEmail),
+    provider: settings?.provider ?? 'resend',
+    credentialSource: resolved?.source ?? 'none',
     ...(reasons.length > 0 ? { reason: reasons.join('; ') } : {}),
   };
 }
@@ -156,32 +211,109 @@ export async function cancelEmail(businessId: string, id: string, cancelledBy: s
   return cancelled;
 }
 
-export async function getSettings(businessId: string): Promise<BusinessEmailSettingsRecord | null> {
-  return emailRepository.getSettings(businessId);
+export async function getSettings(businessId: string) {
+  return integrationSettingsRepository.getEmailPublic(businessId);
 }
 
-export async function updateSettings(
-  businessId: string,
-  updatedBy: string,
-  input: { fromEmail: string; fromName?: string | null | undefined; replyToEmail?: string | null | undefined },
-): Promise<BusinessEmailSettingsRecord> {
+export interface UpdateEmailSettingsInput {
+  provider: emailProvider.EmailProviderName;
+  fromEmail: string;
+  fromName?: string | null | undefined;
+  replyToEmail?: string | null | undefined;
+  /** Omit to keep the stored secret; empty string clears it. Never round-tripped to the browser. */
+  resendApiKey?: string | null | undefined;
+  smtpHost?: string | null | undefined;
+  smtpPort?: number | null | undefined;
+  smtpSecure?: boolean | undefined;
+  smtpUsername?: string | null | undefined;
+  smtpPassword?: string | null | undefined;
+}
+
+export async function updateEmailSettings(businessId: string, updatedBy: string, input: UpdateEmailSettingsInput) {
   if (!emailProvider.isPlausibleEmail(input.fromEmail)) throw new InvalidEmailError('That sender address is not a valid email address.');
   if (input.replyToEmail && !emailProvider.isPlausibleEmail(input.replyToEmail)) {
     throw new InvalidEmailError('That reply-to address is not a valid email address.');
   }
-  const settings = await emailRepository.upsertSettings({
+  if (input.provider === 'smtp') {
+    if (!input.smtpHost?.trim()) throw new InvalidEmailError('SMTP needs a host.');
+    if (!input.smtpPort || input.smtpPort < 1 || input.smtpPort > 65535) throw new InvalidEmailError('SMTP needs a valid port.');
+  }
+
+  await integrationSettingsRepository.upsertEmail({
     businessId,
+    provider: input.provider,
     fromEmail: input.fromEmail.trim(),
     fromName: input.fromName?.trim() || null,
     replyToEmail: input.replyToEmail?.trim() || null,
+    resendApiKey: input.resendApiKey,
+    smtpHost: input.smtpHost?.trim() || null,
+    smtpPort: input.smtpPort ?? null,
+    smtpSecure: input.smtpSecure,
+    smtpUsername: input.smtpUsername?.trim() || null,
+    smtpPassword: input.smtpPassword,
   });
+
   await securityAuditLogRepository.record({
     businessId,
     eventType: 'email_settings_updated',
-    rawMetadata: { updatedBy, fromEmail: settings.fromEmail },
+    rawMetadata: { updatedBy, provider: input.provider, fromEmail: input.fromEmail },
   });
-  return settings;
+
+  return integrationSettingsRepository.getEmailPublic(businessId);
 }
+
+export type EmailTestResult = { status: 'ok'; detail: string } | { status: 'failed'; reason: string };
+
+/**
+ * Proves the mail settings genuinely work.
+ *
+ * SMTP is verified twice: a real connection/auth handshake first, then a
+ * real message. Resend has no handshake, so it is proven by the send alone.
+ * Either way the result is recorded, so the Settings screen reports a real
+ * past outcome rather than inferring health from fields being filled in.
+ */
+export async function sendTestEmail(businessId: string, requestedBy: string, toEmail: string): Promise<EmailTestResult> {
+  if (!emailProvider.isPlausibleEmail(toEmail)) throw new InvalidEmailError('That test recipient is not a valid email address.');
+
+  const settings = await integrationSettingsRepository.getEmailResolved(businessId);
+  if (!settings?.fromEmail) return { status: 'failed', reason: 'Set a sender address first.' };
+
+  const resolved = await resolveTransport(settings);
+  if (!resolved) return { status: 'failed', reason: 'No usable mail transport is configured.' };
+
+  if (resolved.transport.kind === 'smtp') {
+    const verified = await emailProvider.verifySmtpTransport(resolved.transport);
+    if (!verified.ok) {
+      await integrationSettingsRepository.recordEmailTest(businessId, false, verified.reason);
+      return { status: 'failed', reason: `Could not connect to the mail server: ${verified.reason}` };
+    }
+  }
+
+  const result = await emailProvider.sendEmail(resolved.transport, {
+    fromEmail: settings.fromEmail,
+    fromName: settings.fromName,
+    replyToEmail: settings.replyToEmail,
+    toEmail: toEmail.trim(),
+    toName: null,
+    subject: 'WhatchatAI test email',
+    bodyText:
+      'This is a real test email from WhatchatAI.\n\n' +
+      'If you are reading it, your sending settings work and the workspace can send email.',
+  });
+
+  const ok = result.status === 'sent';
+  await integrationSettingsRepository.recordEmailTest(businessId, ok, ok ? null : result.reason);
+  await securityAuditLogRepository.record({
+    businessId,
+    eventType: 'email_test_sent',
+    rawMetadata: { requestedBy, toEmail, ok, provider: resolved.transport.kind, source: resolved.source },
+  });
+
+  return ok
+    ? { status: 'ok', detail: `Sent via ${resolved.transport.kind}. Check that inbox to confirm it arrived.` }
+    : { status: 'failed', reason: result.reason };
+}
+
 
 export type DraftWithAiResult =
   | { status: 'drafted'; email: EmailMessageRecord }

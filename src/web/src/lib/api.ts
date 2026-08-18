@@ -437,14 +437,37 @@ export interface EmailCapabilitiesDto {
   providerConfigured: boolean;
   senderConfigured: boolean;
   provider: string;
+  /** Whether the credential in effect came from Settings or the server environment. */
+  credentialSource: 'workspace' | 'environment' | 'none';
   reason?: string;
 }
 
+export type EmailProviderKind = 'resend' | 'smtp';
+
+/** Secrets are never returned - only whether one is stored. */
 export interface EmailSettingsDto {
-  businessId: string;
+  provider: EmailProviderKind;
   fromEmail: string;
   fromName: string | null;
   replyToEmail: string | null;
+  resendApiKeySet: boolean;
+  smtpHost: string | null;
+  smtpPort: number | null;
+  smtpSecure: boolean;
+  smtpUsername: string | null;
+  smtpPasswordSet: boolean;
+  lastTestAt: string | null;
+  lastTestOk: boolean | null;
+  lastTestError: string | null;
+}
+
+export interface GooseSettingsDto {
+  isEnabled: boolean;
+  serviceUrl: string | null;
+  apiKeySet: boolean;
+  lastTestAt: string | null;
+  lastTestOk: boolean | null;
+  lastTestError: string | null;
 }
 
 export interface ScheduledStatusDto {
@@ -938,8 +961,32 @@ export const api = {
 
   getEmailCapabilities: () => request<EmailCapabilitiesDto>('/workspace/email/capabilities'),
   getEmailSettings: () => request<{ settings: EmailSettingsDto | null }>('/workspace/email/settings'),
-  updateEmailSettings: (input: { fromEmail: string; fromName?: string | null; replyToEmail?: string | null }) =>
-    request<{ settings: EmailSettingsDto }>('/workspace/email/settings', { method: 'PUT', body: JSON.stringify(input) }),
+  updateEmailSettings: (input: {
+    provider: EmailProviderKind;
+    fromEmail: string;
+    fromName?: string | null;
+    replyToEmail?: string | null;
+    /** Omit to keep the stored secret; '' clears it. Never send back a value you did not type. */
+    resendApiKey?: string;
+    smtpHost?: string | null;
+    smtpPort?: number | null;
+    smtpSecure?: boolean;
+    smtpUsername?: string | null;
+    smtpPassword?: string;
+  }) => request<{ settings: EmailSettingsDto }>('/workspace/email/settings', { method: 'PUT', body: JSON.stringify(input) }),
+  sendTestEmail: (toEmail: string) =>
+    request<{ status: 'ok'; detail: string } | { status: 'failed'; reason: string }>('/workspace/email/test', {
+      method: 'POST',
+      body: JSON.stringify({ toEmail }),
+    }),
+
+  getGooseSettings: () => request<GooseSettingsDto>('/workspace/integrations/goose'),
+  updateGooseSettings: (input: { isEnabled: boolean; serviceUrl?: string | null; apiKey?: string }) =>
+    request<GooseSettingsDto>('/workspace/integrations/goose', { method: 'PUT', body: JSON.stringify(input) }),
+  testGooseSettings: () =>
+    request<{ status: 'ok'; detail: string } | { status: 'failed'; reason: string }>('/workspace/integrations/goose/test', {
+      method: 'POST',
+    }),
   listEmails: (status?: EmailStatus) =>
     request<{ emails: EmailMessageDto[] }>(`/workspace/email${status ? `?status=${status}` : ''}`),
   createEmailDraft: (input: {

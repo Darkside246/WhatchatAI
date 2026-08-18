@@ -30,7 +30,10 @@ export type SecurityEventType =
   | 'email_approved'
   | 'email_sent'
   | 'email_cancelled'
-  | 'email_settings_updated';
+  | 'email_settings_updated'
+  | 'email_test_sent'
+  | 'goose_settings_updated'
+  | 'goose_tested';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 

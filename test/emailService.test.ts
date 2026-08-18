@@ -9,7 +9,7 @@ import {
   cancelEmail,
   listEmails,
   getEmail,
-  updateSettings,
+  updateEmailSettings,
   getEmailCapabilities,
   draftWithAi,
   isEmailNotApprovableError,
@@ -49,7 +49,12 @@ describe('emailService (draft -> human approval -> send)', () => {
 
   async function configureSending() {
     process.env.RESEND_API_KEY = 'test-key-never-used-for-a-real-call';
-    await updateSettings(businessId, ownerId, { fromEmail: 'hello@example.com', fromName: 'Example Co' });
+    await updateEmailSettings(businessId, ownerId, {
+      provider: 'resend',
+      fromEmail: 'hello@example.com',
+      fromName: 'Example Co',
+      resendApiKey: 'test-workspace-key',
+    });
   }
 
   const draftInput = {
@@ -73,7 +78,7 @@ describe('emailService (draft -> human approval -> send)', () => {
 
   it('refuses to approve when no provider is configured, rather than approving something that cannot send', async () => {
     delete process.env.RESEND_API_KEY;
-    await updateSettings(businessId, ownerId, { fromEmail: 'hello@example.com' });
+    await updateEmailSettings(businessId, ownerId, { provider: 'resend', fromEmail: 'hello@example.com' });
     const draft = await createDraft(businessId, ownerId, draftInput);
 
     await expect(approveAndSend(businessId, draft.id, ownerId)).rejects.toSatisfy(isInvalidEmailError);
