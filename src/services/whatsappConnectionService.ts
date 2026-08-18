@@ -49,6 +49,14 @@ export interface WhatsAppConnectionSnapshot {
   lastDisconnectAt: string | null;
   lastError: string | null;
   reconnectAttempt: number;
+  /**
+   * When THIS code was produced by Baileys. WhatsApp rotates the pairing
+   * code every few seconds, so the connect screen uses this to show that the
+   * code on screen is live and refreshing. It is a real emission timestamp -
+   * deliberately not an expiry, because the validity window is WhatsApp's to
+   * decide and we do not get told what it is.
+   */
+  qrGeneratedAt: string | null;
   /** This account's own real, downloaded profile picture media row - null until a sync has actually succeeded. */
   avatarMediaId: string | null;
 }
@@ -78,6 +86,7 @@ export class WhatsAppConnectionService {
     lastDisconnectAt: null,
     lastError: null,
     reconnectAttempt: 0,
+    qrGeneratedAt: null,
     avatarMediaId: null,
   };
 
@@ -435,6 +444,7 @@ export class WhatsAppConnectionService {
             connected: false,
             qrAvailable: true,
             qrDataUrl,
+            qrGeneratedAt: new Date().toISOString(),
             lastError: null,
           };
         } catch (error) {
@@ -462,6 +472,8 @@ export class WhatsAppConnectionService {
           connected: true,
           qrAvailable: false,
           qrDataUrl: null,
+          // The code has been consumed; there is no live code any more.
+          qrGeneratedAt: null,
           phoneNumber,
           jid,
           pushName,

@@ -10,6 +10,8 @@ export interface WhatsAppConnectionSnapshot {
   lastDisconnectAt: string | null;
   lastError: string | null;
   reconnectAttempt: number;
+  /** When this exact code was produced. A real emission timestamp, not an expiry - WhatsApp never tells us the validity window. */
+  qrGeneratedAt: string | null;
   /** This account's own real, downloaded profile picture media row - null until a sync has actually succeeded. */
   avatarMediaId: string | null;
 }
