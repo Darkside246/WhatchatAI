@@ -14,6 +14,8 @@ export interface WhatsAppOutboundMessageRecord {
   mediaStorageReference: string | null;
   mediaMimeType: string | null;
   mediaFileName: string | null;
+  /** Real measured duration of a voice note, probed from the encoded file - null when unknown. */
+  mediaDurationSeconds: number | null;
   status: OutboundMessageStatus;
   attemptCount: number;
   lastError: string | null;
@@ -38,6 +40,7 @@ export interface CreateOutboundMessageInput {
   mediaStorageReference?: string | null;
   mediaMimeType?: string | null;
   mediaFileName?: string | null;
+  mediaDurationSeconds?: number | null;
   /** Defaults to 'human' (the column's own DB default) when omitted. */
   requestedBy?: string;
 }
@@ -55,6 +58,7 @@ interface OutboundMessageRow {
   media_storage_reference: string | null;
   media_mime_type: string | null;
   media_file_name: string | null;
+  media_duration_seconds: number | null;
   status: OutboundMessageStatus;
   attempt_count: number;
   last_error: string | null;
@@ -79,6 +83,7 @@ function toRecord(row: OutboundMessageRow, wasCreated: boolean): WhatsAppOutboun
     mediaStorageReference: row.media_storage_reference,
     mediaMimeType: row.media_mime_type,
     mediaFileName: row.media_file_name,
+    mediaDurationSeconds: row.media_duration_seconds,
     status: row.status,
     attemptCount: row.attempt_count,
     lastError: row.last_error,
@@ -105,8 +110,9 @@ export class WhatsAppOutboundMessageRepository {
     const { rows } = await this.db.query<OutboundMessageRow>(
       `INSERT INTO whatsapp_outbound_messages
          (business_id, whatsapp_account_id, chat_id, to_jid, idempotency_key, message_type,
-          text_content, caption, media_storage_reference, media_mime_type, media_file_name, requested_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          text_content, caption, media_storage_reference, media_mime_type, media_file_name,
+          media_duration_seconds, requested_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        ON CONFLICT (business_id, whatsapp_account_id, idempotency_key) DO NOTHING
        RETURNING *`,
       [
@@ -121,6 +127,7 @@ export class WhatsAppOutboundMessageRepository {
         input.mediaStorageReference ?? null,
         input.mediaMimeType ?? null,
         input.mediaFileName ?? null,
+        input.mediaDurationSeconds ?? null,
         input.requestedBy ?? 'human',
       ],
     );

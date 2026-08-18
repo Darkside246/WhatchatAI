@@ -108,7 +108,8 @@ export interface OutboundMessageDto {
 export type SendMessageBody =
   | { messageType: 'text'; text: string; idempotencyKey?: string }
   | {
-      messageType: 'image' | 'video' | 'audio' | 'document';
+      /** 'voice_note' is a real WhatsApp PTT message; the server converts the recording to Ogg/Opus before sending. */
+      messageType: 'image' | 'video' | 'audio' | 'voice_note' | 'document';
       mediaBase64: string;
       mediaMimeType: string;
       mediaFileName?: string;

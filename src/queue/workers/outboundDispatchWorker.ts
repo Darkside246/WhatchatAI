@@ -49,6 +49,19 @@ async function buildOutboundContent(record: WhatsAppOutboundMessageRecord): Prom
       return { video: buffer, ...(caption !== undefined && { caption }), ...(mimetype !== undefined && { mimetype }) };
     case 'audio':
       return { audio: buffer, mimetype: mimetype ?? 'audio/ogg; codecs=opus', ptt: false };
+    case 'voice_note':
+      // ptt=true is what makes WhatsApp render this as a voice note with a
+      // waveform rather than a file attachment. The bytes are already
+      // Ogg/Opus - audioTranscodeService guarantees that before the row is
+      // ever created, because WhatsApp will not play anything else here.
+      return {
+        audio: buffer,
+        mimetype: 'audio/ogg; codecs=opus',
+        ptt: true,
+        ...(record.mediaDurationSeconds !== null && record.mediaDurationSeconds !== undefined
+          ? { seconds: record.mediaDurationSeconds }
+          : {}),
+      };
     case 'document':
       return {
         document: buffer,

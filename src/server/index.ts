@@ -694,7 +694,7 @@ const sendMessageSchema = z.discriminatedUnion('messageType', [
     idempotencyKey: z.string().min(1).max(200).optional(),
   }),
   z.object({
-    messageType: z.enum(['image', 'video', 'audio', 'document']),
+    messageType: z.enum(['image', 'video', 'audio', 'voice_note', 'document']),
     mediaBase64: z.string().min(1),
     mediaMimeType: z.string().min(1),
     mediaFileName: z.string().min(1).max(255).optional(),

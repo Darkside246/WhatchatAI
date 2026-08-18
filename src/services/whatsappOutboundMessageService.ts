@@ -7,6 +7,7 @@ import {
 } from '../repositories/whatsappOutboundMessageRepository.js';
 import { enqueueOutboundMessage } from '../queue/queues/outboundMessagesQueue.js';
 import { storeMedia } from '../media/localEncryptedMediaStorage.js';
+import { transcodeToVoiceNote } from '../media/audioTranscodeService.js';
 import type { OutboundMessageType } from '../domain/whatsapp/types.js';
 
 export interface ChatNotFoundError extends Error {
@@ -58,13 +59,34 @@ export class WhatsAppOutboundMessageService {
     }
 
     let mediaStorageReference: string | null = null;
+    let mediaMimeType = input.mediaMimeType;
+    let mediaDurationSeconds: number | null = null;
+
     if (input.messageType !== 'text') {
       if (!input.mediaBase64) throw new Error(`messageType "${input.messageType}" requires mediaBase64`);
-      const buffer = Buffer.from(input.mediaBase64, 'base64');
+      let buffer = Buffer.from(input.mediaBase64, 'base64');
       if (buffer.length === 0) throw new Error('Decoded media is empty');
       if (buffer.length > MAX_MEDIA_BYTES) {
         throw new Error(`Media exceeds the ${MAX_MEDIA_BYTES} byte limit`);
       }
+
+      /*
+       * A voice note is converted to Ogg/Opus BEFORE the row exists, so an
+       * unplayable voice note can never be persisted or queued. Browsers
+       * record WebM/Opus (Chrome, Android) or MP4/AAC (Safari); WhatsApp
+       * voice notes are Ogg/Opus, and sending anything else uploads happily
+       * and then fails to play for the recipient. Failing loudly here is the
+       * honest outcome - the alternative is a feature that looks like it
+       * works and silently does not.
+       */
+      if (input.messageType === 'voice_note') {
+        const converted = await transcodeToVoiceNote(buffer);
+        if (converted.status === 'failed') throw new Error(converted.reason);
+        buffer = converted.buffer;
+        mediaMimeType = converted.mimeType;
+        mediaDurationSeconds = converted.durationSeconds;
+      }
+
       const sha256Hex = createHash('sha256').update(buffer).digest('hex');
       mediaStorageReference = await storeMedia(input.businessId, sha256Hex, buffer);
     } else if (!input.text?.trim()) {
@@ -81,7 +103,9 @@ export class WhatsAppOutboundMessageService {
       textContent: input.messageType === 'text' ? (input.text ?? null) : null,
       caption: input.caption ?? null,
       mediaStorageReference,
-      mediaMimeType: input.mediaMimeType ?? null,
+      // The converted mime type for a voice note, the caller's otherwise.
+      mediaMimeType: mediaMimeType ?? null,
+      mediaDurationSeconds,
       mediaFileName: input.mediaFileName ?? null,
       requestedBy: input.requestedBy ?? 'human',
     });

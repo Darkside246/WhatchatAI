@@ -19,6 +19,8 @@ import {
   Sparkles,
   Lock,
   Trash2,
+  Mic,
+  Square,
 } from 'lucide-react';
 import {
   api,
@@ -38,6 +40,7 @@ import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
 import { Avatar } from './Avatar.js';
 import { MediaLightbox } from './MediaLightbox.js';
+import { useVoiceRecorder } from '../hooks/useVoiceRecorder.js';
 
 type AiMode = WorkspaceChatDetail['chat']['aiMode'];
 
@@ -395,6 +398,7 @@ export function ChatThread({ onOpenDetail }: Props) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const recorder = useVoiceRecorder();
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const [replySuggestions, setReplySuggestions] = useState<string[]>([]);
   const [lightbox, setLightbox] = useState<{ url: string; fileName: string | null } | null>(null);
@@ -655,6 +659,40 @@ export function ChatThread({ onOpenDetail }: Props) {
     if (mimeType.startsWith('video/')) return 'video';
     if (mimeType.startsWith('audio/')) return 'audio';
     return 'document';
+  }
+
+  /**
+   * Sends the real captured audio as a voice note. The server converts it to
+   * Ogg/Opus before anything is stored or queued, so a recording the
+   * recipient could not play never becomes a message.
+   */
+  async function handleStopRecording() {
+    const recording = await recorder.stop();
+    if (!recording || !chatId) return;
+
+    try {
+      const mediaBase64 = await blobToBase64(recording.blob);
+      await dispatchSend(chatId, {
+        messageType: 'voice_note',
+        mediaBase64,
+        mediaMimeType: recording.mimeType,
+      });
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : 'Could not send that voice note.');
+    }
+  }
+
+  function blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result ?? '');
+        const commaIndex = result.indexOf(',');
+        resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+      };
+      reader.onerror = () => reject(reader.error ?? new Error('Failed to read the recording'));
+      reader.readAsDataURL(blob);
+    });
   }
 
   async function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
@@ -982,21 +1020,65 @@ export function ChatThread({ onOpenDetail }: Props) {
           </button>
           <button
             type="button"
-            disabled={sending}
+            disabled={sending || recorder.state === 'recording'}
             onClick={() => fileInputRef.current?.click()}
             title="Attach a file"
             className="text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Paperclip size={18} strokeWidth={1.75} aria-hidden />
           </button>
-          <input
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={handleComposerKeyDown}
-            disabled={sending}
-            placeholder="Type a message"
-            className="flex-1 bg-transparent text-body text-fg outline-none placeholder:text-fg-muted disabled:opacity-50"
-          />
+          {recorder.state === 'recording' ? (
+            /* Real elapsed time from the recorder, and a discard that really
+               drops the audio rather than sending a silent note. */
+            <div className="flex flex-1 items-center gap-2">
+              <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-error" aria-hidden />
+              <span className="text-body tabular-nums text-fg">
+                {Math.floor(recorder.elapsedSeconds / 60)}:{String(recorder.elapsedSeconds % 60).padStart(2, '0')}
+              </span>
+              <span className="text-caption text-fg-muted">Recording…</span>
+              <button
+                type="button"
+                onClick={recorder.cancel}
+                title="Discard this recording"
+                className="ml-auto text-fg-muted hover:text-error"
+              >
+                <Trash2 size={17} strokeWidth={1.75} aria-hidden />
+              </button>
+            </div>
+          ) : (
+            <input
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={handleComposerKeyDown}
+              disabled={sending}
+              placeholder="Type a message"
+              className="flex-1 bg-transparent text-body text-fg outline-none placeholder:text-fg-muted disabled:opacity-50"
+            />
+          )}
+          {recorder.state === 'recording' ? (
+            <button
+              type="button"
+              onClick={() => void handleStopRecording()}
+              title="Send voice note"
+              className="text-accent hover:text-accent-dim"
+            >
+              <Square size={18} strokeWidth={1.75} fill="currentColor" aria-hidden />
+            </button>
+          ) : !draft.trim() ? (
+            <button
+              type="button"
+              disabled={sending || recorder.state === 'requesting'}
+              onClick={() => void recorder.start()}
+              title="Record a voice note"
+              className="text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {recorder.state === 'requesting' ? (
+                <Loader2 size={18} strokeWidth={1.75} className="animate-spin" aria-hidden />
+              ) : (
+                <Mic size={18} strokeWidth={1.75} aria-hidden />
+              )}
+            </button>
+          ) : (
           <button
             type="button"
             disabled={sending || !draft.trim()}
@@ -1012,7 +1094,9 @@ export function ChatThread({ onOpenDetail }: Props) {
               <Send size={18} strokeWidth={1.75} aria-hidden />
             )}
           </button>
+          )}
         </div>
+        {recorder.error && <p className="mt-1 px-2 text-meta text-error">{recorder.error}</p>}
       </div>
 
       {lightbox && (

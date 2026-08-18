@@ -85,4 +85,5 @@ export type MappingConfidence = 'high' | 'medium' | 'low';
 
 export type OutboundMessageStatus = 'queued' | 'sending' | 'sent' | 'failed';
 
-export type OutboundMessageType = 'text' | 'image' | 'video' | 'audio' | 'document';
+/** 'voice_note' is a real WhatsApp PTT message, not an audio attachment - the two render differently for the recipient. */
+export type OutboundMessageType = 'text' | 'image' | 'video' | 'audio' | 'voice_note' | 'document';
