@@ -1,0 +1,50 @@
+{
+  "name": "whatchatai",
+  "version": "1.0.0-alpha.1",
+  "private": true,
+  "description": "Production-first AI WhatsApp agent SaaS platform",
+  "type": "module",
+  "workspaces": [
+    "src/web"
+  ],
+  "scripts": {
+    "predev": "npm run db:migrate",
+    "dev": "concurrently -n backend,worker,frontend -c blue,magenta,green \"npm:dev:server\" \"npm:dev:worker\" \"npm:dev:web\"",
+    "dev:server": "tsx src/server/index.ts",
+    "dev:worker": "tsx src/queue/workers/incomingMessagesWorker.ts",
+    "dev:web": "npm run dev --workspace=src/web",
+    "build": "tsc && npm run build --workspace=src/web",
+    "start": "node dist/server/index.js",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace=src/web",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "test": "DATABASE_URL=postgres://whatchatai:whatchatai_dev@localhost:5432/whatchatai_test vitest run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@google/genai": "latest",
+    "@whiskeysockets/baileys": "latest",
+    "bullmq": "^6.1.1",
+    "dotenv": "latest",
+    "express": "latest",
+    "hash-wasm": "^4.12.0",
+    "ioredis": "^6.0.0",
+    "pg": "^8.23.0",
+    "pino": "latest",
+    "qrcode": "latest",
+    "ws": "^8.21.3",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/express": "latest",
+    "@types/node": "latest",
+    "@types/pg": "^8.21.0",
+    "@types/qrcode": "latest",
+    "@types/ws": "^8.18.1",
+    "concurrently": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "vitest": "^4.1.10"
+  }
+}
