@@ -7,6 +7,60 @@ prior work in it - not what filenames or comments imply. See
 `docs/ARCHITECTURE.md` and `docs/database/` for deeper prior documentation;
 this file is the audit-specific trace required by Phase 0.
 
+> **Correction (post-Phase-1):** this document originally said no
+> drag-and-drop AI agent workflow builder exists. That was wrong - it does
+> exist (`AgentsPage.tsx` + `AgentCanvas.tsx`, routed at `/agents`), and was
+> missed because Phase 0's audit traced backend execution paths and tenant
+> isolation in depth but did not exhaustively enumerate every frontend
+> route. See the full, corrected page inventory below. This correction is
+> left visible rather than silently edited out, per this repo's own
+> practice of not hiding a wrong prior claim.
+
+## Frontend page inventory (corrected, exhaustive)
+
+Routing is `react-router`, mounted inside `WorkspaceShell.tsx` (not
+`App.tsx`, which only gates auth/onboarding/sync state). Nine real routed
+pages, cross-checked against `SaasNavRail.tsx`'s own nav list:
+
+| Route | Page | Nav label | Nav's own `implemented` flag |
+|---|---|---|---|
+| `/chats` | `ChatsRoute.tsx` | Inbox | `true` |
+| `/dashboard` | `DashboardRoute.tsx` | Dashboard | `true` |
+| `/agents` | `AgentsPage.tsx` (+ `AgentCanvas.tsx`) | AI Agents | `true` |
+| `/crm` | `CrmRoute.tsx` | CRM & Leads | `true` |
+| `/automations` | `FunnelsRoute.tsx` | Automations | **`false`** (stale) |
+| `/marketing` | `MarketingRoute.tsx` | Marketing | **`false`** (stale) |
+| `/email` | `EmailRoute.tsx` | Email | `true` |
+| `/billing` | `BillingRoute.tsx` | Billing | `true` |
+| `/settings` | `SettingsRoute.tsx` | Settings | `true` |
+
+**Real finding:** `SaasNavRail.tsx` marks Automations (Funnels) and
+Marketing (Campaigns) as `implemented: false`, which renders their nav
+tooltip as "(coming soon)" - despite both having a fully built backend
+(migrations, repositories, services, API routes - see git history) and a
+real list-based builder UI. This is a stale label left over from an
+earlier point in development, not a functional gap; it under-claims
+rather than over-claims (the safe direction of error), but should be
+corrected so the UI doesn't mislead users into thinking a working feature
+isn't there.
+
+`AgentsPage.tsx` specifically: a real page with two view modes ("Tiles"
+and "Canvas"), the Canvas mode being a genuine drag-and-drop node graph
+(via `@xyflow/react`, confirmed in `src/web/package.json` dependencies)
+showing agent routing/escalation structure, plus the same real
+`AiEngineStrip` reply-engine status (Gemini/Goose) used elsewhere, plus a
+"Test a real customer message" preview against actual routing logic.
+
+`EmailRoute.tsx` specifically: drafts requiring human approval before
+send ("Every email - including one an agent wrote - is sent only after a
+person approves it"), honestly reporting when sending isn't configured
+(no Resend key / no verified sender) rather than pretending it would
+work. This is a real, human-in-the-loop draft/approval feature - not the
+"rich email client, thread viewer & dispatcher" an external tool
+(Antigravity) once described it as when summarizing a user's local run;
+that description was checked against this source and found to overstate
+it.
+
 ## Inbound WhatsApp -> AI -> outbound (the real path)
 
 ```
