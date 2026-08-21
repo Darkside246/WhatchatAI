@@ -1,0 +1,5 @@
+# Pinned to what was actually installed and exercised while building this
+# service (see README.md "Verified vs. not" for what has and hasn't
+# actually been run end-to-end).
+dspy-ai==3.3.0
+pytest==9.1.1

@@ -36,7 +36,10 @@ export type SecurityEventType =
   | 'goose_settings_updated'
   | 'goose_tested'
   | 'ai_tool_invoked'
-  | 'ai_tool_denied';
+  | 'ai_tool_denied'
+  | 'ai_prompt_optimization_imported'
+  | 'ai_prompt_optimization_approved'
+  | 'ai_prompt_optimization_rejected';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 

@@ -75,6 +75,16 @@ import {
   isInvalidKnowledgeBaseDocumentError,
 } from '../services/knowledgeBaseService.js';
 import {
+  importPromptOptimization,
+  listPromptOptimizations,
+  approveOptimization,
+  rejectOptimization,
+  isAgentNotFoundError,
+  isPromptOptimizationNotFoundError,
+  isInvalidPromptOptimizationError,
+  isPromptOptimizationAlreadyDecidedError,
+} from '../services/ai/promptOptimizationService.js';
+import {
   createCampaign,
   listCampaigns,
   getCampaign,
@@ -1910,6 +1920,117 @@ app.patch('/api/workspace/agents/:agentId/status', requireWorkspaceContext, requ
     throw error;
   }
 });
+
+/**
+ * The controlled interface for the separate, offline DSPy prompt-optimizer
+ * (services/prompt-optimizer/, a real Python process an operator runs
+ * manually - never merged into this codebase, never given live DB
+ * credentials, never called at request time). An operator imports its
+ * output artifact here after inspecting it themselves; nothing about this
+ * route touches a live agent's actual behavior - see the approve route for
+ * the one action that does.
+ */
+function mapPromptOptimizationError(error: unknown): { status: number; body: Record<string, unknown> } | null {
+  if (isAgentNotFoundError(error)) return { status: 404, body: { error: 'AGENT_NOT_FOUND' } };
+  if (isPromptOptimizationNotFoundError(error)) return { status: 404, body: { error: 'OPTIMIZATION_NOT_FOUND' } };
+  if (isInvalidPromptOptimizationError(error)) return { status: 400, body: { error: 'INVALID_OPTIMIZATION', message: error.message } };
+  if (isPromptOptimizationAlreadyDecidedError(error)) return { status: 409, body: { error: 'OPTIMIZATION_ALREADY_DECIDED', message: error.message } };
+  return null;
+}
+
+app.get(
+  '/api/workspace/agents/:agentId/prompt-optimizations',
+  requireWorkspaceContext,
+  requirePermission('ai.view'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    try {
+      const optimizations = await listPromptOptimizations(businessId, String(req.params.agentId ?? ''));
+      return res.status(200).json({ optimizations });
+    } catch (error) {
+      const mapped = mapPromptOptimizationError(error);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
+      throw error;
+    }
+  },
+);
+
+const importPromptOptimizationSchema = z.object({
+  optimizedInstruction: z.string().trim().min(1),
+  metricName: z.string().trim().min(1).nullish(),
+  metricScore: z.number().finite().nullish(),
+  datasetSummary: z.record(z.string(), z.unknown()).optional(),
+});
+
+app.post(
+  '/api/workspace/agents/:agentId/prompt-optimizations',
+  requireWorkspaceContext,
+  requirePermission('ai.edit'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const parsed = importPromptOptimizationSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_OPTIMIZATION', details: parsed.error.flatten() });
+    try {
+      const optimization = await importPromptOptimization(businessId, String(req.params.agentId ?? ''), parsed.data);
+      return res.status(201).json({ optimization });
+    } catch (error) {
+      const mapped = mapPromptOptimizationError(error);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
+      throw error;
+    }
+  },
+);
+
+app.post(
+  '/api/workspace/agents/:agentId/prompt-optimizations/:optimizationId/approve',
+  requireWorkspaceContext,
+  requirePermission('ai.edit'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const auth = res.locals.auth as AuthContext;
+    try {
+      const optimization = await approveOptimization(
+        businessId,
+        String(req.params.agentId ?? ''),
+        String(req.params.optimizationId ?? ''),
+        auth.userId,
+      );
+      return res.status(200).json({ optimization });
+    } catch (error) {
+      const mapped = mapPromptOptimizationError(error);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
+      throw error;
+    }
+  },
+);
+
+const rejectPromptOptimizationSchema = z.object({ reason: z.string().trim().min(1).nullish() });
+
+app.post(
+  '/api/workspace/agents/:agentId/prompt-optimizations/:optimizationId/reject',
+  requireWorkspaceContext,
+  requirePermission('ai.edit'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const auth = res.locals.auth as AuthContext;
+    const parsed = rejectPromptOptimizationSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_REJECTION' });
+    try {
+      const optimization = await rejectOptimization(
+        businessId,
+        String(req.params.agentId ?? ''),
+        String(req.params.optimizationId ?? ''),
+        auth.userId,
+        parsed.data.reason ?? null,
+      );
+      return res.status(200).json({ optimization });
+    } catch (error) {
+      const mapped = mapPromptOptimizationError(error);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
+      throw error;
+    }
+  },
+);
 
 app.get('/api/workspace/crm-contacts', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };

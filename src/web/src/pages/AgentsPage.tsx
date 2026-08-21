@@ -12,6 +12,7 @@ import {
 import { ToggleSwitch } from '../components/ToggleSwitch.js';
 import { AgentCanvas } from '../components/AgentCanvas.js';
 import { AiEngineStrip } from '../components/AiEngineStrip.js';
+import { PromptOptimizationsPanel } from '../components/PromptOptimizationsPanel.js';
 
 const CATEGORY_LABEL: Record<AgentCategory, string> = {
   general: 'General',
@@ -434,6 +435,11 @@ export function AgentsPage() {
           onSubmit={handleSubmit}
           onCancel={() => setView({ mode: 'list' })}
         />
+        {view.mode === 'edit' && (
+          <div className="mx-auto mt-6 max-w-3xl">
+            <PromptOptimizationsPanel agentId={view.agentId} />
+          </div>
+        )}
       </div>
     );
   }

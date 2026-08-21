@@ -599,6 +599,32 @@ export interface KnowledgeBaseDocumentDto {
   updatedAt: string;
 }
 
+export type PromptOptimizationStatus = 'pending_review' | 'approved' | 'rejected';
+
+/**
+ * The Node-side record of a DSPy prompt optimization run - see
+ * services/prompt-optimizer/ (a separate, offline Python tool) for how one
+ * of these actually gets produced. Importing one never changes what the
+ * live agent says; only `approve` does, and only an authenticated operator
+ * with the `ai.edit` permission can call it.
+ */
+export interface PromptOptimizationDto {
+  id: string;
+  businessId: string;
+  agentId: string;
+  source: 'dspy';
+  status: PromptOptimizationStatus;
+  baselineInstruction: string | null;
+  optimizedInstruction: string;
+  metricName: string | null;
+  metricScore: number | null;
+  datasetSummary: Record<string, unknown>;
+  createdAt: string;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  rejectionReason: string | null;
+}
+
 export interface MarketingCopySuggestionResult {
   status: 'ok' | 'unavailable';
   reason?: string;
@@ -898,6 +924,25 @@ export const api = {
     request<{ agent: AiAgentSummary }>(`/workspace/agents/${id}/status`, {
       method: 'PATCH',
       body: JSON.stringify({ status }),
+    }),
+  listPromptOptimizations: (agentId: string) =>
+    request<{ optimizations: PromptOptimizationDto[] }>(`/workspace/agents/${agentId}/prompt-optimizations`),
+  importPromptOptimization: (
+    agentId: string,
+    body: { optimizedInstruction: string; metricName?: string | null; metricScore?: number | null; datasetSummary?: Record<string, unknown> },
+  ) =>
+    request<{ optimization: PromptOptimizationDto }>(`/workspace/agents/${agentId}/prompt-optimizations`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  approvePromptOptimization: (agentId: string, optimizationId: string) =>
+    request<{ optimization: PromptOptimizationDto }>(`/workspace/agents/${agentId}/prompt-optimizations/${optimizationId}/approve`, {
+      method: 'POST',
+    }),
+  rejectPromptOptimization: (agentId: string, optimizationId: string, reason?: string | null) =>
+    request<{ optimization: PromptOptimizationDto }>(`/workspace/agents/${agentId}/prompt-optimizations/${optimizationId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason ?? null }),
     }),
   listCrmContacts: () => request<{ crmContacts: WorkspaceCrmContactSummary[] }>('/workspace/crm-contacts'),
   updateCrmContact: (id: string, body: UpdateCrmContactBody) =>

@@ -1,5 +1,150 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - DSPy prompt optimization: a real, separate offline service with a human-approval-only interface into the live app
+
+**Branch:** `phase-2-ai-repair` (continues on the same branch as the prior
+phases - see the Phase 3 entry for why this branch wasn't split further)
+
+**Context:** the user asked to evaluate installing several external
+repositories (OpenClaw, DSPy, OpenPanel, Apache Cloudberry, "Pic Smaller")
+as real, running parts of the architecture - explicitly not merged into
+this codebase, each behind a controlled interface, WhatchatAI remaining
+the orchestrator. Given the size of that ask (one of the five is a
+distributed MPP data warehouse), the current architecture was described
+back to the user first, and they chose to sequence DSPy in first: lowest
+cost/risk of the five (an offline Python tool, no new always-on service,
+no Docker pull needed - unlike a container-based dependency, which this
+sandbox's egress policy has blocked since Phase 1).
+
+**What changed - the Node/Postgres side (the "controlled interface" the
+user's own architecture note called for):**
+
+- Migration 057: `ai_agent_prompt_optimizations` - a real table holding
+  each optimization attempt as `pending_review` / `approved` / `rejected`,
+  with a snapshot of the agent's `system_instruction` at import time
+  (`baseline_instruction`) so the diff is always visible.
+- Migration 058: extends `security_audit_logs`' event-type CHECK
+  constraint with `ai_prompt_optimization_imported` / `_approved` /
+  `_rejected` - every state transition writes a real, visible audit row,
+  same discipline as Phase 7's `ai_tool_invoked`/`ai_tool_denied`.
+- New `src/repositories/aiAgentPromptOptimizationRepository.ts` and
+  `src/services/ai/promptOptimizationService.ts`: `importPromptOptimization()`
+  only ever creates a `pending_review` row - the live agent is provably
+  unaffected by import alone (asserted directly in the tests, not just
+  implied). `approveOptimization()` is the one function that changes a
+  live agent's behavior, and it does so through the *exact same*
+  `AiAgentRepository.update()` a manual Settings edit already uses -
+  not a separate, lesser-audited code path for changing what an agent
+  says. A row can only be decided once (`markApproved`/`markRejected`
+  both `WHERE status = 'pending_review'` - a second approve/reject on an
+  already-decided row is rejected, proven in the tests).
+- 4 new API routes under `/api/workspace/agents/:agentId/prompt-optimizations`
+  (list, import, approve, reject), gated by the existing `ai.view`/`ai.edit`
+  permissions - no new permission was invented for this.
+- New `PromptOptimizationsPanel` component, shown when editing an existing
+  agent in `AgentsPage.tsx`: paste an artifact's JSON to import it for
+  review, then approve or reject each pending one. Approving asks for
+  explicit confirmation before applying.
+
+**What changed - the actual DSPy tool (`services/prompt-optimizer/`, real
+Python, genuinely separate):**
+
+- No Postgres/Redis client or credential anywhere in the directory - it
+  cannot reach WhatchatAI's database even by accident. Not imported by,
+  or wired into, any queue/worker/route in the Node app - there is no
+  automatic or scheduled optimization pass; re-running it is always a
+  deliberate, manual, by-hand action, and its only interaction with the
+  live app is the JSON file it writes.
+- `dspy-ai==3.3.0` installed and verified importable in this sandbox
+  (network egress for `pip` is not blocked the way Docker Hub pulls are).
+  Includes `gepa` as a transitive dependency - the same optimizer named
+  explicitly in the user's own architecture note.
+- `whatchat_prompt_optimizer/signature.py`: a real DSPy `Signature`
+  mirroring the actual live prompt shape in `aiReplyService.ts`'s
+  `buildSystemInstruction()` - deliberately narrower than that function:
+  the trusted TimeContext grounding, the advice-restricted-category hard
+  scope limit, and "never invent facts" are fixed, code-owned safety
+  rules and are never a candidate for optimization. Only the operator's
+  own free-text `system_instruction` field is.
+- `dataset.py`: strict JSONL loader/validator - a malformed row, an
+  unrecognized field, or an empty dataset is a hard error, never silently
+  skipped or defaulted.
+- `metric.py`: a real LLM-judge metric (the standard DSPy pattern for a
+  task where exact-string-match is meaningless) - scores a candidate
+  reply against the operator's own `ideal_reply`, using the same
+  configured LM as the optimizer itself.
+- `optimize.py`: the CLI entrypoint - loads a dataset, requires a real
+  `GEMINI_API_KEY` (refuses to run without one rather than doing nothing
+  silently), runs `BootstrapFewShot` (default) or `GEPA`, and writes a
+  JSON artifact in exactly the shape the Node import endpoint expects,
+  with the metric score computed on a held-out validation split only
+  (never on the training set, which would overstate real quality).
+
+**What is genuinely verified vs. not:** everything Node-side is real,
+migrated, and tested against live Postgres (see Tests below). On the
+Python side, package installation, the signature/program construction,
+dataset validation, artifact writing, and CLI argument handling are all
+covered by 20 real, currently-passing, non-mocked tests. What is **not**
+verified from this sandbox: an actual end-to-end optimization run against
+a real Gemini API key - there is no `GEMINI_API_KEY` available here, and
+the tool refuses to run without one rather than fabricating a result. This
+mirrors the same standing constraint noted for Phase 4/Phase 5 - the one
+remaining step is trying it against a real key and a real dataset in a
+real deployment.
+
+**Deliberately not built in this pass:** OpenClaw, OpenPanel, Apache
+Cloudberry, and "Pic Smaller" remain unstarted - the user chose to
+sequence DSPy first specifically because it carries the least
+infrastructure risk of the five; OpenPanel needs a scoping answer
+(operator-facing vs. customer-facing analytics) before wiring events,
+Cloudberry is a materially larger commitment (a distributed data
+warehouse) that should not be stood up without a real, named analytical
+problem driving it, and "Pic Smaller" was never identified (no repository
+URL was provided). No auto-apply path was built for an optimization
+result under any condition - every application requires an explicit,
+authenticated `POST .../approve` call, by design.
+
+**Tests:** new `test/promptOptimizationService.test.ts` (8 tests, real
+Postgres) - import creates a real `pending_review` row and provably never
+touches the live agent; import is rejected for a nonexistent or
+cross-tenant agent; an empty or 8001-character instruction is rejected;
+approve applies through the real `AiAgentRepository.update()` path and
+preserves every other field; reject never touches the live agent; a
+decided optimization can never be re-decided; cross-tenant/cross-agent
+approve-or-reject is rejected; list is scoped to one agent, newest first.
+New `services/prompt-optimizer/tests/` (20 tests, `pytest`, no live model
+call) - see that service's own README for the exact breakdown. Full
+backend suite: 82/82 test files, 508/508 tests passing (up from 500 - the
+expected +8), zero regressions. Migrations 057-058 applied cleanly against
+a real database. Typecheck (backend + web) and production build both
+clean.
+
+**Status:** `IMPLEMENTED BUT NOT FULLY VERIFIED` - the Node-side controlled
+interface is `IMPLEMENTED AND VERIFIED` (real DB, real tests, all passing).
+The Python tool's own logic is verified the same way, but the actual value
+proposition - DSPy producing a genuinely better instruction - has not been
+observed end-to-end, since that requires a real API key and a real
+dataset neither of which exist in this sandbox.
+
+**Risks:** an operator could paste a low-quality or adversarially-crafted
+artifact into the import form by hand (bypassing the Python tool
+entirely) - the service-level validation (non-empty, ≤8000 chars) is real
+but shallow; the actual safeguard against a bad instruction reaching
+customers is the mandatory human review step before approval, not
+automated content validation. The `system_instruction` field an approved
+optimization replaces was already fully operator-editable before this
+phase (via a plain Settings form) with no stronger validation - this adds
+a second way to reach the same field, not a new risk class.
+
+**Rollback:** `git revert` the commit, or discard the branch. Migrations
+057-058 are additive (`ai_agent_prompt_optimizations` is a new table with
+no existing FKs into it from elsewhere; the CHECK constraint change is the
+same reversible drop/re-add pattern used in every prior migration of this
+kind). `services/prompt-optimizer/` can be deleted outright with zero
+effect on the Node application - nothing in `src/` imports from it.
+
+---
+
 ## 2026-08-21 - Phase 5: multimodal AI - real image/audio/video understanding for inbound media messages
 
 **Branch:** `phase-2-ai-repair` (continues on the same branch as the prior

@@ -5,6 +5,7 @@ import { PlanRepository } from '../src/repositories/planRepository.js';
 import { SubscriptionRepository } from '../src/repositories/subscriptionRepository.js';
 
 const TABLES = [
+  'ai_agent_prompt_optimizations',
   'funnel_instances',
   'funnel_steps',
   'funnel_definitions',
