@@ -1,5 +1,121 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - Phase 7 (scoped): the AI Security Governor - real tenant/actor/tier/rate authorization for every AI tool call
+
+**Branch:** `phase-2-ai-repair` (continues on the same branch as the prior
+phases - see the Phase 3 entry for why this branch wasn't split further)
+
+**Context:** the user asked to evaluate integrating OpenClaw
+(`github.com/openclaw/openclaw`), a large, actively-developed standalone
+"multi-channel AI gateway" product, as Phase 7. Before writing any code,
+the real OpenClaw repository was cloned and read directly rather than
+trusting a pasted architecture proposal at face value:
+
+- Confirmed real: OpenClaw's own Docker hardening guidance (non-root,
+  `--read-only`, `--cap-drop=ALL`), its default-deny bind-mount list
+  (`/etc`, `/proc`, `/sys`, `/dev`, `/root`, Docker socket paths,
+  credential directories), and its documented HTTP tool-invoke auth model
+  (any valid Gateway credential = full trusted-operator access - no
+  narrower per-caller scope exists on that surface).
+- Corrected: a cited `CVE-2026-27002` does not exist in OpenClaw's own
+  security advisories. The two real CVEs referenced there
+  (`CVE-2025-59466`, `CVE-2026-21636`) are Node.js runtime vulnerabilities
+  addressed by a minimum Node version, not OpenClaw application CVEs.
+- Flagged as unverifiable/likely fabricated and dropped: a closing
+  paragraph referencing a "deaf session detector," "reachout timelock
+  guard," and "463 spam errors" - none of these exist anywhere in
+  WhatchatAI's actual codebase.
+- The decisive, repo-verified fact: OpenClaw's own `SECURITY.md` states
+  its trust model explicitly - *"personal assistant (one trusted
+  operator), not shared multi-tenant bus"* - and recommends one Gateway
+  per trust boundary, ideally one host/VPS per operator. For a
+  multi-tenant SaaS, that means one full OpenClaw deployment per
+  business, not a shared instance - a real infrastructure and cost
+  decision, not just an engineering one. Separately, this sandbox's own
+  egress policy already blocks Docker Hub pulls (hit in Phase 1), so an
+  actual OpenClaw container cannot be built or booted from here.
+
+Given that, the user chose to build the authorization layer first
+(their own "Wall 1: WhatchatAI Authorization" concept) - real,
+testable in this sandbox today, and useful regardless of whether or when
+an actual OpenClaw deployment happens, since it is the same gate any
+future external-tool-execution surface would have to pass through.
+
+**What changed:** `src/services/ai/agentGuard.ts`'s `guardToolInvocation`
+- previously a single "is this tool name registered?" check - is now a
+real, five-stage authorization pipeline, run in this order:
+
+1. **Tool registered?** (existing, unchanged)
+2. **SYSTEM-tier tool?** Always denied - new `isTierAlwaysDenied()` in
+   `aiToolPolicy.ts` enforces the directive's own rule ("no AI agent
+   given SYSTEM permissions in the production conversation path") as
+   code, not just a convention future tool additions have to remember.
+3. **Tenant real?** (new) `businessId` is now checked against a live
+   `businesses` row - previously trusted blindly.
+4. **Actor real?** (new) `agentId` is now checked against a live,
+   `ACTIVE` `ai_agents` row that belongs to *this exact* `businessId` -
+   closes a real gap where a forged or cross-tenant `agentId` was
+   previously only ever logged, never verified. Proven directly: a test
+   creates a real, active agent belonging to a *different* business and
+   confirms it is rejected for this one.
+5. **Rate limit.** (new) A real, Postgres-backed per-business-per-tool
+   ceiling over a rolling window (default 5 minutes), tiered by risk
+   (READ 120, WRITE 30, SEND 15, HIGH_RISK 5, SYSTEM 0 - proportionate to
+   what exists today, a single READ tool, not tuned against real
+   WRITE/SEND traffic that has never run). Uses the same convention as
+   the existing login rate limiter (count real rows in a window), not a
+   new Redis counter: `SecurityAuditLogRepository.countRecentByBusinessAndTool()`.
+
+**Also fixed:** previously, any denial (the one unregistered-tool case
+that existed before this phase) threw an error but wrote nothing to the
+audit trail - an operator had no way to see a rejection had even
+happened, only the customer-facing "unavailable" reply. Every denial now
+writes a real `ai_tool_denied` audit event (`severity: 'critical'`,
+migration 056 extends the event-type constraint) before throwing - except
+where a business genuinely does not exist, where `security_audit_logs`'
+own FK to `businesses(id)` makes attribution impossible; the throw itself
+still stops the call in that case, verified in the test.
+
+**Deliberately not built in this pass:** `ai_agents.allowed_tools` /
+`forbidden_tools` - real JSONB columns that already exist in the schema
+(migration 022) but are not mapped into `AiAgentRecord`, not read
+anywhere, and have no UI to set them. Wiring up enforcement for a
+completely dark, un-settable field would be dead code; flagged as a real,
+pre-existing gap for a future pass that also adds the missing UI, not
+built speculatively here. Actual OpenClaw container/deployment work
+(Dockerfile, network policy, version pinning, a GitHub Security Advisory
+watcher) also remains undone, pending the user's own infrastructure
+decision on per-tenant deployment cost.
+
+**Tests:** `test/agentGuard.test.ts` expanded from 3 to 9 tests - unknown
+tenant denied, unknown actor denied, a real active agent belonging to a
+*different* business denied (the cross-tenant case), an archived agent
+denied, the rate limit enforced and audited once the ceiling is reached,
+and the SYSTEM-tier-always-denied rule unit-tested directly. Two existing
+tests in `test/agentGuard.test.ts` were updated to reflect the new
+denial-is-audited behavior and to use a real registered agent instead of
+a fake string id. Three tool-calling tests in `test/aiReplyServiceRetry.test.ts`
+were updated to use a real business + real active agent (via `register()`
++ `AiAgentRepository.create()`) instead of fake ids, since the governor's
+new actor check is real and those tests exercise the real tool-call path
+through `generateAiReply`. Full suite: 80/80 test files, 491/491 tests
+passing (up from 485 - the expected +6), zero regressions. Typecheck and
+production build both clean; migration 056 applied cleanly against a
+real database.
+
+**Status:** `IMPLEMENTED AND VERIFIED`.
+
+**Risks:** the rate-limit defaults are genuinely untested against real
+traffic (only one READ tool exists) - they are a reasonable starting
+point, explicitly env-overridable, not a claim of having been tuned
+against production load.
+
+**Rollback:** `git revert` the commit, or discard the branch. Migration
+056 is additive (`ai_tool_denied` added to an existing CHECK constraint) -
+reversible via the same drop/re-add pattern with that value removed.
+
+---
+
 ## 2026-08-21 - Phase 6: real knowledge base backend for AI agents
 
 **Branch:** `phase-2-ai-repair` (continues on the same branch as Phases

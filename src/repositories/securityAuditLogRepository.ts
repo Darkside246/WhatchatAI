@@ -35,7 +35,8 @@ export type SecurityEventType =
   | 'email_test_sent'
   | 'goose_settings_updated'
   | 'goose_tested'
-  | 'ai_tool_invoked';
+  | 'ai_tool_invoked'
+  | 'ai_tool_denied';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 
@@ -112,5 +113,23 @@ export class SecurityAuditLogRepository {
       [businessId, limit],
     );
     return rows.map(toRecord);
+  }
+
+  /**
+   * Real, DB-backed rate-limit primitive for the AI Security Governor -
+   * same convention as loginAttemptRepository.countRecentFailures (count
+   * real rows in a rolling window), not a new Redis counter. Matches on
+   * the toolName recorded in rawMetadata by guardToolInvocation.
+   */
+  async countRecentByBusinessAndTool(businessId: string, toolName: string, windowMinutes: number): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      `SELECT count(*)::int AS count FROM security_audit_logs
+       WHERE business_id = $1
+         AND event_type = 'ai_tool_invoked'
+         AND raw_metadata ->> 'toolName' = $2
+         AND created_at > now() - ($3 || ' minutes')::interval`,
+      [businessId, toolName, windowMinutes],
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 }

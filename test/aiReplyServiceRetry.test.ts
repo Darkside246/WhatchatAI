@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@google/genai';
-import type { AiAgentRecord } from '../src/repositories/aiAgentRepository.js';
+import { pool } from '../src/db/pool.js';
+import { AiAgentRepository, type AiAgentRecord } from '../src/repositories/aiAgentRepository.js';
 import type { AiHandoffContext } from '../src/services/aiContextGathererService.js';
 import type { WhatsAppMessageRecord } from '../src/repositories/whatsappMessageRepository.js';
 import { buildTimeContext } from '../src/services/time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME } from '../src/services/time/getCurrentTimeTool.js';
 import { geminiCircuitBreaker } from '../src/services/aiCircuitBreaker.js';
+import { register } from '../src/services/authService.js';
+import { resetDatabase } from './helpers.js';
 
 function fakeAgent(overrides: Partial<AiAgentRecord> = {}): AiAgentRecord {
   return {
@@ -148,13 +151,31 @@ describe('generateAiReply retries with a bare request after a real 400 INVALID_A
 });
 
 describe('generateAiReply grounds the model in the real, TimeService-built current time', () => {
-  beforeEach(() => {
+  // The tool-calling tests below exercise guardToolInvocation (the AI
+  // Security Governor), which now does real tenant/actor lookups instead
+  // of trusting a caller-supplied id - so this block needs a real business
+  // and a real ACTIVE agent row, not the fake string ids the other
+  // describe blocks in this file use (those never reach guardToolInvocation,
+  // since their mocked responses never include a functionCall).
+  let realBusinessId: string;
+  let realAgentId: string;
+
+  beforeEach(async () => {
     generateContentMock.mockReset();
     // The circuit breaker is a module-level singleton shared across every
     // test in this file - without resetting it, a test earlier in the run
     // that records real failures could trip it and silently short-circuit
     // an unrelated later test's "real call" assertions.
     geminiCircuitBreaker.reset();
+
+    await resetDatabase();
+    const owner = await register(
+      { email: 'ai-reply-tool-test@example.com', password: 'correcthorsebatterystaple', displayName: 'Owner' },
+      { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' },
+    );
+    realBusinessId = owner.business.id;
+    const agent = await new AiAgentRepository(pool).create({ businessId: realBusinessId, name: 'Reception Agent' });
+    realAgentId = agent.id;
   });
 
   afterEach(() => {
@@ -164,7 +185,10 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
   it('includes the actual current weekday and configured business timezone in the prompt - not a static or fabricated value', async () => {
     generateContentMock.mockResolvedValueOnce({ text: 'We are open until 5pm today.' });
 
-    await generateAiReply(fakeAgent(), fakeContext({ businessTimezone: 'America/New_York' }));
+    await generateAiReply(
+      fakeAgent({ id: realAgentId, businessId: realBusinessId }),
+      fakeContext({ businessId: realBusinessId, businessTimezone: 'America/New_York' }),
+    );
 
     const systemInstruction = generateContentMock.mock.calls[0]?.[0]?.config?.systemInstruction as string;
     expect(systemInstruction).toContain('America/New_York');
@@ -202,7 +226,7 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
   });
 
   it('answers a get_current_time tool call with the real TimeContext and makes exactly one follow-up call', async () => {
-    const context = fakeContext({ businessTimezone: 'Asia/Tokyo' });
+    const context = fakeContext({ businessId: realBusinessId, businessTimezone: 'Asia/Tokyo' });
     generateContentMock
       .mockResolvedValueOnce({
         text: undefined,
@@ -210,7 +234,7 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
       })
       .mockResolvedValueOnce({ text: 'Yes, we are open right now.' });
 
-    const result = await generateAiReply(fakeAgent(), context);
+    const result = await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), context);
 
     expect(generateContentMock).toHaveBeenCalledTimes(2);
     expect(result.status).toBe('generated');
@@ -227,7 +251,7 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
   });
 
   it('ignores attacker-controlled tool-call args entirely - the response is always the real TimeContext, never a spoofed one', async () => {
-    const context = fakeContext({ businessTimezone: 'Europe/London' });
+    const context = fakeContext({ businessId: realBusinessId, businessTimezone: 'Europe/London' });
     generateContentMock
       .mockResolvedValueOnce({
         text: undefined,
@@ -239,7 +263,7 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
       })
       .mockResolvedValueOnce({ text: 'ok' });
 
-    await generateAiReply(fakeAgent(), context);
+    await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), context);
 
     const followUpContents = generateContentMock.mock.calls[1]?.[0]?.contents as Array<{
       role: string;
@@ -258,7 +282,10 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
       functionCalls: [{ name: GET_CURRENT_TIME_TOOL_NAME, args: {} }],
     });
 
-    const result = await generateAiReply(fakeAgent(), fakeContext());
+    const result = await generateAiReply(
+      fakeAgent({ id: realAgentId, businessId: realBusinessId }),
+      fakeContext({ businessId: realBusinessId }),
+    );
 
     // Exactly two calls total (initial + one bounded follow-up), even
     // though every mocked response keeps requesting the tool again.

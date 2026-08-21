@@ -37,3 +37,16 @@ export function isToolRegistered(toolName: string): boolean {
 export function listRegisteredTools(): AiToolPolicyEntry[] {
   return Object.values(AI_TOOL_POLICY);
 }
+
+/**
+ * SYSTEM-tier tools are never reachable through the production AI
+ * conversation path, full stop - this is the directive's own explicit
+ * rule ("no AI agent given SYSTEM permissions in the production
+ * conversation path"), enforced here rather than left as a convention
+ * every future tool addition has to remember. Registering a tool as
+ * SYSTEM-tier documents its risk; it does not grant it a path to
+ * execution from a customer-facing agent.
+ */
+export function isTierAlwaysDenied(risk: AiToolRisk): boolean {
+  return risk === 'SYSTEM';
+}
