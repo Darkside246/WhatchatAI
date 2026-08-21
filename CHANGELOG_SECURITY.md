@@ -1,5 +1,64 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - Phase 16: funnel deletion lifecycle hardening
+
+**Branch:** `phase-2-ai-repair` (continues on the same branch as Phases 2-3
+- see the Phase 3 entry below for why this branch wasn't split further)
+
+**Audit finding:** `deleteFunnel()` in `src/services/funnelService.ts`
+called `funnelRepository.remove(funnelId)` unconditionally. `funnel_steps`
+and `funnel_instances` both `REFERENCES funnel_definitions(id) ON DELETE
+CASCADE` (migration 040), so deleting an active funnel silently destroyed
+every running/waiting instance's history, including customers genuinely
+mid-funnel (e.g. WAITING on a scheduled message for tomorrow, with a real
+BullMQ delayed job already enqueued for it). That customer would simply
+never receive the rest of the funnel, with **no notification to the
+business and no audit trail of what happened** - the same silent-gap
+failure class already fixed for `no_agent`/blocked-keyword/AI-failure
+outcomes in earlier phases, just not yet closed here. The pending BullMQ
+job itself doesn't crash (`resumeFunnelInstance`'s existing `if (!instance
+...) return` guard degrades gracefully when `findInstanceById` returns
+null post-cascade), but the silent data loss and abandoned customer are
+real.
+
+**Fixed:** `deleteFunnel()` now checks `getInstanceCounts()` first and
+refuses to delete (`FunnelHasActiveInstancesError`, mapped to HTTP 409
+`FUNNEL_HAS_ACTIVE_INSTANCES`) while any instance is still `ACTIVE` or
+`WAITING` - the operator must cancel them first via the already-existing
+`cancelFunnelInstance()`, a deliberate, visible action instead of a silent
+cascade. A successful deletion now also writes a `funnel_deleted` audit
+event via the existing `SecurityAuditLogRepository`, matching the sibling
+`funnel_created`/`funnel_activated`/`funnel_deactivated`/`funnel_enrolled`
+events that already existed for every other funnel lifecycle transition
+except this one. Migration 053 extends `security_audit_logs`'
+`event_type` CHECK constraint for the new value, following the same
+drop-and-re-add-with-full-value-list convention as migrations
+041/042/044/045/047/052.
+
+**Scope decision:** deactivation (`setFunnelActive(..., false)`) was left
+unchanged - it already correctly blocks *new* enrollments
+(`enrollContact` throws `InvalidFunnelStepError` when `!funnel.isActive`)
+while letting already-running instances finish naturally, which is
+intentional, documented behavior, not a gap. Only deletion (permanent,
+irreversible) needed a safety rail.
+
+**Tests:** 2 new in `test/funnelService.test.ts` - one proving deletion is
+refused with an active/waiting instance present (and that the funnel and
+instance are both still there afterward, nothing silently dropped), one
+proving deletion succeeds once the instance is cancelled and writes the
+real `funnel_deleted` audit row. Full suite: 78/78 files, 474/474 tests
+passing (up from 472 - the exact expected +2), zero regressions.
+Typecheck and production build both clean; migration 053 applied cleanly
+against a real database.
+
+**Status:** `IMPLEMENTED AND VERIFIED`.
+
+**Rollback:** `git revert` the commit, or discard the branch. Migration
+053 is reversible via the same drop/re-add pattern with `'funnel_deleted'`
+removed from the list.
+
+---
+
 ## 2026-08-21 - Phase 3: centralized AI orchestration + zero-trust tool policy
 
 **Branch:** `phase-2-ai-repair` (continues directly from the Phase 2 commit

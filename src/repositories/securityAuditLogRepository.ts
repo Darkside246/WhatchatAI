@@ -18,6 +18,7 @@ export type SecurityEventType =
   | 'funnel_activated'
   | 'funnel_deactivated'
   | 'funnel_enrolled'
+  | 'funnel_deleted'
   | 'team_created'
   | 'chat_assigned'
   | 'member_created'

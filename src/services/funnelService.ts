@@ -32,6 +32,7 @@ export class FunnelNotFoundError extends Error {}
 export class InvalidFunnelStepError extends Error {}
 export class FunnelInstanceNotFoundError extends Error {}
 export class AlreadyEnrolledError extends Error {}
+export class FunnelHasActiveInstancesError extends Error {}
 
 async function requireOwnFunnel(businessId: string, funnelId: string): Promise<FunnelDefinitionRecord> {
   const funnel = await funnelRepository.findByIdForBusiness(businessId, funnelId);
@@ -84,9 +85,34 @@ export async function updateFunnelMeta(businessId: string, funnelId: string, nam
   return updated;
 }
 
+/**
+ * Deletion CASCADEs to funnel_steps and funnel_instances at the database
+ * level (see migration 040) - a real customer mid-funnel (e.g. WAITING on
+ * a scheduled message for tomorrow, with a real BullMQ delayed job already
+ * queued for it) would simply vanish with no message ever arriving and no
+ * one aware of it: the delayed job's own `resumeFunnelInstance` guard
+ * degrades gracefully (findInstanceById returns null, so it just returns),
+ * but that silence is exactly the kind of unnoticed customer-facing gap
+ * this directive exists to close. Deletion is refused while any instance
+ * is still ACTIVE or WAITING - the operator must cancel them first via the
+ * already-existing cancelFunnelInstance, a deliberate, visible action
+ * instead of a silent cascade.
+ */
 export async function deleteFunnel(businessId: string, funnelId: string): Promise<void> {
-  await requireOwnFunnel(businessId, funnelId);
+  const funnel = await requireOwnFunnel(businessId, funnelId);
+  const counts = await funnelRepository.getInstanceCounts(funnelId);
+  if (counts.active > 0) {
+    throw new FunnelHasActiveInstancesError(
+      `Cannot delete this funnel: ${counts.active} contact(s) are still active or waiting in it. Cancel their instances first.`,
+    );
+  }
   await funnelRepository.remove(funnelId);
+  await securityAuditLogRepository.record({
+    businessId,
+    whatsappAccountId: funnel.whatsappAccountId,
+    eventType: 'funnel_deleted',
+    rawMetadata: { funnelId },
+  });
 }
 
 export async function setFunnelActive(businessId: string, funnelId: string, isActive: boolean): Promise<FunnelDefinitionRecord> {
@@ -420,4 +446,7 @@ export function isFunnelInstanceNotFoundError(error: unknown): error is FunnelIn
 }
 export function isAlreadyEnrolledError(error: unknown): error is AlreadyEnrolledError {
   return error instanceof AlreadyEnrolledError;
+}
+export function isFunnelHasActiveInstancesError(error: unknown): error is FunnelHasActiveInstancesError {
+  return error instanceof FunnelHasActiveInstancesError;
 }

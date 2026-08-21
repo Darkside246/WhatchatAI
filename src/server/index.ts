@@ -134,6 +134,7 @@ import {
   isInvalidFunnelStepError,
   isFunnelInstanceNotFoundError,
   isAlreadyEnrolledError,
+  isFunnelHasActiveInstancesError,
 } from '../services/funnelService.js';
 import { suggestMarketingCopy } from '../services/marketingAiService.js';
 import {
@@ -1352,6 +1353,7 @@ app.delete('/api/workspace/funnels/:funnelId', requireWorkspaceContext, requireP
     return res.status(200).json({ status: 'deleted' });
   } catch (error) {
     if (isFunnelNotFoundError(error)) return res.status(404).json({ error: 'FUNNEL_NOT_FOUND' });
+    if (isFunnelHasActiveInstancesError(error)) return res.status(409).json({ error: 'FUNNEL_HAS_ACTIVE_INSTANCES', message: error.message });
     throw error;
   }
 });

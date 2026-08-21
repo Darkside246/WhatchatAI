@@ -10,9 +10,13 @@ import {
   enrollContact,
   getFunnel,
   cancelFunnelInstance,
+  deleteFunnel,
   isInvalidFunnelStepError,
   isAlreadyEnrolledError,
+  isFunnelHasActiveInstancesError,
+  isFunnelNotFoundError,
 } from '../src/services/funnelService.js';
+import { SecurityAuditLogRepository } from '../src/repositories/securityAuditLogRepository.js';
 import { createTestAccount, resetDatabase } from './helpers.js';
 import { isEntitlementDeniedError } from '../src/services/workspaceService.js';
 
@@ -200,5 +204,46 @@ describe('funnelService (real step execution, real backend actions only)', () =>
 
     const detail = await getFunnel(businessId, funnel.id);
     expect(detail.counts.cancelled).toBe(1);
+  });
+
+  it('refuses to delete a funnel with an ACTIVE or WAITING instance, rather than silently cascading it away', async () => {
+    const funnel = await createFunnel(businessId, accountId, ownerId, 'x', null);
+    await replaceFunnelSteps(businessId, funnel.id, [{ nodeType: 'WAIT', config: { minutes: 60 } }]);
+    await setFunnelActive(businessId, funnel.id, true);
+    const crmContactId = await makeContactWithChat(businessId, accountId, '15559991007@s.whatsapp.net');
+    const instance = await enrollContact(businessId, funnel.id, crmContactId);
+    expect(instance.status).toBe('WAITING');
+
+    await expect(deleteFunnel(businessId, funnel.id)).rejects.toThrow();
+    try {
+      await deleteFunnel(businessId, funnel.id);
+    } catch (error) {
+      expect(isFunnelHasActiveInstancesError(error)).toBe(true);
+    }
+
+    // The funnel and its instance are still there - nothing was silently dropped.
+    const detail = await getFunnel(businessId, funnel.id);
+    expect(detail.counts.active).toBe(1);
+  });
+
+  it('deletes a funnel with no active instances for real, and writes a funnel_deleted audit event', async () => {
+    const funnel = await createFunnel(businessId, accountId, ownerId, 'x', null);
+    await replaceFunnelSteps(businessId, funnel.id, [{ nodeType: 'WAIT', config: { minutes: 60 } }]);
+    await setFunnelActive(businessId, funnel.id, true);
+    const crmContactId = await makeContactWithChat(businessId, accountId, '15559991008@s.whatsapp.net');
+    const instance = await enrollContact(businessId, funnel.id, crmContactId);
+    await cancelFunnelInstance(businessId, funnel.id, instance.id);
+
+    await deleteFunnel(businessId, funnel.id);
+
+    await expect(getFunnel(businessId, funnel.id)).rejects.toThrow();
+    try {
+      await getFunnel(businessId, funnel.id);
+    } catch (error) {
+      expect(isFunnelNotFoundError(error)).toBe(true);
+    }
+
+    const log = await new SecurityAuditLogRepository(pool).listRecent(businessId);
+    expect(log.some((entry) => entry.eventType === 'funnel_deleted')).toBe(true);
   });
 });
