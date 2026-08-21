@@ -39,6 +39,7 @@ import { decodeBuffersFromQueue } from '../../domain/whatsapp/binaryCodec.js';
 import { storeMedia } from '../../media/localEncryptedMediaStorage.js';
 import { mediaFallbackText } from '../../services/ai/mediaContext.js';
 import { sweepStaleFunnelInstances } from '../../services/funnelService.js';
+import { runSecurityScan } from '../../services/securityScanService.js';
 import type { WhatsAppMessageRecord } from '../../repositories/whatsappMessageRepository.js';
 import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaRepository.js';
 import type { MediaDownloadStatus, MediaType, StatusType } from '../../domain/whatsapp/types.js';
@@ -643,6 +644,13 @@ const EMAIL_TIMEOUT_SWEEP_INTERVAL_MS = 60_000;
 // the others above, at a coarser cadence to match.
 const FUNNEL_INSTANCE_TIMEOUT_SWEEP_INTERVAL_MS = 300_000;
 
+// Phase 18 of the original directive - real, scheduled security scans
+// over the existing security_audit_logs table (see securityScanService.ts).
+// Hourly is frequent enough that a genuine brute-force/probing pattern is
+// caught within an hour of crossing its threshold, without the cost of
+// re-scanning the full window every minute.
+const SECURITY_SCAN_INTERVAL_MS = 3_600_000;
+
 export async function sweepStaleEmails(): Promise<void> {
   const stale = await emailMessageRepository.findStalePending(EMAIL_STALE_SECONDS);
   for (const email of stale) {
@@ -691,6 +699,8 @@ async function processRealtimeEventJob(
     await sweepStaleEmails();
   } else if (job.name === 'funnel-instance-timeout-sweep') {
     await sweepStaleFunnelInstances();
+  } else if (job.name === 'security-scan') {
+    await runSecurityScan();
   } else if (job.name === 'media-download') {
     await processMediaDownload(job.data as MediaDownloadJobData);
   } else if (job.name === 'message-reaction') {
@@ -803,3 +813,8 @@ void realtimeEventsQueue
   .catch((error: Error) =>
     console.error('[RealtimeEventsWorker] Failed to schedule funnel-instance-timeout-sweep:', error.message),
   );
+
+void realtimeEventsQueue
+  .upsertJobScheduler('security-scan', { every: SECURITY_SCAN_INTERVAL_MS }, { name: 'security-scan' })
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled security-scan every ${SECURITY_SCAN_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule security-scan:', error.message));

@@ -13,6 +13,7 @@ export const NOTIFICATION_TYPES = [
   'CALL',
   'STATUS',
   'SLA_BREACH',
+  'SECURITY_ALERT',
   'CAMPAIGN_FAILURE',
   'SYSTEM',
 ] as const;

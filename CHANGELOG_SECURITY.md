@@ -1,5 +1,88 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - Phase 18: scheduled security scans (real, finally built)
+
+**Branch:** `phase-2-ai-repair` (continues on the same branch as the prior
+phases - see the Phase 3 entry for why this branch wasn't split further)
+
+**Context:** Priority 3 from `docs/PRODUCTION_READINESS_DIRECTIVE.md` -
+Phase 18 of the original directive, flagged `NOT IMPLEMENTED` twice
+(Phase 20's production audit, and this document) because it needed a real
+scoping decision before it could be built at all: "a scan" of *what*,
+concretely? The concrete answer found by auditing the actual codebase: two
+real, security-relevant denial event types
+(`lock_unlock_failure` in `securityLockService.ts`,
+`ai_tool_denied` in `agentGuard.ts`) were already being written to
+`security_audit_logs` on every real occurrence, but neither ever
+triggered a live notification anywhere - confirmed by grepping for
+`notifyBusiness`/`notifyUser` near both call sites and finding nothing. A
+real brute-force attempt against a business's screen lock, or a pattern
+of denied AI tool calls, was invisible unless someone happened to read
+the raw audit log by hand.
+
+**What changed:**
+
+- Migration 060: adds `SECURITY_ALERT` to `notifications`' type CHECK
+  constraint. Renders automatically in the existing `NotificationCenter`
+  UI with zero frontend changes needed - that component styles purely by
+  `severity`, not per-type icon logic, confirmed before deciding this
+  needed no UI work.
+- New `src/services/securityScanService.ts`'s `runSecurityScan()`:
+  counts real `security_audit_logs` rows per business, per pattern, over
+  a real rolling window (default 24h, env-overridable); when a real count
+  crosses a real, per-pattern threshold (5 lock failures, 10 AI tool
+  denials - both env-overridable), dispatches one real `SECURITY_ALERT`
+  notification. Deliberately only these two patterns to start - not a
+  speculative taxonomy of a dozen hypothetical signals.
+- Never re-alerts on the same still-ongoing pattern more than once per
+  cooldown (default 24h): checks for an existing `SECURITY_ALERT` with
+  the same `target_type` (the pattern's own stable key, e.g.
+  `security_pattern:lock_unlock_failure` - stored in `target_type` TEXT,
+  never `target_id`, which is a strict UUID column) within the cooldown
+  window before writing a new one. A real, ongoing brute-force attempt
+  produces one alert, not one per scan run.
+- Registered as a new `security-scan` BullMQ repeatable job in
+  `incomingMessagesWorker.ts`, checked hourly - reuses the existing
+  `realtimeEventsQueue`/`upsertJobScheduler` infrastructure the other
+  sweeps already use, no new service or external dependency.
+
+**Why not the "02:00-03:00" cron window from the originally pasted
+directive:** that specific framing came from an unverified source (see
+`docs/PRODUCTION_READINESS_DIRECTIVE.md`'s "explicitly not adopted"
+section); an hourly interval-based schedule, matching every other sweep
+in this codebase's own established convention, is a real, working
+design that does not depend on trusting that detail.
+
+**Tests:** new `test/securityScanService.test.ts` (7 tests, real
+Postgres) - a real threshold crossing for each of the two patterns
+dispatches a real alert; staying under threshold never alerts; a
+still-ongoing pattern is never re-alerted within the cooldown window (one
+alert per real incident, not one per scan run); a genuinely elapsed
+cooldown does allow a fresh alert; events outside the scan window (an old,
+resolved incident) never trigger a fresh alert; and a pattern in one
+business is proven to never leak a notification into a different
+business's account. Full suite: 84/84 test files, 529/529 tests (up from
+522 - the expected +7), zero regressions. Migration 060 applied cleanly.
+Typecheck and production build both clean.
+
+**Status:** `IMPLEMENTED AND VERIFIED`.
+
+**Risks:** the default thresholds (5 lock failures, 10 AI tool denials in
+24h) and the hourly cadence are reasoned defaults, not tuned against a
+real observed attack - both are env-overridable, the same
+honestly-flagged category as every other untested-at-scale default in
+this codebase (Phase 7's rate limits, this pass's own funnel-sweep
+grace window). Scoped to two patterns deliberately; expanding the
+pattern list is a config-array addition in `securityScanService.ts`, not
+a redesign, whenever a third real signal is identified.
+
+**Rollback:** `git revert` the commit, or discard the branch. Migration
+060 is additive (one new allowed `type` value on an existing CHECK
+constraint) - reversible via the same drop/re-add pattern used in every
+prior migration of this kind.
+
+---
+
 ## 2026-08-21 - Funnel stale-instance reconciliation sweep
 
 **Branch:** `phase-2-ai-repair` (continues on the same branch as the prior
