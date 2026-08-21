@@ -1,5 +1,134 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - Phase 5: multimodal AI - real image/audio/video understanding for inbound media messages
+
+**Branch:** `phase-2-ai-repair` (continues on the same branch as the prior
+phases - see the Phase 3 entry for why this branch wasn't split further)
+
+**Context:** the user asked which next step would be the biggest real
+step forward, delegating the judgment call. Reading the actual AI-handoff
+trigger in `src/queue/workers/incomingMessagesWorker.ts` found a genuine,
+significant, customer-facing gap: `needsAiHandoff` required
+`Boolean(result.message.textContent)`, and `textContent` is only ever
+populated from a real caption (`imageMessage.caption` etc.) - so any
+WhatsApp message that was *only* a photo, video, voice note, or document
+with no caption text never reached the AI at all, silently, regardless of
+how the agent was configured. Voice notes in particular can never carry a
+caption (not a WhatsApp feature), so every voice message a customer ever
+sent was unanswerable by design. Gemini (already the only model in use via
+`aiReplyService.ts`) natively accepts inline image/audio/video/PDF bytes in
+the same `generateContent` call shape already used, so closing this gap
+needed no new external dependency - only wiring real, already-downloaded,
+already-decrypted media bytes into the existing call.
+
+**What changed:**
+
+- **New `src/services/ai/mediaContext.ts`:** `resolveInlineMediaPart()`
+  turns a real, already-downloaded, checksum-verified `whatsapp_media` row
+  into the exact `{mimeType, data}` (base64) shape Gemini's `inlineData`
+  part expects - decrypting through the existing
+  `localEncryptedMediaStorage.retrieveMedia()`. Returns `null` (never
+  throws, never fabricates bytes) when the media hasn't finished
+  downloading yet, its mimeType isn't one of Gemini's documented supported
+  inline types (an allowlist - unsupported types like `.docx` degrade to
+  text-only rather than being force-fed to the model), or it exceeds a
+  15MB inline-request budget. `mediaFallbackText()` produces an honest,
+  factual placeholder ("[The customer sent a photo.]" /
+  "...but it could not be retrieved.]") for a caption-less media turn -
+  distinguishing "the model can actually see/hear this" from "we only know
+  it was sent" so the model is never left assuming it saw something it did
+  not.
+- **`aiContextGathererService.ts` / `aiOrchestrator.ts`:** `AiHandoffContext`
+  now carries a `media: InlineMediaPart | null` field, resolved in the same
+  `Promise.all` as the rest of the context (CRM, knowledge base, history).
+- **`aiReplyService.ts`'s `toContents()`:** previously filtered out *any*
+  message with no `textContent` - meaning a caption-less media message was
+  silently dropped from the conversation Gemini ever sees, not just
+  unanswered. Now keeps any message with real text **or** real media,
+  attaching the actual decoded image/audio/video bytes as an `inlineData`
+  part on the triggering (most recent) turn only, when real bytes
+  resolved. Historical media turns are described, never re-attached - this
+  codebase never stored retroactive image/audio understanding. Goose
+  failover (`tryGooseFallback`) strips inline bytes back to text-only
+  before calling out, since Goose's own contract has no multimodal
+  understanding to hand them to.
+- **`incomingMessagesWorker.ts`:** media download is a separate, async
+  BullMQ job (`processMediaDownload`) that can complete well after the
+  triggering message is persisted - so a media message's AI handoff can no
+  longer fire at persist time (`processJob`) the way a text-only message's
+  does; it would either reply before it could see the media, or (for a
+  caption-less one) never fire at all. The handoff decision + every real
+  side effect (notifications, `ai_mode` transitions, the outbound send)
+  was extracted into a shared `runAiHandoff()`, now called from two real
+  places: immediately in `processJob` for text-only messages (unchanged
+  behavior), and from a new `maybeTriggerMediaAiHandoff()` in
+  `processMediaDownload`, once a media message's real download outcome
+  (success, failure, or unavailable) is durably recorded. `processMediaDownload`
+  itself was restructured to compute that outcome once and record/react to
+  it exactly once, instead of five duplicated `setDownloadResult()` calls
+  each returning early - a failed/expired download now still reaches the
+  message lookup and triggers a real (mediaId: null, honest fallback text)
+  AI handoff, instead of leaving the customer's message permanently
+  unanswered the way an early return previously would have.
+
+**Deliberately not built in this pass:** sticker messages are excluded
+from the AI-relevant media set (low informational value, high risk of an
+odd reply to meme content). Non-PDF documents (`.docx`, `.xlsx`, etc.)
+degrade to text-only/caption-only - Gemini's inline document support is
+scoped to `application/pdf` here, not attempted for types it cannot
+reliably parse inline. Media over the 15MB inline budget is never
+chunked or summarized - it degrades to text/caption-only rather than a
+partial or fabricated description. `whatsapp_media.transcript` /
+`ai_interpretation` (pre-existing, unused schema columns since Phase A)
+were not wired up to persist a description back onto the media row -
+the model's understanding is used live for the one reply, not stored;
+that remains a real, separate, un-built feature if ever wanted.
+
+**Tests:** new `test/mediaContext.test.ts` (9 tests) - real Postgres media
+rows + real encrypted-at-rest bytes throughout, proving
+`resolveInlineMediaPart` returns the exact original bytes for a real
+downloaded/verified image, and returns `null` (never throws, never
+fabricates) for not-yet-downloaded, unsupported-mimeType, oversized, and
+nonexistent-mediaId cases; plus pure unit tests for `mediaFallbackText`'s
+honest phrasing. `test/aiReplyService.test.ts` updated: the old "no real
+text to reply to" test used a caption-less media message as its example,
+which is exactly the case this phase fixes - split into a genuine
+empty-history test (still short-circuits) and a new test proving a
+caption-less media message now really does attempt a reply (honestly
+reporting `GEMINI_API_KEY` unavailability in this environment, never a
+silent no-op). No existing test exercised the old, narrower
+`needsAiHandoff`/`processMediaDownload` behavior directly, so no other
+test required updating; the existing `test/mediaDownloadWorker.test.ts`
+and `test/aiReplyWorkerIntegration.test.ts` (text-only messages) both
+continued to pass unmodified. Full suite: 81/81 test files, 500/500 tests
+passing (up from 491 - the expected +9), zero regressions. Typecheck
+(backend + web) and production build both clean.
+
+**Status:** `IMPLEMENTED BUT NOT FULLY VERIFIED` - the code path is real
+(no mocks, no fabricated data, real DB/encryption round-trips proven in
+tests) and reasoned through carefully for the async-download timing
+issue, but an actual end-to-end WhatsApp photo/voice message producing a
+real Gemini reply that correctly describes the media has not been
+observed live in this sandbox - there is no live Baileys connection or
+`GEMINI_API_KEY` available here (the same standing constraint as Phase 4
+and every other live-model/live-WhatsApp verification in this engagement).
+
+**Risks:** the 15MB inline-media cap and the Gemini-supported-mimeType
+allowlist are reasoned from the provider's documented limits, not proven
+against a real deployed model/key from this sandbox - the exact same
+category of gap Phase 7's changelog entry already flagged for its
+rate-limit defaults. Deferring a media message's AI handoff until its
+download completes adds real latency (typically seconds) to the reply for
+a captioned image/video that previously replied instantly on the caption
+alone - an accepted, documented tradeoff for actually seeing the image,
+not a regression missed.
+
+**Rollback:** `git revert` the commit, or discard the branch. No schema
+migration in this phase - `media`/`inlineData` is a request-shape and
+in-memory addition only, nothing new persisted to the database.
+
+---
+
 ## 2026-08-21 - Phase 7 (scoped): the AI Security Governor - real tenant/actor/tier/rate authorization for every AI tool call
 
 **Branch:** `phase-2-ai-repair` (continues on the same branch as the prior

@@ -4,6 +4,7 @@ import { CrmContactRepository, type CrmContactRecord } from '../repositories/crm
 import { WhatsAppMessageRepository, type WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { searchKnowledgeBase, type KnowledgeBaseSearchResult } from './knowledgeBaseSearchService.js';
 import { timeService, resolveBusinessTimezone, type TimeContext } from './time/timeService.js';
+import { resolveInlineMediaPart, type InlineMediaPart } from './ai/mediaContext.js';
 
 export interface GatherAiHandoffContextInput {
   businessId: string;
@@ -11,6 +12,8 @@ export interface GatherAiHandoffContextInput {
   contactId: string | null;
   queryText: string;
   historyLimit?: number;
+  /** The triggering message's media row, when it has real, already-downloaded media the AI should actually see/hear - null for a text-only message or one whose media isn't available. */
+  mediaId?: string | null;
 }
 
 export interface AiHandoffContext {
@@ -24,6 +27,8 @@ export interface AiHandoffContext {
   businessTimezone: string;
   /** Authoritative, TimeService-built context (internet-synchronized where possible) - the AI must use this, never its own model knowledge, for "now". */
   timeContext: TimeContext;
+  /** Real, decoded image/audio/video/document bytes for the triggering message, when eligible - null when there is none, it hasn't downloaded yet, or it isn't a Gemini-supported mimeType/size. */
+  media: InlineMediaPart | null;
 }
 
 /**
@@ -39,13 +44,14 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
   const messageRepository = new WhatsAppMessageRepository(pool);
   const businessRepository = new BusinessRepository(pool);
 
-  const [crmContact, knowledgeBase, conversationHistory, business] = await Promise.all([
+  const [crmContact, knowledgeBase, conversationHistory, business, media] = await Promise.all([
     input.contactId
       ? crmContactRepository.findByWhatsAppContact(input.businessId, input.contactId)
       : Promise.resolve(null),
     searchKnowledgeBase(input.businessId, input.queryText),
     messageRepository.listByChat(input.chatId, input.historyLimit ?? 20),
     businessRepository.findById(input.businessId),
+    input.mediaId ? resolveInlineMediaPart(input.businessId, input.mediaId) : Promise.resolve(null),
   ]);
 
   const businessTimezone = resolveBusinessTimezone({ timezone: business?.timezone ?? null });
@@ -59,5 +65,6 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     conversationHistory,
     businessTimezone,
     timeContext,
+    media,
   };
 }

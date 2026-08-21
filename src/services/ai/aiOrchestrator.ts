@@ -8,6 +8,8 @@ export interface OrchestrateAiReplyInput {
   chatId: string;
   contactId: string | null;
   queryText: string;
+  /** The triggering message's media row, when it has real, already-downloaded media the AI should actually see/hear. */
+  mediaId?: string | null;
 }
 
 export type OrchestratedAiOutcome =
@@ -36,6 +38,7 @@ export async function orchestrateAiReply(input: OrchestrateAiReplyInput): Promis
       chatId: input.chatId,
       contactId: input.contactId,
       queryText: input.queryText,
+      mediaId: input.mediaId ?? null,
     }),
     routeInboundMessage(input.businessId, input.queryText),
   ]);

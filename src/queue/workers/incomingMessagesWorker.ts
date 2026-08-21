@@ -37,7 +37,10 @@ import { mapBaileysCallStatus, callTypeFromEvent, isTerminalCallStatus } from '.
 import { classifyJid, derivePhoneNumber } from '../../domain/whatsapp/jid.js';
 import { decodeBuffersFromQueue } from '../../domain/whatsapp/binaryCodec.js';
 import { storeMedia } from '../../media/localEncryptedMediaStorage.js';
-import type { MediaType, StatusType } from '../../domain/whatsapp/types.js';
+import { mediaFallbackText } from '../../services/ai/mediaContext.js';
+import type { WhatsAppMessageRecord } from '../../repositories/whatsappMessageRepository.js';
+import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaRepository.js';
+import type { MediaDownloadStatus, MediaType, StatusType } from '../../domain/whatsapp/types.js';
 
 /**
  * Drains the incoming_messages queue and performs the real Postgres
@@ -92,122 +95,181 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
 
   // Only a genuinely new, live, inbound message in an AI-driven chat needs a
   // response - not duplicates, not historical backfill, not our own outbound
-  // sends, and not chats a human has taken over.
+  // sends, and not chats a human has taken over. A media message (with or
+  // without a caption) is handled separately, once its real bytes have
+  // actually finished downloading - see maybeTriggerMediaAiHandoff below,
+  // called from processMediaDownload. Firing here too would mean the AI
+  // either replies before it can see/hear the media, or (worse) never gets
+  // asked at all for a caption-less one.
   const needsAiHandoff =
     result.message.wasInserted &&
     !message.fromMe &&
     message.isLive &&
     result.chat.aiMode === 'AI_ACTIVE' &&
+    !result.media &&
     Boolean(result.message.textContent);
 
   if (needsAiHandoff) {
-    // Centralized "which agent, given what context, says what" decision -
-    // see src/services/ai/aiOrchestrator.ts. Every side effect below
-    // (notifications, ai_mode transitions, realtime events, the outbound
-    // send) stays here in the worker; the orchestrator's job ends at the
-    // decision itself.
-    const outcome = await orchestrateAiReply({
-      businessId,
-      chatId: result.chat.id,
-      contactId: result.chat.contactId,
-      queryText: result.message.textContent as string,
-    });
-
-    // 'no_agent' is an honest, legitimate outcome (a business can
-    // deliberately want AI to only ever answer specific keyword-scoped
-    // topics) - it must never be papered over with a fabricated reply. But
-    // it must also never be SILENT: previously this returned with nothing
-    // but a server log line the business would never see, so a customer
-    // could go completely unanswered, indefinitely, with no one aware of it.
-    // Handled exactly like a blocked keyword now - the chat moves to
-    // HUMAN_TAKEOVER (so this does not repeat silently on every subsequent
-    // message from the same customer) and the business is notified.
-    if (outcome.kind === 'no_agent') {
-      console.log(`[IncomingMessagesWorker] Chat ${result.chat.id}: ${outcome.reason}`);
-      await chatRepository.setAiMode(result.chat.id, 'HUMAN_TAKEOVER');
-      await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId: result.chat.id });
-      await notifyBusiness({
-        businessId,
-        type: 'HUMAN_HANDOFF',
-        severity: 'warning',
-        title: 'A conversation needs a human',
-        body: 'No AI agent matched this message (no active agent, or none of your agents\' keywords matched), so nothing was sent.',
-        targetType: 'chat',
-        targetId: result.chat.id,
-      }).catch((error) => {
-        console.error('[IncomingMessagesWorker] Failed to dispatch HUMAN_HANDOFF notification:', error);
-      });
-      return;
-    }
-
-    // A blocked keyword is a hard stop: no AI reply at all. The chat is moved
-    // to HUMAN_TAKEOVER so the AI cannot pick it back up on the next message,
-    // and the team is notified - silently dropping it would leave a real
-    // customer waiting on a reply that never comes.
-    if (outcome.kind === 'escalate_to_human') {
-      console.warn(`[IncomingMessagesWorker] Chat ${result.chat.id}: ${outcome.reason}`);
-      await chatRepository.setAiMode(result.chat.id, 'HUMAN_TAKEOVER');
-      await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId: result.chat.id });
-      await notifyBusiness({
-        businessId,
-        type: 'HUMAN_HANDOFF',
-        severity: 'warning',
-        title: 'A conversation needs a human',
-        body: `A blocked keyword ("${outcome.matchedKeyword}") matched, so no AI reply was sent.`,
-        targetType: 'chat',
-        targetId: result.chat.id,
-      }).catch((error) => {
-        console.error('[IncomingMessagesWorker] Failed to dispatch HUMAN_HANDOFF notification:', error);
-      });
-      return;
-    }
-
-    // Same observability gap as 'no_agent' above, one step further down the
-    // pipeline: an agent WAS selected, but the model call itself failed
-    // (bad/missing API key, quota, a genuine API error) and Goose failover
-    // (plus the orchestrator's own one-hop escalation) didn't save it.
-    // Previously this was silent too - only a server log line - so a
-    // business could have a perfectly configured agent and still see
-    // nothing arrive, indefinitely, with no clue why. outcome.reason
-    // carries the real, specific cause (e.g. "GEMINI_API_KEY is not
-    // configured" or the literal API error) into the notification, so the
-    // operator does not have to guess.
-    if (outcome.kind === 'unavailable') {
-      console.log(`[IncomingMessagesWorker] AI reply unavailable for chat ${result.chat.id}: ${outcome.reason}`);
-      await chatRepository.setAiMode(result.chat.id, 'HUMAN_TAKEOVER');
-      await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId: result.chat.id });
-      await notifyBusiness({
-        businessId,
-        type: 'AI_FAILURE',
-        severity: 'warning',
-        title: 'The AI could not reply to a conversation',
-        body: outcome.reason,
-        targetType: 'chat',
-        targetId: result.chat.id,
-      }).catch((error) => {
-        console.error('[IncomingMessagesWorker] Failed to dispatch AI_FAILURE notification:', error);
-      });
-      return;
-    }
-
-    const agent = outcome.agent;
-
-    // Idempotency key derived from the inbound message's own id: if this job
-    // is ever retried/redelivered, the exact same reply is never sent twice.
-    await whatsappOutboundMessageService.send({
+    await runAiHandoff({
       businessId,
       whatsappAccountId,
       chatId: result.chat.id,
-      idempotencyKey: `ai-reply:${result.message.id}`,
-      messageType: 'text',
-      text: outcome.text,
-      requestedBy: 'ai',
-      // The operator's real configured pacing, so replies do not land
-      // unnaturally fast. 0 dispatches immediately.
-      ...(agent.responseDelaySeconds > 0 ? { delayMs: agent.responseDelaySeconds * 1000 } : {}),
+      contactId: result.chat.contactId,
+      messageId: result.message.id,
+      queryText: result.message.textContent as string,
+      mediaId: null,
     });
-    console.log(`[IncomingMessagesWorker] AI reply queued for chat ${result.chat.id} (agent ${agent.id}).`);
   }
+}
+
+/**
+ * Centralized "which agent, given what context, says what" decision - see
+ * src/services/ai/aiOrchestrator.ts - plus every real side effect that
+ * follows it (notifications, ai_mode transitions, realtime events, the
+ * outbound send). Shared by both AI-handoff entry points: an immediate
+ * text-only trigger from processJob, and a deferred trigger from
+ * processMediaDownload once a media message's real bytes are ready (or have
+ * definitively failed to download).
+ */
+async function runAiHandoff(params: {
+  businessId: string;
+  whatsappAccountId: string;
+  chatId: string;
+  contactId: string | null;
+  messageId: string;
+  queryText: string;
+  mediaId: string | null;
+}): Promise<void> {
+  const { businessId, whatsappAccountId, chatId, contactId, messageId, queryText, mediaId } = params;
+
+  const outcome = await orchestrateAiReply({ businessId, chatId, contactId, queryText, mediaId });
+
+  // 'no_agent' is an honest, legitimate outcome (a business can
+  // deliberately want AI to only ever answer specific keyword-scoped
+  // topics) - it must never be papered over with a fabricated reply. But
+  // it must also never be SILENT: previously this returned with nothing
+  // but a server log line the business would never see, so a customer
+  // could go completely unanswered, indefinitely, with no one aware of it.
+  // Handled exactly like a blocked keyword now - the chat moves to
+  // HUMAN_TAKEOVER (so this does not repeat silently on every subsequent
+  // message from the same customer) and the business is notified.
+  if (outcome.kind === 'no_agent') {
+    console.log(`[IncomingMessagesWorker] Chat ${chatId}: ${outcome.reason}`);
+    await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER');
+    await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
+    await notifyBusiness({
+      businessId,
+      type: 'HUMAN_HANDOFF',
+      severity: 'warning',
+      title: 'A conversation needs a human',
+      body: 'No AI agent matched this message (no active agent, or none of your agents\' keywords matched), so nothing was sent.',
+      targetType: 'chat',
+      targetId: chatId,
+    }).catch((error) => {
+      console.error('[IncomingMessagesWorker] Failed to dispatch HUMAN_HANDOFF notification:', error);
+    });
+    return;
+  }
+
+  // A blocked keyword is a hard stop: no AI reply at all. The chat is moved
+  // to HUMAN_TAKEOVER so the AI cannot pick it back up on the next message,
+  // and the team is notified - silently dropping it would leave a real
+  // customer waiting on a reply that never comes.
+  if (outcome.kind === 'escalate_to_human') {
+    console.warn(`[IncomingMessagesWorker] Chat ${chatId}: ${outcome.reason}`);
+    await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER');
+    await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
+    await notifyBusiness({
+      businessId,
+      type: 'HUMAN_HANDOFF',
+      severity: 'warning',
+      title: 'A conversation needs a human',
+      body: `A blocked keyword ("${outcome.matchedKeyword}") matched, so no AI reply was sent.`,
+      targetType: 'chat',
+      targetId: chatId,
+    }).catch((error) => {
+      console.error('[IncomingMessagesWorker] Failed to dispatch HUMAN_HANDOFF notification:', error);
+    });
+    return;
+  }
+
+  // Same observability gap as 'no_agent' above, one step further down the
+  // pipeline: an agent WAS selected, but the model call itself failed
+  // (bad/missing API key, quota, a genuine API error) and Goose failover
+  // (plus the orchestrator's own one-hop escalation) didn't save it.
+  // Previously this was silent too - only a server log line - so a
+  // business could have a perfectly configured agent and still see
+  // nothing arrive, indefinitely, with no clue why. outcome.reason
+  // carries the real, specific cause (e.g. "GEMINI_API_KEY is not
+  // configured" or the literal API error) into the notification, so the
+  // operator does not have to guess.
+  if (outcome.kind === 'unavailable') {
+    console.log(`[IncomingMessagesWorker] AI reply unavailable for chat ${chatId}: ${outcome.reason}`);
+    await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER');
+    await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
+    await notifyBusiness({
+      businessId,
+      type: 'AI_FAILURE',
+      severity: 'warning',
+      title: 'The AI could not reply to a conversation',
+      body: outcome.reason,
+      targetType: 'chat',
+      targetId: chatId,
+    }).catch((error) => {
+      console.error('[IncomingMessagesWorker] Failed to dispatch AI_FAILURE notification:', error);
+    });
+    return;
+  }
+
+  const agent = outcome.agent;
+
+  // Idempotency key derived from the inbound message's own id: if this job
+  // is ever retried/redelivered, the exact same reply is never sent twice.
+  await whatsappOutboundMessageService.send({
+    businessId,
+    whatsappAccountId,
+    chatId,
+    idempotencyKey: `ai-reply:${messageId}`,
+    messageType: 'text',
+    text: outcome.text,
+    requestedBy: 'ai',
+    // The operator's real configured pacing, so replies do not land
+    // unnaturally fast. 0 dispatches immediately.
+    ...(agent.responseDelaySeconds > 0 ? { delayMs: agent.responseDelaySeconds * 1000 } : {}),
+  });
+  console.log(`[IncomingMessagesWorker] AI reply queued for chat ${chatId} (agent ${agent.id}).`);
+}
+
+/**
+ * The media-message counterpart to the inline trigger above: called once
+ * per media job, after its real download outcome (success, failure, or
+ * unavailable) is already durably recorded. Never fires for a message a
+ * human sent, one from before this account was live, one whose chat isn't
+ * AI_ACTIVE right now, or a duplicate/backfilled row - the same real
+ * conditions the text-only path checks, just evaluated after the async
+ * download instead of at persist time.
+ */
+async function maybeTriggerMediaAiHandoff(
+  message: WhatsAppMessageRecord,
+  media: WhatsAppMediaRecord,
+): Promise<void> {
+  if (message.fromMe || message.isHistorical) return;
+
+  const chat = await chatRepository.findById(message.chatId);
+  if (!chat || chat.aiMode !== 'AI_ACTIVE') return;
+
+  const mediaAvailable = media.downloadStatus === 'downloaded';
+  const queryText = message.textContent ?? mediaFallbackText(message.messageType, mediaAvailable);
+
+  await runAiHandoff({
+    businessId: message.businessId,
+    whatsappAccountId: message.whatsappAccountId,
+    chatId: chat.id,
+    contactId: chat.contactId,
+    messageId: message.id,
+    queryText,
+    mediaId: mediaAvailable ? media.id : null,
+  });
 }
 
 const messageRepository = new WhatsAppMessageRepository(pool);
@@ -262,51 +324,56 @@ async function processMediaDownload(data: MediaDownloadJobData): Promise<void> {
   const decoded = decodeBuffersFromQueue(mediaDescriptor) as { key: WAMessageKey; message: proto.IMessage };
   const waMessage = { key: decoded.key, message: decoded.message } as WAMessage;
 
-  let buffer: Buffer;
+  // Single real outcome computed once, then recorded and reacted to exactly
+  // once below - every failure branch (transport error, empty buffer,
+  // oversized, checksum mismatch) used to duplicate the same
+  // setDownloadResult('failed'/'unavailable') call and then return early,
+  // silently skipping the message/AI-handoff lookup that only the success
+  // path reached. A caption-only-visible message whose media then failed to
+  // download would otherwise never trigger a reply at all.
+  let status: MediaDownloadStatus;
+  let storageReference: string | null = null;
+  let sha256Hex: string | null = null;
+  let fileSize: number | null = null;
+
   try {
-    buffer = await downloadMediaMessage(waMessage, 'buffer', {});
+    const buffer = await downloadMediaMessage(waMessage, 'buffer', {});
+    if (!buffer || buffer.length === 0) {
+      console.error(`[RealtimeEventsWorker] Media download for ${mediaId} returned an empty buffer`);
+      status = 'failed';
+    } else if (buffer.length > MAX_MEDIA_DOWNLOAD_BYTES) {
+      console.error(
+        `[RealtimeEventsWorker] Media ${mediaId} (${buffer.length} bytes) exceeds MEDIA_MAX_DOWNLOAD_BYTES (${MAX_MEDIA_DOWNLOAD_BYTES})`,
+      );
+      status = 'failed';
+    } else {
+      const actualSha256 = createHash('sha256').update(buffer).digest();
+      const declaredSha256 = extractDeclaredSha256(decoded.message);
+      if (declaredSha256 && !actualSha256.equals(declaredSha256)) {
+        console.error(`[RealtimeEventsWorker] Media ${mediaId} failed checksum verification against sender-declared SHA-256`);
+        status = 'failed';
+      } else {
+        sha256Hex = actualSha256.toString('hex');
+        storageReference = await storeMedia(businessId, sha256Hex, buffer);
+        fileSize = buffer.length;
+        status = 'downloaded';
+      }
+    }
   } catch (error) {
     const httpError = error as HttpLikeError;
     const statusCode = httpError.output?.statusCode ?? httpError.status;
-    const unavailable = statusCode === 404 || statusCode === 410;
-    console.error(
-      `[RealtimeEventsWorker] Media download failed for media ${mediaId}: ${(error as Error).message}`,
-    );
-    await mediaRepository.setDownloadResult(mediaId, unavailable ? 'unavailable' : 'failed', null, null);
-    return;
+    status = statusCode === 404 || statusCode === 410 ? 'unavailable' : 'failed';
+    console.error(`[RealtimeEventsWorker] Media download failed for media ${mediaId}: ${(error as Error).message}`);
   }
 
-  if (!buffer || buffer.length === 0) {
-    console.error(`[RealtimeEventsWorker] Media download for ${mediaId} returned an empty buffer`);
-    await mediaRepository.setDownloadResult(mediaId, 'failed', null, null);
-    return;
-  }
-
-  if (buffer.length > MAX_MEDIA_DOWNLOAD_BYTES) {
-    console.error(
-      `[RealtimeEventsWorker] Media ${mediaId} (${buffer.length} bytes) exceeds MEDIA_MAX_DOWNLOAD_BYTES (${MAX_MEDIA_DOWNLOAD_BYTES})`,
-    );
-    await mediaRepository.setDownloadResult(mediaId, 'failed', null, null);
-    return;
-  }
-
-  const actualSha256 = createHash('sha256').update(buffer).digest();
-  const declaredSha256 = extractDeclaredSha256(decoded.message);
-  if (declaredSha256 && !actualSha256.equals(declaredSha256)) {
-    console.error(`[RealtimeEventsWorker] Media ${mediaId} failed checksum verification against sender-declared SHA-256`);
-    await mediaRepository.setDownloadResult(mediaId, 'failed', null, null);
-    return;
-  }
-
-  const sha256Hex = actualSha256.toString('hex');
-  const storageReference = await storeMedia(businessId, sha256Hex, buffer);
-  await mediaRepository.setDownloadResult(mediaId, 'downloaded', storageReference, sha256Hex, buffer.length);
+  await mediaRepository.setDownloadResult(mediaId, status, storageReference, sha256Hex, fileSize);
 
   const media = await mediaRepository.findById(mediaId);
   if (media?.messageId) {
     const message = await messageRepository.findById(media.messageId);
     if (message) {
       await publishRealtimeEvent({ type: 'media.updated', businessId, mediaId, messageId: message.id, chatId: message.chatId });
+      await maybeTriggerMediaAiHandoff(message, media);
     }
   } else if (media?.statusId) {
     await publishRealtimeEvent({ type: 'status.media.updated', businessId, mediaId, statusId: media.statusId });

@@ -64,6 +64,7 @@ function fakeContext(overrides: Partial<AiHandoffContext> = {}): AiHandoffContex
     conversationHistory: [fakeMessage()],
     businessTimezone: 'UTC',
     timeContext: buildTimeContext(Date.now(), 'UTC', { status: 'SYNCED', lastSyncedAt: new Date(), source: 'test' }),
+    media: null,
     ...overrides,
   };
 }
@@ -82,15 +83,35 @@ describe('generateAiReply (real GEMINI_API_KEY state in this environment - never
     }
   });
 
-  it('reports "unavailable" rather than calling the model when there is no real text to reply to', async () => {
+  it('reports "unavailable" rather than calling the model when there is truly nothing to reply to (empty conversation history)', async () => {
+    const result = await generateAiReply(fakeAgent(), fakeContext({ conversationHistory: [] }));
+
+    expect(result.status).toBe('unavailable');
+    if (result.status === 'unavailable') {
+      expect(result.reason).toContain('No real message text');
+    }
+  });
+
+  it('a caption-less media message is no longer silently skipped - it still attempts a real reply, honestly, with a real placeholder standing in for the caption', async () => {
+    // Before this phase, a media message with no caption was filtered out of
+    // toContents entirely, so contents.length was 0 and the model was never
+    // even called - a customer who only sent a photo got no reply, no
+    // notification, nothing. Now it reaches the same real GEMINI_API_KEY-gated
+    // path as any other message; this environment has no key configured, so
+    // the honest outcome is "unavailable" for that reason - never a silent
+    // no-op, and never a fabricated reply.
     const result = await generateAiReply(
       fakeAgent(),
       fakeContext({ conversationHistory: [fakeMessage({ textContent: null, messageType: 'image', hasMedia: true })] }),
     );
 
-    expect(result.status).toBe('unavailable');
-    if (result.status === 'unavailable') {
-      expect(result.reason).toContain('No real message text');
+    if (!process.env.GEMINI_API_KEY) {
+      expect(result.status).toBe('unavailable');
+      if (result.status === 'unavailable') {
+        expect(result.reason).toContain('GEMINI_API_KEY');
+      }
+    } else {
+      expect(['generated', 'unavailable']).toContain(result.status);
     }
   });
 });

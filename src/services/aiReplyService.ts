@@ -10,6 +10,7 @@ import { describeTimeContext } from './time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME, getCurrentTimeFunctionDeclaration } from './time/getCurrentTimeTool.js';
 import { geminiCircuitBreaker } from './aiCircuitBreaker.js';
 import { guardToolInvocation } from './ai/agentGuard.js';
+import { mediaFallbackText, type InlineMediaPart } from './ai/mediaContext.js';
 
 export type AiReplyResult = { status: 'generated'; text: string } | { status: 'unavailable'; reason: string };
 
@@ -90,16 +91,30 @@ function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffContext)
  * message is already persisted, its first element IS that message - so it
  * doubles as the final conversation turn. Reversed here into the
  * chronological order a real conversation actually happened in.
+ *
+ * A media message with no caption is no longer dropped from history (it
+ * used to be, silently) - it gets an honest, factual placeholder instead of
+ * a claim the AI cannot support. Only the triggering (last) turn ever gets
+ * real inline bytes attached, and only when `media` genuinely resolved to
+ * one - every earlier media turn is described, never actually seen, since
+ * this codebase never stored image/audio understanding retroactively.
  */
-function toContents(history: AiHandoffContext['conversationHistory']) {
-  return history
-    .filter((message) => Boolean(message.textContent))
+function toContents(history: AiHandoffContext['conversationHistory'], media: InlineMediaPart | null) {
+  const ordered = history
+    .filter((message) => Boolean(message.textContent) || message.hasMedia)
     .slice()
-    .reverse()
-    .map((message) => ({
-      role: message.fromMe ? ('model' as const) : ('user' as const),
-      parts: [{ text: message.textContent as string }],
-    }));
+    .reverse();
+
+  return ordered.map((message, index) => {
+    const isTriggeringMessage = index === ordered.length - 1;
+    const attachMedia = isTriggeringMessage && Boolean(media);
+    const text = message.textContent ?? mediaFallbackText(message.messageType, isTriggeringMessage ? attachMedia : true);
+
+    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [{ text }];
+    if (attachMedia && media) parts.push({ inlineData: { mimeType: media.mimeType, data: media.data } });
+
+    return { role: message.fromMe ? ('model' as const) : ('user' as const), parts };
+  });
 }
 
 /**
@@ -147,9 +162,17 @@ async function tryGooseFallback(
     return { status: 'unavailable', reason: `Gemini unavailable (${geminiReason}); Goose fallback not configured` };
   }
 
+  // Goose's own contract is text-only - it has no multimodal understanding
+  // to hand image/audio bytes to. Every turn `toContents` builds always
+  // starts with a real {text} part (a caption, or an honest media
+  // placeholder), so this never silently drops a turn's meaning - it only
+  // ever drops bytes Goose could not have used anyway.
   const gooseResult = await gooseService.generateResponse({
     systemInstruction: buildSystemInstruction(agent, context),
-    contents,
+    contents: contents.map((content) => ({
+      role: content.role,
+      parts: [content.parts[0] as { text: string }],
+    })),
     endpoint: workspaceEndpoint,
   });
 
@@ -209,7 +232,7 @@ async function resolveTimeToolCall(
 }
 
 export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffContext): Promise<AiReplyResult> {
-  const contents = toContents(context.conversationHistory);
+  const contents = toContents(context.conversationHistory, context.media);
   if (contents.length === 0) {
     return { status: 'unavailable', reason: 'No real message text to reply to' };
   }
