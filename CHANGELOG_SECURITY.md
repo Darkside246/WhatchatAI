@@ -1,5 +1,85 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - Context Trust Builder: untrusted-data boundaries around CRM notes and knowledge base content
+
+**Branch:** `phase-2-ai-repair` (continues on the same branch as the prior
+phases - see the Phase 3 entry for why this branch wasn't split further)
+
+**Context:** the user asked for a comparison between a second pasted
+architecture proposal and the actual current state of this codebase. That
+proposal's "Context Trust Builder" section identified a real, independently
+confirmed gap that the earlier assessment flagged as the highest-priority
+item in `docs/PRODUCTION_READINESS_DIRECTIVE.md` (which supersedes
+`PRODUCTION_AUDIT.md` for planning purposes and records the rest of the
+still-open backlog, including two items - a funnel stale-instance sweep
+and Phase 18's scheduled security scans - carried over unchanged from that
+prior audit): `buildSystemInstruction()` in `aiReplyService.ts`
+concatenated CRM notes and knowledge-base excerpts directly into the
+system prompt as plain text, with no boundary distinguishing "real
+business data" from "an instruction this system wrote."
+
+**What changed:** `aiReplyService.ts` gains a real trust boundary:
+
+- `wrapUntrustedData(source, text)` wraps a value in
+  `<untrusted_data source="...">...</untrusted_data>`.
+- `escapeUntrustedDataBoundary(text)` neutralizes any literal occurrence
+  of `<untrusted_data...>` or `</untrusted_data>` *inside* content about
+  to be wrapped - without this, a CRM note containing the literal text
+  `</untrusted_data>` could forge a close tag and make whatever text
+  follows it in that same note appear to be trusted system instructions
+  again. Runs on every value passed to `wrapUntrustedData`, unconditionally.
+- `buildSystemInstruction()` now wraps CRM `notes` (free text) and every
+  knowledge-base excerpt's snippet in this boundary, and - only when there
+  is real untrusted data present at all - prepends an explicit rule
+  telling the model what the boundary means: real reference material,
+  never a command, a role, or a new instruction, regardless of what text
+  inside it claims or how it's phrased.
+- Deliberately narrow: CRM `stage`/`leadStatus` are controlled enum
+  values, not free text, and are left unwrapped - only genuinely
+  free-text fields (`notes`, KB `snippet`) go through the boundary. The
+  boundary-meaning sentence itself is only added when there is real
+  untrusted data to explain (an agent with no CRM match and no KB hits
+  gets the exact same prompt as before this change).
+
+**Why this matters regardless of whether any of these fields have
+actually been abused yet:** CRM notes are operator-editable free text -
+an operator could paste in something copied from a customer email or
+complaint without noticing it contains injection-style phrasing, and a
+future integration writing to either table would inherit the same risk
+automatically. This is the same reasoning the codebase already applies to
+input validation generally: not skipped just because most input happens
+to be honest.
+
+**Tests:** 8 new tests in `test/aiReplyService.test.ts` -
+`escapeUntrustedDataBoundary` neutralizes both a bare close tag and an
+open tag with attributes while preserving the surrounding text;
+`wrapUntrustedData` produces the exact well-formed boundary string;
+`buildSystemInstruction` wraps real CRM notes and real KB excerpts and
+adds the boundary-meaning rule; a CRM note engineered to forge a close
+tag is proven to never actually produce more than the one real
+`</untrusted_data>` this function itself appends; structured CRM fields
+are proven to stay unwrapped; and the boundary/rule are proven absent
+entirely when there is no untrusted data (no CRM match, no KB hits) - the
+prompt for that case is unchanged from before this pass. Full suite:
+82/82 test files, 516/516 tests (up from 508 - the expected +8), zero
+regressions. Typecheck and production build both clean.
+
+**Status:** `IMPLEMENTED AND VERIFIED`.
+
+**Risks:** this raises the bar against prompt injection via CRM/KB
+content, it does not eliminate the risk category - a sufficiently capable
+model could still be manipulated by text framed as data rather than as an
+instruction. This is defense-in-depth, not a claimed-complete fix; the
+existing "reply only using the real information above... never invent
+facts" hard rule in the same prompt remains the other half of this
+defense, unchanged.
+
+**Rollback:** `git revert` the commit, or discard the branch. No schema
+migration - this is a prompt-construction change only, nothing new
+persisted to the database.
+
+---
+
 ## 2026-08-21 - DSPy prompt optimization: a real, separate offline service with a human-approval-only interface into the live app
 
 **Branch:** `phase-2-ai-repair` (continues on the same branch as the prior
