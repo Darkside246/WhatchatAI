@@ -102,29 +102,44 @@ pasted directive without our own verification (`unverified`).
    shared Gateway), pinned version + digest (obtained from the real GHCR
    registry, never invented), a Security Watcher that can quarantine a
    cell, and OpenClaw treated as a permanently untrusted execution
-   environment mediated through the existing Tool Gateway/`agentGuard.ts`
-   - never trusted with authorization itself. Two slices landed so far
-   (both `IMPLEMENTED BUT NOT FULLY VERIFIED` - no real Docker/Podman
-   daemon and no live `api.github.com` access from this sandbox; see
-   `CHANGELOG_SECURITY.md`'s two 2026-08-21 "OpenClaw" entries for full
-   detail):
+   environment mediated through a dedicated Tool Gateway - never trusted
+   with authorization itself, and never routed through the same
+   `agentGuard.ts`/`aiToolPolicy.ts` the live Gemini path uses (a
+   deliberate file-level isolation choice, not an oversight). Three
+   slices landed so far (see `CHANGELOG_SECURITY.md`'s three 2026-08-21
+   "OpenClaw" entries for full detail):
    1. Mapping table + `OpenClawFleetService` Fleet CLI lifecycle wrapper.
+      `IMPLEMENTED BUT NOT FULLY VERIFIED` (no real Docker/Podman daemon
+      in this sandbox).
    2. `openclawSecurityWatcherService.ts` - polls GitHub Security
       Advisories per deployed version, severity-only classification
       (never auto-clears SAFE, given OpenClaw's non-semver-compatible
       rebuild-revision versioning), auto-quarantines on CRITICAL, wired
-      into the scheduler every 6 hours.
+      into the scheduler every 6 hours. `IMPLEMENTED BUT NOT FULLY
+      VERIFIED` (no live `api.github.com` access from this sandbox).
+   3. `openclawToolGateway.ts` + `entityOwnershipRegistry.ts` - the full
+      authorization pipeline (idempotency/conflict detection, tenant and
+      cell checks, fencing-generation check, rate limit, field/value
+      validation, entity ownership) protecting the first and only
+      WRITE-tier OpenClaw tool, `update_lead` (scoped to `status`/
+      `stage`/`notes` - narrower than first proposed, see the changelog
+      entry for the real schema reasons). `IMPLEMENTED AND VERIFIED` for
+      the authorization logic itself (15 tests, all real Postgres
+      outcomes matching an explicit adversarial acceptance table); still
+      not verified end-to-end since no real OpenClaw cell has ever called
+      it.
 
    Remaining, in order: (1) encrypted Gateway-token storage using the
-   existing `EncryptionService` envelope-encryption path; (2) Tool Gateway
-   wiring into `agentGuard.ts` so OpenClaw output is never trusted with
-   authorization - including an explicit entity-ownership check and a
-   per-tool-invocation idempotency key, both real gaps identified in
-   review of the first slice; (3) a real `fleet create` run against an
-   actual Docker/Podman daemon; (4) OpenClaw behind a feature flag for
-   controlled testing against the existing Gemini/Goose path, with an
-   immediate rollback - the existing AI path stays primary until all of
-   the above is verified, not just implemented.
+   existing `EncryptionService` envelope-encryption path - rotation/
+   revocation mechanics need re-verifying against the real Fleet CLI
+   before being named as such (Fleet's only documented rotation path may
+   be `fleet restore`, not a lightweight standalone operation); (2) a real
+   `fleet create` run against an actual Docker/Podman daemon; (3) wiring
+   an actual OpenClaw cell's tool-call protocol to call the gateway's
+   `invoke()`; (4) OpenClaw behind a feature flag for controlled testing
+   against the existing Gemini/Goose path, with an immediate rollback -
+   the existing AI path stays primary until all of the above is verified,
+   not just implemented.
 4. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
    internal analytics, or customer-facing analytics for tenants? Different
    answers imply different event schemas and access control. Not started.

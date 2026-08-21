@@ -20,6 +20,8 @@ export interface OpenClawFleetCellRecord {
   quarantineReason: string | null;
   quarantinedAt: string | null;
   lastHealthCheckAt: string | null;
+  /** Fencing generation - bumped only when the underlying container is genuinely replaced (provision, upgrade), never by start/stop. */
+  generation: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -36,6 +38,7 @@ interface OpenClawFleetCellRow {
   quarantine_reason: string | null;
   quarantined_at: string | null;
   last_health_check_at: string | null;
+  generation: number;
   created_at: string;
   updated_at: string;
 }
@@ -53,6 +56,7 @@ function toRecord(row: OpenClawFleetCellRow): OpenClawFleetCellRecord {
     quarantineReason: row.quarantine_reason,
     quarantinedAt: row.quarantined_at,
     lastHealthCheckAt: row.last_health_check_at,
+    generation: row.generation,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -138,10 +142,11 @@ export class OpenClawFleetCellRepository {
     );
   }
 
+  /** An upgrade genuinely recreates the container - bumps generation so any in-flight fenced tool request from the prior generation is rejected. */
   async recordUpgrade(businessId: string, deploymentVersion: string, imageDigest: string): Promise<void> {
     await this.db.query(
       `UPDATE openclaw_fleet_cells
-       SET deployment_version = $2, image_digest = $3, cell_state = 'RUNNING', updated_at = now()
+       SET deployment_version = $2, image_digest = $3, cell_state = 'RUNNING', generation = generation + 1, updated_at = now()
        WHERE business_id = $1`,
       [businessId, deploymentVersion, imageDigest],
     );

@@ -1,5 +1,108 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - OpenClaw Tool Gateway + first WRITE-tier tool, update_lead (third slice)
+
+**Branch:** `phase-2-ai-repair`
+
+**Context:** the third piece of the finalized OpenClaw architecture -
+the one the user correctly called "the real security milestone." The
+governing invariant, stated explicitly and enforced here in code and
+tests, not just prose: **OpenClaw can request an action, but it can
+never authorize one.** Every consequential mutation an OpenClaw cell
+could ever request passes through this gateway; nothing about the
+gateway's decision depends on anything the cell's request itself claims
+(no "I'm the owner" field, no identity carried in the tool arguments).
+
+**Two real schema findings, checked before writing any code, that
+narrowed scope below what was originally proposed:**
+
+- `update_lead`'s allowed fields are **`status`, `stage`, `notes`
+  only** - not the originally proposed list including "assigned
+  agent/user" and "tags"/"follow-up date." Checked the real schema:
+  `tags` and `follow_up_date` are columns on `crm_contacts`, a different
+  entity than `leads`; `owner_user_id` exists as a raw column on `leads`
+  but was never wired into `LeadRepository` by any prior phase (no FK to
+  `users`, no read/write method touches it). Extending the tool to cover
+  it would mean wiring a previously-unused column and validating a real
+  assignee - genuine scope beyond "the first tool should be boring."
+  Deferred to a future `update_crm_contact` tool with its own resolver.
+- **`aiToolPolicy.ts` and `agentGuard.ts` are untouched, and OpenClaw's
+  tool registry is a fully separate table/file**, not a shared registry
+  with the live Gemini function-calling path. A registered-but-unused
+  entry there would likely have been harmless in practice, but both
+  files are named explicitly in the user's own diagram as the existing
+  critical path being protected - genuine file-level isolation was
+  chosen over a defensible-but-shared-state argument. A test asserts
+  `aiToolPolicy.ts`'s registered-tool list is still exactly
+  `get_current_time`, proving this rather than just claiming it.
+
+**What was built:**
+
+- Migration `063_openclaw_tool_gateway.sql`: `generation` column on
+  `openclaw_fleet_cells` (a fencing counter, bumped only on genuine
+  container replacement - initial provision and `fleet upgrade`, never
+  start/stop) and `openclaw_tool_executions` (one row per tool-invocation
+  *attempt*, approved or denied - the real idempotency store and the
+  full audit trail in one table).
+- `OpenClawToolExecutionRepository`.
+- `entityOwnershipRegistry.ts`: `EntityOwnershipRegistry` +
+  `LeadOwnershipResolver` - resolves the requesting WhatsApp chat to its
+  real CRM contact (`whatsapp_chats.contact_id -> crm_contacts` via the
+  existing `findByWhatsAppContact`), then checks that contact against the
+  lead's own `crm_contact_id`. An entity type with no registered resolver
+  returns `NOT_FOUND`, never an implicit pass.
+- `openclawToolGateway.ts` (`OpenClawToolGateway.invoke`): the full
+  pipeline - idempotency-key lookup and conflict detection (same key,
+  different parameters, is a DENY, never a silent re-execution or a
+  silent replay of stale results) -> tenant-real check -> Fleet cell
+  match -> `SECURITY_QUARANTINED` check -> fencing-generation check ->
+  rate limit (20/5min, its own counter against `openclaw_tool_executions`,
+  not shared with `agentGuard`'s) -> field/value validation against the
+  tool's explicit allowlist -> entity ownership -> execution via a small,
+  explicit `execute()` switch (never a data-driven "call any repository
+  method by name" dispatcher) -> a durable, auditable record either way.
+
+**Verification, matching the acceptance table the user required before
+registering any additional WRITE-tier tool** - all real Postgres
+outcomes, not mocked:
+
+| Scenario | Result |
+|---|---|
+| OpenClaw updates its own tenant's authorized lead | APPROVED, row actually changed |
+| Another tenant's lead | DENIED (`not found`), other tenant's row untouched |
+| A different customer's lead in the *same* tenant | DENIED (`no authorized relationship`) |
+| Unregistered tool (`approve_refund`) | DENIED |
+| Unknown entity id | DENIED |
+| Unwritable field (`owner_user_id`) | DENIED |
+| Invalid field value | DENIED |
+| Same operation submitted twice | First APPROVED, second replayed (no second DB write) |
+| Same idempotency key, different fields | DENIED, original fields never overwritten |
+| Stale/expired fencing generation | DENIED, lead untouched |
+| `SECURITY_QUARANTINED` cell | DENIED, lead untouched |
+| Prompt-injection-style claimed identity in the request fields | DENIED - the extra field alone is rejected; nothing inspects it for a claim |
+| `execute_sql`-shaped tool name | DENIED - same as any other unregistered tool, no SQL capability exists anywhere in this path |
+| Existing Gemini/Baileys path | Unaffected - `aiToolPolicy.ts` still registers exactly one tool |
+
+15 new tests, all passing on the first real run against Postgres. Full
+suite 562/562. Typecheck clean.
+
+**Status: `IMPLEMENTED AND VERIFIED`** for the gateway's own authorization
+logic (every scenario above is a real, asserted Postgres outcome, not a
+mocked unit). **Still `NOT FULLY VERIFIED` end-to-end**: nothing yet
+calls this gateway from an actual running OpenClaw cell (no real Fleet
+`fleet create` has ever been run anywhere in this engagement - Docker Hub
+pulls remain blocked in this sandbox), so this proves the authorization
+boundary is correct in isolation, not that a real cell's real tool-call
+protocol reaches it correctly.
+
+**What's still open, in order:** (1) encrypted Gateway-token storage
+(deferred from slice order, not forgotten - see prior entry); (2) a real
+`fleet create` run against an actual Docker/Podman daemon; (3) wiring an
+actual OpenClaw cell's tool-call protocol to call `invoke()`; (4) OpenClaw
+behind a feature flag for controlled testing against the existing
+Gemini/Goose path, with an immediate rollback. The existing Gemini/Baileys
+production path remains completely untouched by all three slices so far.
+
 ## 2026-08-21 - OpenClaw Security Watcher (second slice)
 
 **Branch:** `phase-2-ai-repair`
