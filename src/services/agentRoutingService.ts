@@ -46,7 +46,11 @@ function firstMatch(text: string, keywords: string[]): string | null {
  *     all, highest priority first.
  *
  * Returns 'no_agent' rather than inventing a fallback when nothing applies -
- * the caller must skip silently, never fabricate a reply.
+ * the caller must skip silently, never fabricate a reply. Note this is a
+ * legitimate, intentional outcome (some businesses want AI to only ever
+ * answer specific keyword-scoped topics) - it is the caller's job to make
+ * that outcome VISIBLE to the business (see incomingMessagesWorker.ts),
+ * never to silently reinterpret the operator's own keyword scoping.
  */
 export async function routeInboundMessage(businessId: string, messageText: string): Promise<AgentRoutingDecision> {
   const agents = (await agentRepository.listByBusiness(businessId)).filter((agent) => agent.status === 'ACTIVE');

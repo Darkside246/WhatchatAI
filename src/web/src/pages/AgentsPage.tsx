@@ -507,6 +507,17 @@ export function AgentsPage() {
           <AiEngineStrip />
         </div>
 
+        {agents && agents.length > 0 && agents.every((agent) => agent.status !== 'ACTIVE' || agent.triggerKeywords.length > 0) && (
+          <div className="mt-4 flex gap-2.5 rounded-lg border border-warning/40 bg-warning/10 p-3">
+            <ShieldAlert size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden />
+            <p className="text-caption text-fg-secondary">
+              <span className="font-semibold text-fg">No agent can catch everything.</span> Every active agent here has trigger
+              keywords, so a message that matches none of them gets no AI reply at all - it is handed to a human instead. If you
+              want one agent to answer anything else, remove its trigger keywords (or add a second agent with none).
+            </p>
+          </div>
+        )}
+
         {error && <p className="mt-4 text-caption text-error">{error}</p>}
 
         <div className="mt-5 grid gap-3 sm:grid-cols-2">

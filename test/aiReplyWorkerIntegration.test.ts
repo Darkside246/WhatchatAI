@@ -2,10 +2,15 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { AiAgentRepository } from '../src/repositories/aiAgentRepository.js';
 import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
+import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
+import { NotificationRepository } from '../src/repositories/notificationRepository.js';
+import { register } from '../src/services/authService.js';
 import { enqueueIncomingMessage, incomingMessagesQueue } from '../src/queue/queues/incomingMessagesQueue.js';
 import { incomingMessagesWorker } from '../src/queue/workers/incomingMessagesWorker.js';
 import type { IngestedWhatsAppMessage } from '../src/services/whatsappMessageIngestionService.js';
-import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
+import { createTestAccount, resetDatabase } from './helpers.js';
+
+const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
 
 /**
  * This environment has no GEMINI_API_KEY configured (same real state the
@@ -16,12 +21,18 @@ import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.
  */
 describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API_KEY absence in this environment)', () => {
   let businessId: string;
+  let ownerId: string;
   let accountId: string;
   let accountJid: string;
 
   beforeEach(async () => {
     await resetDatabase();
-    businessId = await createTestBusiness();
+    const owner = await register(
+      { email: 'owner@example.com', password: 'correcthorsebatterystaple', displayName: 'Owner' },
+      device,
+    );
+    businessId = owner.business.id;
+    ownerId = owner.user.id;
     accountJid = '15550001111@s.whatsapp.net';
     accountId = await createTestAccount(businessId, accountJid);
   });
@@ -84,6 +95,32 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
       businessId,
     ]);
     expect(Number(rows[0].count)).toBe(0);
+  });
+
+  it('a "no_agent" outcome is never silent - it hands the chat to a human and notifies the business, not just a server log', async () => {
+    // Reproduces the real reported symptom: an operator's only agent is
+    // scoped to a trigger keyword that does not match this message, so
+    // routing legitimately returns 'no_agent'. Before this fix that
+    // returned with nothing but a console.log line the operator would never
+    // see, so a real customer could go unanswered indefinitely with no one
+    // aware of it.
+    const agents = new AiAgentRepository(pool);
+    await agents.create({ businessId, name: 'Bookings', triggerKeywords: ['appointment'] });
+
+    const messageId = `AI-NOAGENT-VISIBLE-${Date.now()}`;
+    await sendInboundAndWait(messageId, 'hey, are you open on weekends?');
+
+    const messageRepository = new WhatsAppMessageRepository(pool);
+    const persisted = await messageRepository.findByWhatsAppId(businessId, accountId, messageId);
+    expect(persisted).not.toBeNull();
+
+    const chats = new WhatsAppChatRepository(pool);
+    const chat = await chats.findById(persisted!.chatId);
+    expect(chat?.aiMode).toBe('HUMAN_TAKEOVER');
+
+    const notifications = new NotificationRepository(pool);
+    const list = await notifications.listForUser(businessId, ownerId, 10);
+    expect(list.some((n) => n.type === 'HUMAN_HANDOFF' && n.targetId === persisted!.chatId)).toBe(true);
   });
 
   it('never fabricates an outbound send when an agent exists but the AI model is unavailable (no GEMINI_API_KEY)', async () => {

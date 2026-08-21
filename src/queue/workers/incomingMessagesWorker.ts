@@ -111,11 +111,32 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
 
     // Real multi-agent routing: which of this business's active agents should
     // take this message, decided from the operator's own keyword/priority
-    // configuration. 'no_agent' is an honest outcome - skip, never fabricate.
+    // configuration. 'no_agent' is an honest, legitimate outcome (a business
+    // can deliberately want AI to only ever answer specific keyword-scoped
+    // topics) - it must never be papered over with a fabricated reply. But
+    // it must also never be SILENT: previously this returned with nothing
+    // but a server log line the business would never see, so a customer
+    // could go completely unanswered, indefinitely, with no one aware of it.
+    // Handled exactly like a blocked keyword now - the chat moves to
+    // HUMAN_TAKEOVER (so this does not repeat silently on every subsequent
+    // message from the same customer) and the business is notified.
     const decision = await routeInboundMessage(businessId, result.message.textContent as string);
 
     if (decision.outcome === 'no_agent') {
-      console.log(`[IncomingMessagesWorker] AI handoff for chat ${result.chat.id}: ${decision.reason}`);
+      console.log(`[IncomingMessagesWorker] Chat ${result.chat.id}: ${decision.reason}`);
+      await chatRepository.setAiMode(result.chat.id, 'HUMAN_TAKEOVER');
+      await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId: result.chat.id });
+      await notifyBusiness({
+        businessId,
+        type: 'HUMAN_HANDOFF',
+        severity: 'warning',
+        title: 'A conversation needs a human',
+        body: 'No AI agent matched this message (no active agent, or none of your agents\' keywords matched), so nothing was sent.',
+        targetType: 'chat',
+        targetId: result.chat.id,
+      }).catch((error) => {
+        console.error('[IncomingMessagesWorker] Failed to dispatch HUMAN_HANDOFF notification:', error);
+      });
       return;
     }
 
