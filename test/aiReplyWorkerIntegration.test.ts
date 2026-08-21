@@ -123,7 +123,7 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
     expect(list.some((n) => n.type === 'HUMAN_HANDOFF' && n.targetId === persisted!.chatId)).toBe(true);
   });
 
-  it('never fabricates an outbound send when an agent exists but the AI model is unavailable (no GEMINI_API_KEY)', async () => {
+  it('never fabricates an outbound send when an agent exists but the AI model is unavailable (no GEMINI_API_KEY) - and makes that visible, not silent', async () => {
     if (process.env.GEMINI_API_KEY) return; // This test asserts the honest-unavailable path specifically.
 
     const agents = new AiAgentRepository(pool);
@@ -136,5 +136,22 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
       businessId,
     ]);
     expect(Number(rows[0].count)).toBe(0);
+
+    // Reproduces a second real reported symptom: routing succeeds (a real
+    // agent was selected), but the model call itself is unavailable and
+    // Goose failover isn't configured either. Before this fix that was also
+    // silent - only a server log line - so a perfectly-configured agent
+    // could still never produce a visible reply, with no clue why.
+    const messageRepository = new WhatsAppMessageRepository(pool);
+    const persisted = await messageRepository.findByWhatsAppId(businessId, accountId, messageId);
+    const chats = new WhatsAppChatRepository(pool);
+    const chat = await chats.findById(persisted!.chatId);
+    expect(chat?.aiMode).toBe('HUMAN_TAKEOVER');
+
+    const notifications = new NotificationRepository(pool);
+    const list = await notifications.listForUser(businessId, ownerId, 10);
+    const failure = list.find((n) => n.type === 'AI_FAILURE' && n.targetId === persisted!.chatId);
+    expect(failure).toBeDefined();
+    expect(failure?.body).toContain('GEMINI_API_KEY is not configured');
   });
 });

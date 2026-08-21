@@ -181,8 +181,30 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
       }
     }
 
+    // Same observability gap as 'no_agent' above, one step further down the
+    // pipeline: an agent WAS selected, but the model call itself failed
+    // (bad/missing API key, quota, a genuine API error) and Goose failover
+    // didn't save it. Previously this was silent too - only a server log
+    // line - so a business could have a perfectly configured agent and
+    // still see nothing arrive, indefinitely, with no clue why. reply.reason
+    // carries the real, specific cause (e.g. "GEMINI_API_KEY is not
+    // configured" or the literal API error) into the notification, so the
+    // operator does not have to guess.
     if (reply.status !== 'generated') {
       console.log(`[IncomingMessagesWorker] AI reply unavailable for chat ${result.chat.id}: ${reply.reason}`);
+      await chatRepository.setAiMode(result.chat.id, 'HUMAN_TAKEOVER');
+      await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId: result.chat.id });
+      await notifyBusiness({
+        businessId,
+        type: 'AI_FAILURE',
+        severity: 'warning',
+        title: 'The AI could not reply to a conversation',
+        body: reply.reason,
+        targetType: 'chat',
+        targetId: result.chat.id,
+      }).catch((error) => {
+        console.error('[IncomingMessagesWorker] Failed to dispatch AI_FAILURE notification:', error);
+      });
       return;
     }
 
