@@ -26,5 +26,6 @@ DATABASE_URL=postgres://whatchatai:whatchatai_dev@localhost:5432/whatchatai_dev
 npm install
 npm run dev    # runs migrations, then the backend (:3000) and frontend (:5173) together
 npm test        # runs 56 tests against a real whatchatai_test Postgres database
-npm run build   # real production build: compiled backend + Vite bundle, served as one process via `npm start`
+npm run build   # real production build: compiled backend + Vite bundle
+npm start       # runs the API/web process and the AI-reply queue worker together (`npm start` alone used to skip the worker - AI replies never fired in production; fixed)
 ```

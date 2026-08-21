@@ -14,7 +14,9 @@
     "dev:worker": "tsx src/queue/workers/incomingMessagesWorker.ts",
     "dev:web": "npm run dev --workspace=src/web",
     "build": "tsc && npm run build --workspace=src/web",
-    "start": "node dist/server/index.js",
+    "start": "concurrently -n backend,worker -c blue,magenta \"npm:start:server\" \"npm:start:worker\"",
+    "start:server": "node dist/server/index.js",
+    "start:worker": "node dist/queue/workers/incomingMessagesWorker.js",
     "typecheck": "tsc --noEmit && npm run typecheck --workspace=src/web",
     "db:migrate": "tsx src/db/migrate.ts",
     "test": "DATABASE_URL=postgres://whatchatai:whatchatai_dev@localhost:5432/whatchatai_test vitest run"
@@ -26,6 +28,7 @@
     "@google/genai": "latest",
     "@whiskeysockets/baileys": "latest",
     "bullmq": "^6.1.1",
+    "concurrently": "latest",
     "dotenv": "latest",
     "express": "latest",
     "express-rate-limit": "^8.6.2",
@@ -47,7 +50,6 @@
     "@types/pg": "^8.21.0",
     "@types/qrcode": "latest",
     "@types/ws": "^8.18.1",
-    "concurrently": "latest",
     "tsx": "latest",
     "typescript": "latest",
     "vitest": "^4.1.10"
