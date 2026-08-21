@@ -51,40 +51,36 @@ Verified against actual source/tests in this session, each with its own
 | Failure-injection-tested Postgres/Redis outage handling on the request path | `src/queue/enqueueWithTimeout.ts` (2 of 6 producers - see gap below) |
 | Container hardening (non-root, cap-drop, resource limits) | `Dockerfile`, `docker-compose.yml` - real boot verified once, not since Phase 2 |
 
-## Real, currently-open gaps - this is the actual backlog
+## Closed since this document was written
+
+Priorities 1-4 below are now done - each with its own `CHANGELOG_SECURITY.md`
+entry, real tests, and a passing full suite at the time it landed:
+
+1. **Context Trust Builder** - `<untrusted_data>` boundaries now wrap CRM
+   notes and knowledge-base excerpts in `aiReplyService.ts`, with a
+   boundary-forging-attempt escape and an explicit rule telling the model
+   what the boundary means. `IMPLEMENTED AND VERIFIED`.
+2. **Funnel stale-instance reconciliation sweep** - migration 059 added
+   `funnel_instances.resume_at`; `sweepStaleFunnelInstances()` reconciles
+   an instance whose delayed job never fired, never touches one still
+   genuinely waiting. `IMPLEMENTED AND VERIFIED`.
+3. **Phase 18: scheduled security scans** - `securityScanService.ts`
+   scans `security_audit_logs` for repeated `lock_unlock_failure`/
+   `ai_tool_denied` and raises a real, cooldown-deduped `SECURITY_ALERT`
+   notification. `IMPLEMENTED AND VERIFIED`.
+4. **`enqueueWithTimeout` on the remaining producers** - turned out to be
+   a real correction, not just uniformity: three of the four "off the
+   request path" producers were actually awaited by real HTTP routes
+   (`scheduleStatus`, `approveAndSend`, all three revocation functions).
+   All six remaining call sites now wrapped. `IMPLEMENTED AND VERIFIED`.
+
+## Real, currently-open gaps - this is the actual remaining backlog
 
 Ordered by priority. "Confidence" reflects whether this was independently
 found and verified in this codebase (`high`) vs. carried over from the
 pasted directive without our own verification (`unverified`).
 
-1. **Context Trust Builder** - *confidence: high, independently found*.
-   `buildSystemInstruction()` in `aiReplyService.ts` concatenates CRM
-   notes and knowledge-base excerpts directly into the system prompt with
-   no boundary marking - a customer-controlled or operator-pasted CRM
-   note containing prompt-injection-style text has no explicit "this is
-   data, not an instruction" framing today. Cheap, additive, no new
-   service. **Priority 1.**
-2. **Funnel stale-instance reconciliation sweep** - *confidence: high,
-   flagged in the last production audit*. Outbound messages, sync jobs,
-   and emails all have a sweep for "stuck mid-flight with a lost job"
-   (`sweepStaleOutboundMessages`, `sweepStaleSyncJobs`, `sweepStaleEmails`
-   in `incomingMessagesWorker.ts`); funnel instances stuck in `WAITING`
-   with a lost `funnel_advance` job do not. Same established pattern,
-   just not yet applied here. **Priority 2.**
-3. **Phase 18: scheduled security scans** - *confidence: high, flagged
-   twice now, never built*. No cron/repeatable job runs any kind of
-   security scan. A BullMQ repeatable job is the obvious fit, reusing
-   existing infrastructure - needs a real decision on what "scan" means
-   concretely (dependency audit? stale-session sweep? audit log rollup?)
-   before it can be scoped, not just scheduled. **Priority 3.**
-4. **`enqueueWithTimeout` coverage on the remaining 4 producers**
-   (`enqueueMediaDownload`, message-revocation enqueue, scheduled-status-
-   publish enqueue, email-send enqueue) - *confidence: high, a bounded
-   decision already documented, not an oversight*. None of these sit on a
-   synchronous request a user is waiting on, so lower urgency than the
-   two already wrapped, but still a real inconsistency worth closing for
-   uniformity. **Priority 4.**
-5. **Fencing tokens for BullMQ worker execution** (execution_id/lease_id/
+1. **Fencing tokens for BullMQ worker execution** (execution_id/lease_id/
    monotonic token validated inside the Postgres transaction) -
    *confidence: legitimate pattern (this is the standard
    distributed-systems technique for exactly this problem), but no
@@ -95,13 +91,13 @@ pasted directive without our own verification (`unverified`).
    but no observed gap it would have caught. **Watch item, not scheduled
    work** - build if a real duplicate-mutation incident is ever observed,
    not speculatively.
-6. **Docker container re-verification** - real gap, but *not something
+2. **Docker container re-verification** - real gap, but *not something
    this sandbox can close*: Docker Hub pulls are blocked by this
    environment's egress policy (hit repeatedly since Phase 1). Every
    phase since the one verified boot has been typechecked/tested/built
    natively, never re-booted in a real container. Stays documented as an
    open risk until run in an environment with real registry access.
-7. **AI Runtime adapter / OpenClaw** - *deferred, not unverified, but
+3. **AI Runtime adapter / OpenClaw** - *deferred, not unverified, but
    blocked on a real decision*: OpenClaw's own trust model is one
    deployment per operator, meaning per-tenant WhatsApp business here -
    a real infrastructure/cost decision the user has not yet made. Building
@@ -109,16 +105,16 @@ pasted directive without our own verification (`unverified`).
    a stub second one would be exactly the "framework for a hypothetical"
    the governing principle above warns against. Build the adapter *when*
    OpenClaw deployment is actually decided, not before.
-8. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
+4. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
    internal analytics, or customer-facing analytics for tenants? Different
    answers imply different event schemas and access control. Not started.
-9. **Apache Cloudberry** - *deferred, real over-engineering risk*: a
+5. **Apache Cloudberry** - *deferred, real over-engineering risk*: a
    distributed MPP data warehouse is a materially bigger commitment than
    anything else on this list. Should not be stood up without a named
    analytical problem it solves that Postgres genuinely cannot. Not
    started.
-10. **"Pic Smaller"** - *unidentified*: no repository URL has been
-    provided; cannot evaluate or plan against it.
+6. **"Pic Smaller"** - *unidentified*: no repository URL has been
+   provided; cannot evaluate or plan against it.
 
 ## Explicitly not adopted from the pasted directive
 
