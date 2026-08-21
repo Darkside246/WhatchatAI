@@ -589,6 +589,16 @@ export interface FunnelDetailDto {
   counts: FunnelCounts;
 }
 
+export interface KnowledgeBaseDocumentDto {
+  id: string;
+  businessId: string;
+  createdBy: string;
+  title: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface MarketingCopySuggestionResult {
   status: 'ok' | 'unavailable';
   reason?: string;
@@ -1098,4 +1108,15 @@ export const api = {
     request<ReplySuggestionResult>(`/workspace/chats/${chatId}/reply-suggestions`),
 
   globalSearch: (query: string) => request<{ results: GlobalSearchResult[] }>(`/workspace/search?q=${encodeURIComponent(query)}`),
+
+  listKnowledgeBaseDocuments: () => request<{ documents: KnowledgeBaseDocumentDto[] }>('/workspace/knowledge-base'),
+  createKnowledgeBaseDocument: (title: string, content: string) =>
+    request<{ document: KnowledgeBaseDocumentDto }>('/workspace/knowledge-base', { method: 'POST', body: JSON.stringify({ title, content }) }),
+  updateKnowledgeBaseDocument: (documentId: string, title: string, content: string) =>
+    request<{ document: KnowledgeBaseDocumentDto }>(`/workspace/knowledge-base/${documentId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title, content }),
+    }),
+  deleteKnowledgeBaseDocument: (documentId: string) =>
+    request<{ status: string }>(`/workspace/knowledge-base/${documentId}`, { method: 'DELETE' }),
 };

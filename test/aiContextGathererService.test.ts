@@ -7,7 +7,7 @@ import { CrmContactRepository } from '../src/repositories/crmContactRepository.j
 import { gatherAiHandoffContext } from '../src/services/aiContextGathererService.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 
-describe('gatherAiHandoffContext (real Promise.all over Postgres + honest KB unavailability)', () => {
+describe('gatherAiHandoffContext (real Promise.all over Postgres, including real KB full-text search)', () => {
   let businessId: string;
   let accountId: string;
 
@@ -17,7 +17,7 @@ describe('gatherAiHandoffContext (real Promise.all over Postgres + honest KB una
     accountId = await createTestAccount(businessId);
   });
 
-  it('gathers CRM contact, conversation history, and an honest knowledge-base unavailability signal concurrently', async () => {
+  it('gathers CRM contact, conversation history, and a real (empty) knowledge-base search result concurrently', async () => {
     const contactRepo = new WhatsAppContactRepository(pool);
     const chatRepo = new WhatsAppChatRepository(pool);
     const messageRepo = new WhatsAppMessageRepository(pool);
@@ -75,8 +75,10 @@ describe('gatherAiHandoffContext (real Promise.all over Postgres + honest KB una
     expect(context.conversationHistory).toHaveLength(1);
     expect(context.conversationHistory[0]?.textContent).toBe('earlier message in the conversation');
 
-    // No knowledge base backend exists yet - this must be honestly reported, never fabricated.
-    expect(context.knowledgeBase.available).toBe(false);
+    // A real knowledge base search now runs (Phase 6) - with no documents
+    // created for this business, an honest "search worked, nothing to find"
+    // result is expected: available, zero results, never fabricated matches.
+    expect(context.knowledgeBase.available).toBe(true);
     expect(context.knowledgeBase.results).toEqual([]);
   });
 

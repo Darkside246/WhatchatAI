@@ -17,6 +17,7 @@ import {
 } from '../lib/api.js';
 import { Avatar } from '../components/Avatar.js';
 import { IntegrationSettingsPanel } from '../components/IntegrationSettingsPanel.js';
+import { KnowledgeBaseCard } from '../components/KnowledgeBaseCard.js';
 import { MediaLightbox } from '../components/MediaLightbox.js';
 import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
@@ -1172,6 +1173,7 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
         <BusinessProfileCard />
         <TimeSyncCard />
         <WhatsAppAccountCard connection={connection} />
+        <KnowledgeBaseCard />
         <IntegrationSettingsPanel />
         <AccountCard />
         <TeamMembersCard />

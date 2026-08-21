@@ -67,6 +67,14 @@ import {
 } from '../services/teamService.js';
 import { isCapacityExceededError, isInvalidAssignmentError } from '../services/workspaceService.js';
 import {
+  createKnowledgeBaseDocument,
+  listKnowledgeBaseDocuments,
+  updateKnowledgeBaseDocument,
+  deleteKnowledgeBaseDocument,
+  isKnowledgeBaseDocumentNotFoundError,
+  isInvalidKnowledgeBaseDocumentError,
+} from '../services/knowledgeBaseService.js';
+import {
   createCampaign,
   listCampaigns,
   getCampaign,
@@ -1195,6 +1203,65 @@ app.put('/api/workspace/integrations/goose', requirePermission('settings.manage'
 app.post('/api/workspace/integrations/goose/test', expensiveActionLimiter, requirePermission('settings.manage'), async (_req, res) => {
   const auth = res.locals.auth as AuthContext;
   return res.status(200).json(await testGooseSettings(auth.businessId, auth.userId));
+});
+
+app.get('/api/workspace/knowledge-base', requirePermission('settings.manage'), async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  return res.status(200).json({ documents: await listKnowledgeBaseDocuments(auth.businessId) });
+});
+
+const knowledgeBaseDocumentSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  content: z.string().trim().min(1).max(20_000),
+});
+
+app.post('/api/workspace/knowledge-base', requirePermission('settings.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = knowledgeBaseDocumentSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_DOCUMENT', details: parsed.error.flatten() });
+  try {
+    const document = await createKnowledgeBaseDocument(auth.businessId, auth.userId, parsed.data.title, parsed.data.content);
+    return res.status(201).json({ document });
+  } catch (error) {
+    if (isInvalidKnowledgeBaseDocumentError(error)) return res.status(400).json({ error: 'INVALID_DOCUMENT', message: error.message });
+    if (isEntitlementDeniedError(error)) {
+      const message =
+        error.reason === 'NO_ACTIVE_SUBSCRIPTION'
+          ? 'This business has no active subscription.'
+          : error.reason === 'ENTITLEMENT_DISABLED'
+            ? 'Knowledge base documents are not enabled on this plan.'
+            : `Knowledge base document limit reached for this plan (${error.current}/${error.limit}).`;
+      return res
+        .status(403)
+        .json({ error: 'ENTITLEMENT_DENIED', reason: error.reason, limit: error.limit, current: error.current, message });
+    }
+    throw error;
+  }
+});
+
+app.patch('/api/workspace/knowledge-base/:documentId', requirePermission('settings.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = knowledgeBaseDocumentSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_DOCUMENT', details: parsed.error.flatten() });
+  try {
+    const document = await updateKnowledgeBaseDocument(auth.businessId, String(req.params.documentId ?? ''), parsed.data.title, parsed.data.content);
+    return res.status(200).json({ document });
+  } catch (error) {
+    if (isKnowledgeBaseDocumentNotFoundError(error)) return res.status(404).json({ error: 'DOCUMENT_NOT_FOUND' });
+    if (isInvalidKnowledgeBaseDocumentError(error)) return res.status(400).json({ error: 'INVALID_DOCUMENT', message: error.message });
+    throw error;
+  }
+});
+
+app.delete('/api/workspace/knowledge-base/:documentId', requirePermission('settings.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  try {
+    await deleteKnowledgeBaseDocument(auth.businessId, String(req.params.documentId ?? ''));
+    return res.status(200).json({ status: 'deleted' });
+  } catch (error) {
+    if (isKnowledgeBaseDocumentNotFoundError(error)) return res.status(404).json({ error: 'DOCUMENT_NOT_FOUND' });
+    throw error;
+  }
 });
 
 app.get('/api/workspace/email', requirePermission('email.view'), async (req, res) => {

@@ -1,5 +1,95 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - Phase 6: real knowledge base backend for AI agents
+
+**Branch:** `phase-2-ai-repair` (continues on the same branch as Phases
+2-3, 16-17, 19-20 - see the Phase 3 entry for why this branch wasn't
+split further)
+
+**Context:** `src/services/knowledgeBaseSearchService.ts` already existed
+as an honest stub (`available: false`, zero results, `reason: 'not yet
+implemented'`), already wired through `aiContextGathererService.ts` into
+`AiHandoffContext` and already surfaced in the Gemini prompt in
+`aiReplyService.ts` (`context.knowledgeBase.available && ... results`).
+This phase replaces the stub with a real backend behind the exact same
+interface - no downstream code changed.
+
+**Added:**
+- Migration 055: `knowledge_base_documents` (business-scoped title/content
+  documents with a generated, GIN-indexed `tsvector` column), plus a
+  `max_knowledge_base_documents` entry in the existing generic
+  `plan_entitlements` mechanism (same pattern campaigns/funnels already
+  use - Starter 10, Growth 50, Business 200, Enterprise unlimited).
+- `src/repositories/knowledgeBaseRepository.ts` / `src/services/
+  knowledgeBaseService.ts` - real CRUD with tenant scoping and entitlement
+  enforcement, following the funnel/campaign service conventions exactly.
+- Real search: `knowledgeBaseSearchService.ts` now calls Postgres native
+  full-text search (`ts_rank` over the generated `tsvector`) - deliberately
+  not an embeddings/vector store, since that would add a new external
+  per-query API dependency and, most likely, a Postgres extension
+  (pgvector) not present in this project's `postgres:16-alpine` image, for
+  a feature with no demonstrated need for semantic matching yet.
+- `GET/POST/PATCH/DELETE /api/workspace/knowledge-base`, gated by the
+  existing `settings.manage` permission.
+- `KnowledgeBaseCard.tsx` - a real Settings panel (add/edit/delete, real
+  entitlement-limit error surfaced from the API) following the existing
+  `IntegrationSettingsPanel`/card conventions exactly.
+
+**Real bug found and fixed during this phase, not assumed correct from
+reading the code:** the first working version used `plainto_tsquery`,
+Postgres's default for a plain-text query, which ANDs every term
+together - wrong for this use case, since the AI passes a whole natural-
+language customer message as the query (e.g. "how long does shipping
+take"). Verified empirically against a real document ("Standard shipping
+takes 5 to 7 business days") that `plainto_tsquery` returned zero results
+for that exact query, because the document doesn't contain the word
+"long". Fixed by OR-combining the query's own stemmed lexemes
+(`strip(to_tsvector(...))` + a `|`-joining `regexp_replace`, a documented
+Postgres idiom) so a document matching any significant term is found,
+ranked by how many terms it actually matches. A second, unrelated bug
+surfaced while fixing the first: the regex literal `\s+` written directly
+in a TypeScript template-literal SQL string is silently stripped by JS's
+own string-escaping to `s+` (JS treats an unrecognized backslash-letter
+escape as just the letter) - verified by reproducing the exact corrupted
+query Postgres received, then fixed by escaping it as `\\s+` so the
+literal backslash actually reaches Postgres.
+
+**What was deliberately not built:** a `deleteFunnel`-style safety check
+against in-use documents doesn't apply here (a document has no dependent
+state to strand); no dedicated `security_audit_logs` events for KB CRUD
+(matching the existing CRM-contact precedent - static reference content a
+business writes itself, not a security-relevant event class like
+locks/auth/campaigns-that-send-real-messages).
+
+**Verification:** full click-through browser verification (add/edit/
+delete via the real Settings UI) was attempted with a real Playwright-
+driven Chromium session against the real dev stack, but the app correctly
+gates all authenticated routes on a live Baileys WhatsApp connection
+(`useAppGate`) - there is no dev-only bypass, and this sandbox has no real
+phone to pair, so the gate could not be passed. This is the same
+constraint already documented for Phase 4, not a gap introduced here. In
+its place: a production build (`tsc` + `vite build`) confirms the
+component compiles and type-checks cleanly, and the backend is proven
+end-to-end by 9 real-Postgres tests: full CRUD, empty-title/content
+rejection, cross-tenant update/delete refusal, the real per-plan
+entitlement limit, a real full-text match ranked correctly, an honest
+empty-result case distinguished from unavailability, and cross-tenant
+search isolation. Full suite: 80/80 test files, 485/485 tests passing (up
+from 478 - the expected +7 in the new file), zero regressions. Typecheck
+and production build both clean; migration 055 applied cleanly against a
+real database.
+
+**Status:** `IMPLEMENTED AND VERIFIED` at the backend/API level;
+`IMPLEMENTED BUT NOT BROWSER-VERIFIED` for the Settings UI specifically,
+for the reason above - not claimed as fully verified where it wasn't.
+
+**Rollback:** `git revert` the commit, or discard the branch. Migration
+055 is additive (new table, new entitlement rows) - reversible via a
+plain `DROP TABLE` and a `DELETE FROM plan_entitlements WHERE
+entitlement_key = 'max_knowledge_base_documents'`.
+
+---
+
 ## 2026-08-21 - Phase 20: final production audit
 
 **Branch:** `phase-2-ai-repair`
