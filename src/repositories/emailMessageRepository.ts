@@ -3,7 +3,7 @@ import type { Queryable } from './types.js';
 export const EMAIL_KINDS = ['custom', 'order_update', 'appointment', 'receipt', 'invoice', 'general_update'] as const;
 export type EmailKind = (typeof EMAIL_KINDS)[number];
 
-export type EmailStatus = 'draft' | 'approved' | 'sending' | 'sent' | 'failed' | 'cancelled';
+export type EmailStatus = 'draft' | 'approved' | 'sending' | 'sent' | 'failed' | 'cancelled' | 'indeterminate';
 
 export interface EmailMessageRecord {
   id: string;
@@ -217,6 +217,31 @@ export class EmailMessageRepository {
   async markFailed(id: string, reason: string): Promise<void> {
     await this.db.query(
       `UPDATE email_messages SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1`,
+      [id, reason.slice(0, 500)],
+    );
+  }
+
+  /**
+   * A send left stuck in 'sending' with no worker left to resolve it (the
+   * process crashed between sendEmail() resolving and markSent()/markFailed()
+   * committing). markSending() only ever re-claims a row that is 'approved',
+   * so nothing else can ever pick this back up - unlike the identical
+   * WhatsApp case, there is no BullMQ retry waiting in the wings. Whether the
+   * provider actually sent it is genuinely unknown, so this is reconciled to
+   * 'indeterminate', never a false 'failed' or a silent forever-'sending'.
+   */
+  async findStalePending(staleAfterSeconds: number): Promise<EmailMessageRecord[]> {
+    const { rows } = await this.db.query<EmailMessageRow>(
+      `SELECT * FROM email_messages
+       WHERE status = 'sending' AND updated_at < now() - ($1 || ' seconds')::interval`,
+      [staleAfterSeconds],
+    );
+    return rows.map(toRecord);
+  }
+
+  async markIndeterminate(id: string, reason: string): Promise<void> {
+    await this.db.query(
+      `UPDATE email_messages SET status = 'indeterminate', last_error = $2, updated_at = now() WHERE id = $1`,
       [id, reason.slice(0, 500)],
     );
   }

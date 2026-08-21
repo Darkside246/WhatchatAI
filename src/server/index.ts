@@ -1175,8 +1175,8 @@ app.post('/api/workspace/integrations/goose/test', expensiveActionLimiter, requi
 app.get('/api/workspace/email', requirePermission('email.view'), async (req, res) => {
   const { businessId } = res.locals.auth as AuthContext;
   const statusParam = typeof req.query.status === 'string' ? req.query.status : undefined;
-  const status = statusParam && ['draft', 'approved', 'sending', 'sent', 'failed', 'cancelled'].includes(statusParam)
-    ? (statusParam as 'draft' | 'approved' | 'sending' | 'sent' | 'failed' | 'cancelled')
+  const status = statusParam && ['draft', 'approved', 'sending', 'sent', 'failed', 'cancelled', 'indeterminate'].includes(statusParam)
+    ? (statusParam as 'draft' | 'approved' | 'sending' | 'sent' | 'failed' | 'cancelled' | 'indeterminate')
     : undefined;
   return res.status(200).json({ emails: await listEmails(businessId, status) });
 });

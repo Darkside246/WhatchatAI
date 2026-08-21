@@ -24,6 +24,8 @@ export interface WhatsAppOutboundMessageRecord {
   requestedBy: string;
   createdAt: string;
   sentAt: string | null;
+  /** Set the instant before the real Baileys sendMessage call - see markSendAttempted(). Non-null on resume means the previous attempt may already have reached WhatsApp. */
+  sendAttemptedAt: string | null;
   /** True only when this call itself created the row - false when an idempotency-key conflict returned a pre-existing send request. */
   wasCreated: boolean;
 }
@@ -67,6 +69,7 @@ interface OutboundMessageRow {
   requested_by: string;
   created_at: string;
   sent_at: string | null;
+  send_attempted_at: string | null;
 }
 
 function toRecord(row: OutboundMessageRow, wasCreated: boolean): WhatsAppOutboundMessageRecord {
@@ -92,6 +95,7 @@ function toRecord(row: OutboundMessageRow, wasCreated: boolean): WhatsAppOutboun
     requestedBy: row.requested_by,
     createdAt: row.created_at,
     sentAt: row.sent_at,
+    sendAttemptedAt: row.send_attempted_at,
     wasCreated,
   };
 }
@@ -167,6 +171,45 @@ export class WhatsAppOutboundMessageRepository {
        SET status = 'sending', attempt_count = attempt_count + 1, updated_at = now()
        WHERE id = $1`,
       [id],
+    );
+  }
+
+  /**
+   * Committed the instant before the real Baileys sendMessage call, not
+   * bundled into markSending() - the two writes must land on either side of
+   * the actual network call so a crash between them is distinguishable from
+   * a crash before it. On any later attempt, a non-null send_attempted_at
+   * means the previous attempt may already have reached WhatsApp; the
+   * caller must treat that as indeterminate, never call sendMessage again.
+   */
+  async markSendAttempted(id: string): Promise<void> {
+    await this.db.query(`UPDATE whatsapp_outbound_messages SET send_attempted_at = now() WHERE id = $1`, [id]);
+  }
+
+  /**
+   * Undoes markSendAttempted() when this same process is still alive to
+   * observe that sendMessage itself threw (nothing was confirmed sent) -
+   * that is an ordinary, safely-retryable failure, not the crash-mid-flight
+   * scenario the marker exists to catch. Only a send_attempted_at that
+   * SURVIVES into a new job invocation (because the process died before
+   * reaching this call) means the previous attempt's outcome is genuinely
+   * unknown.
+   */
+  async clearSendAttempted(id: string): Promise<void> {
+    await this.db.query(`UPDATE whatsapp_outbound_messages SET send_attempted_at = NULL WHERE id = $1`, [id]);
+  }
+
+  /**
+   * Terminal, but honestly distinct from markFailed: we do not know whether
+   * WhatsApp actually received this message. Never retried automatically -
+   * only a human checking the real chat/provider can resolve it.
+   */
+  async markIndeterminate(id: string, reason: string): Promise<void> {
+    await this.db.query(
+      `UPDATE whatsapp_outbound_messages
+       SET status = 'indeterminate', last_error = $2, updated_at = now()
+       WHERE id = $1`,
+      [id, reason],
     );
   }
 

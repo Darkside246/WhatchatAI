@@ -83,7 +83,7 @@ export type JidMappingSource = 'baileys_alt_jid' | 'manual' | 'verified';
 
 export type MappingConfidence = 'high' | 'medium' | 'low';
 
-export type OutboundMessageStatus = 'queued' | 'sending' | 'sent' | 'failed';
+export type OutboundMessageStatus = 'queued' | 'sending' | 'sent' | 'failed' | 'indeterminate';
 
 /** 'voice_note' is a real WhatsApp PTT message, not an audio attachment - the two render differently for the recipient. */
 export type OutboundMessageType = 'text' | 'image' | 'video' | 'audio' | 'voice_note' | 'document';

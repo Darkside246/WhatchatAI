@@ -163,6 +163,68 @@ describe('outbound_messages BullMQ pipeline (real Redis queue + real worker + re
     expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
+  it('never re-sends after a crash between the real send call and recording it - marks indeterminate instead', async () => {
+    isReadyMock.mockReturnValue(true);
+    sendMessageMock.mockResolvedValue({ key: { id: 'WA-SHOULD-NOT-BE-CALLED' } });
+
+    const repository = new WhatsAppOutboundMessageRepository(pool);
+    const record = await repository.createIdempotent({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      toJid,
+      idempotencyKey: 'dispatch-crash-mid-flight',
+      messageType: 'text',
+      textContent: 'Simulates a worker that died right after calling WhatsApp',
+    });
+
+    // Simulates the exact crash window under test: a previous attempt got
+    // as far as committing markSendAttempted() (the marker set immediately
+    // before the real sendMessage call) but never reached markSent() - the
+    // worker process died in between, before it ever ran here.
+    await repository.markSending(record.id);
+    await repository.markSendAttempted(record.id);
+
+    await enqueueOutboundMessage({ outboundMessageId: record.id });
+
+    const deadline = Date.now() + 12_000;
+    let updated = await repository.findById(record.id);
+    while (Date.now() < deadline && updated?.status !== 'indeterminate') {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      updated = await repository.findById(record.id);
+    }
+
+    expect(updated?.status).toBe('indeterminate');
+    expect(updated?.lastError).toContain('reached the point of calling WhatsApp');
+    // The real proof this fix matters: sendMessage must never be called on
+    // this resumed attempt, however many times BullMQ would otherwise retry.
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('still sends normally when only markSending ran before - proves the new marker does not block a real first attempt', async () => {
+    isReadyMock.mockReturnValue(true);
+    sendMessageMock.mockResolvedValue({ key: { id: 'WA-SENT-normal-path' } });
+
+    const repository = new WhatsAppOutboundMessageRepository(pool);
+    const record = await repository.createIdempotent({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      toJid,
+      idempotencyKey: 'dispatch-marker-happy-path',
+      messageType: 'text',
+      textContent: 'A completely normal send, never interrupted',
+    });
+
+    await enqueueOutboundMessage({ outboundMessageId: record.id });
+    const outcome = await waitForOutcome(repository, record.id);
+
+    expect(outcome).toBe('sent');
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    const updated = await repository.findById(record.id);
+    expect(updated?.sendAttemptedAt).not.toBeNull();
+  });
+
   it('sweeps a send abandoned mid-dispatch (stuck sending, no worker left to resolve it) to failed', async () => {
     const repository = new WhatsAppOutboundMessageRepository(pool);
     const record = await repository.createIdempotent({

@@ -5,6 +5,7 @@ import { OUTBOUND_MESSAGES_QUEUE, type OutboundMessageJobData } from '../queues/
 import { whatsappConnectionService } from '../../services/whatsappConnectionService.js';
 import { retrieveMedia } from '../../media/localEncryptedMediaStorage.js';
 import { publishRealtimeEvent } from '../../realtime/pubsub.js';
+import { notifyBusiness } from '../../services/notificationService.js';
 import { pool } from '../../db/pool.js';
 import {
   WhatsAppOutboundMessageRepository,
@@ -82,12 +83,15 @@ async function buildOutboundContent(record: WhatsAppOutboundMessageRecord): Prom
  * automatically; only once attempts are exhausted does the 'failed' handler
  * below mark the row terminally failed.
  *
- * Known limitation, stated honestly rather than hidden: if this process
- * crashes after WhatsApp has already accepted the send but before
- * markSent() commits, a retry of the same job would call sendMessage again
- * and could produce a second real message to the recipient. WhatsApp gives
- * clients no server-side dedup key for outbound sends, so this narrow
- * crash-mid-flight window cannot be fully closed from the client side.
+ * The crash-mid-flight window is closed, not just documented: WhatsApp
+ * gives clients no server-side dedup key for outbound sends, so a naive
+ * retry after a crash between "WhatsApp accepted the send" and "markSent()
+ * committed" would produce a real duplicate message. markSendAttempted()
+ * commits the instant before sendMessage is called, so a resumed attempt
+ * that finds it already set knows the previous attempt may have reached
+ * WhatsApp and must not call sendMessage again - it is marked
+ * 'indeterminate' and left for a human to check the real chat, instead of
+ * either silently double-sending or silently retrying forever.
  */
 async function processOutboundMessage(job: Job<OutboundMessageJobData>): Promise<void> {
   const { outboundMessageId } = job.data;
@@ -96,7 +100,27 @@ async function processOutboundMessage(job: Job<OutboundMessageJobData>): Promise
     console.error(`[OutboundDispatchWorker] No such outbound message ${outboundMessageId}`);
     return;
   }
-  if (record.status === 'sent') return; // Already succeeded on a prior delivery of this job.
+  if (record.status === 'sent' || record.status === 'indeterminate') return; // Already resolved on a prior delivery of this job.
+
+  if (record.sendAttemptedAt) {
+    const reason =
+      'A previous attempt reached the point of calling WhatsApp before this worker restarted or the job was redelivered - ' +
+      'whether the message actually sent is unknown, so it was not retried automatically.';
+    console.warn(`[OutboundDispatchWorker] Outbound message ${record.id}: ${reason}`);
+    await outboundMessageRepository.markIndeterminate(record.id, reason);
+    await notifyBusiness({
+      businessId: record.businessId,
+      type: 'AUTOMATION_FAILURE',
+      severity: 'warning',
+      title: 'A WhatsApp send needs a manual check',
+      body: 'A message send was interrupted and we cannot confirm whether it reached the recipient. Check the chat before resending.',
+      targetType: 'chat',
+      targetId: record.chatId,
+    }).catch((error) => {
+      console.error('[OutboundDispatchWorker] Failed to dispatch AUTOMATION_FAILURE notification:', error);
+    });
+    return;
+  }
 
   if (!whatsappConnectionService.isReady()) {
     throw new Error('WhatsApp is not connected - cannot send right now');
@@ -107,10 +131,35 @@ async function processOutboundMessage(job: Job<OutboundMessageJobData>): Promise
   await outboundMessageRepository.markSending(record.id);
 
   const content = await buildOutboundContent(record);
-  const sent = await socket.sendMessage(record.toJid, content);
-  const whatsappMessageId = sent?.key?.id;
-  if (!whatsappMessageId) throw new Error('WhatsApp accepted the send but returned no message id');
 
+  // Committed right before the real network call - see markSendAttempted's
+  // own doc comment for why this must be a separate write from markSending.
+  await outboundMessageRepository.markSendAttempted(record.id);
+
+  let sent: Awaited<ReturnType<typeof socket.sendMessage>>;
+  try {
+    sent = await socket.sendMessage(record.toJid, content);
+  } catch (error) {
+    // sendMessage itself threw: we are still running, so we know for
+    // certain no message id was ever returned - this is an ordinary
+    // transient failure, safe for BullMQ's normal retry/backoff exactly as
+    // before. Clear the marker so that retry is not mistaken for a
+    // resumed, possibly-already-sent attempt.
+    await outboundMessageRepository.clearSendAttempted(record.id);
+    throw error;
+  }
+
+  const whatsappMessageId = sent?.key?.id;
+  if (!whatsappMessageId) {
+    await outboundMessageRepository.clearSendAttempted(record.id);
+    throw new Error('WhatsApp accepted the send but returned no message id');
+  }
+
+  // Past this point WhatsApp has genuinely already sent the message. The
+  // marker deliberately stays set: if markSent() itself now fails (e.g. a
+  // transient DB error) and this job gets retried, the top-of-function
+  // check must refuse to call sendMessage again - a known-good send is
+  // worth a manual reconciliation, never a risk of sending it twice.
   await outboundMessageRepository.markSent(record.id, whatsappMessageId);
   await publishRealtimeEvent({ type: 'chat.updated', businessId: record.businessId, chatId: record.chatId });
 }

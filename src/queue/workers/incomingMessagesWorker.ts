@@ -33,6 +33,7 @@ import { WhatsAppPresenceRepository } from '../../repositories/whatsappPresenceR
 import { WhatsAppSyncJobRepository } from '../../repositories/whatsappSyncJobRepository.js';
 import { WhatsAppAccountRepository } from '../../repositories/whatsappAccountRepository.js';
 import { WhatsAppOutboundMessageRepository } from '../../repositories/whatsappOutboundMessageRepository.js';
+import { EmailMessageRepository } from '../../repositories/emailMessageRepository.js';
 import { mapBaileysCallStatus, callTypeFromEvent, isTerminalCallStatus } from '../../domain/whatsapp/callStatus.js';
 import { classifyJid, derivePhoneNumber } from '../../domain/whatsapp/jid.js';
 import { decodeBuffersFromQueue } from '../../domain/whatsapp/binaryCodec.js';
@@ -191,6 +192,7 @@ const mediaRepository = new WhatsAppMediaRepository(pool);
 const reactionRepository = new WhatsAppMessageReactionRepository(pool);
 const presenceRepository = new WhatsAppPresenceRepository(pool);
 const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
+const emailMessageRepository = new EmailMessageRepository(pool);
 const chatRepository = new WhatsAppChatRepository(pool);
 
 // Configurable, not hardcoded: operators can raise/lower this per deployment.
@@ -531,6 +533,37 @@ export async function sweepStaleOutboundMessages(): Promise<void> {
   }
 }
 
+// Same honesty problem as the outbound-message sweep above, but a genuinely
+// different outcome: markSending() on email_messages only ever re-claims a
+// row that is 'approved', so a stuck 'sending' row has no BullMQ retry
+// waiting to resolve it, and whether the provider actually sent it is
+// unknown - reconciled to 'indeterminate' (never a false 'failed') and
+// surfaced to the business so a human checks the real mailbox/provider.
+const EMAIL_STALE_SECONDS = 300;
+const EMAIL_TIMEOUT_SWEEP_INTERVAL_MS = 60_000;
+
+export async function sweepStaleEmails(): Promise<void> {
+  const stale = await emailMessageRepository.findStalePending(EMAIL_STALE_SECONDS);
+  for (const email of stale) {
+    const reason = `Abandoned mid-send - no progress for over ${EMAIL_STALE_SECONDS}s (likely a process restart or crash); whether the provider actually sent it is unknown`;
+    await emailMessageRepository.markIndeterminate(email.id, reason);
+    await notifyBusiness({
+      businessId: email.businessId,
+      type: 'AUTOMATION_FAILURE',
+      severity: 'warning',
+      title: 'An email send needs a manual check',
+      body: `A send to ${email.toEmail} was interrupted and we cannot confirm whether it reached the provider. Check before resending.`,
+      targetType: 'email_message',
+      targetId: email.id,
+    }).catch((error) => {
+      console.error('[RealtimeEventsWorker] Failed to dispatch AUTOMATION_FAILURE notification:', error);
+    });
+  }
+  if (stale.length > 0) {
+    console.log(`[RealtimeEventsWorker] Reconciled ${stale.length} stale email(s) to indeterminate`);
+  }
+}
+
 async function processRealtimeEventJob(
   job: Job<
     | MessageStatusJobData
@@ -553,6 +586,8 @@ async function processRealtimeEventJob(
     await sweepStaleSyncJobs();
   } else if (job.name === 'outbound-message-timeout-sweep') {
     await sweepStaleOutboundMessages();
+  } else if (job.name === 'email-timeout-sweep') {
+    await sweepStaleEmails();
   } else if (job.name === 'media-download') {
     await processMediaDownload(job.data as MediaDownloadJobData);
   } else if (job.name === 'message-reaction') {
@@ -640,3 +675,8 @@ void realtimeEventsQueue
   .catch((error: Error) =>
     console.error('[RealtimeEventsWorker] Failed to schedule outbound-message-timeout-sweep:', error.message),
   );
+
+void realtimeEventsQueue
+  .upsertJobScheduler('email-timeout-sweep', { every: EMAIL_TIMEOUT_SWEEP_INTERVAL_MS }, { name: 'email-timeout-sweep' })
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled email-timeout-sweep every ${EMAIL_TIMEOUT_SWEEP_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule email-timeout-sweep:', error.message));

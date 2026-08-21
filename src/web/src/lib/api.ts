@@ -414,7 +414,7 @@ export interface AiEnginesDto {
 
 export const EMAIL_KINDS = ['custom', 'order_update', 'appointment', 'receipt', 'invoice', 'general_update'] as const;
 export type EmailKind = (typeof EMAIL_KINDS)[number];
-export type EmailStatus = 'draft' | 'approved' | 'sending' | 'sent' | 'failed' | 'cancelled';
+export type EmailStatus = 'draft' | 'approved' | 'sending' | 'sent' | 'failed' | 'cancelled' | 'indeterminate';
 
 export interface EmailMessageDto {
   id: string;

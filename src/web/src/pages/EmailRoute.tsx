@@ -28,6 +28,7 @@ const STATUS_STYLE: Record<EmailStatus, string> = {
   sent: 'bg-success/15 text-success',
   failed: 'bg-error/15 text-error',
   cancelled: 'bg-surface-3 text-fg-muted',
+  indeterminate: 'bg-warning/15 text-warning',
 };
 
 /**
@@ -42,6 +43,7 @@ const STATUS_LABEL: Record<EmailStatus, string> = {
   sent: 'Sent',
   failed: 'Failed',
   cancelled: 'Cancelled',
+  indeterminate: 'Unknown - check manually',
 };
 
 const EMPTY_DRAFT = { kind: 'general_update' as EmailKind, toEmail: '', toName: '', subject: '', bodyText: '' };
