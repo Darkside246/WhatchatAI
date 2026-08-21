@@ -234,6 +234,7 @@ export interface PlanCatalogueDto {
 export interface WorkspaceBusiness {
   id: string;
   name: string;
+  timezone: string;
 }
 
 export const BUSINESS_ROLES = ['OWNER', 'ADMIN', 'MANAGER', 'SUPERVISOR', 'AGENT', 'MARKETING', 'VIEWER'] as const;
@@ -829,6 +830,11 @@ export const api = {
   getBusiness: () => request<{ business: WorkspaceBusiness }>('/workspace/business'),
   updateBusiness: (name: string) =>
     request<{ business: WorkspaceBusiness }>('/workspace/business', { method: 'PATCH', body: JSON.stringify({ name }) }),
+  updateBusinessTimezone: (timezone: string) =>
+    request<{ business: WorkspaceBusiness }>('/workspace/business/timezone', {
+      method: 'PATCH',
+      body: JSON.stringify({ timezone }),
+    }),
   /** Pushes a real profile picture to WhatsApp itself (Baileys updateProfilePicture) - never just a local-only avatar swap. */
   updateAccountProfilePicture: (imageBase64: string, mimeType: string) =>
     request<{ status: string }>('/workspace/account/profile-picture', {

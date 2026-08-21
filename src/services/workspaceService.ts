@@ -1,7 +1,7 @@
 import { pool } from '../db/pool.js';
 import { resolveDisplayName, type ContactNameSources } from '../domain/whatsapp/displayName.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
-import { BusinessRepository, type BusinessRecord } from '../repositories/businessRepository.js';
+import { BusinessRepository, isValidTimezone, type BusinessRecord } from '../repositories/businessRepository.js';
 import { WhatsAppChatRepository, type ChatAiMode } from '../repositories/whatsappChatRepository.js';
 import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
 import { WhatsAppMessageRepository } from '../repositories/whatsappMessageRepository.js';
@@ -878,6 +878,19 @@ export class WorkspaceService {
 
   async updateBusinessName(businessId: string, name: string): Promise<BusinessRecord> {
     const updated = await this.businessRepository.updateName(businessId, name);
+    if (!updated) throw new Error(`Business ${businessId} not found`);
+    return updated;
+  }
+
+  /**
+   * The AI reply pipeline needs a real timezone to know whether "now" is
+   * inside the opening hours an operator wrote in free text - without one,
+   * "now" defaults to UTC, which is silently wrong for almost every real
+   * business.
+   */
+  async updateBusinessTimezone(businessId: string, timezone: string): Promise<BusinessRecord> {
+    if (!isValidTimezone(timezone)) throw new Error(`INVALID: "${timezone}" is not a real IANA timezone name (e.g. "America/New_York").`);
+    const updated = await this.businessRepository.updateTimezone(businessId, timezone);
     if (!updated) throw new Error(`Business ${businessId} not found`);
     return updated;
   }

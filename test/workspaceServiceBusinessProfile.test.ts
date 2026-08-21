@@ -26,4 +26,24 @@ describe('workspaceService business profile (real businesses row, Settings page 
   it('throws for a business id that does not exist - never returns a fabricated profile', async () => {
     await expect(workspaceService.getBusinessProfile('00000000-0000-0000-0000-000000000000')).rejects.toThrow();
   });
+
+  it('defaults a new business to UTC, and persists a real IANA timezone change', async () => {
+    const initial = await workspaceService.getBusinessProfile(businessId);
+    expect(initial.timezone).toBe('UTC');
+
+    const updated = await workspaceService.updateBusinessTimezone(businessId, 'America/New_York');
+    expect(updated.timezone).toBe('America/New_York');
+
+    const reread = await workspaceService.getBusinessProfile(businessId);
+    expect(reread.timezone).toBe('America/New_York');
+  });
+
+  it('rejects a fake timezone name via the real runtime IANA database, not a hardcoded list', async () => {
+    await expect(workspaceService.updateBusinessTimezone(businessId, 'Definitely/NotARealPlace')).rejects.toThrow(
+      /not a real IANA timezone/,
+    );
+
+    const reread = await workspaceService.getBusinessProfile(businessId);
+    expect(reread.timezone).toBe('UTC'); // unchanged - a rejected update must not partially apply
+  });
 });

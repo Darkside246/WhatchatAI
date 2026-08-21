@@ -108,11 +108,17 @@ export async function testGeminiConnection(): Promise<GeminiTestResult> {
       try {
         const bareResponse = await genAi.models.generateContent({ model, contents });
         if (bareResponse.text?.trim()) {
+          // Real replies recover from exactly this case: generateAiReply
+          // catches the same 400 and retries with a bare request before
+          // giving up. So this is a genuinely working setup, not a failure -
+          // reporting it as 'failed' would tell an operator their AI is
+          // broken when it is actually replying.
           return {
-            status: 'failed',
-            reason:
-              `Model "${model}" works with a bare request, but the real reply pipeline's generation config is rejected: ${fullMessage}. ` +
-              'Likely cause: temperature or thinkingConfig is not supported the way this model expects.',
+            status: 'ok',
+            detail:
+              `Model "${model}" works, but rejects the full config (temperature/thinkingConfig): ${fullMessage}. ` +
+              'Real replies already recover from this automatically (they retry with a bare request), so this is not blocking anything - ' +
+              'noted here so it can be tuned later if desired.',
           };
         }
         return { status: 'failed', reason: `Bare request to "${model}" returned no text, and the full request failed: ${fullMessage}` };

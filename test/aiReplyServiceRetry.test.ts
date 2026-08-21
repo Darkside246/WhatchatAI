@@ -59,6 +59,7 @@ function fakeContext(overrides: Partial<AiHandoffContext> = {}): AiHandoffContex
     crmContact: null,
     knowledgeBase: { available: false, results: [], reason: 'not configured' },
     conversationHistory: [fakeMessage()],
+    businessTimezone: 'UTC',
     ...overrides,
   };
 }
@@ -126,5 +127,41 @@ describe('generateAiReply retries with a bare request after a real 400 INVALID_A
 
     expect(generateContentMock).toHaveBeenCalledTimes(2);
     expect(result.status).toBe('unavailable');
+  });
+});
+
+describe('generateAiReply grounds the model in the real current time', () => {
+  beforeEach(() => {
+    generateContentMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('includes the actual current weekday and the configured business timezone in the prompt - not a static or fabricated value', async () => {
+    generateContentMock.mockResolvedValueOnce({ text: 'We are open until 5pm today.' });
+
+    await generateAiReply(fakeAgent(), fakeContext({ businessTimezone: 'America/New_York' }));
+
+    const systemInstruction = generateContentMock.mock.calls[0]?.[0]?.config?.systemInstruction as string;
+    expect(systemInstruction).toContain('business timezone: America/New_York');
+
+    // Computed independently via the same real Intl API (not hardcoded),
+    // so this proves a genuine live timestamp is in the prompt, not a
+    // fixed placeholder string.
+    const expectedWeekday = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'long' }).format(
+      new Date(),
+    );
+    expect(systemInstruction).toContain(expectedWeekday);
+  });
+
+  it('falls back to a labeled UTC time rather than crashing when the stored timezone is invalid', async () => {
+    generateContentMock.mockResolvedValueOnce({ text: 'ok' });
+
+    await generateAiReply(fakeAgent(), fakeContext({ businessTimezone: 'Not/ARealTimezone' }));
+
+    const systemInstruction = generateContentMock.mock.calls[0]?.[0]?.config?.systemInstruction as string;
+    expect(systemInstruction).toContain('not recognized - showing UTC');
   });
 });

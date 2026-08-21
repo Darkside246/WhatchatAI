@@ -12,9 +12,40 @@ export type AiReplyResult = { status: 'generated'; text: string } | { status: 'u
 // regardless of what the model returns.
 const MAX_REPLY_CHARS = 2000;
 
+/**
+ * The real wall-clock instant, in the business's own configured timezone -
+ * never the server's UTC clock, and never a value the model has to infer.
+ * Without this, an agent told "open Mon-Fri 9-5" has no way to know whether
+ * it is currently true, and will happily recite hours regardless of whether
+ * the business is actually open right now.
+ */
+function formatCurrentTime(timezone: string): string {
+  try {
+    const formatted = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    }).format(new Date());
+    return `${formatted} (business timezone: ${timezone})`;
+  } catch {
+    // An invalid stored timezone is a real, honest state to surface rather
+    // than crash the whole reply - the operator's server clock is the last
+    // resort here, clearly labeled as such.
+    return `${new Date().toUTCString()} (business timezone "${timezone}" is not recognized - showing UTC)`;
+  }
+}
+
 function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffContext): string {
   const lines: string[] = [
     `You are an AI assistant replying on behalf of a real business over WhatsApp${agent.name ? `, operating as "${agent.name}"` : ''}.`,
+    `The current real date and time is: ${formatCurrentTime(context.businessTimezone)}. Use this to answer honestly about ` +
+      'whether the business is open right now, how long until it opens or closes, and what "today"/"tomorrow" refer to - ' +
+      'never assume the business is open just because opening hours were mentioned somewhere below.',
   ];
 
   if (agent.persona) lines.push(`Persona: ${agent.persona}`);

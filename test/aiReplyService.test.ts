@@ -59,6 +59,7 @@ function fakeContext(overrides: Partial<AiHandoffContext> = {}): AiHandoffContex
     crmContact: null,
     knowledgeBase: { available: false, results: [], reason: 'not configured' },
     conversationHistory: [fakeMessage()],
+    businessTimezone: 'UTC',
     ...overrides,
   };
 }

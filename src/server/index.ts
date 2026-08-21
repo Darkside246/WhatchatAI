@@ -1552,6 +1552,28 @@ app.patch('/api/workspace/business', requireWorkspaceContext, requirePermission(
   return res.status(200).json({ business });
 });
 
+const updateBusinessTimezoneSchema = z.object({ timezone: z.string().trim().min(1).max(100) });
+
+app.patch(
+  '/api/workspace/business/timezone',
+  requireWorkspaceContext,
+  requirePermission('settings.manage'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const parsed = updateBusinessTimezoneSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_TIMEZONE' });
+    try {
+      const business = await workspaceService.updateBusinessTimezone(businessId, parsed.data.timezone);
+      return res.status(200).json({ business });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('INVALID:')) {
+        return res.status(400).json({ error: 'INVALID_TIMEZONE', message: error.message.replace('INVALID:', '').trim() });
+      }
+      throw error;
+    }
+  },
+);
+
 const updateProfilePictureSchema = z.object({
   imageBase64: z.string().min(1),
   mimeType: z.string().min(1),

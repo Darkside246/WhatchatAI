@@ -59,12 +59,18 @@ function BusinessProfileCard() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [timezone, setTimezone] = useState('');
+  const [editingTimezone, setEditingTimezone] = useState(false);
+  const [savingTimezone, setSavingTimezone] = useState(false);
+  const [timezoneError, setTimezoneError] = useState<string | null>(null);
+
   useEffect(() => {
     api
       .getBusiness()
       .then((res) => {
         setBusiness(res.business);
         setName(res.business.name);
+        setTimezone(res.business.timezone);
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load business profile.'));
   }, []);
@@ -81,6 +87,21 @@ function BusinessProfileCard() {
       setError(err instanceof ApiError ? err.message : 'Failed to save.');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleSaveTimezone() {
+    if (!timezone.trim()) return;
+    setSavingTimezone(true);
+    setTimezoneError(null);
+    try {
+      const res = await api.updateBusinessTimezone(timezone.trim());
+      setBusiness(res.business);
+      setEditingTimezone(false);
+    } catch (err) {
+      setTimezoneError(err instanceof ApiError ? err.message : 'Failed to save.');
+    } finally {
+      setSavingTimezone(false);
     }
   }
 
@@ -127,6 +148,55 @@ function BusinessProfileCard() {
           </button>
         </div>
       )}
+
+      <div className="mt-4 border-t border-border-subtle pt-4">
+        <p className="text-caption font-medium text-fg-secondary">Timezone</p>
+        <p className="mt-0.5 text-meta text-fg-muted">
+          Used by your AI agents to know the real current time - so they never claim to be open outside your real hours,
+          or vice versa.
+        </p>
+        {timezoneError && <p className="mt-1 text-caption text-error">{timezoneError}</p>}
+        {business && !editingTimezone && (
+          <div className="mt-2 flex items-center justify-between">
+            <p className="text-body text-fg">{business.timezone}</p>
+            <button
+              type="button"
+              onClick={() => setEditingTimezone(true)}
+              className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3"
+            >
+              Change
+            </button>
+          </div>
+        )}
+        {business && editingTimezone && (
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              value={timezone}
+              onChange={(e) => setTimezone(e.target.value)}
+              placeholder="e.g. America/New_York, Europe/London, Asia/Karachi"
+              className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-body text-fg outline-none focus:border-accent"
+            />
+            <button
+              type="button"
+              onClick={() => void handleSaveTimezone()}
+              disabled={savingTimezone || !timezone.trim()}
+              className="rounded-lg bg-accent px-3 py-2 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+            >
+              {savingTimezone ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingTimezone(false);
+                setTimezone(business.timezone);
+              }}
+              className="rounded-lg px-3 py-2 text-caption text-fg-muted hover:text-fg"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
