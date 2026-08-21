@@ -16,10 +16,8 @@ import {
 } from '../queues/realtimeEventsQueue.js';
 import { whatsappMessagePersistenceService } from '../../services/whatsappMessagePersistenceService.js';
 import { runSentinel } from '../../security/sentinel/sentinel.js';
-import { gatherAiHandoffContext } from '../../services/aiContextGathererService.js';
-import { generateAiReply } from '../../services/aiReplyService.js';
+import { orchestrateAiReply } from '../../services/ai/aiOrchestrator.js';
 import { timeService } from '../../services/time/timeService.js';
-import { routeInboundMessage, resolveEscalationAgent } from '../../services/agentRoutingService.js';
 import { whatsappOutboundMessageService } from '../../services/whatsappOutboundMessageService.js';
 import { WhatsAppChatRepository } from '../../repositories/whatsappChatRepository.js';
 import { notifyBusiness } from '../../services/notificationService.js';
@@ -103,17 +101,20 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     Boolean(result.message.textContent);
 
   if (needsAiHandoff) {
-    const context = await gatherAiHandoffContext({
+    // Centralized "which agent, given what context, says what" decision -
+    // see src/services/ai/aiOrchestrator.ts. Every side effect below
+    // (notifications, ai_mode transitions, realtime events, the outbound
+    // send) stays here in the worker; the orchestrator's job ends at the
+    // decision itself.
+    const outcome = await orchestrateAiReply({
       businessId,
       chatId: result.chat.id,
       contactId: result.chat.contactId,
       queryText: result.message.textContent as string,
     });
 
-    // Real multi-agent routing: which of this business's active agents should
-    // take this message, decided from the operator's own keyword/priority
-    // configuration. 'no_agent' is an honest, legitimate outcome (a business
-    // can deliberately want AI to only ever answer specific keyword-scoped
+    // 'no_agent' is an honest, legitimate outcome (a business can
+    // deliberately want AI to only ever answer specific keyword-scoped
     // topics) - it must never be papered over with a fabricated reply. But
     // it must also never be SILENT: previously this returned with nothing
     // but a server log line the business would never see, so a customer
@@ -121,10 +122,8 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     // Handled exactly like a blocked keyword now - the chat moves to
     // HUMAN_TAKEOVER (so this does not repeat silently on every subsequent
     // message from the same customer) and the business is notified.
-    const decision = await routeInboundMessage(businessId, result.message.textContent as string);
-
-    if (decision.outcome === 'no_agent') {
-      console.log(`[IncomingMessagesWorker] Chat ${result.chat.id}: ${decision.reason}`);
+    if (outcome.kind === 'no_agent') {
+      console.log(`[IncomingMessagesWorker] Chat ${result.chat.id}: ${outcome.reason}`);
       await chatRepository.setAiMode(result.chat.id, 'HUMAN_TAKEOVER');
       await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId: result.chat.id });
       await notifyBusiness({
@@ -145,8 +144,8 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     // to HUMAN_TAKEOVER so the AI cannot pick it back up on the next message,
     // and the team is notified - silently dropping it would leave a real
     // customer waiting on a reply that never comes.
-    if (decision.outcome === 'escalate_to_human') {
-      console.warn(`[IncomingMessagesWorker] Chat ${result.chat.id}: ${decision.reason}`);
+    if (outcome.kind === 'escalate_to_human') {
+      console.warn(`[IncomingMessagesWorker] Chat ${result.chat.id}: ${outcome.reason}`);
       await chatRepository.setAiMode(result.chat.id, 'HUMAN_TAKEOVER');
       await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId: result.chat.id });
       await notifyBusiness({
@@ -154,7 +153,7 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
         type: 'HUMAN_HANDOFF',
         severity: 'warning',
         title: 'A conversation needs a human',
-        body: `A blocked keyword ("${decision.matchedKeyword}") matched, so no AI reply was sent.`,
+        body: `A blocked keyword ("${outcome.matchedKeyword}") matched, so no AI reply was sent.`,
         targetType: 'chat',
         targetId: result.chat.id,
       }).catch((error) => {
@@ -163,36 +162,18 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
       return;
     }
 
-    const agent = decision.agent;
-    console.log(`[IncomingMessagesWorker] Chat ${result.chat.id}: ${decision.reason}`);
-
-    let reply = await generateAiReply(agent, context);
-
-    // A real escalation hop: if the selected agent could not produce a reply
-    // and the operator configured someone to escalate to, try that agent
-    // once. Exactly one hop - never a chain that could loop between two
-    // agents pointing at each other.
-    if (reply.status !== 'generated') {
-      const escalationAgent = await resolveEscalationAgent(agent);
-      if (escalationAgent) {
-        console.log(
-          `[IncomingMessagesWorker] Chat ${result.chat.id}: agent "${agent.name}" could not reply (${reply.reason}); escalating to "${escalationAgent.name}".`,
-        );
-        reply = await generateAiReply(escalationAgent, context);
-      }
-    }
-
     // Same observability gap as 'no_agent' above, one step further down the
     // pipeline: an agent WAS selected, but the model call itself failed
     // (bad/missing API key, quota, a genuine API error) and Goose failover
-    // didn't save it. Previously this was silent too - only a server log
-    // line - so a business could have a perfectly configured agent and
-    // still see nothing arrive, indefinitely, with no clue why. reply.reason
+    // (plus the orchestrator's own one-hop escalation) didn't save it.
+    // Previously this was silent too - only a server log line - so a
+    // business could have a perfectly configured agent and still see
+    // nothing arrive, indefinitely, with no clue why. outcome.reason
     // carries the real, specific cause (e.g. "GEMINI_API_KEY is not
     // configured" or the literal API error) into the notification, so the
     // operator does not have to guess.
-    if (reply.status !== 'generated') {
-      console.log(`[IncomingMessagesWorker] AI reply unavailable for chat ${result.chat.id}: ${reply.reason}`);
+    if (outcome.kind === 'unavailable') {
+      console.log(`[IncomingMessagesWorker] AI reply unavailable for chat ${result.chat.id}: ${outcome.reason}`);
       await chatRepository.setAiMode(result.chat.id, 'HUMAN_TAKEOVER');
       await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId: result.chat.id });
       await notifyBusiness({
@@ -200,7 +181,7 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
         type: 'AI_FAILURE',
         severity: 'warning',
         title: 'The AI could not reply to a conversation',
-        body: reply.reason,
+        body: outcome.reason,
         targetType: 'chat',
         targetId: result.chat.id,
       }).catch((error) => {
@@ -208,6 +189,8 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
       });
       return;
     }
+
+    const agent = outcome.agent;
 
     // Idempotency key derived from the inbound message's own id: if this job
     // is ever retried/redelivered, the exact same reply is never sent twice.
@@ -217,7 +200,7 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
       chatId: result.chat.id,
       idempotencyKey: `ai-reply:${result.message.id}`,
       messageType: 'text',
-      text: reply.text,
+      text: outcome.text,
       requestedBy: 'ai',
       // The operator's real configured pacing, so replies do not land
       // unnaturally fast. 0 dispatches immediately.

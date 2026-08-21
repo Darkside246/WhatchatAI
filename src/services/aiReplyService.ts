@@ -9,6 +9,7 @@ import type { AiHandoffContext } from './aiContextGathererService.js';
 import { describeTimeContext } from './time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME, getCurrentTimeFunctionDeclaration } from './time/getCurrentTimeTool.js';
 import { geminiCircuitBreaker } from './aiCircuitBreaker.js';
+import { guardToolInvocation } from './ai/agentGuard.js';
 
 export type AiReplyResult = { status: 'generated'; text: string } | { status: 'unavailable'; reason: string };
 
@@ -177,11 +178,23 @@ async function resolveTimeToolCall(
   contents: Content[],
   systemInstruction: string,
   response: GenerateContentResponse,
-  timeContext: AiHandoffContext['timeContext'],
+  agent: AiAgentRecord,
+  context: AiHandoffContext,
 ): Promise<GenerateContentResponse> {
   const call = response.functionCalls?.find((candidate) => candidate.name === GET_CURRENT_TIME_TOOL_NAME);
   if (!call) return response;
 
+  // Fails closed on any tool name this codebase did not explicitly
+  // register (defense in depth beyond the single declared tool above),
+  // and writes the real audit event - never optional, never silent.
+  await guardToolInvocation(GET_CURRENT_TIME_TOOL_NAME, {
+    businessId: context.businessId,
+    whatsappAccountId: null,
+    chatId: context.chatId,
+    agentId: agent.id,
+  });
+
+  const timeContext = context.timeContext;
   const followUpContents: Content[] = [
     ...contents,
     { role: 'model', parts: [{ functionCall: call }] },
@@ -257,7 +270,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
     }
 
     if (toolsEnabled) {
-      response = await resolveTimeToolCall(genAi, model, contents, systemInstruction, response, context.timeContext);
+      response = await resolveTimeToolCall(genAi, model, contents, systemInstruction, response, agent, context);
     }
 
     // A response object came back from the API layer at all - Gemini is

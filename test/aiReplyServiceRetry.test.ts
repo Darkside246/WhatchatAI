@@ -64,6 +64,8 @@ function fakeContext(overrides: Partial<AiHandoffContext> = {}): AiHandoffContex
     buildTimeContext(Date.now(), businessTimezone, { status: 'SYNCED', lastSyncedAt: new Date(), source: 'test' });
 
   return {
+    businessId: 'business-1',
+    chatId: 'chat-1',
     crmContact: null,
     knowledgeBase: { available: false, results: [], reason: 'not configured' },
     conversationHistory: [fakeMessage()],

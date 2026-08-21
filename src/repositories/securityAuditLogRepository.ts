@@ -33,7 +33,8 @@ export type SecurityEventType =
   | 'email_settings_updated'
   | 'email_test_sent'
   | 'goose_settings_updated'
-  | 'goose_tested';
+  | 'goose_tested'
+  | 'ai_tool_invoked';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 

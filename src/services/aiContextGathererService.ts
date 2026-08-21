@@ -14,6 +14,9 @@ export interface GatherAiHandoffContextInput {
 }
 
 export interface AiHandoffContext {
+  /** Echoed back from the input - lets downstream consumers (e.g. agentGuard's tool-invocation audit log) stay self-contained without threading extra parameters through generateAiReply. */
+  businessId: string;
+  chatId: string;
   crmContact: CrmContactRecord | null;
   knowledgeBase: KnowledgeBaseSearchResult;
   conversationHistory: WhatsAppMessageRecord[];
@@ -48,5 +51,13 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
   const businessTimezone = resolveBusinessTimezone({ timezone: business?.timezone ?? null });
   const timeContext = timeService.buildContextForTimezone(businessTimezone, business ?? undefined);
 
-  return { crmContact, knowledgeBase, conversationHistory, businessTimezone, timeContext };
+  return {
+    businessId: input.businessId,
+    chatId: input.chatId,
+    crmContact,
+    knowledgeBase,
+    conversationHistory,
+    businessTimezone,
+    timeContext,
+  };
 }

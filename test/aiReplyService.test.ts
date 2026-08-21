@@ -57,6 +57,8 @@ function fakeMessage(overrides: Partial<WhatsAppMessageRecord> = {}): WhatsAppMe
 
 function fakeContext(overrides: Partial<AiHandoffContext> = {}): AiHandoffContext {
   return {
+    businessId: 'business-1',
+    chatId: 'chat-1',
     crmContact: null,
     knowledgeBase: { available: false, results: [], reason: 'not configured' },
     conversationHistory: [fakeMessage()],

@@ -1,5 +1,88 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - Phase 3: centralized AI orchestration + zero-trust tool policy
+
+**Branch:** `phase-2-ai-repair` (continues directly from the Phase 2 commit
+on this same branch - no separate Phase 3 branch was cut, since this phase
+touches the same AI call path Phase 2 just repaired and splitting it would
+have meant re-basing one on top of the other for no real isolation benefit)
+
+**Changed:** `src/services/aiReplyService.ts` (the `get_current_time` tool
+call now runs through a real permission guard before executing, see
+below), `src/services/aiContextGathererService.ts` (`AiHandoffContext`
+widened with `businessId`/`chatId`, echoed through so downstream consumers
+are self-contained), `src/repositories/securityAuditLogRepository.ts`
+(added `'ai_tool_invoked'` to the audit event-type union),
+`src/queue/workers/incomingMessagesWorker.ts` (its ~130-line inline
+sequence of `gatherAiHandoffContext` -> `routeInboundMessage` ->
+`generateAiReply` -> one-hop escalation is now a single call to
+`orchestrateAiReply()`; every side effect - notifications, `ai_mode`
+transitions, realtime events, the idempotent outbound send - is
+unchanged, byte-for-byte the same behavior, just no longer duplicated
+inline in the worker).
+
+**Added:**
+- `src/services/ai/aiToolPolicy.ts` - a real permission registry
+  (`AiToolRisk`: READ/WRITE/SEND/HIGH_RISK/SYSTEM) for every AI-invocable
+  tool. Currently contains exactly one entry: `get_current_time: READ`.
+  This is the directive's zero-trust tool model made real, not aspirational
+  - proportionate to what the codebase actually has today (one tool), not
+  scaffolded for tools that don't exist yet.
+- `src/services/ai/agentGuard.ts` - `guardToolInvocation()`, a fail-closed
+  guard called before any tool executes. An unregistered tool name throws
+  `UnregisteredToolError` immediately, before any database access. A
+  registered tool's invocation is logged as a real, non-blocking audit
+  event (`ai_tool_invoked`) via the existing `SecurityAuditLogRepository` -
+  reusing that table rather than building new telemetry infrastructure.
+  The audit write is `.catch()`-guarded so a logging failure can never
+  block a tool call or crash the worker.
+- Migration `052_ai_tool_audit_events.sql` - extends the
+  `security_audit_logs_event_type_check` constraint to allow
+  `'ai_tool_invoked'`, following this codebase's established
+  drop-and-re-add-with-full-value-list convention (same pattern as
+  migrations 041/042/044/045/047).
+- `src/services/ai/aiOrchestrator.ts` - `orchestrateAiReply()`, the single
+  entry point that now owns "which agent, given what context, says what."
+  It deliberately does *not* own side effects (notifications, `ai_mode`
+  transitions, the outbound send) - those stay in the calling worker,
+  since they are queue/dispatch concerns, not AI orchestration ones. Same
+  routing/escalation/context logic as before this phase - a
+  consolidation, not a rewrite.
+
+**What was deliberately NOT built:** no rename of
+`aiContextGathererService.ts`/`aiReplyService.ts`/`geminiClient.ts` to the
+directive's suggested `agentContext.ts`/`aiModelGateway.ts` names - they
+already serve those roles, are tested, and are imported elsewhere; a mass
+rename for naming-convention purity alone would violate "preserve what
+works" for no functional benefit. No `aiMemory.ts` (no demonstrated
+need). No new telemetry service - the existing `security_audit_logs`
+table already fits this exactly.
+
+**Tests:** `test/agentGuard.test.ts` (new, 3 tests, real Postgres writes
+via `createTestBusiness()`/`resetDatabase()` - not mocked - proving the
+unregistered-tool fail-closed path writes zero audit rows, a registered
+tool's invocation writes exactly one real `ai_tool_invoked` row with no
+phone-number-shaped value anywhere in its metadata, and the policy
+registry's exact current content). Existing `AiHandoffContext` fixtures in
+`test/aiReplyService.test.ts` and `test/aiReplyServiceRetry.test.ts`
+updated for the widened type. Full suite: 78/78 files, 472/472 tests
+passing (up from 77/469 - the expected +1 file/+3 tests), zero
+regressions. Typecheck clean, production build clean, migration 052
+applies cleanly against a real database with no other migrations pending.
+
+**Status:** `IMPLEMENTED AND VERIFIED`.
+
+**Risks:** none identified beyond what Phase 2 already carried forward -
+this phase changes call structure, not call behavior, and the full
+regression suite confirms behavior is unchanged.
+
+**Rollback:** `git revert` the commit(s), or discard the branch. The only
+schema change is the additive `CHECK` constraint extension in migration
+052, which is itself reversible via the same drop/re-add pattern with
+`'ai_tool_invoked'` removed from the list.
+
+---
+
 ## 2026-08-21 - Phase 2: existing AI path audit + one real repair (circuit breaker)
 
 **Branch:** `phase-2-ai-repair` (base: `phase-1-container-security` @ `0467bf1`)
