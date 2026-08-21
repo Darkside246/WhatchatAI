@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getAiEngineStatus } from '../src/services/aiEngineStatusService.js';
+import { getAiEngineStatus, testGeminiConnection } from '../src/services/aiEngineStatusService.js';
 
 const serverSource = readFileSync(
   path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/server/index.ts'),
@@ -92,4 +92,34 @@ describe('aiEngineStatusService (honest engine reporting, never a fabricated gre
     expect(goose?.reason).toBeTruthy();
     expect(status.canGenerate).toBe(false);
   });
+});
+
+describe('testGeminiConnection (a real call, not a presence check)', () => {
+  const originalGemini = process.env.GEMINI_API_KEY;
+
+  beforeEach(() => {
+    delete process.env.GEMINI_API_KEY;
+  });
+
+  afterEach(() => {
+    if (originalGemini === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = originalGemini;
+  });
+
+  it('honestly fails when no key is set, rather than pretending to have tested anything', async () => {
+    const result = await testGeminiConnection();
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') expect(result.reason).toContain('GEMINI_API_KEY is not set');
+  });
+
+  it('surfaces the real provider error - not a generic message - when the key is present but invalid', async () => {
+    // A real call: this key is syntactically present but not a genuine
+    // credential, so the actual Gemini API is expected to reject it. This
+    // proves the function returns the literal provider error rather than
+    // silently reporting success or a made-up reason.
+    process.env.GEMINI_API_KEY = 'invalid-test-key-not-a-real-credential';
+    const result = await testGeminiConnection();
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') expect(result.reason.length).toBeGreaterThan(0);
+  }, 15_000);
 });

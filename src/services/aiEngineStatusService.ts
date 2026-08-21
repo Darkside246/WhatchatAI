@@ -64,3 +64,36 @@ export async function getAiEngineStatus(): Promise<AiEngineStatus> {
     canGenerate: geminiConfigured || goose.state === 'available',
   };
 }
+
+export type GeminiTestResult = { status: 'ok'; detail: string } | { status: 'failed'; reason: string };
+
+/**
+ * The real test getAiEngineStatus deliberately does not run: one minimal,
+ * cheap live call to prove the key actually works, not just that it exists.
+ * A key can be present but revoked, malformed, from the wrong project, or
+ * out of quota - "configured" cannot tell those apart from a working key,
+ * only an actual call can. Kept to the smallest possible request
+ * (thinkingBudget: 0, a few output tokens) since this spends real quota.
+ */
+export async function testGeminiConnection(): Promise<GeminiTestResult> {
+  const genAi = getGeminiClient();
+  if (!genAi) return { status: 'failed', reason: 'GEMINI_API_KEY is not set' };
+
+  try {
+    const model = process.env.GEMINI_REPLY_MODEL || process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+    const response = await genAi.models.generateContent({
+      model,
+      contents: [{ role: 'user', parts: [{ text: 'Reply with the single word: ok' }] }],
+      config: { temperature: 0, thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 16 },
+    });
+    if (!response.text?.trim()) {
+      return { status: 'failed', reason: 'The API accepted the request but returned no text - check the model name and account access.' };
+    }
+    return { status: 'ok', detail: `Model "${model}" answered a real test call successfully.` };
+  } catch (error) {
+    // The literal provider error, not a paraphrase - this is the one place
+    // an operator can see whether their key is invalid, unauthorized,
+    // rate-limited, or points at a model they don't have access to.
+    return { status: 'failed', reason: error instanceof Error ? error.message : String(error) };
+  }
+}

@@ -142,7 +142,7 @@ import {
   isScheduledStatusNotFoundError,
   isInvalidScheduledStatusError,
 } from '../services/scheduledStatusService.js';
-import { getAiEngineStatus } from '../services/aiEngineStatusService.js';
+import { getAiEngineStatus, testGeminiConnection } from '../services/aiEngineStatusService.js';
 import { getGooseSettings, updateGooseSettings, testGooseSettings } from '../services/gooseSettingsService.js';
 import {
   createDraft as createEmailDraft,
@@ -632,6 +632,18 @@ app.get('/api/workspace/billing/plans', requireWorkspaceContext, async (_req, re
 app.get('/api/workspace/ai-engines', requireWorkspaceContext, async (_req, res) => {
   return res.status(200).json(await getAiEngineStatus());
 });
+
+app.post(
+  '/api/workspace/ai-engines/gemini/test',
+  expensiveActionLimiter,
+  requirePermission('settings.manage'),
+  async (_req, res) => {
+    // A real, minimal live call - the only way to tell "key present" apart
+    // from "key actually works" (revoked, wrong project, out of quota all
+    // look identical to a presence check).
+    return res.status(200).json(await testGeminiConnection());
+  },
+);
 
 
 app.get('/api/workspace/sync-status', requireWorkspaceContext, async (_req, res) => {

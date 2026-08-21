@@ -412,6 +412,8 @@ export interface AiEnginesDto {
   canGenerate: boolean;
 }
 
+export type GeminiTestResultDto = { status: 'ok'; detail: string } | { status: 'failed'; reason: string };
+
 export const EMAIL_KINDS = ['custom', 'order_update', 'appointment', 'receipt', 'invoice', 'general_update'] as const;
 export type EmailKind = (typeof EMAIL_KINDS)[number];
 export type EmailStatus = 'draft' | 'approved' | 'sending' | 'sent' | 'failed' | 'cancelled' | 'indeterminate';
@@ -963,6 +965,7 @@ export const api = {
     request<{ status: 'requested' }>(`/workspace/scheduled-statuses/${id}/revoke`, { method: 'POST' }),
 
   getAiEngines: () => request<AiEnginesDto>('/workspace/ai-engines'),
+  testGeminiConnection: () => request<GeminiTestResultDto>('/workspace/ai-engines/gemini/test', { method: 'POST' }),
 
   getEmailCapabilities: () => request<EmailCapabilitiesDto>('/workspace/email/capabilities'),
   getEmailSettings: () => request<{ settings: EmailSettingsDto | null }>('/workspace/email/settings'),
