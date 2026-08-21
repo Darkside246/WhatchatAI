@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { SyncStatusResponse, WhatsAppConnectionSnapshot } from '../lib/api.js';
+import { getWhatsAppDisplayLabel } from '../lib/whatsappDisplayName.js';
 
 interface Props {
   connection: WhatsAppConnectionSnapshot | null;
@@ -39,7 +40,12 @@ export function SyncingPage({ connection, sync, onContinueAnyway }: Props) {
       <div className="w-full max-w-md rounded-2xl border border-border-subtle bg-surface-2 p-8">
         <h2 className="text-xl font-semibold text-fg">Synchronizing your business data…</h2>
         <p className="mt-2 text-body text-fg-secondary">
-          Connected as {connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? 'your account'}.
+          Connected as{' '}
+          {getWhatsAppDisplayLabel(
+            { pushName: connection?.pushName, phoneNumber: connection?.phoneNumber },
+            'your account',
+          )}
+          .
           Pulling real chats, contacts, groups, and message history from WhatsApp.
         </p>
 

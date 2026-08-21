@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import type { SyncStatusResponse, WhatsAppConnectionSnapshot } from '../lib/api.js';
+import { getWhatsAppDisplayLabel } from '../lib/whatsappDisplayName.js';
 import { SaasNavRail, SaasNavBottomBar } from '../components/SaasNavRail.js';
 import { NotificationCenter } from '../components/NotificationCenter.js';
 import { CommandPalette } from '../components/CommandPalette.js';
@@ -49,7 +50,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
               <kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-meta sm:inline">⌘K</kbd>
             </button>
             <p className="hidden text-caption text-fg-muted md:block">
-              Connected as {connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'}
+              Connected as {getWhatsAppDisplayLabel({ pushName: connection?.pushName, phoneNumber: connection?.phoneNumber })}
             </p>
             <div className="flex items-center gap-3">
               <NotificationCenter />
