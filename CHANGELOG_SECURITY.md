@@ -29,20 +29,21 @@ never copies non-TS assets), Redis failing to boot under `cap_drop:
 [ALL]`, and the worker healthcheck using a binary (`pgrep`) that isn't
 present in `node:22-slim`.
 
-**Status:** `IMPLEMENTED AND VERIFIED (pending a final confirmation
-pull)`. All nine verification items from the original checklist passed
-against a real boot: image builds cleanly, all four services report
-`healthy`, migrations apply (51/51), non-root execution confirmed
-(`uid=10001`), resource limits confirmed via `docker inspect`
-(512 MiB / 1.0 CPU / 256 pids, matching config exactly), no `EROFS`
-errors under `read_only`, `/api/health` returns 200 with the expected
-security headers, the worker genuinely starts consuming its real queues,
-and a real Baileys WhatsApp connection succeeded inside the container.
-The one remaining gap: the verified run was against a locally-patched
-version of these files on the collaborator's machine, not yet the exact
-bytes now committed here - functionally identical, but a final
-`git pull` + re-run closes that gap completely rather than assuming
-textual equivalence.
+**Status:** `IMPLEMENTED AND VERIFIED`. All nine verification items from
+the original checklist passed against a real boot: image builds cleanly,
+all four services report `healthy`, migrations apply (51/51), non-root
+execution confirmed (`uid=10001`), resource limits confirmed via
+`docker inspect` (512 MiB / 1.0 CPU / 256 pids, matching config exactly),
+no `EROFS` errors under `read_only`, `/api/health` returns 200 with the
+expected security headers, the worker genuinely starts consuming its real
+queues, and a real Baileys WhatsApp connection succeeded inside the
+container. A follow-up confirmation pass then closed the last gap:
+`git pull` fast-forwarded `668760b..26f1eab` (the exact commit range
+pushed here) on the collaborator's machine, followed by
+`docker compose down && docker compose build && docker compose up -d`
+against the actual tracked files - not the earlier locally-patched
+equivalent - and all four services came up `healthy` again. This is
+unconditionally verified, not pending anything further.
 
 **Rollback:** Same as the prior entry - no application code, schema, or
 `package.json`/lockfile touched.

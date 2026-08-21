@@ -170,17 +170,16 @@ bugs above found and fixed in the same pass):
   fix, and the process/volume ownership boundaries - as before, verified
   by direct inspection.
 
+**Confirmation pass (closed the loop):** the fixes above were committed
+and pushed (`26f1eab`), then the collaborator ran `git pull` (fast-
+forwarded `668760b..26f1eab` - the exact same commit range pushed here),
+`docker compose down`, a fresh `docker compose build`, and
+`docker compose up -d` against the actual tracked files - not a locally-
+patched equivalent. All four services (`postgres`, `redis`, `app-server`,
+`app-worker`) reported `healthy` in `docker compose ps`. This is now
+unconditionally `IMPLEMENTED AND VERIFIED`, not pending anything.
+
 **Still open, honestly:**
-- The verification run above was against a version of the Dockerfile/
-  compose file that a collaborator had **locally patched** on their own
-  machine before reporting back (the four fixes above). Those fixes have
-  since been applied to the actual tracked files in this repo and pushed,
-  in the same form described, but the *exact* pushed bytes have not yet
-  been re-run end-to-end - only the logically-equivalent locally-patched
-  version was. A final confirmation pass (`git pull`, then repeat the
-  same 9 steps) closes this gap completely; until then this is
-  `IMPLEMENTED AND VERIFIED (pending a final confirmation pull)`, not
-  unconditionally verified.
 - Whether Postgres would survive `cap_drop: [ALL]` remains untested (it
   was never applied there in the first place, so this run doesn't answer
   that question either way - see the hardening table above).
