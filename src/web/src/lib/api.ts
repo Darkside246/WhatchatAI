@@ -235,6 +235,28 @@ export interface WorkspaceBusiness {
   id: string;
   name: string;
   timezone: string;
+  timeSource: 'AUTOMATIC' | 'MANUAL';
+  manualOverrideTargetUtc: string | null;
+  manualOverrideSetAt: string | null;
+}
+
+export type TimeSyncStatus = 'SYNCED' | 'DEGRADED' | 'STALE' | 'MANUAL_OVERRIDE';
+
+export interface TimeContextDto {
+  utcNow: string;
+  timezone: string;
+  localDateTime: string;
+  localDate: string;
+  dayOfWeek: string;
+  utcOffset: string;
+  syncStatus: TimeSyncStatus;
+  lastSyncedAt: string | null;
+  source: string;
+}
+
+export interface TimeStatusResponse {
+  timeContext: TimeContextDto;
+  sync: { status: 'SYNCED' | 'DEGRADED' | 'STALE'; provider: string; estimatedAccuracy: 'high' | 'degraded' | 'unknown' };
 }
 
 export const BUSINESS_ROLES = ['OWNER', 'ADMIN', 'MANAGER', 'SUPERVISOR', 'AGENT', 'MARKETING', 'VIEWER'] as const;
@@ -834,6 +856,18 @@ export const api = {
     request<{ business: WorkspaceBusiness }>('/workspace/business/timezone', {
       method: 'PATCH',
       body: JSON.stringify({ timezone }),
+    }),
+  getTimeStatus: () => request<TimeStatusResponse>('/workspace/time-status'),
+  /** `targetLocalDateTime` is a "YYYY-MM-DDTHH:mm" wall-clock string (no timezone suffix) - interpreted server-side against the business's own timezone. */
+  enableManualTimeOverride: (targetLocalDateTime: string) =>
+    request<{ business: WorkspaceBusiness }>('/workspace/business/time-override', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled: true, targetLocalDateTime }),
+    }),
+  disableManualTimeOverride: () =>
+    request<{ business: WorkspaceBusiness }>('/workspace/business/time-override', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled: false }),
     }),
   /** Pushes a real profile picture to WhatsApp itself (Baileys updateProfilePicture) - never just a local-only avatar swap. */
   updateAccountProfilePicture: (imageBase64: string, mimeType: string) =>

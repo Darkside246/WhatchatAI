@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Camera, Lock, LogOut, Monitor, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
+import { Camera, Clock, Lock, LogOut, Monitor, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
 import {
   api,
   mediaUrl,
@@ -13,6 +13,7 @@ import {
   type TeamDto,
   type AgentCapacityDto,
   type AgentAvailability,
+  type TimeStatusResponse,
 } from '../lib/api.js';
 import { Avatar } from '../components/Avatar.js';
 import { IntegrationSettingsPanel } from '../components/IntegrationSettingsPanel.js';
@@ -23,6 +24,12 @@ import { triggerLockNow } from '../lib/lockEvents.js';
 import { useAuth } from '../hooks/useAuth.js';
 
 const MAX_PROFILE_PICTURE_BYTES = 5 * 1024 * 1024;
+
+// Real IANA zone list from the runtime's own tz database (Node/browser ICU) -
+// never a hand-maintained list that can drift from what the server actually
+// recognizes as valid.
+const IANA_TIMEZONES: string[] =
+  typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
 
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -174,8 +181,14 @@ function BusinessProfileCard() {
               value={timezone}
               onChange={(e) => setTimezone(e.target.value)}
               placeholder="e.g. America/New_York, Europe/London, Asia/Karachi"
+              list="iana-timezone-options"
               className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-body text-fg outline-none focus:border-accent"
             />
+            <datalist id="iana-timezone-options">
+              {IANA_TIMEZONES.map((zone) => (
+                <option key={zone} value={zone} />
+              ))}
+            </datalist>
             <button
               type="button"
               onClick={() => void handleSaveTimezone()}
@@ -196,6 +209,137 @@ function BusinessProfileCard() {
             </button>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+const SYNC_STATUS_LABEL: Record<TimeStatusResponse['timeContext']['syncStatus'], string> = {
+  SYNCED: 'Internet synchronized',
+  DEGRADED: 'Time synchronization degraded',
+  STALE: 'Time synchronization stale',
+  MANUAL_OVERRIDE: 'Manual time override active',
+};
+
+const SYNC_STATUS_COLOR: Record<TimeStatusResponse['timeContext']['syncStatus'], string> = {
+  SYNCED: 'bg-success/15 text-success',
+  DEGRADED: 'bg-warning/15 text-warning',
+  STALE: 'bg-error/15 text-error',
+  MANUAL_OVERRIDE: 'bg-info/15 text-info',
+};
+
+/** Real internet-synchronized business time and manual override control - polled, never a locally-computed guess. */
+function TimeSyncCard() {
+  const [status, setStatus] = useState<TimeStatusResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [overrideInput, setOverrideInput] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    try {
+      const result = await api.getTimeStatus();
+      setStatus(result);
+    } catch {
+      setError('Could not load time status.');
+    }
+  }
+
+  useEffect(() => {
+    void load();
+    const interval = setInterval(() => void load(), 30_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  async function handleEnableOverride() {
+    if (!overrideInput) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.enableManualTimeOverride(overrideInput);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to enable manual override.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDisableOverride() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.disableManualTimeOverride();
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to disable manual override.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!status) return null;
+  const { timeContext } = status;
+  const isManual = timeContext.syncStatus === 'MANUAL_OVERRIDE';
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      <div className="flex items-center justify-between">
+        <h2 className="flex items-center gap-1.5 text-body font-semibold text-fg">
+          <Clock size={15} aria-hidden />
+          Time &amp; synchronization
+        </h2>
+        <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${SYNC_STATUS_COLOR[timeContext.syncStatus]}`}>
+          {SYNC_STATUS_LABEL[timeContext.syncStatus]}
+        </span>
+      </div>
+
+      {isManual && (
+        <p className="mt-2 rounded-lg bg-info/10 px-3 py-2 text-caption font-semibold text-info">MANUAL TIME OVERRIDE ACTIVE</p>
+      )}
+
+      <div className="mt-3 flex items-baseline gap-2">
+        <p className="text-title font-semibold text-fg">
+          {timeContext.dayOfWeek}, {timeContext.localDate} {timeContext.localDateTime.slice(11, 16)}
+        </p>
+        <p className="text-caption text-fg-muted">
+          ({timeContext.timezone}, UTC{timeContext.utcOffset})
+        </p>
+      </div>
+
+      {error && <p className="mt-2 text-caption text-error">{error}</p>}
+
+      <div className="mt-4 border-t border-border-subtle pt-4">
+        <p className="text-caption font-medium text-fg-secondary">Manual time override (advanced)</p>
+        <p className="mt-0.5 text-meta text-fg-muted">
+          For testing only - sets what your AI agents see as "now" without changing anyone's real clock or timezone
+          rules. Never settable from a WhatsApp conversation.
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <input
+            type="datetime-local"
+            value={overrideInput}
+            onChange={(e) => setOverrideInput(e.target.value)}
+            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-caption text-fg outline-none focus:border-accent"
+          />
+          <button
+            type="button"
+            onClick={() => void handleEnableOverride()}
+            disabled={busy || !overrideInput}
+            className="rounded-lg bg-accent px-3 py-2 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+          >
+            {busy ? 'Saving…' : 'Set override'}
+          </button>
+          {isManual && (
+            <button
+              type="button"
+              onClick={() => void handleDisableOverride()}
+              disabled={busy}
+              className="rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
+            >
+              Clear override
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1026,6 +1170,7 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
       <div className="mt-6 max-w-2xl space-y-4">
         <ThemeCard />
         <BusinessProfileCard />
+        <TimeSyncCard />
         <WhatsAppAccountCard connection={connection} />
         <IntegrationSettingsPanel />
         <AccountCard />

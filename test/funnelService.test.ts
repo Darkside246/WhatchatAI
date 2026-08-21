@@ -150,6 +150,44 @@ describe('funnelService (real step execution, real backend actions only)', () =>
     expect(rows[0]!.tags).not.toContain('not-qualified');
   });
 
+  it('validates the new WAIT-until-local-time shape without breaking the original minutes-based validation', async () => {
+    const funnel = await createFunnel(businessId, accountId, ownerId, 'Time-based wait', null);
+
+    // Neither minutes nor untilLocalTime - still rejected exactly like before this feature existed.
+    await expect(replaceFunnelSteps(businessId, funnel.id, [{ nodeType: 'WAIT', config: {} }])).rejects.toThrow();
+
+    // A malformed local time string is rejected.
+    await expect(
+      replaceFunnelSteps(businessId, funnel.id, [{ nodeType: 'WAIT', config: { untilLocalTime: '25:99' } }]),
+    ).rejects.toThrow();
+
+    // An invalid weekday name is rejected.
+    await expect(
+      replaceFunnelSteps(businessId, funnel.id, [{ nodeType: 'WAIT', config: { untilLocalTime: '09:00', untilDayOfWeek: 'FUNDAY' } }]),
+    ).rejects.toThrow();
+
+    // A valid untilLocalTime (with no weekday) is accepted.
+    await expect(
+      replaceFunnelSteps(businessId, funnel.id, [{ nodeType: 'WAIT', config: { untilLocalTime: '09:00' } }]),
+    ).resolves.toBeDefined();
+  });
+
+  it('a WAIT-until-local-time step pauses the instance in WAITING, resolved against the business timezone', async () => {
+    await pool.query('UPDATE businesses SET timezone = $2 WHERE id = $1', [businessId, 'America/New_York']);
+
+    const funnel = await createFunnel(businessId, accountId, ownerId, 'Morning follow-up', null);
+    await replaceFunnelSteps(businessId, funnel.id, [
+      { nodeType: 'WAIT', config: { untilLocalTime: '09:00' } },
+      { nodeType: 'MESSAGE', config: { text: 'Good morning!' } },
+    ]);
+    await setFunnelActive(businessId, funnel.id, true);
+
+    const crmContactId = await makeContactWithChat(businessId, accountId, '15559991006@s.whatsapp.net');
+    const instance = await enrollContact(businessId, funnel.id, crmContactId);
+    expect(instance.status).toBe('WAITING');
+    expect(instance.currentPosition).toBe(1);
+  });
+
   it('cancelling a running instance stops it for real', async () => {
     const funnel = await createFunnel(businessId, accountId, ownerId, 'x', null);
     await replaceFunnelSteps(businessId, funnel.id, [{ nodeType: 'WAIT', config: { minutes: 60 } }]);

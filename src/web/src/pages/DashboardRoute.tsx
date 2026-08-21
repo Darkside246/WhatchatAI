@@ -9,6 +9,7 @@ import {
   type AiEnginesDto,
 } from '../lib/api.js';
 import { AiEngineStrip } from '../components/AiEngineStrip.js';
+import { TimeSyncStrip } from '../components/TimeSyncStrip.js';
 
 function StatCard({
   icon: Icon,
@@ -309,8 +310,9 @@ export function DashboardRoute() {
       {/* SYSTEM HEALTH - the same real, non-vacuous engine status shown elsewhere in the product. */}
       <section className="mt-6">
         <h2 className="text-body font-semibold text-fg">System health</h2>
-        <div className="mt-2">
+        <div className="mt-2 flex flex-col gap-2">
           <AiEngineStrip />
+          <TimeSyncStrip />
         </div>
       </section>
     </div>

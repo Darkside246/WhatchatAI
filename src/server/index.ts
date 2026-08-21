@@ -40,6 +40,9 @@ import {
   LockNotConfiguredError,
 } from '../services/securityLockService.js';
 import { listHumanTakeoverAlerts } from '../services/securityAlertService.js';
+import { timeService } from '../services/time/timeService.js';
+import { zonedWallClockToUtc } from '../services/time/timeContext.js';
+import { BusinessRepository, isValidTimezone } from '../repositories/businessRepository.js';
 import {
   listNotifications,
   markNotificationRead,
@@ -1574,6 +1577,75 @@ app.patch(
   },
 );
 
+app.get('/api/workspace/time-status', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const timeContext = await timeService.buildBusinessTimeContext(businessId);
+  const sync = timeService.getSyncState();
+  return res.status(200).json({
+    timeContext,
+    sync: { status: sync.syncStatus, provider: sync.provider, estimatedAccuracy: sync.estimatedAccuracy },
+  });
+});
+
+const timeOverrideSchema = z.union([
+  z.object({ enabled: z.literal(true), targetLocalDateTime: z.string().min(1) }),
+  z.object({ enabled: z.literal(false) }),
+]);
+
+app.patch(
+  '/api/workspace/business/time-override',
+  requireWorkspaceContext,
+  requirePermission('settings.manage'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const parsed = timeOverrideSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_TIME_OVERRIDE' });
+
+    const businessRepository = new BusinessRepository(pool);
+
+    if (!parsed.data.enabled) {
+      const business = await businessRepository.clearManualTimeOverride(businessId);
+      return res.status(200).json({ business });
+    }
+
+    // The operator's browser sends a local wall-clock string (no timezone
+    // math trusted from the client) - parsed against the business's own
+    // timezone so "9:00 AM" means 9:00 AM there, not wherever the operator
+    // happens to be sitting.
+    const business = await businessRepository.findById(businessId);
+    if (!business) return res.status(404).json({ error: 'BUSINESS_NOT_FOUND' });
+    if (!isValidTimezone(business.timezone)) {
+      return res.status(400).json({ error: 'INVALID_TIMEZONE', message: 'Set a valid business timezone before enabling manual override' });
+    }
+
+    // Expects an <input type="datetime-local">-shaped "YYYY-MM-DDTHH:mm[:ss]"
+    // string with no timezone suffix - it is interpreted as a wall-clock
+    // reading in the business's own timezone via zonedWallClockToUtc, never
+    // as the operator's browser timezone or the server's own clock.
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(parsed.data.targetLocalDateTime);
+    if (!match) return res.status(400).json({ error: 'INVALID_TIME_OVERRIDE' });
+    const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr] = match;
+    const targetUtc = zonedWallClockToUtc(
+      {
+        year: Number(yearStr),
+        month: Number(monthStr),
+        day: Number(dayStr),
+        hour: Number(hourStr),
+        minute: Number(minuteStr),
+        second: secondStr ? Number(secondStr) : 0,
+      },
+      business.timezone,
+    );
+
+    // setAtUtc is authoritative server time (TimeService), never
+    // client-supplied - the elapsed-time rebase in TimeService depends on
+    // this being real, not something a request body could spoof.
+    const setAtUtc = new Date(timeService.getSyncState().utcNow);
+    const updated = await businessRepository.setManualTimeOverride(businessId, targetUtc, setAtUtc);
+    return res.status(200).json({ business: updated });
+  },
+);
+
 const updateProfilePictureSchema = z.object({
   imageBase64: z.string().min(1),
   mimeType: z.string().min(1),
@@ -2127,6 +2199,11 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
 void whatsappConnectionService.connect().catch((error) => {
   console.error('[WhatsApp] Initial connection failed:', error);
 });
+
+// Fire-and-forget background calibration - never blocks server startup, and
+// a failed first sync just leaves TimeService reporting STALE until the
+// next retry, never an unhandled rejection.
+timeService.start();
 
 const httpServer = createServer(app);
 attachWebSocketServer(httpServer);

@@ -18,6 +18,7 @@ import { whatsappMessagePersistenceService } from '../../services/whatsappMessag
 import { runSentinel } from '../../security/sentinel/sentinel.js';
 import { gatherAiHandoffContext } from '../../services/aiContextGathererService.js';
 import { generateAiReply } from '../../services/aiReplyService.js';
+import { timeService } from '../../services/time/timeService.js';
 import { routeInboundMessage, resolveEscalationAgent } from '../../services/agentRoutingService.js';
 import { whatsappOutboundMessageService } from '../../services/whatsappOutboundMessageService.js';
 import { WhatsAppChatRepository } from '../../repositories/whatsappChatRepository.js';
@@ -651,6 +652,11 @@ export const realtimeEventsWorker = new Worker(REALTIME_EVENTS_QUEUE, processRea
   connection: queueConnection,
   concurrency: CONCURRENCY,
 });
+
+// This is the process that actually calls generateAiReply, so it needs its
+// own background time calibration too - fire-and-forget, never blocks
+// worker startup or message processing.
+timeService.start();
 
 incomingMessagesWorker.on('completed', (job) => {
   console.log(`[IncomingMessagesWorker] Persisted message ${job.data.message.messageId}`);

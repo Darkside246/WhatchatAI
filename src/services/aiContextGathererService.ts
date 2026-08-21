@@ -3,6 +3,7 @@ import { BusinessRepository } from '../repositories/businessRepository.js';
 import { CrmContactRepository, type CrmContactRecord } from '../repositories/crmContactRepository.js';
 import { WhatsAppMessageRepository, type WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { searchKnowledgeBase, type KnowledgeBaseSearchResult } from './knowledgeBaseSearchService.js';
+import { timeService, resolveBusinessTimezone, type TimeContext } from './time/timeService.js';
 
 export interface GatherAiHandoffContextInput {
   businessId: string;
@@ -18,6 +19,8 @@ export interface AiHandoffContext {
   conversationHistory: WhatsAppMessageRecord[];
   /** Real IANA name from the business's own Settings, defaulting to 'UTC' - never guessed from the server's own clock. */
   businessTimezone: string;
+  /** Authoritative, TimeService-built context (internet-synchronized where possible) - the AI must use this, never its own model knowledge, for "now". */
+  timeContext: TimeContext;
 }
 
 /**
@@ -42,5 +45,8 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     businessRepository.findById(input.businessId),
   ]);
 
-  return { crmContact, knowledgeBase, conversationHistory, businessTimezone: business?.timezone ?? 'UTC' };
+  const businessTimezone = resolveBusinessTimezone({ timezone: business?.timezone ?? null });
+  const timeContext = timeService.buildContextForTimezone(businessTimezone, business ?? undefined);
+
+  return { crmContact, knowledgeBase, conversationHistory, businessTimezone, timeContext };
 }

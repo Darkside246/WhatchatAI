@@ -3,6 +3,7 @@ import { generateAiReply } from '../src/services/aiReplyService.js';
 import type { AiAgentRecord } from '../src/repositories/aiAgentRepository.js';
 import type { AiHandoffContext } from '../src/services/aiContextGathererService.js';
 import type { WhatsAppMessageRecord } from '../src/repositories/whatsappMessageRepository.js';
+import { buildTimeContext } from '../src/services/time/timeContext.js';
 
 function fakeAgent(overrides: Partial<AiAgentRecord> = {}): AiAgentRecord {
   return {
@@ -60,6 +61,7 @@ function fakeContext(overrides: Partial<AiHandoffContext> = {}): AiHandoffContex
     knowledgeBase: { available: false, results: [], reason: 'not configured' },
     conversationHistory: [fakeMessage()],
     businessTimezone: 'UTC',
+    timeContext: buildTimeContext(Date.now(), 'UTC', { status: 'SYNCED', lastSyncedAt: new Date(), source: 'test' }),
     ...overrides,
   };
 }

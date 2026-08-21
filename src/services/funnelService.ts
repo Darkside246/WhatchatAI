@@ -15,6 +15,12 @@ import { enqueueFunnelAdvance } from '../queue/queues/funnelAdvanceQueue.js';
 import { sendFunnelEmail } from './emailService.js';
 import { EntitlementService } from './entitlementService.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
+import { BusinessRepository } from '../repositories/businessRepository.js';
+import { timeService, resolveBusinessTimezone, WEEKDAY_NAMES, type WeekdayName } from './time/timeService.js';
+
+const businessRepository = new BusinessRepository(pool);
+
+const LOCAL_TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 const funnelRepository = new FunnelRepository(pool);
 const crmContactRepository = new CrmContactRepository(pool);
@@ -120,9 +126,19 @@ function validateStep(step: FunnelStepInput, stepCount: number): void {
     case 'MESSAGE':
       if (typeof c.text !== 'string' || !c.text.trim()) throw new InvalidFunnelStepError('MESSAGE step requires config.text');
       break;
-    case 'WAIT':
-      if (typeof c.minutes !== 'number' || c.minutes <= 0) throw new InvalidFunnelStepError('WAIT step requires a positive config.minutes');
+    case 'WAIT': {
+      const hasMinutes = typeof c.minutes === 'number' && c.minutes > 0;
+      const hasUntilLocalTime = typeof c.untilLocalTime === 'string' && LOCAL_TIME_PATTERN.test(c.untilLocalTime);
+      if (!hasMinutes && !hasUntilLocalTime) {
+        throw new InvalidFunnelStepError(
+          'WAIT step requires either a positive config.minutes, or config.untilLocalTime as "HH:mm" (business timezone)',
+        );
+      }
+      if (hasUntilLocalTime && c.untilDayOfWeek !== undefined && !WEEKDAY_NAMES.includes(c.untilDayOfWeek as WeekdayName)) {
+        throw new InvalidFunnelStepError(`WAIT config.untilDayOfWeek must be one of: ${WEEKDAY_NAMES.join(', ')}`);
+      }
       break;
+    }
     case 'CONDITION':
       if (typeof c.field !== 'string' || typeof c.equals !== 'string' || typeof c.matchStepPosition !== 'number') {
         throw new InvalidFunnelStepError('CONDITION step requires config.field, config.equals, config.matchStepPosition');
@@ -199,6 +215,31 @@ export async function enrollContact(businessId: string, funnelId: string, crmCon
 }
 
 /**
+ * WAIT delay resolution: `minutes` (the original, unchanged relative delay)
+ * takes priority if present, so every funnel built before this feature
+ * keeps behaving exactly as it did. `untilLocalTime` is additive - it
+ * resolves the next real UTC instant that wall-clock time next occurs in
+ * the business's own timezone (optionally on a specific weekday), via
+ * TimeService, never a naive `new Date()` computed in server time.
+ */
+async function resolveWaitDelayMs(businessId: string, config: Record<string, unknown>): Promise<number> {
+  if (typeof config.minutes === 'number' && config.minutes > 0) {
+    return config.minutes * 60_000;
+  }
+
+  const business = await businessRepository.findById(businessId);
+  const timezone = resolveBusinessTimezone({ timezone: business?.timezone ?? null });
+  const [hourStr, minuteStr] = String(config.untilLocalTime).split(':');
+  const target = timeService.resolveNextLocalOccurrence(
+    timezone,
+    Number(hourStr),
+    Number(minuteStr),
+    typeof config.untilDayOfWeek === 'string' ? (config.untilDayOfWeek as WeekdayName) : undefined,
+  );
+  return Math.max(0, target.getTime() - Date.now());
+}
+
+/**
  * The real step executor. Every branch below calls a genuinely existing
  * service method - never a fabricated "done" with nothing behind it. On
  * MESSAGE/WAIT the loop stops (WAIT resumes later via a real delayed
@@ -230,9 +271,9 @@ async function runFromPosition(instance: FunnelInstanceRecord): Promise<void> {
           break;
         }
         case 'WAIT': {
-          const minutes = Number(step.config.minutes);
+          const delayMs = await resolveWaitDelayMs(instance.businessId, step.config);
           await funnelRepository.updateInstance(instance.id, { currentPosition: position + 1, status: 'WAITING' });
-          await enqueueFunnelAdvance({ instanceId: instance.id }, minutes * 60_000);
+          await enqueueFunnelAdvance({ instanceId: instance.id }, delayMs);
           return; // Resumes later via the queue - stop executing now.
         }
         case 'CONDITION': {
