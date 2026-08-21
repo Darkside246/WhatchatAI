@@ -24,6 +24,7 @@ import {
   isLeadNotFoundError,
 } from '../services/workspaceService.js';
 import { whatsappOutboundMessageService, isChatNotFoundError as isOutboundChatNotFoundError } from '../services/whatsappOutboundMessageService.js';
+import { openclawAdapterRouter } from './openclawAdapterRouter.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
 import { checkRedisHealth } from '../redis/client.js';
@@ -264,6 +265,12 @@ app.use('/api/workspace/campaigns', expensiveActionLimiter);
 // 20mb (not the old 2mb) to fit base64-encoded outbound media uploads -
 // this is one global parser, so every route's real ceiling moved with it.
 app.use(express.json({ limit: '20mb' }));
+
+// OpenClaw's own tool-call adapter - authenticates via a per-cell
+// callback token (Bearer), never the session-cookie `requireAuth` below.
+// See openclawAdapterRouter.ts/openclawAdapterService.ts; entirely
+// separate authorization path from every route under /api/workspace.
+app.use('/api/openclaw', openclawAdapterRouter);
 
 app.get('/api/health', (_req, res) => {
   res.status(200).json({

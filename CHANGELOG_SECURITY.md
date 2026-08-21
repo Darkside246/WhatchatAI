@@ -1,5 +1,107 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - OpenClaw Tool Gateway adapter: the HTTP seam a real cell would call (fourth slice)
+
+**Branch:** `phase-2-ai-repair`
+
+**Context:** the user drew a clear, correct distinction after the third
+slice: the Tool Gateway's *authorization logic* was proven, but nothing
+yet connected an actual OpenClaw cell to it - "OpenClaw Security
+Boundary: COMPLETE, OpenClaw Runtime Integration: NOT YET VERIFIED." This
+slice builds the missing HTTP seam (`OpenClaw Cell -> Authenticated
+Gateway Adapter -> OpenClawToolGateway.invoke()`), which the runtime
+integration still needs regardless of Fleet availability.
+
+**A real environment finding, checked before deciding scope, that
+matters for every future OpenClaw slice, not just this one:** this
+sandbox actually has a working Docker daemon (`dockerd` starts and runs
+fine - `docker info` reports a real Engine 29.3.1) - the "Docker
+unavailable" framing carried since Phase 1 was imprecise. What's
+actually blocked is narrower and confirmed directly: `docker pull` (both
+`hello-world` from Docker Hub and the real pinned
+`ghcr.io/openclaw/openclaw@sha256:...` image) resolves the registry API,
+auth, and manifest correctly, then fails at the layer-download step -
+Docker Hub redirects blobs to `production.cloudfront.docker.com`, GHCR
+redirects to `pkg-containers.githubusercontent.com`, and both CDN domains
+are outside this sandbox's egress allowlist while the registries' own
+API domains stay reachable. `openclaw fleet create` shells out to
+`docker pull` internally, so it would fail at the identical point - real
+Fleet verification (steps the user proposed: cell start/stop, health,
+cross-tenant isolation, quarantine actually stopping a cell, digest
+pinning enforcement, upgrade behavior) needs an environment whose egress
+allows those two CDN domains, not achievable in this one regardless of
+Docker daemon presence. The daemon was stopped and no containers were
+left running after this check.
+
+**Decision, per the user's own choice when presented with this
+blocker:** build what's honestly testable without a live cell now (this
+slice), and leave "OpenClaw Runtime Integration: NOT YET VERIFIED" as
+the accurate label until a Docker/Podman-capable environment is
+available for the real Fleet + real cell work.
+
+**What was built:**
+
+- Migration `064_openclaw_callback_token.sql`: `callback_token_hash` on
+  `openclaw_fleet_cells` - the credential a Fleet cell presents (as a
+  Bearer token) to call *into* WhatchatAI's own adapter endpoint, the
+  opposite direction from Fleet's own Gateway token (which WhatchatAI
+  would use to call *out* to a cell, and is deliberately never stored -
+  see migration 061). Only a SHA-256 hash is ever persisted, mirroring
+  this codebase's existing `sessionTokenService.ts` pattern exactly -
+  there is nothing to decrypt back to, so a hash-only lookup is the
+  correct primitive here, not reversible envelope encryption.
+- `openclawCallbackTokenService.ts` - a deliberate mirror (not a shared
+  import) of `sessionTokenService.ts`'s generate/hash shape, kept
+  separate so the two credentials stay independently reviewable.
+- `OpenClawFleetService.provisionCellForBusiness` now mints a real
+  callback token before calling `fleet create`, passes it to the cell via
+  `--env OPENCLAW_CALLBACK_TOKEN=<token>` (Fleet's own documented `--env`
+  mechanism), stores only its hash, and returns the raw value exactly
+  once in the result - the same "shown once" contract Fleet's own
+  Gateway token follows.
+- `openclawAdapterService.ts` (`handleOpenClawToolInvokeRequest`) - the
+  actual authorization-adjacent logic: Bearer-token extraction, hash
+  lookup to resolve the calling cell's real identity, request-shape
+  validation, then a call-through to `OpenClawToolGateway.invoke()`.
+  **The businessId/fleetCellId used for that call come only from the
+  authenticated cell record the token resolves to - never from anything
+  the request body claims**, so a cell cannot present its own valid token
+  and then ask to act as a different tenant by writing a different value
+  into the JSON body.
+- `openclawAdapterRouter.ts` - a five-line Express `Router` wrapper
+  (`POST /tools/invoke`), mounted at `/api/openclaw` in `server/index.ts`,
+  outside the session-cookie `requireAuth` gate every `/api/workspace`
+  route sits behind. All real logic lives in the plain function above,
+  exported and tested directly - no HTTP test harness (no `supertest`
+  dependency added) needed for a wrapper this thin, consistent with how
+  every other part of this codebase is tested.
+
+**Verification:** 13 new tests (adapter) + 1 new assertion in the
+existing Fleet-service suite confirming a real random callback token is
+minted, passed via `--env`, and resolvable by its hash. Notably: a
+**stolen valid token from a different tenant, used against this tenant's
+real lead/chat IDs in the request body, is denied by the gateway** (a
+real cross-tenant business-logic DENY, not merely an HTTP 401) - proving
+the "body claims are never trusted" property end-to-end through the
+adapter, not just inside the gateway's own unit tests. Full suite
+575/575. Typecheck clean. Server boots cleanly with the new route
+mounted (manual check, no crash on import/listen).
+
+**Status: `IMPLEMENTED AND VERIFIED`** for the adapter's own logic (same
+standard as the third slice - every scenario is a real Postgres/HTTP-
+shaped outcome). **Runtime integration is still `NOT YET VERIFIED`**: no
+real OpenClaw cell has ever called this endpoint, and per the finding
+above, this sandbox cannot produce one. That milestone now depends on an
+environment with real access to Docker/GHCR blob storage - it is
+otherwise ready to be exercised the moment one is available.
+
+**What's still open:** real Fleet verification (blocked here, not
+elsewhere); wiring an actual OpenClaw cell's own tool-calling
+configuration to call this adapter; encrypted storage for Fleet's own
+Gateway token (the *other* direction of credential, deferred since
+slice one); OpenClaw behind a feature flag, tenant-allowlisted, only
+after the above.
+
 ## 2026-08-21 - OpenClaw Tool Gateway + first WRITE-tier tool, update_lead (third slice)
 
 **Branch:** `phase-2-ai-repair`

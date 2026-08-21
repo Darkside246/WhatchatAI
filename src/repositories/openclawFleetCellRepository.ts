@@ -94,6 +94,28 @@ export class OpenClawFleetCellRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /**
+   * The adapter endpoint's only lookup path: a hash never round-trips
+   * back to the raw callback token, so this is the sole way a cell's
+   * bearer credential resolves to a tenant/cell identity. Never exposed
+   * via `OpenClawFleetCellRecord` itself - callers only ever compare a
+   * hash to find a row, never read one back off a record.
+   */
+  async findByCallbackTokenHash(callbackTokenHash: string): Promise<OpenClawFleetCellRecord | null> {
+    const { rows } = await this.db.query<OpenClawFleetCellRow>(
+      'SELECT * FROM openclaw_fleet_cells WHERE callback_token_hash = $1',
+      [callbackTokenHash],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  async setCallbackTokenHash(businessId: string, callbackTokenHash: string): Promise<void> {
+    await this.db.query(
+      'UPDATE openclaw_fleet_cells SET callback_token_hash = $2, updated_at = now() WHERE business_id = $1',
+      [businessId, callbackTokenHash],
+    );
+  }
+
   async findByFleetCellId(fleetCellId: string): Promise<OpenClawFleetCellRecord | null> {
     const { rows } = await this.db.query<OpenClawFleetCellRow>(
       'SELECT * FROM openclaw_fleet_cells WHERE fleet_cell_id = $1',

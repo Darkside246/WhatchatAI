@@ -33,6 +33,7 @@ const {
   OPENCLAW_PINNED_VERSION,
 } = await import('../src/services/openclawFleetService.js');
 const { OpenClawFleetCellRepository } = await import('../src/repositories/openclawFleetCellRepository.js');
+const { hashCallbackToken } = await import('../src/services/openclawCallbackTokenService.js');
 
 describe('fleetCellIdForBusiness / validateFleetTenantId', () => {
   it('derives a tenant ID that matches OpenClaw Fleet\'s own grammar from a real UUID', () => {
@@ -94,9 +95,16 @@ describe('OpenClawFleetService (real Postgres, mocked Fleet CLI)', () => {
     expect(result.cell.cellState).toBe('RUNNING');
     expect(result.cell.gatewayEndpoint).toBe('http://127.0.0.1:19104');
 
+    // A real, random callback token is minted and passed to the CLI via
+    // --env - this is the credential the cell must present later to call
+    // back into the Tool Gateway adapter.
+    expect(result.callbackToken).toMatch(/^[0-9a-f]{64}$/);
+    expect(args).toContain(`OPENCLAW_CALLBACK_TOKEN=${result.callbackToken}`);
+
     const persisted = await repo.findByBusinessId(businessId);
     expect(persisted?.cellState).toBe('RUNNING');
     expect(persisted?.securityStatus).toBe('SAFE');
+    expect(await repo.findByCallbackTokenHash(hashCallbackToken(result.callbackToken as string))).not.toBeNull();
   });
 
   it('is idempotent: a second provision call never invokes the CLI again', async () => {

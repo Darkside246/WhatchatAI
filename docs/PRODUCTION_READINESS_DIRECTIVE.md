@@ -128,18 +128,39 @@ pasted directive without our own verification (`unverified`).
       outcomes matching an explicit adversarial acceptance table); still
       not verified end-to-end since no real OpenClaw cell has ever called
       it.
+   4. `openclawAdapterService.ts`/`openclawAdapterRouter.ts` - the HTTP
+      seam a real cell would call (`POST /api/openclaw/tools/invoke`),
+      Bearer-token authenticated via a per-cell callback secret (hash-only
+      storage, mirroring `sessionTokenService.ts`). `IMPLEMENTED AND
+      VERIFIED` for the adapter's own logic, including a test proving a
+      stolen valid token from another tenant is denied by the gateway
+      when used against this tenant's real entity/chat IDs - not just an
+      HTTP auth failure, an actual cross-tenant business-logic DENY.
+
+   **Real environment finding from this fourth slice, relevant to every
+   future OpenClaw slice:** this sandbox actually runs a real Docker
+   daemon (`dockerd` starts fine) - what's genuinely blocked is narrower:
+   `docker pull` resolves the registry API/manifest for both Docker Hub
+   and GHCR, then fails at the layer-download step because both
+   registries redirect blobs to CDN domains
+   (`production.cloudfront.docker.com`, `pkg-containers.githubusercontent.com`)
+   outside this sandbox's egress allowlist. `fleet create` would fail at
+   the identical point. Real Fleet verification needs an environment
+   whose egress allows those two domains - not a Docker-daemon problem,
+   a network-policy one.
 
    Remaining, in order: (1) encrypted Gateway-token storage using the
    existing `EncryptionService` envelope-encryption path - rotation/
    revocation mechanics need re-verifying against the real Fleet CLI
    before being named as such (Fleet's only documented rotation path may
    be `fleet restore`, not a lightweight standalone operation); (2) a real
-   `fleet create` run against an actual Docker/Podman daemon; (3) wiring
-   an actual OpenClaw cell's tool-call protocol to call the gateway's
-   `invoke()`; (4) OpenClaw behind a feature flag for controlled testing
-   against the existing Gemini/Goose path, with an immediate rollback -
-   the existing AI path stays primary until all of the above is verified,
-   not just implemented.
+   `fleet create` run against an environment with real registry blob
+   access; (3) wiring an actual OpenClaw cell's own tool-calling
+   configuration to call the adapter built in slice four; (4) OpenClaw
+   behind a feature flag for controlled testing against the existing
+   Gemini/Goose path, tenant-allowlisted, with an immediate rollback - the
+   existing AI path stays primary until all of the above is verified, not
+   just implemented.
 4. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
    internal analytics, or customer-facing analytics for tenants? Different
    answers imply different event schemas and access control. Not started.

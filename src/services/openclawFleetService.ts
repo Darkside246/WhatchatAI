@@ -6,6 +6,7 @@ import {
   type OpenClawFleetCellRecord,
   type FleetCellState,
 } from '../repositories/openclawFleetCellRepository.js';
+import { generateCallbackToken, hashCallbackToken } from './openclawCallbackTokenService.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -127,6 +128,14 @@ export interface FleetCellProvisionResult {
    * needed again. Null on an idempotent no-op (the cell already existed).
    */
   gatewayToken: string | null;
+  /**
+   * The credential this cell must present (as a Bearer token) when
+   * calling into WhatchatAI's own Tool Gateway adapter - the opposite
+   * direction from `gatewayToken` above. Returned exactly once, same as
+   * Fleet's own token; only its SHA-256 hash is ever persisted (see
+   * `openclawCallbackTokenService.ts`). Null on an idempotent no-op.
+   */
+  callbackToken: string | null;
 }
 
 /**
@@ -151,13 +160,21 @@ export class OpenClawFleetService {
   /** Idempotent: an existing cell is returned as-is rather than attempting a second `fleet create`. */
   async provisionCellForBusiness(businessId: string): Promise<FleetCellProvisionResult> {
     const existing = await this.repo.findByBusinessId(businessId);
-    if (existing) return { cell: existing, gatewayToken: null };
+    if (existing) return { cell: existing, gatewayToken: null, callbackToken: null };
 
     const fleetCellId = fleetCellIdForBusiness(businessId);
+    // Generated before the CLI call so it can be injected into the cell's
+    // own environment at creation time - the cell needs this value to
+    // ever call the Tool Gateway adapter back, so it must be minted
+    // before the container exists, not after.
+    const callbackToken = generateCallbackToken();
 
     let stdout: string;
     try {
-      stdout = await runFleetCli(['create', fleetCellId, '--image', OPENCLAW_PINNED_IMAGE, '--json'], FLEET_CREATE_TIMEOUT_MS);
+      stdout = await runFleetCli(
+        ['create', fleetCellId, '--image', OPENCLAW_PINNED_IMAGE, '--env', `OPENCLAW_CALLBACK_TOKEN=${callbackToken}`, '--json'],
+        FLEET_CREATE_TIMEOUT_MS,
+      );
     } catch (error) {
       throw new Error(`openclaw fleet create ${fleetCellId} failed: ${describeExecError(error)}`);
     }
@@ -173,8 +190,9 @@ export class OpenClawFleetService {
       gatewayEndpoint,
     });
     await this.repo.updateCellState(businessId, 'RUNNING');
+    await this.repo.setCallbackTokenHash(businessId, hashCallbackToken(callbackToken));
 
-    return { cell: { ...cell, cellState: 'RUNNING' }, gatewayToken: parsed.gatewayToken ?? null };
+    return { cell: { ...cell, cellState: 'RUNNING' }, gatewayToken: parsed.gatewayToken ?? null, callbackToken };
   }
 
   /** Real liveness check via `fleet status --json`, never assumed - updates the persisted cell_state from what Fleet actually reports. */
