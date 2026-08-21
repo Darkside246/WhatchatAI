@@ -1,5 +1,108 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - Phase 19: real failure-injection testing against Postgres and Redis
+
+**Branch:** `phase-2-ai-repair` (continues on the same branch as Phases
+2-3, 16, and 17 - see the Phase 3 entry for why this branch wasn't split
+further)
+
+**Method:** this was real fault injection against this sandbox's actual
+running Postgres and Redis, not a written-up hypothetical. `sudo service
+postgresql stop`/`start` and `redis-cli shutdown nosave` /
+`redis-server --daemonize` were used to kill and restore each dependency
+while the real dev server (`npx tsx src/server/index.ts`) was up and being
+hit with real `curl` requests, plus one isolated script that added a real
+job to a real BullMQ `Queue` against a stopped Redis to measure what
+`queue.add()` actually does (never assumed).
+
+**Findings, in the order discovered:**
+
+1. **Postgres outage: already handled correctly.** `/api/health/database`
+   returned an honest `503 DATABASE_UNAVAILABLE` with the real driver
+   error; a route with no dedicated DB-error handling (`/api/auth/
+   bootstrap-status`) returned a `500` rather than hanging or crashing the
+   process; the server recovered automatically once Postgres came back,
+   with no restart needed. No fix required here - this confirms Phase 0's
+   task #6/#8 groundwork still holds.
+
+2. **Real bug: the generic error handler leaked internal error text to
+   any client.** The Postgres-down `500` response's `message` field was
+   the raw driver error verbatim (`"connect ECONNREFUSED
+   127.0.0.1:5432"`) - this is the fallback handler every unhandled route
+   error in the app reaches, so any internal detail an unexpected error
+   carries (connection strings, and depending on the error's origin
+   potentially SQL fragments) was reachable by any caller, authenticated
+   or not. **Fixed:** the client-facing `message` is now generic
+   (`"An unexpected error occurred."`) whenever `NODE_ENV === 'production'`
+   (the setting this app's own `docker-compose.yml` already uses) - the
+   full error is still logged server-side via the existing
+   `console.error`, and development keeps the detailed message for local
+   debugging. Verified live in both modes: dev mode still shows the raw
+   error under a real Postgres outage; a real `NODE_ENV=production`
+   instance under the same outage returns the generic message.
+
+3. **Real bug: a Redis outage hangs any request awaiting `queue.add()`
+   indefinitely, never failing honestly.** BullMQ's own required worker
+   setting `maxRetriesPerRequest: null` (see `src/queue/connection.ts`'s
+   comment) means ioredis retries a command forever rather than
+   rejecting - correct for a background worker with no deadline, wrong
+   for an HTTP request awaiting an enqueue directly. Verified empirically:
+   a real `Queue.add()` call against a real, stopped Redis neither
+   resolved nor rejected for the full 8-second observation window. Any
+   route synchronously awaiting an enqueue - a composer send, a campaign
+   send, a funnel `WAIT` step (`enrollContact` → `runFromPosition`) -
+   would hang the HTTP request for as long as Redis stayed down. **Fixed:**
+   added `src/queue/enqueueWithTimeout.ts`, a small wrapper that races the
+   enqueue call against a 5s timeout and returns control to the caller
+   either way, logging (not swallowing) a deferred failure if the
+   underlying call eventually does reject. This does not change delivery
+   correctness, only response latency: every call site this wraps
+   (`whatsappOutboundMessageService.send()`, the funnel `WAIT` step) only
+   calls it *after* the durable Postgres row already exists as `queued`/
+   `WAITING`, so if Redis is merely slow to reconnect the background
+   retry still succeeds once it recovers, and if Redis stays down long
+   enough the existing stale-row reconciliation sweeps
+   (`sweepStaleOutboundMessages` et al.) already fail it honestly and
+   notify the business - this fix's only job is to stop the HTTP request
+   itself from blocking on an enqueue call that may never return promptly.
+
+4. **Real, minor gap: `checkRedisHealth()` existed but was never wired to
+   a route.** `src/redis/client.ts` already had a correct, working health
+   check (its own client already uses `maxRetriesPerRequest: 3`, so it
+   fails fast rather than hanging) - it was simply dead code, unreachable
+   from outside the process. **Fixed:** added `GET /api/health/redis`,
+   mirroring the existing `/api/health/database` convention exactly.
+   Verified live: reports `200 CONNECTED` normally and a real `503
+   REDIS_UNAVAILABLE` (with the real ioredis error) when Redis is stopped.
+
+**Explicitly NOT fixed in this pass (documented, not silently skipped):**
+the same indefinite-hang risk exists at every other BullMQ producer in the
+codebase - `enqueueMediaDownload`, message-revocation enqueue,
+scheduled-status-publish enqueue, and email-send enqueue - but none of
+those sit in a synchronous HTTP request-response path a user is actively
+waiting on (they're triggered by async worker-side events or background
+jobs), so wrapping them was judged lower-value and out of this phase's
+bounded scope; a future pass could apply `enqueueWithTimeout` there too if
+a concrete need is demonstrated. No new stale-instance reconciliation
+sweep was added for funnel instances stuck in `WAITING` with a lost
+funnel-advance job (unlike outbound messages/sync jobs/emails, which
+already have one) - flagged as a real, undemonstrated-yet-plausible gap
+for a future pass, not built speculatively here.
+
+**Tests:** 3 new in `test/enqueueWithTimeout.test.ts` (fake-timer-based,
+deterministic: resolves promptly on a fast enqueue, returns at the
+timeout boundary without hanging on a stalled one, and logs rather than
+swallows a deferred late rejection). Full suite: 79/79 files, 478/478
+tests passing (up from 475 - the expected +3), zero regressions.
+Typecheck and production build both clean. No schema changes this phase.
+
+**Status:** `IMPLEMENTED AND VERIFIED`.
+
+**Rollback:** `git revert` the commit, or discard the branch. No schema
+or dependency changes.
+
+---
+
 ## 2026-08-21 - Phase 17: campaign dispatch-failure lifecycle hardening
 
 **Branch:** `phase-2-ai-repair` (continues on the same branch as Phases

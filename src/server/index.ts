@@ -26,6 +26,7 @@ import {
 import { whatsappOutboundMessageService, isChatNotFoundError as isOutboundChatNotFoundError } from '../services/whatsappOutboundMessageService.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
+import { checkRedisHealth } from '../redis/client.js';
 import { ensureDefaultBusinessProvisioned } from '../services/businessBootstrapService.js';
 import { syncContactProfilePicture } from '../services/profilePictureSyncService.js';
 import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
@@ -279,6 +280,14 @@ app.get('/api/health/database', async (_req, res) => {
   const health = await checkDatabaseHealth();
   res.status(health.available ? 200 : 503).json({
     status: health.available ? 'CONNECTED' : 'DATABASE_UNAVAILABLE',
+    ...health,
+  });
+});
+
+app.get('/api/health/redis', async (_req, res) => {
+  const health = await checkRedisHealth();
+  res.status(health.available ? 200 : 503).json({
+    status: health.available ? 'CONNECTED' : 'REDIS_UNAVAILABLE',
     ...health,
   });
 });
@@ -2193,9 +2202,22 @@ if (existsSync(webBuildDir)) {
   });
 }
 
+/**
+ * Discovered by real failure injection (Phase 19): stopping Postgres and
+ * hitting an ordinary route surfaced this handler returning the raw
+ * driver error verbatim to the client (e.g. "connect ECONNREFUSED
+ * 127.0.0.1:5432") - internal connection details, and depending on the
+ * error's origin potentially SQL fragments, are never something an
+ * unauthenticated or low-trust caller should see. The full error is still
+ * logged server-side for real debugging; only the client-facing message
+ * is generic outside development, matching this app's own NODE_ENV=production
+ * setting in docker-compose.yml.
+ */
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   console.error('[API] Unhandled route error:', error);
-  res.status(500).json({ error: 'INTERNAL_ERROR', message: error instanceof Error ? error.message : String(error) });
+  const isDev = (process.env.NODE_ENV ?? 'development') !== 'production';
+  const message = isDev ? (error instanceof Error ? error.message : String(error)) : 'An unexpected error occurred.';
+  res.status(500).json({ error: 'INTERNAL_ERROR', message });
 });
 
 void whatsappConnectionService.connect().catch((error) => {

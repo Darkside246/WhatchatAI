@@ -6,6 +6,7 @@ import {
   type WhatsAppOutboundMessageRecord,
 } from '../repositories/whatsappOutboundMessageRepository.js';
 import { enqueueOutboundMessage } from '../queue/queues/outboundMessagesQueue.js';
+import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 import { storeMedia } from '../media/localEncryptedMediaStorage.js';
 import { transcodeToVoiceNote } from '../media/audioTranscodeService.js';
 import type { OutboundMessageType } from '../domain/whatsapp/types.js';
@@ -113,8 +114,11 @@ export class WhatsAppOutboundMessageService {
     // Only actually enqueue on a genuinely new row - createIdempotent()
     // returning a pre-existing row (the idempotency-key conflict path)
     // means a send for this exact request was already queued/dispatched.
+    // The row already durably exists as 'queued' at this point, so a slow
+    // or unreachable Redis must never hang this HTTP request indefinitely
+    // - see enqueueWithTimeout's own comment for why.
     if (record.wasCreated) {
-      await enqueueOutboundMessage({ outboundMessageId: record.id }, input.delayMs);
+      await enqueueWithTimeout(enqueueOutboundMessage({ outboundMessageId: record.id }, input.delayMs), `outbound message ${record.id}`);
     }
 
     return record;

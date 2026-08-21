@@ -12,6 +12,7 @@ import { workspaceService, type EntitlementDeniedError } from './workspaceServic
 import { notifyUser } from './notificationService.js';
 import { whatsappOutboundMessageService } from './whatsappOutboundMessageService.js';
 import { enqueueFunnelAdvance } from '../queue/queues/funnelAdvanceQueue.js';
+import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 import { sendFunnelEmail } from './emailService.js';
 import { EntitlementService } from './entitlementService.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
@@ -299,7 +300,10 @@ async function runFromPosition(instance: FunnelInstanceRecord): Promise<void> {
         case 'WAIT': {
           const delayMs = await resolveWaitDelayMs(instance.businessId, step.config);
           await funnelRepository.updateInstance(instance.id, { currentPosition: position + 1, status: 'WAITING' });
-          await enqueueFunnelAdvance({ instanceId: instance.id }, delayMs);
+          // The instance row is already durably WAITING at this point, so a
+          // slow/unreachable Redis must never hang the caller (e.g. a real
+          // HTTP enrollContact request) indefinitely - see enqueueWithTimeout.
+          await enqueueWithTimeout(enqueueFunnelAdvance({ instanceId: instance.id }, delayMs), `funnel advance ${instance.id}`);
           return; // Resumes later via the queue - stop executing now.
         }
         case 'CONDITION': {
