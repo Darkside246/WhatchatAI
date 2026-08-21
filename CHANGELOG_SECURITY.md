@@ -1,5 +1,29 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - Phase 20: final production audit
+
+**Branch:** `phase-2-ai-repair`
+
+**Changed:** Added `PRODUCTION_AUDIT.md` - a roll-up of every phase
+actually completed this session (0, 1, 2, 3, 16, 17, 19), an honest list
+of what was explicitly declined and why (Phases 5, 7-15, 18 - speculative
+new infrastructure with no demonstrated need, per the directive's own
+anti-over-engineering principle), and every currently-open, real gap
+found along the way (the unwrapped lower-priority BullMQ producers from
+Phase 19, no stale-instance sweep for funnels, Docker only verified once
+externally, Phase 18 never started). No application code changed.
+
+**Status:** `IMPLEMENTED AND VERIFIED` - every claim in `PRODUCTION_AUDIT.md`
+was checked against real output in this session: `npx tsc --noEmit`
+clean, `npm run build` clean, full test suite 79/79 files and 478/478
+tests passing against a real Postgres/Redis, and all 54 migrations
+applying cleanly in order.
+
+**Rollback:** `git revert` the commit, or discard the branch. Documentation
+only.
+
+---
+
 ## 2026-08-21 - Phase 19: real failure-injection testing against Postgres and Redis
 
 **Branch:** `phase-2-ai-repair` (continues on the same branch as Phases
