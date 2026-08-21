@@ -1,5 +1,88 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - OpenClaw Security Watcher (second slice)
+
+**Branch:** `phase-2-ai-repair`
+
+**Context:** the second piece of the user's finalized OpenClaw architecture,
+in the agreed order (Security Watcher -> encrypted Gateway credentials ->
+Tool Gateway/`agentGuard.ts` wiring -> real Fleet verification -> feature
+flag). Requirement, verbatim: monitor GitHub Security Advisories against
+the exact deployed OpenClaw version, distinguish severity, quarantine
+affected cells automatically where policy requires it, never silently
+upgrade, and record every security decision in PostgreSQL.
+
+**What was built:**
+
+- Migration `062_openclaw_security_watcher.sql`: `openclaw_security_advisories`
+  (one row per (GHSA ID, deployed version) actually evaluated, upserted on
+  every run so a re-check updates the classification rather than
+  duplicating) and `openclaw_security_watcher_runs` (one row per watcher
+  run, success or failure - the real audit trail "record every security
+  decision" depends on).
+- `OpenClawSecurityAdvisoryRepository`.
+- `openclawSecurityWatcherService.ts` (`runSecurityWatcher`): fetches
+  `GET /repos/openclaw/openclaw/security-advisories` (paginated via the
+  `Link` header, capped at 10 pages), evaluates every non-withdrawn
+  advisory against every version `listDistinctDeployedVersions()` reports,
+  and calls `OpenClawFleetService.quarantineCell` (added last commit - it
+  really stops the Fleet cell, not just a DB flag) for every business on a
+  version with a CRITICAL-classified advisory. Already-quarantined cells
+  are skipped, never re-quarantined.
+
+**A real design correction made before finishing this slice, not after:**
+the first draft tried to positively clear an advisory as SAFE via a
+semver range/exact-match check against `patched_versions`/
+`vulnerable_version_range`. Two real problems ruled that out: (1) this
+sandbox cannot make a live call to `api.github.com` (blocked by its own
+egress policy, confirmed via `curl` returning 403 during this
+engagement's research pass), so the exact response field shapes couldn't
+be verified against a real payload; (2) OpenClaw's own calendar-plus-
+rebuild-revision versioning (`2026.7.1`, `2026.7.1-1`, `2026.7.1-2`)
+doesn't follow semver precedence for the `-N` suffix - semver reads
+`2026.7.1-2` as an older *pre-release* of `2026.7.1`, when it's actually
+the same-or-newer rebuild, so a lower-bound range check could wrongly
+report a current version as "not in range" (falsely SAFE) - exactly the
+failure direction a fail-closed control must never produce. Classification
+is severity-only in this slice: CRITICAL/HIGH severity -> CRITICAL,
+everything else -> WARNING, **nothing is ever auto-classified SAFE**. The
+`SAFE` enum value stays valid in the schema for a later slice (an
+operator-confirmed override, or a verified parser once the real API shape
+and OpenClaw's version-ordering intent are both confirmed) - it's just
+unreachable by this function today, which is documented in its own
+comment rather than silently left ambiguous.
+
+Also removed the `semver` dependency added mid-slice once nothing in the
+final design actually used it - keeping an unused dependency around
+because it was already installed would have been exactly the kind of
+premature abstraction the governing principle warns against.
+
+**Wired into the scheduler:** `openclaw-security-watcher` runs every 6
+hours via `realtimeEventsQueue`'s existing `upsertJobScheduler` pattern
+(`incomingMessagesWorker.ts`), registered now even though no tenant has a
+Fleet cell provisioned yet, so there is no window where a deployed cell
+exists without a watcher already checking it.
+
+**Status: `IMPLEMENTED BUT NOT FULLY VERIFIED`.** 9 new tests (`fetch`
+mocked - this sandbox cannot reach `api.github.com` directly, the same
+constraint noted above), full suite 547/547 (one pre-existing, unrelated
+flake observed and re-run clean: `agentGuard.test.ts`'s PII-regex
+assertion occasionally collides with a randomly-generated UUID that
+happens to contain a 7-digit run - not touched by this change, not fixed
+here since it's outside this slice's scope), typecheck clean. Never
+exercised against a live GitHub API response, so the exact JSON shape
+this code parses is inferred from GitHub's public REST API documentation,
+not confirmed against a real payload from this environment.
+
+**What's still open, in order:** (1) encrypted Gateway-token storage,
+(2) Tool Gateway/`agentGuard.ts` wiring so OpenClaw output is never
+trusted with authorization - including the entity-ownership check and
+per-tool-invocation idempotency key the user's own review of the first
+slice called out as real gaps agentGuard.ts doesn't yet cover, (3) a real
+`fleet create` run against an actual daemon, (4) OpenClaw behind a feature
+flag for controlled testing against the existing Gemini/Goose path, with
+an immediate rollback.
+
 ## 2026-08-21 - OpenClaw Fleet: authoritative tenant-cell mapping + lifecycle service (first slice)
 
 **Branch:** `phase-2-ai-repair`

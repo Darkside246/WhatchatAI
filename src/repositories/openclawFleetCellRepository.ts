@@ -115,6 +115,15 @@ export class OpenClawFleetCellRepository {
     return rows.map((row) => ({ deploymentVersion: row.deployment_version, imageDigest: row.image_digest }));
   }
 
+  /** Every business currently deployed on a given version - the Security Watcher's own quarantine fan-out target. */
+  async listBusinessIdsByDeploymentVersion(deploymentVersion: string): Promise<string[]> {
+    const { rows } = await this.db.query<{ business_id: string }>(
+      'SELECT business_id FROM openclaw_fleet_cells WHERE deployment_version = $1',
+      [deploymentVersion],
+    );
+    return rows.map((row) => row.business_id);
+  }
+
   async updateCellState(businessId: string, cellState: FleetCellState): Promise<void> {
     await this.db.query(
       'UPDATE openclaw_fleet_cells SET cell_state = $2, updated_at = now() WHERE business_id = $1',

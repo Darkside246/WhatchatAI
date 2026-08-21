@@ -5,6 +5,8 @@ import { PlanRepository } from '../src/repositories/planRepository.js';
 import { SubscriptionRepository } from '../src/repositories/subscriptionRepository.js';
 
 const TABLES = [
+  'openclaw_security_advisories',
+  'openclaw_security_watcher_runs',
   'openclaw_fleet_cells',
   'ai_agent_prompt_optimizations',
   'funnel_instances',

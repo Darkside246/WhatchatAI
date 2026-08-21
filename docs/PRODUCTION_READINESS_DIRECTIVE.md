@@ -103,15 +103,28 @@ pasted directive without our own verification (`unverified`).
    registry, never invented), a Security Watcher that can quarantine a
    cell, and OpenClaw treated as a permanently untrusted execution
    environment mediated through the existing Tool Gateway/`agentGuard.ts`
-   - never trusted with authorization itself. See
-   `CHANGELOG_SECURITY.md`'s 2026-08-21 "OpenClaw Fleet" entry for the
-   first slice (mapping table + `OpenClawFleetService` lifecycle wrapper,
-   `IMPLEMENTED BUT NOT FULLY VERIFIED` - no real Docker/Podman daemon
-   available in this sandbox to run an actual `fleet create`). Remaining,
-   in order: Security Watcher (GitHub Security Advisories polling per
-   deployed version), encrypted Gateway-token storage, Tool Gateway wiring
-   so OpenClaw output is never trusted with authorization, and a real
-   `fleet create` run against an actual daemon.
+   - never trusted with authorization itself. Two slices landed so far
+   (both `IMPLEMENTED BUT NOT FULLY VERIFIED` - no real Docker/Podman
+   daemon and no live `api.github.com` access from this sandbox; see
+   `CHANGELOG_SECURITY.md`'s two 2026-08-21 "OpenClaw" entries for full
+   detail):
+   1. Mapping table + `OpenClawFleetService` Fleet CLI lifecycle wrapper.
+   2. `openclawSecurityWatcherService.ts` - polls GitHub Security
+      Advisories per deployed version, severity-only classification
+      (never auto-clears SAFE, given OpenClaw's non-semver-compatible
+      rebuild-revision versioning), auto-quarantines on CRITICAL, wired
+      into the scheduler every 6 hours.
+
+   Remaining, in order: (1) encrypted Gateway-token storage using the
+   existing `EncryptionService` envelope-encryption path; (2) Tool Gateway
+   wiring into `agentGuard.ts` so OpenClaw output is never trusted with
+   authorization - including an explicit entity-ownership check and a
+   per-tool-invocation idempotency key, both real gaps identified in
+   review of the first slice; (3) a real `fleet create` run against an
+   actual Docker/Podman daemon; (4) OpenClaw behind a feature flag for
+   controlled testing against the existing Gemini/Goose path, with an
+   immediate rollback - the existing AI path stays primary until all of
+   the above is verified, not just implemented.
 4. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
    internal analytics, or customer-facing analytics for tenants? Different
    answers imply different event schemas and access control. Not started.

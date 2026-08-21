@@ -40,6 +40,7 @@ import { storeMedia } from '../../media/localEncryptedMediaStorage.js';
 import { mediaFallbackText } from '../../services/ai/mediaContext.js';
 import { sweepStaleFunnelInstances } from '../../services/funnelService.js';
 import { runSecurityScan } from '../../services/securityScanService.js';
+import { runSecurityWatcher } from '../../services/openclawSecurityWatcherService.js';
 import { enqueueWithTimeout } from '../enqueueWithTimeout.js';
 import type { WhatsAppMessageRecord } from '../../repositories/whatsappMessageRepository.js';
 import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaRepository.js';
@@ -659,6 +660,18 @@ const FUNNEL_INSTANCE_TIMEOUT_SWEEP_INTERVAL_MS = 300_000;
 // re-scanning the full window every minute.
 const SECURITY_SCAN_INTERVAL_MS = 3_600_000;
 
+// OpenClaw Security Watcher - polls GitHub Security Advisories for the
+// exact OpenClaw version(s) this platform has deployed (see
+// openclawSecurityWatcherService.ts). No tenant has an OpenClaw Fleet
+// cell provisioned yet as of this phase (Fleet provisioning wiring is a
+// later slice), so this job runs and correctly no-ops until one exists -
+// it is registered now rather than added later so there is no window
+// where a deployed cell exists without a watcher checking it. Every 6
+// hours: advisories don't change fast enough to need hourly polling, and
+// this keeps well under GitHub's unauthenticated rate limit for however
+// many distinct versions are ever actually deployed.
+const OPENCLAW_SECURITY_WATCHER_INTERVAL_MS = 21_600_000;
+
 export async function sweepStaleEmails(): Promise<void> {
   const stale = await emailMessageRepository.findStalePending(EMAIL_STALE_SECONDS);
   for (const email of stale) {
@@ -709,6 +722,8 @@ async function processRealtimeEventJob(
     await sweepStaleFunnelInstances();
   } else if (job.name === 'security-scan') {
     await runSecurityScan();
+  } else if (job.name === 'openclaw-security-watcher') {
+    await runSecurityWatcher();
   } else if (job.name === 'media-download') {
     await processMediaDownload(job.data as MediaDownloadJobData);
   } else if (job.name === 'message-reaction') {
@@ -826,3 +841,14 @@ void realtimeEventsQueue
   .upsertJobScheduler('security-scan', { every: SECURITY_SCAN_INTERVAL_MS }, { name: 'security-scan' })
   .then(() => console.log(`[RealtimeEventsWorker] Scheduled security-scan every ${SECURITY_SCAN_INTERVAL_MS}ms`))
   .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule security-scan:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler(
+    'openclaw-security-watcher',
+    { every: OPENCLAW_SECURITY_WATCHER_INTERVAL_MS },
+    { name: 'openclaw-security-watcher' },
+  )
+  .then(() =>
+    console.log(`[RealtimeEventsWorker] Scheduled openclaw-security-watcher every ${OPENCLAW_SECURITY_WATCHER_INTERVAL_MS}ms`),
+  )
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule openclaw-security-watcher:', error.message));
