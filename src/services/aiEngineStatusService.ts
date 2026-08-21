@@ -1,3 +1,4 @@
+import { ApiError } from '@google/genai';
 import { getGeminiClient } from './geminiClient.js';
 import * as gooseService from './gooseService.js';
 
@@ -79,21 +80,55 @@ export async function testGeminiConnection(): Promise<GeminiTestResult> {
   const genAi = getGeminiClient();
   if (!genAi) return { status: 'failed', reason: 'GEMINI_API_KEY is not set' };
 
+  const model = process.env.GEMINI_REPLY_MODEL || process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+  const contents = [{ role: 'user' as const, parts: [{ text: 'Reply with the single word: ok' }] }];
+
   try {
-    const model = process.env.GEMINI_REPLY_MODEL || process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+    // Stage 1: the exact request shape aiReplyService sends for a real
+    // customer reply - this result is what actually matters.
     const response = await genAi.models.generateContent({
       model,
-      contents: [{ role: 'user', parts: [{ text: 'Reply with the single word: ok' }] }],
-      config: { temperature: 0, thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 16 },
+      contents,
+      config: { temperature: 0.6, thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 16 },
     });
     if (!response.text?.trim()) {
-      return { status: 'failed', reason: 'The API accepted the request but returned no text - check the model name and account access.' };
+      return { status: 'failed', reason: `Model "${model}" accepted the request but returned no text.` };
     }
-    return { status: 'ok', detail: `Model "${model}" answered a real test call successfully.` };
-  } catch (error) {
+    return { status: 'ok', detail: `Model "${model}" answered a real test call successfully, using the exact request shape real replies use.` };
+  } catch (fullError) {
+    const fullMessage = fullError instanceof Error ? fullError.message : String(fullError);
+
+    // Stage 2: bisect rather than guess. A generic 400 INVALID_ARGUMENT
+    // gives no field-level detail, so retry the bare minimum request (no
+    // temperature, no thinkingConfig) to tell "the model/key itself is the
+    // problem" apart from "one of the generation-config fields is rejected
+    // for this specific model" - which is exactly what happens when a model
+    // generation drops support for a parameter an older config still sends.
+    if (fullError instanceof ApiError && fullError.status === 400) {
+      try {
+        const bareResponse = await genAi.models.generateContent({ model, contents });
+        if (bareResponse.text?.trim()) {
+          return {
+            status: 'failed',
+            reason:
+              `Model "${model}" works with a bare request, but the real reply pipeline's generation config is rejected: ${fullMessage}. ` +
+              'Likely cause: temperature or thinkingConfig is not supported the way this model expects.',
+          };
+        }
+        return { status: 'failed', reason: `Bare request to "${model}" returned no text, and the full request failed: ${fullMessage}` };
+      } catch (bareError) {
+        return {
+          status: 'failed',
+          reason:
+            `Model "${model}" is rejected even with a bare request (no config), regardless of parameters - ` +
+            `likely an invalid or inaccessible model name for this key: ${bareError instanceof Error ? bareError.message : String(bareError)}`,
+        };
+      }
+    }
+
     // The literal provider error, not a paraphrase - this is the one place
     // an operator can see whether their key is invalid, unauthorized,
     // rate-limited, or points at a model they don't have access to.
-    return { status: 'failed', reason: error instanceof Error ? error.message : String(error) };
+    return { status: 'failed', reason: fullMessage };
   }
 }

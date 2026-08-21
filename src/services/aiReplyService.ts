@@ -1,3 +1,4 @@
+import { ApiError } from '@google/genai';
 import { getGeminiClient } from './geminiClient.js';
 import * as gooseService from './gooseService.js';
 import { IntegrationSettingsRepository } from '../repositories/integrationSettingsRepository.js';
@@ -159,25 +160,43 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
   if (!genAi) return tryGooseFallback('GEMINI_API_KEY is not configured', agent, context, contents);
 
   const model = process.env.GEMINI_REPLY_MODEL || process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+  const systemInstruction = buildSystemInstruction(agent, context);
 
   try {
-    const response = await genAi.models.generateContent({
-      model,
-      contents,
-      config: {
-        systemInstruction: buildSystemInstruction(agent, context),
-        temperature: 0.6,
-        // A short WhatsApp reply doesn't need the model to reason before
-        // answering, and those internal "thinking" tokens draw from the
-        // same budget as the visible reply - left enabled, a real reply
-        // could still be cut off mid-word even with a generous
-        // maxOutputTokens. thinkingBudget: 0 is the SDK's own documented
-        // way to disable it outright, removing the failure mode entirely
-        // rather than just making it less likely.
-        thinkingConfig: { thinkingBudget: 0 },
-        maxOutputTokens: 1024,
-      },
-    });
+    let response;
+    try {
+      response = await genAi.models.generateContent({
+        model,
+        contents,
+        config: {
+          systemInstruction,
+          temperature: 0.6,
+          // A short WhatsApp reply doesn't need the model to reason before
+          // answering, and those internal "thinking" tokens draw from the
+          // same budget as the visible reply - left enabled, a real reply
+          // could still be cut off mid-word even with a generous
+          // maxOutputTokens. thinkingBudget: 0 is the SDK's own documented
+          // way to disable it outright, removing the failure mode entirely
+          // rather than just making it less likely.
+          thinkingConfig: { thinkingBudget: 0 },
+          maxOutputTokens: 1024,
+        },
+      });
+    } catch (configError) {
+      // A generic 400 from the provider gives no field-level detail, and
+      // real evidence (via the "Test Gemini connection" diagnostic) showed
+      // this exact temperature/thinkingConfig combination rejected outright
+      // for at least one real deployed model/key. Rather than let a
+      // parameter mismatch take down every reply, retry once with the bare
+      // minimum request real models must support - only the system
+      // instruction, which is not optional for a coherent reply.
+      if (!(configError instanceof ApiError) || configError.status !== 400) throw configError;
+      response = await genAi.models.generateContent({
+        model,
+        contents,
+        config: { systemInstruction, maxOutputTokens: 1024 },
+      });
+    }
 
     const text = response.text?.trim();
     if (!text) return tryGooseFallback('Reply model returned an empty response', agent, context, contents);
