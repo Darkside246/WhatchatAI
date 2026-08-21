@@ -1,0 +1,173 @@
+# Phase 1 container security baseline. See docs/DOCKER.md for the full
+# reasoning behind every hardening decision below, and for what was and
+# was not empirically verified in this environment.
+#
+# Secrets: consumed via env_file (.env, already gitignored - the existing
+# repo convention) rather than inline values. This is NOT full
+# production secrets management (Docker/Swarm/K8s secrets, a vault, etc.)
+# - it is a non-regressive bolt-on appropriate for this phase, documented
+# as a known gap in docs/DOCKER.md.
+
+x-app-image: &app-image whatchatai-app:phase1
+x-app-common: &app-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: *app-image
+  env_file:
+    - .env
+  environment:
+    NODE_ENV: production
+    PORT: "3000"
+    DATABASE_URL: postgres://${POSTGRES_USER:-whatchatai}:${POSTGRES_PASSWORD:-whatchatai_dev}@postgres:5432/${POSTGRES_DB:-whatchatai_dev}
+    REDIS_URL: redis://redis:6379/0
+    # These MUST be set explicitly here, not left to whatever the
+    # developer's own .env has (that file's own WHATSAPP_SESSION_DIR is a
+    # relative host path meant for `npm run dev`, e.g. "./data/whatsapp-
+    # session" - inside the container that resolves relative to /app and
+    # would NOT be the mounted volume below, silently breaking WhatsApp
+    # session persistence across container restarts. Caught by running
+    # `docker compose config` during this phase's own verification, not
+    # assumed safe.).
+    WHATSAPP_SESSION_DIR: /app/data/whatsapp
+    MEDIA_STORAGE_DIR: /app/data/media-storage
+  user: "10001:10001"
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 256
+  mem_limit: 512m
+  cpus: 1.0
+  networks:
+    - whatchatai-net
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-whatchatai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-whatchatai_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-whatchatai_dev}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # No host port mapping - only app-server/app-worker (on whatchatai-net)
+    # can reach Postgres. Uncomment for local psql access during development:
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-whatchatai} -d ${POSTGRES_DB:-whatchatai_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1.0
+    networks:
+      - whatchatai-net
+    restart: unless-stopped
+    # cap_drop: ALL is deliberately NOT applied here - the official Postgres
+    # entrypoint needs CHOWN/DAC_OVERRIDE/SETUID/SETGID on first boot to
+    # take ownership of the data directory before it drops to the postgres
+    # user itself. This is documented vendor-entrypoint behaviour, NOT
+    # something this phase could empirically confirm - image builds were
+    # blocked by network policy in this environment (see docs/DOCKER.md,
+    # "What was verified vs. not"). Re-test with cap_drop: [ALL] applied
+    # here before trusting this exception in production.
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", ""]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+    networks:
+      - whatchatai-net
+    restart: unless-stopped
+
+  app-server:
+    <<: *app-common
+    container_name: whatchatai-app-server
+    # Migrations run once, here, before the HTTP server starts - this is
+    # the process that owns the Baileys/WhatsApp connection and the five
+    # in-process BullMQ workers (outbound dispatch, scheduled statuses,
+    # message revocations, email send, funnel advance) that server/index.ts
+    # itself instantiates. Verified by reading the actual imports, not
+    # assumed from file naming.
+    command: ["sh", "-c", "node dist/db/migrate.js && node dist/server/index.js"]
+    ports:
+      - "3000:3000"
+    volumes:
+      - whatsapp-session:/app/data/whatsapp
+      - media-storage:/app/data/media-storage
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  app-worker:
+    <<: *app-common
+    container_name: whatchatai-app-worker
+    # This is the ONLY process that instantiates incomingMessagesWorker and
+    # realtimeEventsWorker (which handles media-download jobs) - verified
+    # against the actual BullMQ Worker() call sites, not assumed. It does
+    # NOT open the Baileys connection and does NOT need the WhatsApp
+    # session volume; it DOES need media-storage (shared, read-write) since
+    # it is the process that downloads and encrypts inbound media.
+    command: ["node", "dist/queue/workers/incomingMessagesWorker.js"]
+    volumes:
+      - media-storage:/app/data/media-storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      app-server:
+        condition: service_healthy
+    healthcheck:
+      # Process-liveness only - this worker has no HTTP endpoint, so this
+      # confirms the Node process is running, NOT that queue processing is
+      # actually succeeding. Do not read this as "worker is healthy" in
+      # the fuller sense /api/health/database or /api/health/whatsapp mean
+      # for app-server.
+      test: ["CMD-SHELL", "pgrep -f 'dist/queue/workers/incomingMessagesWorker.js' > /dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+networks:
+  whatchatai-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  whatsapp-session:
+  media-storage:

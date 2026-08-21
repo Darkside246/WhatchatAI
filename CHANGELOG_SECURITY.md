@@ -1,5 +1,56 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - Phase 1: container security baseline
+
+**Branch:** `phase-1-container-security` (base: `audit/phase-0-safety-baseline`
+@ `ac09e6b`)
+
+**Changed:** Added `Dockerfile`, `docker-compose.yml`, `.dockerignore`,
+`docs/DOCKER.md`. Zero application code, schema, or dependency changes.
+
+**Added:** Two-service app image (app-server, app-worker, same image,
+different command - see `docs/DOCKER.md` for the verified process/volume
+boundary), `postgres:16-alpine`, `redis:7-alpine`, an explicit bridge
+network, four named volumes (`postgres-data`, `redis-data`,
+`whatsapp-session`, `media-storage`).
+
+**Security controls added:** non-root execution (fixed uid/gid 10001) for
+both app containers, `cap_drop: [ALL]` + `no-new-privileges` on
+app-server/app-worker/redis (deliberately not on postgres - see
+`docs/DOCKER.md`), `read_only` root filesystem + scoped `tmpfs` on the app
+containers, per-service pids/memory/cpu limits, no host port exposure for
+postgres/redis, no Docker socket mount anywhere, healthchecks gating
+startup order (`depends_on: condition: service_healthy`).
+
+**Real finding caught during this phase's own verification (not a build-
+time hypothetical):** `docker compose config` surfaced that
+`WHATSAPP_SESSION_DIR` was silently inheriting a host-relative path from
+the developer's own `.env` via `env_file`, which inside a container would
+have resolved outside the mounted volume - would have silently discarded
+the WhatsApp session on every container recreation. Fixed by pinning it
+explicitly in `docker-compose.yml`'s `environment:` block. See
+`docs/DOCKER.md` for detail.
+
+**Status:** `IMPLEMENTED BUT NOT FULLY VERIFIED`. `docker compose config`
+validation passed and caught a real defect (above). Image build and
+container boot could **not** be completed in this environment: every
+`docker build`/`docker pull node:22-slim` attempt was rejected by this
+session's own egress policy (`production.cloudfront.docker.com` CONNECT
+denied - confirmed via the proxy's own status endpoint, not assumed). Per
+that policy's explicit instruction, this was reported rather than routed
+around via an alternate registry mirror. See `docs/DOCKER.md`, "What was
+verified vs. not," for the complete, itemized list of what still needs
+confirming in an environment with open registry access before this is
+trusted in production - most notably whether `postgres` actually starts
+with the rest of its hardening applied, and whether `read_only: true`
+breaks anything at runtime.
+
+**Rollback:** Branch can be discarded entirely; no application code,
+schema, or `package.json`/lockfile was touched, so there is nothing to
+revert outside this branch's own four new files.
+
+---
+
 Security-relevant changes only (not a general changelog - see `docs/` and
 git history for full feature history). Each entry states what changed, why,
 and its verification status per the directive's terminology:
