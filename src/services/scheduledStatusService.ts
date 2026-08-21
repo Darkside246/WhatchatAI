@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { pool } from '../db/pool.js';
 import { ScheduledStatusRepository, type ScheduledStatusRecord, type ScheduledStatusType } from '../repositories/scheduledStatusRepository.js';
 import { enqueueScheduledStatus } from '../queue/queues/scheduledStatusesQueue.js';
+import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 import { storeMedia } from '../media/localEncryptedMediaStorage.js';
 
 const scheduledStatusRepository = new ScheduledStatusRepository(pool);
@@ -82,7 +83,10 @@ export async function scheduleStatus(businessId: string, id: string): Promise<Sc
 
   const updated = await scheduledStatusRepository.updateStatus(id, 'SCHEDULED');
   if (!updated) throw new ScheduledStatusNotFoundError('Scheduled status not found.');
-  await enqueueScheduledStatus({ scheduledStatusId: id }, delayMs);
+  // The row is already durably SCHEDULED at this point, so a slow/
+  // unreachable Redis must never hang this caller (a real HTTP "schedule
+  // this status" request) indefinitely - see enqueueWithTimeout.
+  await enqueueWithTimeout(enqueueScheduledStatus({ scheduledStatusId: id }, delayMs), `scheduled status ${id}`);
   return updated;
 }
 

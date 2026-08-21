@@ -40,6 +40,7 @@ import { storeMedia } from '../../media/localEncryptedMediaStorage.js';
 import { mediaFallbackText } from '../../services/ai/mediaContext.js';
 import { sweepStaleFunnelInstances } from '../../services/funnelService.js';
 import { runSecurityScan } from '../../services/securityScanService.js';
+import { enqueueWithTimeout } from '../enqueueWithTimeout.js';
 import type { WhatsAppMessageRecord } from '../../repositories/whatsappMessageRepository.js';
 import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaRepository.js';
 import type { MediaDownloadStatus, MediaType, StatusType } from '../../domain/whatsapp/types.js';
@@ -434,7 +435,14 @@ async function processStatusUpdate(data: StatusUpdateJobData): Promise<void> {
       fileName: ingested.fileName,
     });
     await statusRepository.attachMedia(status.id, media.id);
-    await enqueueMediaDownload({ businessId, whatsappAccountId, mediaId: media.id, mediaDescriptor: ingested.mediaDescriptor });
+    // Same reasoning as whatsappMessagePersistenceService.persist(): the
+    // status/media rows are already durably committed above, so wrapped
+    // for the uniform guarantee even though this path is never a
+    // synchronous HTTP request either.
+    await enqueueWithTimeout(
+      enqueueMediaDownload({ businessId, whatsappAccountId, mediaId: media.id, mediaDescriptor: ingested.mediaDescriptor }),
+      `status media download ${media.id}`,
+    );
   }
 }
 

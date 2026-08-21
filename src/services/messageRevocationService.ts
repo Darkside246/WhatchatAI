@@ -5,6 +5,7 @@ import { CampaignRepository } from '../repositories/campaignRepository.js';
 import { ScheduledStatusRepository } from '../repositories/scheduledStatusRepository.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { enqueueRevocation } from '../queue/queues/messageRevocationsQueue.js';
+import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 
 const messageRepository = new WhatsAppMessageRepository(pool);
 const chatRepository = new WhatsAppChatRepository(pool);
@@ -76,12 +77,13 @@ export async function revokeMessage(businessId: string, messageId: string, reque
   const claimed = await messageRepository.markRevokeRequested(messageId, businessId, requestedBy);
   if (!claimed) throw new NotRevocableError('This message can no longer be deleted for everyone.');
 
-  await enqueueRevocation({
-    kind: 'message',
-    messageId,
-    businessId,
-    whatsappAccountId: message.whatsappAccountId,
-  });
+  // markRevokeRequested is already durably committed above, so a slow/
+  // unreachable Redis must never hang this caller (a real HTTP
+  // "delete for everyone" request) indefinitely - see enqueueWithTimeout.
+  await enqueueWithTimeout(
+    enqueueRevocation({ kind: 'message', messageId, businessId, whatsappAccountId: message.whatsappAccountId }),
+    `message revocation ${messageId}`,
+  );
 
   await securityAuditLogRepository.record({
     businessId,
@@ -121,14 +123,12 @@ export async function recallCampaign(businessId: string, campaignId: string, req
       continue;
     }
 
-    await enqueueRevocation(
-      {
-        kind: 'message',
-        messageId: candidate.messageId,
-        businessId,
-        whatsappAccountId: candidate.whatsappAccountId,
-      },
-      queued * RECALL_STAGGER_MS,
+    await enqueueWithTimeout(
+      enqueueRevocation(
+        { kind: 'message', messageId: candidate.messageId, businessId, whatsappAccountId: candidate.whatsappAccountId },
+        queued * RECALL_STAGGER_MS,
+      ),
+      `campaign recall message ${candidate.messageId}`,
     );
     queued += 1;
   }
@@ -161,12 +161,10 @@ export async function revokeScheduledStatus(businessId: string, scheduledStatusI
   const claimed = await scheduledStatusRepository.markRevokeRequested(scheduledStatusId, businessId);
   if (!claimed) throw new NotRevocableError('This post can no longer be deleted from WhatsApp.');
 
-  await enqueueRevocation({
-    kind: 'status',
-    scheduledStatusId,
-    businessId,
-    whatsappAccountId: record.whatsappAccountId,
-  });
+  await enqueueWithTimeout(
+    enqueueRevocation({ kind: 'status', scheduledStatusId, businessId, whatsappAccountId: record.whatsappAccountId }),
+    `status revocation ${scheduledStatusId}`,
+  );
 
   await securityAuditLogRepository.record({
     businessId,

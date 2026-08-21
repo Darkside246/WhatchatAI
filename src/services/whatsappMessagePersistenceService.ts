@@ -10,6 +10,7 @@ import type { MediaType, MessageType } from '../domain/whatsapp/types.js';
 import { chatTypeFromJidKind } from '../domain/whatsapp/chatType.js';
 import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { enqueueMediaDownload } from '../queue/queues/realtimeEventsQueue.js';
+import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 import type {
   IngestedWhatsAppMessage,
   WhatsAppDocumentSubtype,
@@ -73,12 +74,20 @@ export class WhatsAppMessagePersistenceService {
     const result = await withTransaction((client) => this.persistWithClient(client, input));
 
     if (result.media && input.ingested.mediaDescriptor) {
-      await enqueueMediaDownload({
-        businessId: input.businessId,
-        whatsappAccountId: input.whatsappAccountId,
-        mediaId: result.media.id,
-        mediaDescriptor: input.ingested.mediaDescriptor,
-      });
+      // The message/media rows are already durably committed above, so a
+      // slow/unreachable Redis must never hang this caller indefinitely -
+      // see enqueueWithTimeout. Reached from the incoming-messages worker
+      // (never a synchronous HTTP request) but wrapped for the same
+      // uniform guarantee as every other producer in this codebase.
+      await enqueueWithTimeout(
+        enqueueMediaDownload({
+          businessId: input.businessId,
+          whatsappAccountId: input.whatsappAccountId,
+          mediaId: result.media.id,
+          mediaDescriptor: input.ingested.mediaDescriptor,
+        }),
+        `media download ${result.media.id}`,
+      );
     }
 
     return result;

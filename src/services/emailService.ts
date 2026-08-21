@@ -13,6 +13,7 @@ import {
 import { AiAgentRepository } from '../repositories/aiAgentRepository.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { enqueueEmailSend } from '../queue/queues/emailSendQueue.js';
+import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 import * as emailProvider from './emailProviderService.js';
 import { getGeminiClient } from './geminiClient.js';
 
@@ -196,7 +197,10 @@ export async function approveAndSend(businessId: string, id: string, approvedBy:
     rawMetadata: { emailMessageId: id, approvedBy, draftedByAgentId: approved.draftedByAgentId, toEmail: approved.toEmail },
   });
 
-  await enqueueEmailSend({ emailMessageId: id, businessId });
+  // The row is already durably 'approved' at this point, so a slow/
+  // unreachable Redis must never hang this caller (a real HTTP
+  // "approve and send" request) indefinitely - see enqueueWithTimeout.
+  await enqueueWithTimeout(enqueueEmailSend({ emailMessageId: id, businessId }), `email send ${id}`);
   return approved;
 }
 
@@ -468,7 +472,11 @@ export async function sendFunnelEmail(input: {
     rawMetadata: { emailMessageId: draft.id, approvedBy: input.authorisedBy, source: 'funnel', funnelId: input.funnelId },
   });
 
-  await enqueueEmailSend({ emailMessageId: draft.id, businessId: input.businessId });
+  // Reached from a funnel's SEND_EMAIL step, which can itself run
+  // synchronously inside a real HTTP enrollContact request (initial
+  // enrollment) as well as from the background funnelAdvanceWorker (a
+  // WAIT resume) - never assume this is off the request path.
+  await enqueueWithTimeout(enqueueEmailSend({ emailMessageId: draft.id, businessId: input.businessId }), `funnel email send ${draft.id}`);
   return approved;
 }
 

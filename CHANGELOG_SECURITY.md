@@ -1,5 +1,69 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - enqueueWithTimeout on the remaining producers (with a correction to the prior audit)
+
+**Branch:** `phase-2-ai-repair` (continues on the same branch as the prior
+phases - see the Phase 3 entry for why this branch wasn't split further)
+
+**Context:** Priority 4 from `docs/PRODUCTION_READINESS_DIRECTIVE.md` -
+Phase 19's own changelog entry stated the `enqueueWithTimeout` fix was
+applied to the two producers on a synchronous request path
+(`whatsappOutboundMessageService.send()`, the funnel `WAIT` step) and
+that the other four (`enqueueMediaDownload`, message-revocation enqueue,
+scheduled-status-publish enqueue, email-send enqueue) were "left unwrapped
+- a bounded decision, not an oversight" because "none of those sit in a
+synchronous request a user is actively waiting on."
+
+**That claim was checked against the actual call graph for this pass, and
+was wrong for three of the four.** Tracing each producer's real callers
+back to `server/index.ts`:
+
+- `scheduleStatus()` (→ `enqueueScheduledStatus`) is awaited directly by
+  `POST /.../scheduled-statuses/:id/schedule`.
+- `approveAndSend()` (→ `enqueueEmailSend`) is awaited directly by
+  `POST /.../emails/:id/approve`.
+- `revokeMessage()`/`recallCampaign()`/`revokeScheduledStatus()` (→
+  `enqueueRevocation`, four call sites total) are awaited directly by
+  three separate revoke/recall routes.
+- `sendFunnelEmail()`'s `enqueueEmailSend` call is reached from a
+  funnel's `SEND_EMAIL` step, which runs synchronously inside
+  `enrollContact()` during *initial* enrollment (a real HTTP request) as
+  well as from the background `funnelAdvanceWorker` on a WAIT resume -
+  the same code path serves both, so it can never be assumed to be
+  off-request.
+
+Only `enqueueMediaDownload` (two call sites, both inside the incoming-
+messages/status worker, never a synchronous HTTP handler) was genuinely
+off the request path as originally claimed.
+
+**What changed:** all six remaining call sites now use
+`enqueueWithTimeout`, wrapped after their own durable Postgres write
+already committed (`markRevokeRequested`, `updateStatus('SCHEDULED')`,
+`emailRepository.approve()`, the message/media insert transaction) -
+matching the exact precondition `enqueueWithTimeout`'s own doc comment
+requires. A slow or unreachable Redis can no longer hang a real HTTP
+request (schedule a status post, approve-and-send an email, delete a
+message/campaign/status for everyone) indefinitely; it now returns within
+5 seconds with the underlying job left retrying in the background, the
+same guarantee the original two producers already had.
+
+**Tests:** no new tests - each wrapped function is exercised by existing
+tests (`funnelService.test.ts`, `emailService`/route-level coverage,
+message revocation tests) whose continued passing proves the success
+path is unchanged, and `enqueueWithTimeout`'s own generic timeout/logging
+mechanics are already covered by `test/enqueueWithTimeout.test.ts`
+(Phase 19) - six more per-call-site Redis-down integration tests would
+duplicate that same generic proof six times over with no new logic to
+verify. Full suite: 84/84 test files, 529/529 tests, zero regressions.
+Typecheck and production build both clean.
+
+**Status:** `IMPLEMENTED AND VERIFIED`.
+
+**Rollback:** `git revert` the commit, or discard the branch. No schema
+migration - purely wraps existing enqueue calls, nothing new persisted.
+
+---
+
 ## 2026-08-21 - Phase 18: scheduled security scans (real, finally built)
 
 **Branch:** `phase-2-ai-repair` (continues on the same branch as the prior
