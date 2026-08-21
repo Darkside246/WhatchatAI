@@ -100,14 +100,20 @@ services:
       start_period: 5s
     security_opt:
       - no-new-privileges:true
-    cap_drop:
-      - ALL
     pids_limit: 128
     mem_limit: 256m
     cpus: 0.5
     networks:
       - whatchatai-net
     restart: unless-stopped
+    # cap_drop: ALL was tried here and broke startup: the official Redis
+    # image's entrypoint uses setpriv/gosu to drop from root to the redis
+    # user, which needs SETUID/SETGID - removing all capabilities produced
+    # "setpriv: setresuid failed: Operation not permitted". Same class of
+    # exception as postgres above, confirmed by an actual container boot
+    # during Phase 1 verification (unlike postgres's exception, which is
+    # still only a documented-behaviour assumption, not yet re-tested with
+    # cap_drop: [ALL] applied).
 
   app-server:
     <<: *app-common
@@ -156,7 +162,15 @@ services:
       # actually succeeding. Do not read this as "worker is healthy" in
       # the fuller sense /api/health/database or /api/health/whatsapp mean
       # for app-server.
-      test: ["CMD-SHELL", "pgrep -f 'dist/queue/workers/incomingMessagesWorker.js' > /dev/null"]
+      #
+      # Originally `pgrep -f ...`, which failed with exit 127
+      # ("command not found") - node:22-slim doesn't package procps, so
+      # pgrep isn't present. This container's command has no shell wrapper
+      # (unlike app-server's), so the Node process itself is PID 1; sending
+      # it signal 0 checks liveness without needing any extra binary at
+      # all. Confirmed by an actual container boot during Phase 1
+      # verification.
+      test: ["CMD", "node", "-e", "process.kill(1, 0)"]
       interval: 15s
       timeout: 5s
       retries: 5

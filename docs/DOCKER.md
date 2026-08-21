@@ -32,74 +32,93 @@ as their own services with no host port mapping - only `app-server`/
 
 | Control | app-server / app-worker | postgres | redis |
 |---|---|---|---|
-| Non-root user | Fixed uid/gid 10001, `USER` in the image + explicit `user:` in compose | Vendor default (`postgres` user, after root-owned init step) | Vendor default (`redis` user) |
-| `cap_drop: [ALL]` | Yes | **No - see below** | Yes |
+| Non-root user | Fixed uid/gid 10001, `USER` in the image + explicit `user:` in compose | Vendor default (`postgres` user, after root-owned init step) | Vendor default (`redis` user, after root-owned init step) |
+| `cap_drop: [ALL]` | Yes | **No - see below** | **No - see below** |
 | `security_opt: no-new-privileges:true` | Yes | Yes | Yes |
 | `read_only` root filesystem + `tmpfs:/tmp` | Yes | No (vendor image needs its data dir writable, handled via the named volume) | No (vendor image writes AOF files to its data dir, handled via the named volume) |
 | `pids_limit` / `mem_limit` / `cpus` | 256 / 512m / 1.0 | 256 / 512m / 1.0 | 128 / 256m / 0.5 |
 | Host port exposure | Only `app-server`, port 3000 | None | None |
-| Healthcheck | `/api/health` (server), `pgrep` process-liveness (worker - see caveat below) | `pg_isready` | `redis-cli ping` |
+| Healthcheck | `/api/health` (server), Node PID-1-liveness (worker - see caveat below) | `pg_isready` | `redis-cli ping` |
 | Secrets | via `env_file: .env` (gitignored, existing repo convention) - **not** Docker/Swarm/K8s secrets; see Known gaps | same | n/a |
 
-**Why `postgres` does NOT get `cap_drop: [ALL]`:** the official Postgres
-image's entrypoint runs as root on first boot specifically to `chown` the
-data directory before dropping to the `postgres` user itself - it needs
-`CHOWN`/`DAC_OVERRIDE`/`SETUID`/`SETGID` for that one-time step. Applying
-`cap_drop: [ALL]` here without first testing against the vendor's own
-entrypoint would be exactly the "blindly harden something you haven't
-verified" mistake the directive warns against. This is a documented,
-deliberate exception, not an oversight - and it is called out again as
-**not yet empirically confirmed** below.
+**Why `postgres` and `redis` do NOT get `cap_drop: [ALL]`:** both official
+images' entrypoints run as root on first boot to take ownership of their
+data directory (via `chown`, under Postgres's own script) or to drop
+privileges via `setpriv`/`gosu` (Redis) before running as their own
+unprivileged user - both need `CHOWN`/`DAC_OVERRIDE`/`SETUID`/`SETGID` for
+that one-time step. **The Redis exception is now empirically confirmed**:
+a real container boot during Phase 1 verification hit
+`setpriv: setresuid failed: Operation not permitted` with `cap_drop:
+[ALL]` applied, and removing it fixed the boot cleanly - this is a
+verified result, not an assumption. **The Postgres exception is still
+only a documented-vendor-behaviour assumption** - Postgres has simply
+never been run with `cap_drop: [ALL]` applied in this repo's testing to
+either confirm or deny it, since that was the design from the start.
 
 **Worker healthcheck caveat:** `app-worker` has no HTTP server, so its
-healthcheck (`pgrep -f ...`) only proves the Node process is still running.
-It says nothing about whether jobs are actually being processed
-successfully. Do not read it as equivalent to `app-server`'s `/api/health`
-(itself only a liveness check - see the comment in the Dockerfile: real
-readiness for dependencies is `/api/health/database` and
-`/api/health/whatsapp`, which are not what any container healthcheck uses
-here).
+healthcheck only proves the Node process (PID 1 in that container, since
+its command has no shell wrapper) is still running. It says nothing about
+whether jobs are actually being processed successfully. Do not read it as
+equivalent to `app-server`'s `/api/health` (itself only a liveness check -
+see the comment in the Dockerfile: real readiness for dependencies is
+`/api/health/database` and `/api/health/whatsapp`, which are not what any
+container healthcheck uses here). The healthcheck command itself changed
+during Phase 1 verification - see below.
 
-## A real bug this phase's own review caught
+## Real bugs this phase's own review, and a real container boot, caught
 
-`docker compose config` was run to validate the compose file, and it
-surfaced a real defect before any container ran: `WHATSAPP_SESSION_DIR`
-was being pulled in from the developer's own `.env` file
-(`./data/whatsapp-session`, a relative host path meant for `npm run dev`)
-via `env_file`. Inside a container that path resolves relative to `/app`,
-**not** the `/app/data/whatsapp` path the `whatsapp-session` named volume
-is actually mounted at - meaning the Baileys session would have been
-written to an ephemeral, unmounted directory and lost on every container
-recreation, forcing a fresh QR re-pair every time. Fixed by setting
-`WHATSAPP_SESSION_DIR: /app/data/whatsapp` explicitly in
-`docker-compose.yml`'s `environment:` block, which takes precedence over
-`env_file`. This is exactly the class of defect "verify before changing"
-exists to catch, and it was caught by actually running validation, not by
-inspection alone.
+Four real defects were found and fixed during Phase 1 - three of them only
+findable by actually booting a container, which this sandbox could not do
+(see below); a collaborator ran the real build/boot on their own machine
+(Windows + WSL2 + Docker Desktop) and reported them back with exact error
+text, independently cross-checked against known, verifiable facts about
+these tools before being trusted:
+
+1. **`WHATSAPP_SESSION_DIR` volume mismatch** - found via `docker compose
+   config` alone, no container needed. `WHATSAPP_SESSION_DIR` was being
+   pulled in from the developer's own `.env` file (`./data/whatsapp-
+   session`, a relative host path meant for `npm run dev`) via `env_file`.
+   Inside a container that path resolves relative to `/app`, **not** the
+   `/app/data/whatsapp` path the `whatsapp-session` named volume is
+   actually mounted at - meaning the Baileys session would have been
+   written to an ephemeral, unmounted directory and lost on every
+   container recreation. Fixed by setting `WHATSAPP_SESSION_DIR: /app/data
+   /whatsapp` explicitly in `docker-compose.yml`'s `environment:` block.
+
+2. **Migrations missing from the runtime image** - `tsc` compiles `.ts` ->
+   `.js` only; it never copies non-TypeScript assets like `.sql` files.
+   `migrate.ts` resolves its migrations directory relative to its own
+   compiled location (`dist/db/migrate.js` -> `dist/db/migrations`), which
+   never gets populated by the build - confirmed independently by reading
+   `src/db/migrate.ts`'s `MIGRATIONS_DIR` resolution before trusting the
+   report. Fixed: `COPY --from=build /app/src/db/migrations
+   ./dist/db/migrations` added to the Dockerfile's runtime stage.
+
+3. **Redis boot failure under `cap_drop: [ALL]`** -
+   `setpriv: setresuid failed: Operation not permitted`. The official
+   Redis image's entrypoint needs `SETUID`/`SETGID` to drop from root to
+   the `redis` user, the same class of exception already documented for
+   Postgres. Fixed by removing `cap_drop: [ALL]` from the `redis` service
+   (see the hardening table above).
+
+4. **Worker healthcheck failing with exit 127** - `pgrep -f ...` failed
+   because `node:22-slim` doesn't package `procps` (which provides
+   `pgrep`) - a real, verifiable characteristic of Debian slim images.
+   Fixed by replacing it with `node -e "process.kill(1, 0)"`, which checks
+   PID-1 liveness using only Node itself (correct here specifically
+   because `app-worker`'s command has no shell wrapper, so the Node
+   process really is PID 1 in that container).
+
+Each of these is exactly the class of defect that can only be caught by
+actually running the thing, not by static review - which is precisely why
+this phase's own verification insisted on real command output rather than
+accepting a summary.
 
 ## What was verified vs. not, honestly
 
-**IMPLEMENTED AND VERIFIED:**
-- `docker compose config` parses cleanly: valid YAML/Compose schema,
-  `env_file` interpolation resolves, volume/port/healthcheck/network
-  definitions are all well-formed.
-- The `WHATSAPP_SESSION_DIR` defect above - found and fixed for real,
-  confirmed via a second `docker compose config` run showing the corrected
-  value.
-- The process/volume ownership boundaries described above - verified by
-  reading the actual `new Worker(...)` call sites and
-  `whatsappConnectionService.connect()` call site, not assumed from
-  filenames.
-- `.dockerignore` correctly excludes `.env`/`.env.*` (with `.env.example`
-  kept) from the build context, matching this repo's existing `.gitignore`
-  convention - confirmed by reading the file.
-
-**IMPLEMENTED BUT NOT FULLY VERIFIED - and here is exactly why:**
-
-Building the image (`docker compose build` / `docker build .`) and
-therefore booting the actual stack could **not** be completed in this
-environment. `docker pull node:22-slim` and every build attempt failed
-identically:
+**Why this session couldn't build/boot it directly:** `docker pull
+node:22-slim` and every build attempt in this sandboxed environment failed
+identically -
 
 ```
 ERROR: node:22-slim: failed to resolve source metadata for
@@ -107,52 +126,68 @@ docker.io/library/node:22-slim: ... Get "https://production.cloudfront.docker.co
 Forbidden
 ```
 
-The session's own egress-proxy status endpoint
-(`http://127.0.0.1:39499/__agentproxy/status`) confirms this is a
-deliberate policy denial, not a transient failure:
+- confirmed via the session's own egress-proxy status endpoint to be a
+deliberate policy denial (`"connect_rejected"`, `host:
+"production.cloudfront.docker.com:443"`), not a transient failure, and per
+that proxy's own documented instructions ("do not retry or route around
+it - report the blocked host") this was reported rather than bypassed via
+an alternate registry mirror.
 
-```json
-"recentRelayFailures": [{
-  "kind": "connect_rejected",
-  "detail": "gateway answered 403 to CONNECT (policy denial or upstream failure)",
-  "host": "production.cloudfront.docker.com:443"
-}]
-```
+**IMPLEMENTED AND VERIFIED** (against a real `docker compose build` /
+`docker compose up -d` run on a collaborator's machine - Windows 11 + WSL2
++ Docker Desktop, open network, no egress restriction - with the four
+bugs above found and fixed in the same pass):
 
-Per this session's own proxy documentation: *"403/407 from the proxy: The
-destination host is not allowed by your organization's egress policy for
-this session. Do not retry or route around it - report the blocked
-host."* This was reported, not routed around (no alternate registry
-mirror was substituted to bypass it) - consistent with the directive's
-own Section 51 ("Never allow an AI agent to decide that an external
-repository is safe simply because it appears in a prompt") and Section 62
-stop condition ("STOP and report if... external API is unavailable").
+- **Build completes end-to-end**: `npm ci` -> `tsc` -> `vite build`
+  inside the image, no errors. Output matched byte-for-byte the same
+  Vite bundle sizes (`686.36 kB`, gzip `198.98 kB`) already confirmed by
+  this session's own non-Docker `npm run build`.
+- **All four services report healthy** in `docker compose ps`: `postgres`,
+  `redis`, `app-server`, `app-worker`.
+- **Migrations run for real inside the container**: log output showed
+  `[migrate] Applied 51 migration(s)` through `051_business_time_override.sql`
+  before the server started listening.
+- **Non-root execution confirmed**: `docker compose exec app-server id` ->
+  `uid=10001(whatchatai) gid=10001(whatchatai) groups=10001(whatchatai)`.
+- **Resource limits confirmed applied** via `docker inspect`: `Memory:
+  536870912` (512 MiB), `NanoCPUs: 1000000000` (1.0 CPU),
+  `PidsLimit: 256` - exactly the configured values, not zero/unset.
+- **`read_only` root filesystem does not break anything**: no `EROFS`
+  errors in either container's logs - the risk flagged earlier (ffmpeg
+  temp files) did not materialize.
+- **`/api/health` responds 200** with the expected security headers
+  (CSP, HSTS, `X-Frame-Options`, etc. - from the existing `helmet`
+  middleware, unmodified by this phase) and the expected JSON body.
+- **`app-worker` genuinely boots and starts consuming its real queues**:
+  log output showed `[IncomingMessagesWorker] Listening on queue
+  "incoming_messages"` and `[RealtimeEventsWorker] Listening on queue
+  "realtime_events"`, plus its scheduled sweep jobs starting.
+- **Redis's `cap_drop: [ALL]` exception is now empirically confirmed**
+  (see "Real bugs" above), not just assumed by analogy to Postgres.
+- **A real WhatsApp connection succeeded inside the container**: server
+  log showed a genuine Baileys `"connected to WA"` event.
+- `docker compose config` schema validation, the `WHATSAPP_SESSION_DIR`
+  fix, and the process/volume ownership boundaries - as before, verified
+  by direct inspection.
 
-**Concretely still unverified, and must be checked in an environment with
-open registry access before this is trusted in production:**
-- That the image actually builds end-to-end (the `npm ci` /
-  `npm run build` commands are proven to work in this exact repository
-  state outside Docker - see `CURRENT_STATE.md` §8 - but not yet inside
-  this specific base image).
-- That `postgres` actually starts successfully with `cap_drop: [ALL]`
-  removed but the rest of its hardening applied (untested assumption
-  based on documented Postgres entrypoint behavior, not an empirical
-  result).
-- That `read_only: true` + a single `/tmp` tmpfs is sufficient for the
-  app-server/app-worker processes to run without hitting an `EROFS`
-  write error somewhere unaccounted for (voice-note/ffmpeg temp files
-  being the most likely candidate). **If this breaks something:** the fix
-  is to either extend the `tmpfs:` list for that service or drop
-  `read_only` for it specifically - do not silently disable it repo-wide
-  without first identifying the actual write path.
-- Non-root execution and the resource limits taking effect as configured
-  (`docker exec ... whoami`, `docker inspect` for cgroup limits) -
-  written correctly per the Compose spec, not confirmed against a running
-  container.
-- Real inbound-WhatsApp-to-AI-to-outbound flow through the containers -
-  not testable here at all (no live WhatsApp/Gemini credentials in this
-  sandbox even outside Docker, consistent with every prior phase of work
-  in this repository this session).
+**Still open, honestly:**
+- The verification run above was against a version of the Dockerfile/
+  compose file that a collaborator had **locally patched** on their own
+  machine before reporting back (the four fixes above). Those fixes have
+  since been applied to the actual tracked files in this repo and pushed,
+  in the same form described, but the *exact* pushed bytes have not yet
+  been re-run end-to-end - only the logically-equivalent locally-patched
+  version was. A final confirmation pass (`git pull`, then repeat the
+  same 9 steps) closes this gap completely; until then this is
+  `IMPLEMENTED AND VERIFIED (pending a final confirmation pull)`, not
+  unconditionally verified.
+- Whether Postgres would survive `cap_drop: [ALL]` remains untested (it
+  was never applied there in the first place, so this run doesn't answer
+  that question either way - see the hardening table above).
+- Full inbound-WhatsApp-message -> AI reply -> outbound-send flow through
+  the containers was not exercised in the report (only the connection
+  itself was confirmed) - worth a real end-to-end message test as a
+  follow-up, not required to call container *infrastructure* verified.
 
 ## Known gaps (not fixed in this phase, listed honestly)
 

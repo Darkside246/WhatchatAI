@@ -1,5 +1,54 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - Phase 1: real container boot verification, four bugs found and fixed
+
+**Branch:** `phase-1-container-security` (continues from `668760b`)
+
+**Changed:** `Dockerfile` (added a `COPY` for migration `.sql` files into
+the runtime image), `docker-compose.yml` (removed `cap_drop: [ALL]` from
+`redis`; replaced the `app-worker` healthcheck's `pgrep`-based command
+with a `node -e "process.kill(1, 0)"` PID-1 liveness check), `docs/DOCKER.md`
+and this changelog updated to reflect real verification results.
+
+**How this was verified:** this sandboxed session cannot pull Docker Hub
+images (policy-blocked egress, see the prior entry below) - a
+collaborator built and booted the real stack on their own machine
+(Windows 11 + WSL2 + Docker Desktop) and reported back raw command
+output, which was cross-checked for internal consistency before being
+trusted (e.g. the exact Vite bundle sizes matched this session's own
+non-Docker build byte-for-byte; the specific error messages reported -
+`setpriv: setresuid failed`, `pgrep` exit 127 on `node:22-slim` - were
+independently confirmed against known, verifiable facts about those
+tools before the corresponding fixes were applied here).
+
+**Four real bugs found and fixed** (see `docs/DOCKER.md`, "Real bugs...",
+for full detail): a `WHATSAPP_SESSION_DIR` volume mismatch (already fixed
+in the prior entry via static `docker compose config` review),
+`.sql` migration files missing from the compiled runtime image (`tsc`
+never copies non-TS assets), Redis failing to boot under `cap_drop:
+[ALL]`, and the worker healthcheck using a binary (`pgrep`) that isn't
+present in `node:22-slim`.
+
+**Status:** `IMPLEMENTED AND VERIFIED (pending a final confirmation
+pull)`. All nine verification items from the original checklist passed
+against a real boot: image builds cleanly, all four services report
+`healthy`, migrations apply (51/51), non-root execution confirmed
+(`uid=10001`), resource limits confirmed via `docker inspect`
+(512 MiB / 1.0 CPU / 256 pids, matching config exactly), no `EROFS`
+errors under `read_only`, `/api/health` returns 200 with the expected
+security headers, the worker genuinely starts consuming its real queues,
+and a real Baileys WhatsApp connection succeeded inside the container.
+The one remaining gap: the verified run was against a locally-patched
+version of these files on the collaborator's machine, not yet the exact
+bytes now committed here - functionally identical, but a final
+`git pull` + re-run closes that gap completely rather than assuming
+textual equivalence.
+
+**Rollback:** Same as the prior entry - no application code, schema, or
+`package.json`/lockfile touched.
+
+---
+
 ## 2026-08-21 - Phase 1: container security baseline
 
 **Branch:** `phase-1-container-security` (base: `audit/phase-0-safety-baseline`

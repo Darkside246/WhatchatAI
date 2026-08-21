@@ -42,6 +42,14 @@ COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
 
+# tsc compiles .ts -> .js only; it never copies non-TS assets. migrate.ts
+# resolves its migrations directory relative to its OWN compiled location
+# (dist/db/migrate.js -> dist/db/migrations), so without this the .sql
+# files are simply absent at runtime and migrations fail with ENOENT -
+# confirmed by a real container boot during Phase 1 verification, not
+# caught by static review.
+COPY --from=build /app/src/db/migrations ./dist/db/migrations
+
 # Persistent state lives under /app/data (WhatsApp session + local encrypted
 # media storage) - created here so it has the right ownership before the
 # volume is mounted over it; the actual persistence comes from the named
