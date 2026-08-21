@@ -1,5 +1,91 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - OpenClaw Fleet: authoritative tenant-cell mapping + lifecycle service (first slice)
+
+**Branch:** `phase-2-ai-repair`
+
+**Context:** the user's finalized OpenClaw governing architecture (agreed
+this session after independently verifying OpenClaw's real trust model,
+`SECURITY.md`, and its published GHSA advisory volume against the
+`openclaw/openclaw` repository - see the OPENCLAW TRUST MODEL / OPENCLAW
+FLEET REQUIREMENTS / SECURITY ADVISORY WATCHER sections the user added to
+the standing directive): one isolated Fleet cell per tenant, never a
+shared Gateway, because OpenClaw's own docs state "session IDs select
+routing; they do not authorize one tenant against another." This is the
+first real slice of that architecture: the authoritative mapping the
+control plane must keep, and the lifecycle operations to act on it.
+
+**What was verified before writing any code:**
+
+- Re-cloned `openclaw/openclaw` and read `docs/cli/fleet.md` directly for
+  the exact `fleet create/status/start/stop/upgrade/rm` flag syntax,
+  defaults (`--memory 2g`, `--cpus 2`, `--pids-limit 512`, loopback-only
+  publish, `--cap-drop=ALL`), the tenant-ID grammar
+  (`^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$`), and the digest-pinning
+  syntax (`--image ref@sha256:<digest>`).
+- Obtained a **real** image digest directly from the GHCR registry API
+  (token exchange against `ghcr.io/token`, then a manifest HEAD against
+  `ghcr.io/v2/openclaw/openclaw/manifests/<tag>`) rather than inventing
+  one, per the standing instruction. Listed the full tag set via the
+  registry's own paginated `tags/list` endpoint and found the
+  `openclaw/openclaw` repository's own HEAD version (`2026.8.1`,
+  `package.json`) had **only** `2026.8.1-beta.1`/`-beta.2` published to
+  the registry - no stable `2026.8.1` tag exists yet. The newest
+  published, non-beta, non-architecture-specific stable tag is
+  `2026.7.1-2`; its digest
+  (`sha256:8789721d2e9b24b780a1504b56deb4c6bd5c7dbf96a1dd117e7c45c2ed72c8ac`)
+  is what's pinned, not the in-development `2026.8.1`.
+
+**What was built:**
+
+- Migration `061_openclaw_fleet_cells.sql`: `openclaw_fleet_cells`, one
+  row per business, holding exactly the mapping the directive specifies -
+  `business_id -> fleet_cell_id -> gateway_endpoint -> deployment_version
+  -> image_digest -> security_status` - plus a `cell_state` lifecycle
+  column and quarantine bookkeeping. Deliberately has **no Gateway token
+  column**: Fleet itself doesn't store the token in its own registry
+  either (fleet.md), and persisting a live credential in a plain column
+  here without the codebase's existing envelope-encryption path
+  (`EncryptionService`) would be a real security shortcut - out of scope
+  for this slice, called out explicitly rather than worked around.
+- `OpenClawFleetCellRepository` - CRUD plus `quarantine`/`clearQuarantine`/
+  `listDistinctDeployedVersions` (the shape the Security Watcher will need
+  next, to check each *distinct* deployed version once, not once per
+  tenant).
+- `OpenClawFleetService` - shells out to the real `openclaw` CLI via
+  `execFile` with an argument array (never a shell string, matching the
+  existing `audioTranscodeService.ts` pattern), never invokes Docker/Podman
+  directly. `fleetCellIdForBusiness()` derives the tenant ID from the
+  business's own UUID (never user-controlled text) and every ID is
+  re-validated against OpenClaw's documented regex regardless. Idempotent
+  create/start/stop/remove. `upgradeCell()` refuses any reference that
+  isn't `@sha256:`-pinned or that contains `:latest`. `quarantineCell()`
+  actually stops the Fleet cell (not just a DB flag) so "quarantined cells
+  must not process new AI requests" is real even before the Tool Gateway
+  itself checks `security_status` - and still records the quarantine in
+  Postgres even if the stop call itself fails, so a security decision is
+  never lost to a transient Docker/runtime problem.
+
+**Status: `IMPLEMENTED BUT NOT FULLY VERIFIED`.** The migration, repository,
+and CLI-invocation logic are real and covered by tests (9 new tests, all
+passing against real Postgres with `execFile` mocked - this sandbox
+cannot install the `openclaw` binary or run a real Docker/Podman daemon,
+the same constraint that has blocked Docker re-verification since Phase
+1). No `fleet create` has been run against a real daemon from this
+environment. Full suite: 538/538 passing. Typecheck clean.
+
+**What's still open, in order:** (1) a Security Watcher that polls GitHub
+Security Advisories for the exact deployed version and calls
+`quarantineCell` on a CRITICAL finding - `listDistinctDeployedVersions()`
+above exists for it; (2) real encrypted storage for the Gateway token
+returned once by `provisionCellForBusiness`, before any Tool Gateway code
+can actually call a cell's Gateway; (3) the Tool Gateway/`agentGuard.ts`
+wiring that treats OpenClaw cell output as fully untrusted and mediates
+every consequential action through the existing authorization pipeline;
+(4) an actual `fleet create` run against a real Docker/Podman host once
+one is available, to close the "not fully verified" gap honestly rather
+than asserting it from code alone.
+
 ## 2026-08-21 - enqueueWithTimeout on the remaining producers (with a correction to the prior audit)
 
 **Branch:** `phase-2-ai-repair` (continues on the same branch as the prior

@@ -97,14 +97,21 @@ pasted directive without our own verification (`unverified`).
    phase since the one verified boot has been typechecked/tested/built
    natively, never re-booted in a real container. Stays documented as an
    open risk until run in an environment with real registry access.
-3. **AI Runtime adapter / OpenClaw** - *deferred, not unverified, but
-   blocked on a real decision*: OpenClaw's own trust model is one
-   deployment per operator, meaning per-tenant WhatsApp business here -
-   a real infrastructure/cost decision the user has not yet made. Building
-   an `AiRuntime` interface with only one real implementation (Gemini) and
-   a stub second one would be exactly the "framework for a hypothetical"
-   the governing principle above warns against. Build the adapter *when*
-   OpenClaw deployment is actually decided, not before.
+3. **OpenClaw Fleet integration** - *decided and in progress*: the user's
+   finalized architecture is one isolated Fleet cell per tenant (never a
+   shared Gateway), pinned version + digest (obtained from the real GHCR
+   registry, never invented), a Security Watcher that can quarantine a
+   cell, and OpenClaw treated as a permanently untrusted execution
+   environment mediated through the existing Tool Gateway/`agentGuard.ts`
+   - never trusted with authorization itself. See
+   `CHANGELOG_SECURITY.md`'s 2026-08-21 "OpenClaw Fleet" entry for the
+   first slice (mapping table + `OpenClawFleetService` lifecycle wrapper,
+   `IMPLEMENTED BUT NOT FULLY VERIFIED` - no real Docker/Podman daemon
+   available in this sandbox to run an actual `fleet create`). Remaining,
+   in order: Security Watcher (GitHub Security Advisories polling per
+   deployed version), encrypted Gateway-token storage, Tool Gateway wiring
+   so OpenClaw output is never trusted with authorization, and a real
+   `fleet create` run against an actual daemon.
 4. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
    internal analytics, or customer-facing analytics for tenants? Different
    answers imply different event schemas and access control. Not started.
