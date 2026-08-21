@@ -5,6 +5,7 @@ import type { AiHandoffContext } from '../src/services/aiContextGathererService.
 import type { WhatsAppMessageRecord } from '../src/repositories/whatsappMessageRepository.js';
 import { buildTimeContext } from '../src/services/time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME } from '../src/services/time/getCurrentTimeTool.js';
+import { geminiCircuitBreaker } from '../src/services/aiCircuitBreaker.js';
 
 function fakeAgent(overrides: Partial<AiAgentRecord> = {}): AiAgentRecord {
   return {
@@ -91,6 +92,11 @@ const { generateAiReply } = await import('../src/services/aiReplyService.js');
 describe('generateAiReply retries with a bare request after a real 400 INVALID_ARGUMENT', () => {
   beforeEach(() => {
     generateContentMock.mockReset();
+    // The circuit breaker is a module-level singleton shared across every
+    // test in this file - without resetting it, a test earlier in the run
+    // that records real failures could trip it and silently short-circuit
+    // an unrelated later test's "real call" assertions.
+    geminiCircuitBreaker.reset();
   });
 
   afterEach(() => {
@@ -142,6 +148,11 @@ describe('generateAiReply retries with a bare request after a real 400 INVALID_A
 describe('generateAiReply grounds the model in the real, TimeService-built current time', () => {
   beforeEach(() => {
     generateContentMock.mockReset();
+    // The circuit breaker is a module-level singleton shared across every
+    // test in this file - without resetting it, a test earlier in the run
+    // that records real failures could trip it and silently short-circuit
+    // an unrelated later test's "real call" assertions.
+    geminiCircuitBreaker.reset();
   });
 
   afterEach(() => {
@@ -251,5 +262,57 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
     // though every mocked response keeps requesting the tool again.
     expect(generateContentMock).toHaveBeenCalledTimes(2);
     expect(result.status).toBe('generated');
+  });
+});
+
+describe('generateAiReply respects the Gemini circuit breaker', () => {
+  beforeEach(() => {
+    generateContentMock.mockReset();
+    geminiCircuitBreaker.reset();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    geminiCircuitBreaker.reset();
+  });
+
+  it('after enough consecutive real failures, skips the live Gemini call entirely on the next message', async () => {
+    generateContentMock.mockRejectedValue(new ApiError({ message: 'The service is currently unavailable.', status: 503 }));
+
+    // Default threshold is 3 - three real replies, each hitting a genuine failure.
+    await generateAiReply(fakeAgent(), fakeContext());
+    await generateAiReply(fakeAgent(), fakeContext());
+    await generateAiReply(fakeAgent(), fakeContext());
+    expect(generateContentMock).toHaveBeenCalledTimes(3);
+
+    generateContentMock.mockClear();
+    const result = await generateAiReply(fakeAgent(), fakeContext());
+
+    // The circuit is open: no real call was attempted this time.
+    expect(generateContentMock).not.toHaveBeenCalled();
+    expect(result.status).toBe('unavailable');
+    if (result.status === 'unavailable') expect(result.reason).toContain('circuit breaker open');
+  });
+
+  it('a successful reply keeps the circuit closed - no false trips from ordinary use', async () => {
+    generateContentMock.mockResolvedValue({ text: 'All good.' });
+
+    await generateAiReply(fakeAgent(), fakeContext());
+    await generateAiReply(fakeAgent(), fakeContext());
+    await generateAiReply(fakeAgent(), fakeContext());
+
+    expect(generateContentMock).toHaveBeenCalledTimes(3);
+    expect(geminiCircuitBreaker.getState()).toBe('CLOSED');
+  });
+
+  it('a real 400 that recovers via the bare-request retry counts as success, not a circuit-breaker failure', async () => {
+    generateContentMock
+      .mockRejectedValueOnce(new ApiError({ message: 'Request contains an invalid argument.', status: 400 }))
+      .mockResolvedValueOnce({ text: 'Recovered fine.' });
+
+    const result = await generateAiReply(fakeAgent(), fakeContext());
+
+    expect(result.status).toBe('generated');
+    expect(geminiCircuitBreaker.getState()).toBe('CLOSED');
   });
 });

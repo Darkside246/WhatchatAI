@@ -1,5 +1,55 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - Phase 2: existing AI path audit + one real repair (circuit breaker)
+
+**Branch:** `phase-2-ai-repair` (base: `phase-1-container-security` @ `0467bf1`)
+
+**Audit findings:** traced the real inbound -> Sentinel -> persistence ->
+queue -> worker -> AI routing -> context -> model -> outbound path
+(`src/queue/workers/incomingMessagesWorker.ts`,
+`src/services/agentRoutingService.ts`, `src/services/aiReplyService.ts`).
+The major failure modes this directive's Phase 2 asks about were already
+fixed in earlier work this session, confirmed still in place: `no_agent`
+and blocked-keyword routing outcomes visibly notify the business and move
+the chat to `HUMAN_TAKEOVER` rather than silently dropping the customer;
+a failed model call (Gemini + Goose both unavailable) does the same via
+an `AI_FAILURE` notification; the escalation hop is bounded to exactly
+one agent, never a loop; outbound sends carry an idempotency key derived
+from the inbound message id; human takeover (`ai_mode !== 'AI_ACTIVE'`)
+gates the AI path out entirely before it runs.
+
+**One real, remaining gap found and fixed:** no circuit breaker existed
+for the Gemini call (directive Section 45 - external services must have
+timeout/backoff/circuit breaker/cooldown). During a sustained outage,
+every single queued message would wait out a full network round trip
+(primary call, then a bare-request retry) before falling back - wasted
+latency per message with no benefit, since a failing provider was very
+unlikely to suddenly succeed message-to-message. Added
+`src/services/aiCircuitBreaker.ts`: a minimal per-process (not Redis-
+shared - deliberately, see the file's own comment) CLOSED/OPEN/HALF_OPEN
+breaker. After 3 consecutive real call failures it opens for 60s
+(both configurable via `GEMINI_CIRCUIT_FAILURE_THRESHOLD`/
+`GEMINI_CIRCUIT_COOLDOWN_MS`), skipping straight to Goose/`unavailable`
+until a single probe call is allowed through again. A 400-then-bare-retry
+recovery still counts as success (proves Gemini is reachable), so it does
+not falsely trip the breaker.
+
+**Tests:** 11 new (`test/aiCircuitBreaker.test.ts` - pure state-machine
+tests for CLOSED->OPEN->HALF_OPEN->CLOSED transitions, cooldown timing,
+failed-probe reopening; 3 new integration tests in
+`test/aiReplyServiceRetry.test.ts` proving `generateAiReply` actually
+skips the live call once open, stays closed under normal success, and
+does not trip on a recovered 400). Full suite: 77/77 files, 469/469 tests
+passing (up from 76/458 - the exact expected +1 file/+11 tests), zero
+regressions. Typecheck and production build both clean.
+
+**Status:** `IMPLEMENTED AND VERIFIED`.
+
+**Rollback:** `git revert` the commit, or discard the branch - no schema
+or dependency changes.
+
+---
+
 ## 2026-08-21 - Phase 1: real container boot verification, four bugs found and fixed
 
 **Branch:** `phase-1-container-security` (continues from `668760b`)

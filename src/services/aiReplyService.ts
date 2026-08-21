@@ -8,6 +8,7 @@ import { ADVICE_RESTRICTED_CATEGORIES, type AiAgentRecord } from '../repositorie
 import type { AiHandoffContext } from './aiContextGathererService.js';
 import { describeTimeContext } from './time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME, getCurrentTimeFunctionDeclaration } from './time/getCurrentTimeTool.js';
+import { geminiCircuitBreaker } from './aiCircuitBreaker.js';
 
 export type AiReplyResult = { status: 'generated'; text: string } | { status: 'unavailable'; reason: string };
 
@@ -203,6 +204,14 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
   const genAi = getGeminiClient();
   if (!genAi) return tryGooseFallback('GEMINI_API_KEY is not configured', agent, context, contents);
 
+  // Sustained Gemini outages must not cost every queued message a full
+  // network timeout before falling back - once several consecutive real
+  // calls have failed, skip straight to Goose (or "unavailable") until the
+  // cooldown elapses and a single probe call is allowed through again.
+  if (!geminiCircuitBreaker.canAttempt()) {
+    return tryGooseFallback(`Gemini unavailable (${geminiCircuitBreaker.describeUnavailable()})`, agent, context, contents);
+  }
+
   const model = process.env.GEMINI_REPLY_MODEL || process.env.GEMINI_MODEL || 'gemini-3.5-flash';
   const systemInstruction = buildSystemInstruction(agent, context);
 
@@ -251,12 +260,19 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
       response = await resolveTimeToolCall(genAi, model, contents, systemInstruction, response, context.timeContext);
     }
 
+    // A response object came back from the API layer at all - Gemini is
+    // reachable and functioning, regardless of whether the text itself
+    // ended up empty (a different failure class, not a transport/outage
+    // signal, so it does not feed the circuit breaker below).
+    geminiCircuitBreaker.recordSuccess();
+
     const text = response.text?.trim();
     if (!text) return tryGooseFallback('Reply model returned an empty response', agent, context, contents);
 
     return { status: 'generated', text: text.slice(0, MAX_REPLY_CHARS) };
   } catch (error) {
     const reason = `Reply model call failed: ${error instanceof Error ? error.message : String(error)}`;
+    geminiCircuitBreaker.recordFailure(reason);
     return tryGooseFallback(reason, agent, context, contents);
   }
 }
