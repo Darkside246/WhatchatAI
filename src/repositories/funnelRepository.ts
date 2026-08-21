@@ -88,6 +88,8 @@ export interface FunnelInstanceRecord {
   startedAt: string;
   completedAt: string | null;
   lastError: string | null;
+  /** The real, computed moment the delayed funnel_advance job is expected to fire - null except while WAITING. See migration 059. */
+  resumeAt: string | null;
   updatedAt: string;
 }
 
@@ -102,6 +104,7 @@ interface FunnelInstanceRow {
   started_at: string;
   completed_at: string | null;
   last_error: string | null;
+  resume_at: string | null;
   updated_at: string;
 }
 
@@ -117,6 +120,7 @@ function toInstanceRecord(row: FunnelInstanceRow): FunnelInstanceRecord {
     startedAt: row.started_at,
     completedAt: row.completed_at,
     lastError: row.last_error,
+    resumeAt: row.resume_at,
     updatedAt: row.updated_at,
   };
 }
@@ -228,7 +232,13 @@ export class FunnelRepository {
 
   async updateInstance(
     id: string,
-    input: { currentPosition?: number; status?: FunnelInstanceStatus; completedAt?: boolean; lastError?: string | null },
+    input: {
+      currentPosition?: number;
+      status?: FunnelInstanceStatus;
+      completedAt?: boolean;
+      lastError?: string | null;
+      resumeAt?: string | null;
+    },
   ): Promise<FunnelInstanceRecord | null> {
     const { rows } = await this.db.query<FunnelInstanceRow>(
       `UPDATE funnel_instances SET
@@ -236,12 +246,28 @@ export class FunnelRepository {
          status = COALESCE($3, status),
          completed_at = CASE WHEN $4 THEN now() ELSE completed_at END,
          last_error = COALESCE($5, last_error),
+         resume_at = COALESCE($6, resume_at),
          updated_at = now()
        WHERE id = $1
        RETURNING *`,
-      [id, input.currentPosition ?? null, input.status ?? null, input.completedAt ?? false, input.lastError ?? null],
+      [id, input.currentPosition ?? null, input.status ?? null, input.completedAt ?? false, input.lastError ?? null, input.resumeAt ?? null],
     );
     return rows[0] ? toInstanceRecord(rows[0]) : null;
+  }
+
+  /**
+   * A real, computed-resume-time staleness check - never "WAITING for a
+   * long time" alone, since a WAIT node's delay can legitimately be days.
+   * Only an instance whose own recorded resume_at has passed by more than
+   * `staleSeconds`, and is still WAITING, counts - see migration 059.
+   */
+  async findStaleWaiting(staleSeconds: number): Promise<FunnelInstanceRecord[]> {
+    const { rows } = await this.db.query<FunnelInstanceRow>(
+      `SELECT * FROM funnel_instances
+       WHERE status = 'WAITING' AND resume_at IS NOT NULL AND resume_at < now() - ($1 || ' seconds')::interval`,
+      [staleSeconds],
+    );
+    return rows.map(toInstanceRecord);
   }
 
   /** Real funnel analytics - entered/completed/active/failed counts, computed live, never a separately maintained counter. */

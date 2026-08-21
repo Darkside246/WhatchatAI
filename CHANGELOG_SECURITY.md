@@ -1,5 +1,84 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - Funnel stale-instance reconciliation sweep
+
+**Branch:** `phase-2-ai-repair` (continues on the same branch as the prior
+phases - see the Phase 3 entry for why this branch wasn't split further)
+
+**Context:** Priority 2 from `docs/PRODUCTION_READINESS_DIRECTIVE.md` - a
+gap first flagged (not built) in the Phase 20 production audit: outbound
+messages, sync jobs, and emails all have a real sweep reconciling a row
+stuck mid-flight with no BullMQ retry left to resolve it
+(`sweepStaleOutboundMessages`/`sweepStaleSyncJobs`/`sweepStaleEmails` in
+`incomingMessagesWorker.ts`); funnel instances stuck `WAITING` with a lost
+`funnel_advance` job did not.
+
+**The real design problem this isn't the other three sweeps' pattern:** a
+WAITING funnel instance can legitimately stay WAITING for days by design -
+a WAIT node's own configured delay. "How long has it been WAITING" is
+therefore the *wrong* staleness signal here, unlike the other three
+sweeps where the operation is expected to take seconds. The real signal
+is whether the instance's own **recorded, computed resume time** has
+passed while it's still WAITING - meaning the delayed job that was
+supposed to wake it never fired.
+
+**What changed:**
+
+- Migration 059: `funnel_instances.resume_at` - the real moment (computed
+  from the WAIT step's own delay, the same value passed to
+  `enqueueFunnelAdvance`) the instance is expected to resume. Set only
+  when transitioning into `WAITING`.
+- `FunnelRepository.findStaleWaiting(staleSeconds)`: real query -
+  `status = 'WAITING' AND resume_at < now() - staleSeconds`. Never
+  matches a genuinely-still-waiting instance, however long its WAIT
+  delay is, since that comparison is against its own `resume_at`, not a
+  fixed age.
+- `funnelService.ts`'s `sweepStaleFunnelInstances()`: reconciles a stale
+  instance to `FAILED` (existing terminal status, reused) with a real,
+  specific `lastError`, and notifies the business
+  (`AUTOMATION_FAILURE`) - same honesty discipline as the other three
+  sweeps: never silently left claiming to be in-flight forever. **Never
+  auto-resumes it** - an automatic resume this sweep triggered could race
+  a delayed job that actually still exists and is merely running late
+  under real concurrency pressure; reconciling to a visible failure and
+  letting the operator re-enroll the contact is the same
+  give-up-honestly choice `sweepStaleEmails` already makes rather than
+  guessing at a retry.
+- Registered as a new `funnel-instance-timeout-sweep` BullMQ repeatable
+  job in `incomingMessagesWorker.ts`, checked every 5 minutes (coarser
+  than the other sweeps' 1-2 minute cadence, matching how much less
+  time-sensitive detecting a lost job is here) with a default 600s grace
+  window past `resume_at` before considering a job lost rather than
+  merely running behind.
+
+**Tests:** new `test/funnelStaleInstanceSweep.test.ts` (7 tests, real
+Postgres) - a real WAIT step records a real future `resume_at`; an
+instance whose `resume_at` passed long ago is reconciled to `FAILED` with
+an honest error and a real notification; an instance whose `resume_at` is
+still genuinely in the future (a long WAIT, working as designed) is left
+untouched; an instance only recently past its `resume_at` (inside the
+grace window) is left untouched; a non-`WAITING` instance is never
+touched regardless of its `resume_at`. Full suite: 83/83 test files,
+522/522 tests (up from 516 - the expected +6, plus 1 test proving the
+WAIT step now records `resumeAt`), zero regressions. Migration 059
+applied cleanly. Typecheck and production build both clean.
+
+**Status:** `IMPLEMENTED AND VERIFIED`.
+
+**Risks:** the 600s default grace window and 5-minute sweep cadence are
+reasoned from the existing sweeps' conventions, not tuned against a real
+observed lost-job incident (none has been demonstrated in this codebase's
+own failure-injection testing) - both are env-overridable
+(`FUNNEL_INSTANCE_STALE_SECONDS`), not a claim of having been tuned
+against production load, the same honestly-flagged category as Phase 7's
+rate-limit defaults.
+
+**Rollback:** `git revert` the commit, or discard the branch. Migration
+059 is additive (`resume_at`, nullable, no data migration needed for
+existing rows) - reversible via `ALTER TABLE ... DROP COLUMN`.
+
+---
+
 ## 2026-08-21 - Context Trust Builder: untrusted-data boundaries around CRM notes and knowledge base content
 
 **Branch:** `phase-2-ai-repair` (continues on the same branch as the prior

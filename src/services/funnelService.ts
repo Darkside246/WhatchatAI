@@ -9,7 +9,7 @@ import {
 import { CrmContactRepository } from '../repositories/crmContactRepository.js';
 import { WhatsAppChatRepository } from '../repositories/whatsappChatRepository.js';
 import { workspaceService, type EntitlementDeniedError } from './workspaceService.js';
-import { notifyUser } from './notificationService.js';
+import { notifyUser, notifyBusiness } from './notificationService.js';
 import { whatsappOutboundMessageService } from './whatsappOutboundMessageService.js';
 import { enqueueFunnelAdvance } from '../queue/queues/funnelAdvanceQueue.js';
 import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
@@ -299,7 +299,8 @@ async function runFromPosition(instance: FunnelInstanceRecord): Promise<void> {
         }
         case 'WAIT': {
           const delayMs = await resolveWaitDelayMs(instance.businessId, step.config);
-          await funnelRepository.updateInstance(instance.id, { currentPosition: position + 1, status: 'WAITING' });
+          const resumeAt = new Date(Date.now() + delayMs).toISOString();
+          await funnelRepository.updateInstance(instance.id, { currentPosition: position + 1, status: 'WAITING', resumeAt });
           // The instance row is already durably WAITING at this point, so a
           // slow/unreachable Redis must never hang the caller (e.g. a real
           // HTTP enrollContact request) indefinitely - see enqueueWithTimeout.
@@ -428,6 +429,46 @@ export async function resumeFunnelInstance(instanceId: string): Promise<void> {
   await funnelRepository.updateInstance(instance.id, { status: 'ACTIVE' });
   const refreshed = await funnelRepository.findInstanceById(instanceId);
   if (refreshed) await runFromPosition(refreshed);
+}
+
+// Configurable, not hardcoded: how far past an instance's own recorded
+// resume_at it must be before the delayed job is considered lost rather
+// than just running a little behind under real concurrency pressure.
+const FUNNEL_INSTANCE_STALE_SECONDS = Number(process.env.FUNNEL_INSTANCE_STALE_SECONDS ?? 600);
+
+/**
+ * Real reconciliation for an instance abandoned mid-WAIT - the same
+ * honesty problem sweepStaleOutboundMessages/sweepStaleSyncJobs/
+ * sweepStaleEmails already solve for their own entities (a row wedged
+ * mid-flight with no retry left to resolve it), applied here for the
+ * first time. Reconciled to FAILED (never silently left WAITING forever,
+ * and never silently auto-resumed - a resume this sweep triggered itself
+ * could race a delayed job that actually still exists and is merely
+ * running late), with the business notified so a real customer's stalled
+ * funnel is visible, not silent.
+ */
+export async function sweepStaleFunnelInstances(): Promise<void> {
+  const stale = await funnelRepository.findStaleWaiting(FUNNEL_INSTANCE_STALE_SECONDS);
+  for (const instance of stale) {
+    await funnelRepository.updateInstance(instance.id, {
+      status: 'FAILED',
+      lastError: `Abandoned mid-wait - no progress for over ${FUNNEL_INSTANCE_STALE_SECONDS}s past its expected resume time (likely a lost queue job), reconciled by the stale-instance sweep`,
+    });
+    await notifyBusiness({
+      businessId: instance.businessId,
+      type: 'AUTOMATION_FAILURE',
+      severity: 'warning',
+      title: 'A funnel got stuck and needs a look',
+      body: 'A contact was mid-funnel, waiting on a delayed step, and the step never resumed. The funnel instance has been marked failed - re-enroll the contact if you want to try again.',
+      targetType: 'funnel_instance',
+      targetId: instance.id,
+    }).catch((error) => {
+      console.error('[FunnelService] Failed to dispatch AUTOMATION_FAILURE notification for stale funnel instance:', error);
+    });
+  }
+  if (stale.length > 0) {
+    console.log(`[FunnelService] Reconciled ${stale.length} stale WAITING funnel instance(s) to failed`);
+  }
 }
 
 export async function cancelFunnelInstance(businessId: string, funnelId: string, instanceId: string): Promise<FunnelInstanceRecord> {

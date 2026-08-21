@@ -38,6 +38,7 @@ import { classifyJid, derivePhoneNumber } from '../../domain/whatsapp/jid.js';
 import { decodeBuffersFromQueue } from '../../domain/whatsapp/binaryCodec.js';
 import { storeMedia } from '../../media/localEncryptedMediaStorage.js';
 import { mediaFallbackText } from '../../services/ai/mediaContext.js';
+import { sweepStaleFunnelInstances } from '../../services/funnelService.js';
 import type { WhatsAppMessageRecord } from '../../repositories/whatsappMessageRepository.js';
 import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaRepository.js';
 import type { MediaDownloadStatus, MediaType, StatusType } from '../../domain/whatsapp/types.js';
@@ -636,6 +637,12 @@ export async function sweepStaleOutboundMessages(): Promise<void> {
 const EMAIL_STALE_SECONDS = 300;
 const EMAIL_TIMEOUT_SWEEP_INTERVAL_MS = 60_000;
 
+// A WAITING funnel instance can legitimately stay WAITING for days (a
+// WAIT node's own configured delay) - see sweepStaleFunnelInstances in
+// funnelService.ts for why this sweep checks a much longer interval than
+// the others above, at a coarser cadence to match.
+const FUNNEL_INSTANCE_TIMEOUT_SWEEP_INTERVAL_MS = 300_000;
+
 export async function sweepStaleEmails(): Promise<void> {
   const stale = await emailMessageRepository.findStalePending(EMAIL_STALE_SECONDS);
   for (const email of stale) {
@@ -682,6 +689,8 @@ async function processRealtimeEventJob(
     await sweepStaleOutboundMessages();
   } else if (job.name === 'email-timeout-sweep') {
     await sweepStaleEmails();
+  } else if (job.name === 'funnel-instance-timeout-sweep') {
+    await sweepStaleFunnelInstances();
   } else if (job.name === 'media-download') {
     await processMediaDownload(job.data as MediaDownloadJobData);
   } else if (job.name === 'message-reaction') {
@@ -779,3 +788,18 @@ void realtimeEventsQueue
   .upsertJobScheduler('email-timeout-sweep', { every: EMAIL_TIMEOUT_SWEEP_INTERVAL_MS }, { name: 'email-timeout-sweep' })
   .then(() => console.log(`[RealtimeEventsWorker] Scheduled email-timeout-sweep every ${EMAIL_TIMEOUT_SWEEP_INTERVAL_MS}ms`))
   .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule email-timeout-sweep:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler(
+    'funnel-instance-timeout-sweep',
+    { every: FUNNEL_INSTANCE_TIMEOUT_SWEEP_INTERVAL_MS },
+    { name: 'funnel-instance-timeout-sweep' },
+  )
+  .then(() =>
+    console.log(
+      `[RealtimeEventsWorker] Scheduled funnel-instance-timeout-sweep every ${FUNNEL_INSTANCE_TIMEOUT_SWEEP_INTERVAL_MS}ms`,
+    ),
+  )
+  .catch((error: Error) =>
+    console.error('[RealtimeEventsWorker] Failed to schedule funnel-instance-timeout-sweep:', error.message),
+  );
