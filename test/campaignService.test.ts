@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { register } from '../src/services/authService.js';
 import { WhatsAppContactRepository } from '../src/repositories/whatsappContactRepository.js';
@@ -18,6 +18,7 @@ import {
   isTooManyRecipientsError,
   isCampaignNotFoundError,
 } from '../src/services/campaignService.js';
+import { whatsappOutboundMessageService } from '../src/services/whatsappOutboundMessageService.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 import { isEntitlementDeniedError } from '../src/services/workspaceService.js';
 
@@ -183,6 +184,38 @@ describe('campaignService (real eligibility, real status machine, real send pipe
     await approveCampaign(businessId, second.id, ownerId);
     await sendCampaign(businessId, second.id);
     await expect(cancelCampaign(businessId, second.id)).rejects.toThrow();
+  });
+
+  it('a recipient whose dispatch throws (e.g. their chat vanished) reaches an honest FAILED state, never stuck as "queued" forever, and the business is notified', async () => {
+    const contactId = await makeEligibleContact(businessId, accountId, '15559990009@s.whatsapp.net', 'Vanishing');
+    const { campaign } = await createCampaign(businessId, accountId, ownerId, { name: 'Doomed Send', messageText: 'Hi', crmContactIds: [contactId] });
+    await submitCampaignForReview(businessId, campaign.id);
+    await approveCampaign(businessId, campaign.id, ownerId);
+
+    // Simulate the real failure mode whatsappOutboundMessageService.send()
+    // itself throws for (e.g. ChatNotFoundError when the recipient's chat
+    // vanished between recipient-list creation and send time) - before any
+    // outbound_message row is ever created.
+    const sendSpy = vi.spyOn(whatsappOutboundMessageService, 'send').mockRejectedValueOnce(new Error('Chat not found for this business.'));
+
+    await sendCampaign(businessId, campaign.id);
+    sendSpy.mockRestore();
+
+    const detail = await getCampaign(businessId, campaign.id);
+    expect(detail.recipients[0]?.outboundMessageId).toBeNull();
+    expect(detail.recipients[0]?.status).toBe('failed');
+    expect(detail.counts.failed).toBe(1);
+    expect(detail.counts.queued).toBe(0);
+
+    // With no real recipients left queued, the campaign reaches a real
+    // terminal status on the next read instead of staying RUNNING forever.
+    expect(detail.campaign.status).toBe('COMPLETED');
+
+    const { rows: notificationRows } = await pool.query<{ type: string }>(
+      `SELECT type FROM notifications WHERE business_id = $1 AND target_id = $2`,
+      [businessId, campaign.id],
+    );
+    expect(notificationRows.some((row) => row.type === 'AUTOMATION_FAILURE')).toBe(true);
   });
 
   it('refuses to touch a campaign belonging to a different business', async () => {

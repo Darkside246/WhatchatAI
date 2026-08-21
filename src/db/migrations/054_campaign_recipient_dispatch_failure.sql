@@ -1,0 +1,11 @@
+-- Production-safety directive Phase 17: a campaign recipient whose actual
+-- dispatch call throws (e.g. their chat was deleted between recipient-list
+-- creation and send time - a real, already-possible ChatNotFoundError from
+-- whatsappOutboundMessageService.send) previously left outbound_message_id
+-- permanently NULL with nothing recorded. getStatusCounts() counted that
+-- row as 'queued' forever (COUNT(*) FILTER (WHERE om.id IS NULL OR ...)),
+-- so the campaign could never reach a terminal status and the business was
+-- never told a send had silently failed - the same honesty gap already
+-- closed for sync jobs, outbound messages, and emails via their own
+-- last_error + stale-reconciliation conventions.
+ALTER TABLE campaign_recipients ADD COLUMN last_error TEXT;

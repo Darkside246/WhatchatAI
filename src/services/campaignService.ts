@@ -8,6 +8,7 @@ import {
 import { whatsappOutboundMessageService } from './whatsappOutboundMessageService.js';
 import { EntitlementService } from './entitlementService.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
+import { notifyBusiness } from './notificationService.js';
 import { type EntitlementDeniedError } from './workspaceService.js';
 
 const campaignRepository = new CampaignRepository(pool);
@@ -212,6 +213,7 @@ export async function sendCampaign(businessId: string, campaignId: string): Prom
   });
 
   let index = 0;
+  let failedCount = 0;
   for (const recipient of pending) {
     try {
       const outboundMessage = await whatsappOutboundMessageService.send({
@@ -226,10 +228,30 @@ export async function sendCampaign(businessId: string, campaignId: string): Prom
       await campaignRepository.linkOutboundMessage(recipient.id, outboundMessage.id);
     } catch (error) {
       // A single recipient's dispatch failing (e.g. their chat vanished)
-      // must not abort the rest of a real campaign send.
+      // must not abort the rest of a real campaign send - but it must also
+      // never be silent: recorded as a real terminal failure (never left
+      // outbound_message_id NULL forever, which getStatusCounts would have
+      // read as permanently 'queued', wedging the whole campaign in RUNNING).
+      const message = error instanceof Error ? error.message : String(error);
       console.error(`[CampaignService] Failed to dispatch campaign ${campaignId} to recipient ${recipient.id}:`, error);
+      await campaignRepository.recordDispatchFailure(recipient.id, message);
+      failedCount += 1;
     }
     index += 1;
+  }
+
+  if (failedCount > 0) {
+    await notifyBusiness({
+      businessId,
+      type: 'AUTOMATION_FAILURE',
+      severity: 'warning',
+      title: 'Some campaign messages could not be sent',
+      body: `${failedCount} of ${pending.length} recipient(s) in "${campaign.name}" could not be dispatched (e.g. their conversation no longer exists). Check the campaign detail for which ones.`,
+      targetType: 'campaign',
+      targetId: campaignId,
+    }).catch((notifyError) => {
+      console.error('[CampaignService] Failed to dispatch AUTOMATION_FAILURE notification:', notifyError);
+    });
   }
 
   return running;

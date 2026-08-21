@@ -1,5 +1,69 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-21 - Phase 17: campaign dispatch-failure lifecycle hardening
+
+**Branch:** `phase-2-ai-repair` (continues on the same branch as Phases
+2-3 and 16 - see the Phase 3 entry for why this branch wasn't split
+further)
+
+**Audit finding:** `sendCampaign()` in `src/services/campaignService.ts`
+caught a per-recipient `whatsappOutboundMessageService.send()` failure
+(e.g. `ChatNotFoundError` - a real, already-possible error when a
+recipient's chat vanishes between recipient-list creation and send time)
+with only a `console.error`, leaving `campaign_recipients.outbound_
+message_id` NULL forever for that recipient. `getStatusCounts()`'s
+`queued` filter (`WHERE om.id IS NULL OR om.status IN (...)`) counted
+that permanently-unlinked row as `queued` indefinitely, so
+`maybeCompleteRunningCampaign()` (which only flips `RUNNING` ->
+`COMPLETED` once `queued === 0`) could never resolve the campaign to a
+terminal status. The business was never told a send had silently failed
+for some recipients - the exact same silent-stuck-forever failure class
+already closed elsewhere in this codebase for stale sync jobs, stale
+outbound messages, and stale emails via their own `last_error` columns
+and stale-reconciliation sweeps, just not yet closed here.
+
+**Fixed:** Added `campaign_recipients.last_error` (migration 054, same
+`last_error TEXT` convention as `funnel_instances`/`email_messages`/
+`whatsapp_sync_jobs`/`whatsapp_outbound_messages`). `sendCampaign()`'s
+catch block now calls the new `campaignRepository.recordDispatchFailure()`
+before continuing to the next recipient. `getStatusCounts()` and the
+per-recipient status `CASE` in `listRecipients()` both now treat "no
+outbound message AND a recorded `last_error`" as a real terminal `failed`
+state rather than perpetual `queued` - so a campaign with a genuine
+dispatch failure now correctly reaches `COMPLETED` once every recipient
+has a terminal outcome, exactly as it already did for provider-side
+failures (`om.status = 'failed'`). If any recipient failed to dispatch,
+the business now gets a real `AUTOMATION_FAILURE` notification naming the
+campaign and the failure count.
+
+**Scope decision:** `cancelCampaign()`'s existing status-machine
+restriction (only `DRAFT`/`REVIEW`/`APPROVED` may be cancelled, never
+`RUNNING`) was left unchanged - it is already honest: `sendCampaign()`
+enqueues each recipient's send as a real, already-delayed BullMQ job, so
+a `RUNNING` campaign has no in-flight state a cancel could actually stop
+without either faking success or racing the queue; refusing to pretend to
+cancel it is correct, not a gap.
+
+**Tests:** 1 new in `test/campaignService.test.ts` (mocks
+`whatsappOutboundMessageService.send` to reject once, exactly the real
+failure shape, via `vi.spyOn(...).mockRejectedValueOnce` rather than
+hard-deleting a chat row, since `campaign_recipients.chat_id` CASCADEs on
+that table and would delete the recipient row itself instead of
+reproducing the failure) - proves the recipient reaches `failed`
+(`outboundMessageId` stays null), `counts.queued` is `0`, the campaign
+itself reaches `COMPLETED` on the next read, and a real
+`AUTOMATION_FAILURE` notification row exists. Full suite: 78/78 files,
+475/475 tests passing (up from 474 - the expected +1), zero regressions.
+Typecheck and production build both clean; migration 054 applied cleanly
+against a real database.
+
+**Status:** `IMPLEMENTED AND VERIFIED`.
+
+**Rollback:** `git revert` the commit, or discard the branch. Migration
+054 only adds a nullable column - reversible via a plain `DROP COLUMN`.
+
+---
+
 ## 2026-08-21 - Phase 16: funnel deletion lifecycle hardening
 
 **Branch:** `phase-2-ai-repair` (continues on the same branch as Phases 2-3

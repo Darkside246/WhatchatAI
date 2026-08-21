@@ -75,6 +75,7 @@ export interface CampaignRecipientRecord {
   displayName: string;
   phoneNumber: string | null;
   status: RecipientStatus | null;
+  lastError: string | null;
   createdAt: string;
 }
 
@@ -87,6 +88,7 @@ interface CampaignRecipientRow {
   display_name: string | null;
   phone_number: string | null;
   status: RecipientStatus | null;
+  last_error: string | null;
   created_at: string;
 }
 
@@ -100,6 +102,7 @@ function toRecipientRecord(row: CampaignRecipientRow): CampaignRecipientRecord {
     displayName: row.display_name ?? 'Unknown',
     phoneNumber: row.phone_number,
     status: row.status,
+    lastError: row.last_error,
     createdAt: row.created_at,
   };
 }
@@ -141,8 +144,10 @@ const RECIPIENT_STATUS_SELECT = `
     WHEN om.status = 'failed' THEN 'failed'
     WHEN wm.status IS NOT NULL THEN wm.status::text
     WHEN om.status IS NOT NULL THEN om.status::text
+    WHEN cr.last_error IS NOT NULL THEN 'failed'
     ELSE NULL
   END AS status,
+  cr.last_error,
   cr.created_at
 `;
 
@@ -283,6 +288,19 @@ export class CampaignRepository {
   }
 
   /**
+   * Records a real dispatch-time failure (e.g. whatsappOutboundMessageService.send
+   * threw before any outbound_message row could even be created - a vanished
+   * chat, a media error) so this recipient reaches an honest terminal state
+   * instead of sitting in outbound_message_id IS NULL forever, which
+   * getStatusCounts previously read as permanently 'queued' - the exact
+   * silent-stuck-forever gap this codebase already closed for sync jobs,
+   * outbound messages, and emails via their own last_error columns.
+   */
+  async recordDispatchFailure(recipientId: string, error: string): Promise<void> {
+    await this.db.query('UPDATE campaign_recipients SET last_error = $2 WHERE id = $1', [recipientId, error]);
+  }
+
+  /**
    * The real whatsapp_messages rows a campaign actually put on WhatsApp and
    * that are still revocable. Recipients that never got sent, or whose
    * revoke already ran, are excluded - a recall must not claim to have
@@ -315,11 +333,11 @@ export class CampaignRepository {
     }>(
       `SELECT
          COUNT(*)::text AS total,
-         COUNT(*) FILTER (WHERE om.id IS NULL OR om.status IN ('queued', 'sending'))::text AS queued,
+         COUNT(*) FILTER (WHERE (om.id IS NULL AND cr.last_error IS NULL) OR om.status IN ('queued', 'sending'))::text AS queued,
          COUNT(*) FILTER (WHERE om.status = 'sent' AND wm.status IS NULL)::text AS sent,
          COUNT(*) FILTER (WHERE wm.status IN ('delivered', 'played'))::text AS delivered,
          COUNT(*) FILTER (WHERE wm.status = 'read')::text AS read,
-         COUNT(*) FILTER (WHERE om.status = 'failed')::text AS failed
+         COUNT(*) FILTER (WHERE om.status = 'failed' OR (om.id IS NULL AND cr.last_error IS NOT NULL))::text AS failed
        FROM campaign_recipients cr
        LEFT JOIN whatsapp_outbound_messages om ON om.id = cr.outbound_message_id
        LEFT JOIN whatsapp_messages wm ON wm.id = om.message_id
