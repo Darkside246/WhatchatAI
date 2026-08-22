@@ -1,5 +1,88 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - OpenClaw Cell Runtime: egress containment - per-cell networks are now `--internal`
+
+**Branch:** `openclaw-cell-runtime`, continuing on top of `ac36817`.
+
+**Context:** while discussing OpenClaw's own internal agent capability
+(the `openai/gpt-5.5` default observed in a real boot log - see the entry
+below), the user asked whether using Gemini instead of OpenAI changes
+anything. Answering that honestly required checking `buildRunArgs()`
+against the *original* hardening requirement list from when this
+architecture was first designed - which included "minimal outbound
+access." It was never actually implemented: the per-cell network was a
+plain `docker network create --driver bridge`, which has full outbound
+internet access via normal Docker NAT, identical to any default bridge
+network. The provider question (Gemini vs. OpenAI) was a distraction from
+the real gap - nothing restricted what a cell could reach at all, for any
+provider, if a credential were ever placed inside one. The user's explicit
+decision: fix this before touching credentials or researching the
+internal agent path further, and do it without weakening any existing
+hardening.
+
+**Fix (`dockerCellRuntime.ts`):**
+- `ensureNetwork()`: per-cell network creation now passes `--internal` -
+  Docker's own primitive for "the daemon never wires up an outbound
+  route for this network." A container attached only to an internal
+  network cannot reach the general internet at all; this is enforced by
+  Docker itself, not custom iptables rules bolted on separately.
+- `buildRunArgs()`: adds `--add-host host.docker.internal:host-gateway` -
+  the one deliberate exception, letting the cell still reach the Docker
+  host machine (where WhatchatAI's own Tool Gateway/adapter listens) via
+  a name Docker resolves locally, not a real DNS lookup. No external DNS
+  is granted or needed for this - satisfies "DNS only if required" by
+  requiring none.
+- Existing loopback-only host-side port publish (`127.0.0.1:<port>:18789`
+  for the cell's own inbound Gateway) is unaffected - `--internal` only
+  blocks the container's own *outbound* route, not inbound
+  Docker-managed port forwarding from the host.
+
+**An honest, explicitly-tracked remaining gap:** `host.docker.internal`
+reachability is host-wide, not narrowed to the Tool Gateway's specific
+port. A cell today can reach anything else the host happens to have
+listening, not just the adapter endpoint. Closing that further needs
+either a host-side firewall rule scoped to the docker bridge subnet, or a
+dedicated egress-proxy sidecar per cell - both bigger, separate design
+decisions not built in this pass, flagged rather than silently treated as
+"solved."
+
+**What this does NOT yet prove:** two real-world behaviors this design
+depends on have not been verified against a real daemon:
+1. That `host.docker.internal` / `host-gateway` actually resolves and
+   stays reachable from *inside* an `--internal` network (expected,
+   per Docker's documented behavior that host-gateway reachability is
+   local-bridge traffic rather than "outside world" traffic that
+   `--internal` blocks - but expected is not verified).
+2. That two cells' separate dedicated networks genuinely cannot reach
+   each other (expected, per Docker's standard bridge-network isolation
+   - same caveat).
+This sandbox cannot verify either (no GHCR/Docker Hub blob access here,
+confirmed again this session - `dockerd` itself won't even start under
+this sandbox's process restrictions). Both need a real 2-cell test on the
+user's machine before being called `VERIFIED`.
+
+**Test changes (`test/dockerCellRuntime.test.ts`):** updated the network-
+creation assertion to require `--internal`, and added an assertion that
+`buildRunArgs()` includes `--add-host host.docker.internal:host-gateway`.
+These prove the *construction* of the Docker invocation is correct: they
+cannot prove Docker's daemon actually enforces the isolation this pass
+assumes.
+
+**Verification:** 589/589 tests passing, typecheck clean - both against
+the mocked test double only, same caveat as above.
+
+**Status: `IMPLEMENTED BUT NOT FULLY VERIFIED`** - specifically the two
+items listed above. Everything previously verified (auth enforcement,
+resource limits, restart lifecycle, the rest of the hardening profile) is
+unaffected by this change and remains `VERIFIED`.
+
+**Still explicitly out of scope for this pass, per the user's own
+ordering:** no provider credential (OpenAI, Gemini, or otherwise) is to
+be added to a cell until this egress containment is itself verified;
+`purgeData` containment; encrypted Gateway-token storage; the OpenClaw
+internal-agent/tool-invocation research; the feature flag. All unchanged
+from the prior entry's ordering.
+
 ## 2026-08-22 - OpenClaw Cell Runtime: real DockerCellRuntime verification against a live container, restart-timing fix
 
 **Branch:** `openclaw-cell-runtime`, continuing directly on top of `9613421`

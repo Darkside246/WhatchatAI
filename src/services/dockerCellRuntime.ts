@@ -103,11 +103,24 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     private readonly healthCheckPollIntervalMs = 1_000,
   ) {}
 
+  /**
+   * `--internal` is Docker's own primitive for "no default route to the
+   * outside world" - the daemon never wires up outbound NAT/masquerade
+   * for this network, so a container attached only to it cannot reach
+   * the general internet at all. This is the actual fix for the
+   * "minimal outbound access" requirement from the original hardening
+   * list, which the first Docker implementation never wired up. Real
+   * cross-network isolation (that one cell's network truly cannot reach
+   * another cell's) is a well-documented property of separate
+   * user-defined Docker bridge networks, but - like everything else in
+   * this file - is only a real property once confirmed against a real
+   * daemon, not assumed from documentation alone.
+   */
   private async ensureNetwork(cellId: string): Promise<void> {
     try {
       await docker(['network', 'inspect', networkName(cellId)]);
     } catch {
-      await docker(['network', 'create', '--driver', 'bridge', networkName(cellId)]);
+      await docker(['network', 'create', '--driver', 'bridge', '--internal', networkName(cellId)]);
     }
   }
 
@@ -129,6 +142,15 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
       '--cpus', '2',
       '--network', networkName(cellId),
       '--publish', `127.0.0.1:${port}:18789`,
+      // The one exception to the network's own `--internal` blackhole:
+      // this lets the cell resolve/reach the Docker host machine (where
+      // WhatchatAI's own Tool Gateway/adapter listens), via a name Docker
+      // resolves locally rather than a real DNS lookup - it costs nothing
+      // in outbound reachability elsewhere. NOTE: this currently makes
+      // the whole host reachable on whatever ports the host has open, not
+      // narrowed to the Tool Gateway's own port specifically - a real,
+      // tracked remaining gap, not silently treated as fully closed.
+      '--add-host', 'host.docker.internal:host-gateway',
       '--mount', `type=bind,source=${stateDir},target=/home/node/.openclaw`,
       '--restart', 'unless-stopped',
       '-e', 'HOME=/home/node',

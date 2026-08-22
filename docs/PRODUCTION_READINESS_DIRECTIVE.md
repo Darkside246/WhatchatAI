@@ -180,6 +180,22 @@ pasted directive without our own verification (`unverified`).
       full budget rather than a short cap). Restart lifecycle:
       `VERIFIED`.
 
+   **Egress containment (2026-08-22, separate from the timing fix
+   above):** the original hardening requirement list included "minimal
+   outbound access" - never actually implemented until now. Per-cell
+   networks now use Docker's `--internal` flag (no default outbound
+   route at all) with one deliberate exception (`--add-host
+   host.docker.internal:host-gateway`) so a cell can still reach
+   WhatchatAI's own Tool Gateway/adapter on the host. **Two real-world
+   assumptions this depends on are not yet verified against a real
+   daemon**: that host-gateway reachability actually survives on an
+   `--internal` network, and that two cells' separate networks genuinely
+   cannot reach each other. This sandbox cannot verify either (no GHCR
+   access, and `dockerd` itself won't start under this sandbox's process
+   restrictions this session). Explicitly gates the next item: no
+   provider credential (OpenAI, Gemini, or otherwise) is to be placed in
+   a cell until this is verified for real.
+
    **Also reconfirmed this pass, independent of the Fleet finding:**
    this sandbox genuinely runs a Docker daemon; what actually blocks
    image pulls here is narrower - both Docker Hub and GHCR redirect blob

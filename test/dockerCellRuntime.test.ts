@@ -63,7 +63,9 @@ describe('DockerCellRuntime', () => {
     const [inspectCall, createCall, runCall] = execFileMock.mock.calls as [unknown[], unknown[], unknown[]];
     expect(inspectCall[0]).toBe('docker');
     expect(inspectCall[1]).toEqual(expect.arrayContaining(['network', 'inspect']));
-    expect(createCall[1]).toEqual(expect.arrayContaining(['network', 'create', '--driver', 'bridge']));
+    // --internal: no default route to the outside world for this network -
+    // the actual egress-containment mechanism, not just a private network.
+    expect(createCall[1]).toEqual(expect.arrayContaining(['network', 'create', '--driver', 'bridge', '--internal']));
 
     const runArgs = runCall[1] as string[];
     expect(runArgs).toEqual(
@@ -81,6 +83,10 @@ describe('DockerCellRuntime', () => {
     // Loopback-only publish - never a wildcard bind.
     expect(runArgs.some((arg) => /^127\.0\.0\.1:\d+:18789$/.test(arg))).toBe(true);
     expect(runArgs.some((arg) => arg.startsWith('0.0.0.0:'))).toBe(false);
+    // The one deliberate hole in the internal network - reaching the
+    // Docker host itself (where the Tool Gateway/adapter listens), via
+    // Docker's own local name resolution, not a real DNS lookup.
+    expect(runArgs).toEqual(expect.arrayContaining(['--add-host', 'host.docker.internal:host-gateway']));
     // Digest-pinned image only, never :latest.
     expect(runArgs).toContain(image);
     expect(runArgs.join(' ')).not.toMatch(/:latest/);
