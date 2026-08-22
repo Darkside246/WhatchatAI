@@ -1,5 +1,91 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - OpenClaw Cell Runtime: per-cell relay - Phase 2 real-hardware verification, all 8 tests passed
+
+**Branch:** `openclaw-cell-runtime`. Verification only, plus one real bug
+found and fixed along the way (`fd23a51`, see below). No design changes -
+the Phase 1 architecture held up exactly as designed.
+
+**What was run:** two real disposable cells (Cell A, Cell B), each with
+its own real relay container, provisioned end-to-end on the user's
+machine through the actual `openclawCellService.provisionCellForBusiness`
+path (not a hand-rolled test harness) against the real relay image built
+from this repo (`docker build --target relay-runtime`). All 8 tests from
+the approved Phase 2 plan run for real, in order:
+
+1. **Cell → relay → MCP works.** A real `docker exec`'d `curl` from
+   inside Cell A's own container, through Relay A, to the real
+   `OPENCLAW_MCP_SERVER_ENABLED=true` WhatchatAI server - a genuine
+   `HTTP/1.1 200 OK` with a real MCP `initialize` response
+   (`protocolVersion: "2025-11-25"`, real `serverInfo`). This is the
+   first time a hardened cell has ever reached the MCP endpoint at all
+   in this whole engagement - the entire reason Stage 0/the relay design
+   exists.
+2. **Cell → arbitrary internet host fails** - `000` against
+   `https://example.com` from inside the cell (the cell itself has no
+   egress network at all; only its relay does).
+3. **Cell → another cell fails** - `000` from Cell A directly at Cell
+   B's container by name.
+4. **Cell → arbitrary IP fails** - `000` against `1.1.1.1`.
+5. **The relay refuses anything outside its two fixed routes** - a real
+   `404` on `POST /anything-else`, no outbound attempt.
+6. **Relay A cannot become a path to Cell B or Relay B** - real
+   `docker exec`'d `node -e "fetch(...)"` calls from *inside Relay A's
+   own container* (not the cell) at both Cell B and Relay B, both timing
+   out.
+7. **Removing a cell removes its relay and both networks** - confirmed
+   with a real before/after `docker ps`/`docker network ls` sweep across
+   both cells: all four resources per cell (cell container, cell
+   network, relay container, relay egress network) present before, and
+   completely absent after `removeCellForBusiness(..., {purgeData:
+   true})`.
+8. **Restarting a cell does not broaden access** - Cell A stopped and
+   restarted through the real `openclawCellService.stopCell`/`startCell`
+   lifecycle (which now also stops/starts the relay), then re-ran tests
+   1-3 against it: internet still `000`, Cell B still `000`, and the
+   real MCP round trip through the relay still returned a genuine `200`.
+
+**One real bug found and fixed mid-run (commit `fd23a51`):** the first
+provisioning attempt failed with `Relay for cell ... did not become
+healthy within 60000ms`. Real diagnosis (not guessed): `docker logs`
+showed the relay's own HTTP server was genuinely up and correctly
+serving `/healthz` the whole time, and Docker's own container
+`HEALTHCHECK` (which already used `node -e "fetch(...)"`) reported
+`(healthy)` - but `dockerCellRuntime.ts`'s own gating check used `docker
+exec <relay> curl ...`, and the relay's image (deliberately built with
+zero `node_modules` to minimize its footprint) has no `curl` at all,
+confirmed directly: `exec: "curl": executable file not found in $PATH`.
+Fixed by giving the relay's health check its own command using Node's
+built-in `fetch` (matching what the Dockerfile's `HEALTHCHECK` already
+did correctly) rather than adding `curl` as a new dependency purely to
+satisfy this one check - the cell's own health check (which does use
+`curl`, against the real OpenClaw image which does ship it) was left
+untouched. 657/657 tests still passing after the fix; both cells
+provisioned cleanly and both relays became genuinely healthy on the
+retry.
+
+**Real environment friction encountered and resolved along the way (not
+code issues):** a stale WSL2 `/mnt/c/...` directory handle intermittently
+broke `git`/`node`'s ability to read the current working directory
+(`uv_cwd: ENOENT`) - resolved each time by a fresh `cd`; an esbuild
+Windows/Linux binary mismatch recurred after `git pull` touched
+`package-lock.json` - resolved by `npm install` from the real WSL2
+shell; a transient Docker Hub credential-helper error on the first image
+build resolved itself on retry. None of these affected the runtime code
+under test - they're recorded here because they're exactly the kind of
+real friction that makes this evidence trustworthy: nothing was mocked
+or assumed to make the numbers come out clean.
+
+**Status: `IMPLEMENTED AND REAL-HARDWARE VERIFIED`.** All 8 Phase 2
+acceptance tests passed. Per the user's own build order: still
+explicitly not done - no credential of any kind has touched a cell, no
+live OpenClaw agent is wired to the relay's `/gemini` route, and the
+feature flag remains off. Those are Phase 3, gated on the user's
+explicit approval per the credential-boundary constraints already
+agreed (dedicated disposable key, lowest practical spend/rate cap,
+explicit model, no persistence, time-boxed cell lifetime, provider-
+specific egress proven before the key goes anywhere near a cell).
+
 ## 2026-08-22 - OpenClaw Cell Runtime: per-cell relay - real network policy enforcement boundary (Phase 1: implemented, unit-tested; real-hardware Phase 2 verification pending)
 
 **Branch:** `openclaw-cell-runtime`. New: `src/relay/openclawRelayServer.ts`,

@@ -427,22 +427,40 @@ pasted directive without our own verification (`unverified`).
    clean, a real `tsc` build confirmed. See `CHANGELOG_SECURITY.md`'s
    matching entry for the complete evidence trail.
 
-   Remaining, per the user's own Phase 1/Phase 2 split: real-hardware
-   verification on the user's machine - build the relay's real Docker
-   image, then prove `cell → relay → MCP` genuinely works, `cell →
-   internet` still fails, `cell → another cell` still fails, `cell →
-   arbitrary IP` fails, a compromised relay cannot reach another cell,
-   and removing/restarting a cell correctly tears down/preserves its
-   relay - before any credential is introduced. Only after that passes:
-   design and verify the provider-specific (Gemini) egress path for real,
-   inject a disposable Gemini credential into one disposable hardened
-   cell under the constraints already agreed (dedicated key, lowest
-   practical spend/rate cap, explicit model, no persistence, time-boxed),
-   wire this MCP server into a live OpenClaw agent, and run the real
-   agent → relay → Gemini → MCP → Tool Gateway → PostgreSQL test plus the
-   adversarial cases (wrong-tenant `chat_id`, stale `cell_generation`,
-   quarantine, excluded tool, cross-tenant target, idempotency conflict)
-   from the agent itself. Only after all of that: enable
+   **Phase 2 real-hardware verification: `PASSED` (2026-08-22), all 8
+   tests.** Two real disposable cells, each with its own real relay,
+   provisioned end-to-end through the actual production code path
+   (`openclawCellService.provisionCellForBusiness`) on the user's
+   machine. Every test from the approved plan run for real: `cell →
+   relay → MCP` genuinely works (a real `200 OK` MCP `initialize`
+   response, driven all the way from inside a hardened cell's own
+   container through its relay to the real WhatchatAI server - the first
+   time this has ever happened in this engagement); `cell → internet`
+   still fails; `cell → another cell` still fails; `cell → arbitrary IP`
+   fails; the relay's structural allow-list rejects anything outside its
+   two fixed routes; a compromised relay cannot reach another cell or its
+   relay (confirmed from *inside* the relay's own container, not just the
+   cell); removing a cell tears down its relay and both networks
+   together (a real before/after sweep across both cells, all four
+   resources present then absent); restarting a cell does not broaden
+   access (re-verified isolation and MCP reachability after a real
+   stop/start cycle). One real bug was found and fixed along the way
+   (`fd23a51` - the relay's health check tried to use `curl`, which its
+   own deliberately-`node_modules`-free image doesn't have; fixed to use
+   Node's built-in `fetch` instead). See `CHANGELOG_SECURITY.md`'s
+   matching entry for the full raw evidence.
+
+   Remaining, per the user's own build order - Phase 3, gated on
+   explicit approval before any credential goes near a cell: design and
+   verify the provider-specific (Gemini) egress path for real, inject a
+   disposable Gemini credential into one disposable hardened cell under
+   the constraints already agreed (dedicated key, lowest practical
+   spend/rate cap, explicit model, no persistence, time-boxed), wire this
+   MCP server into a live OpenClaw agent, and run the real agent → relay
+   → Gemini → MCP → Tool Gateway → PostgreSQL test plus the adversarial
+   cases (wrong-tenant `chat_id`, stale `cell_generation`, quarantine,
+   excluded tool, cross-tenant target, idempotency conflict) from the
+   agent itself. Only after all of that: enable
    `OPENCLAW_MCP_SERVER_ENABLED` and tenant-allowlist behind a feature
    flag - the existing Gemini/Baileys path on `phase-2-ai-repair` remains
    completely untouched throughout.
