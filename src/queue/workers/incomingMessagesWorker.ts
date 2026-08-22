@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { createHash } from 'node:crypto';
 import { Worker, type Job } from 'bullmq';
 import { downloadMediaMessage, type WAMessage, type WAMessageKey, type proto } from '@whiskeysockets/baileys';
