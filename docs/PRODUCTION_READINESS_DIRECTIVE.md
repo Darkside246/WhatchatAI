@@ -172,8 +172,10 @@ pasted directive without our own verification (`unverified`).
       not intermittent - the real boot-to-`ready` time is 5.1-5.8s
       against a hardcoded 5s post-restart health-check cap) and fixed
       (restart now uses the same configured deadline `create()` gets,
-      no new magic constant); the fix itself was re-verified against
-      the real container. Restart lifecycle: `VERIFIED`.
+      no new magic constant) - the fix passes the (mocked) test suite
+      but has **not yet** been re-run against the real container; that
+      re-run is the immediate next step. Restart lifecycle: fix
+      implemented, `NOT YET RE-VERIFIED`.
 
    **Also reconfirmed this pass, independent of the Fleet finding:**
    this sandbox genuinely runs a Docker daemon; what actually blocks

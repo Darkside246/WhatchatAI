@@ -70,17 +70,25 @@ instead of throwing.
 
 **Verification:** 589/589 tests passing (588 + the new regression test),
 typecheck clean, `npm run db:migrate` unaffected (no schema change this
-entry). The restart-timing fix itself was verified against the real
-runtime, not just the mocked test suite - see the re-test evidence above.
+entry) - all run in the sandbox, against the mocked `execFile`/`fetch`
+test double, not the real container. The diagnosis (real 5.1-5.8s boot
+time vs. a 5s cap) came from real evidence gathered on the user's
+machine, but **the fix itself has not yet been re-run against that real
+container** - this sandbox has no GHCR blob access (see the entry
+below). That re-run is the immediate next step, not yet done.
 
 **Honest status after this pass:**
 - Auth enforcement: **VERIFIED** (real wrong-token rejection at the
-  WebSocket transport layer, real correct-token success).
+  WebSocket transport layer, real correct-token success) - unaffected by
+  this fix.
 - Container hardening: **VERIFIED** (every flag confirmed via real
-  `docker inspect`).
-- Resource limits: **VERIFIED** (real `docker inspect` values).
-- Restart lifecycle (`stop()`/`start()`): **VERIFIED** after the fix and
-  a real re-test - see below.
+  `docker inspect`) - unaffected by this fix.
+- Resource limits: **VERIFIED** (real `docker inspect` values) -
+  unaffected by this fix.
+- Restart lifecycle (`stop()`/`start()`): fix implemented and passes the
+  (mocked) test suite; **NOT YET RE-VERIFIED against the real
+  container** - the 3-cycle stop/start reproduction needs to be re-run
+  with this commit checked out before calling it VERIFIED.
 - OpenClaw's internal agent/model behavior (its own independent
   `openai/gpt-5.5`-defaulting agent capability, observed in boot logs but
   never exercised): **NOT YET INVESTIGATED** - genuinely out of scope for
