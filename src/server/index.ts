@@ -77,6 +77,15 @@ import {
   isInvalidKnowledgeBaseDocumentError,
 } from '../services/knowledgeBaseService.js';
 import {
+  uploadDocument,
+  listDocuments,
+  getDocument,
+  deleteDocument,
+  downloadDocument,
+  isDocumentNotFoundError,
+  isInvalidDocumentError,
+} from '../services/documentService.js';
+import {
   importPromptOptimization,
   listPromptOptimizations,
   approveOptimization,
@@ -1293,6 +1302,91 @@ app.delete('/api/workspace/knowledge-base/:documentId', requirePermission('setti
     return res.status(200).json({ status: 'deleted' });
   } catch (error) {
     if (isKnowledgeBaseDocumentNotFoundError(error)) return res.status(404).json({ error: 'DOCUMENT_NOT_FOUND' });
+    throw error;
+  }
+});
+
+/**
+ * Phase B, D1 only: secure ownership/persistence foundation for business
+ * documents. No parsing, no chunking, no AI retrieval, no send capability -
+ * see docs/PHASE_B_CONSOLIDATED_ARCHITECTURE_AND_IMPLEMENTATION_PLAN.md.
+ * Gated the same way knowledge-base routes are (settings.manage) - both
+ * are company-knowledge-shaped, human-managed resources, not part of the
+ * WhatsApp-socket-bound workspace context.
+ */
+app.get('/api/workspace/documents', requirePermission('settings.manage'), async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  return res.status(200).json({ documents: await listDocuments(auth.businessId) });
+});
+
+const uploadDocumentSchema = z.object({
+  filename: z.string().trim().min(1).max(255),
+  mimeType: z.string().trim().min(1),
+  fileBase64: z.string().min(1),
+});
+
+app.post('/api/workspace/documents', requirePermission('settings.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = uploadDocumentSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_DOCUMENT', details: parsed.error.flatten() });
+  try {
+    const result = await uploadDocument({
+      businessId: auth.businessId,
+      createdBy: auth.userId,
+      filename: parsed.data.filename,
+      mimeType: parsed.data.mimeType,
+      fileBase64: parsed.data.fileBase64,
+    });
+    return res.status(201).json(result);
+  } catch (error) {
+    if (isInvalidDocumentError(error)) return res.status(400).json({ error: 'INVALID_DOCUMENT', message: error.message });
+    if (isEntitlementDeniedError(error)) {
+      const message =
+        error.reason === 'NO_ACTIVE_SUBSCRIPTION'
+          ? 'This business has no active subscription.'
+          : error.reason === 'ENTITLEMENT_DISABLED'
+            ? 'Business documents are not enabled on this plan.'
+            : `Business document limit reached for this plan (${error.current}/${error.limit}).`;
+      return res
+        .status(403)
+        .json({ error: 'ENTITLEMENT_DENIED', reason: error.reason, limit: error.limit, current: error.current, message });
+    }
+    throw error;
+  }
+});
+
+app.get('/api/workspace/documents/:documentId', requirePermission('settings.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  try {
+    const document = await getDocument(auth.businessId, String(req.params.documentId ?? ''));
+    return res.status(200).json({ document });
+  } catch (error) {
+    if (isDocumentNotFoundError(error)) return res.status(404).json({ error: 'DOCUMENT_NOT_FOUND' });
+    throw error;
+  }
+});
+
+app.get('/api/workspace/documents/:documentId/download', requirePermission('settings.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  try {
+    const { buffer, document, version } = await downloadDocument(auth.businessId, String(req.params.documentId ?? ''));
+    res.setHeader('Content-Type', 'application/octet-stream'); // never the stored mime_type inline - same rule GET /api/media/:id follows for non-inline-safe types
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(document.filename)}"`);
+    res.setHeader('Content-Length', String(version.fileSize));
+    return res.status(200).send(buffer);
+  } catch (error) {
+    if (isDocumentNotFoundError(error)) return res.status(404).json({ error: 'DOCUMENT_NOT_FOUND' });
+    throw error;
+  }
+});
+
+app.delete('/api/workspace/documents/:documentId', requirePermission('settings.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  try {
+    await deleteDocument(auth.businessId, String(req.params.documentId ?? ''), auth.userId);
+    return res.status(200).json({ status: 'deleted' });
+  } catch (error) {
+    if (isDocumentNotFoundError(error)) return res.status(404).json({ error: 'DOCUMENT_NOT_FOUND' });
     throw error;
   }
 });

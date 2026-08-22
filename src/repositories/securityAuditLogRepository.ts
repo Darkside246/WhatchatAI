@@ -39,7 +39,10 @@ export type SecurityEventType =
   | 'ai_tool_denied'
   | 'ai_prompt_optimization_imported'
   | 'ai_prompt_optimization_approved'
-  | 'ai_prompt_optimization_rejected';
+  | 'ai_prompt_optimization_rejected'
+  | 'business_document_uploaded'
+  | 'business_document_upload_blocked'
+  | 'business_document_deleted';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 

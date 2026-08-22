@@ -6,6 +6,7 @@ import { WhatsAppAccountRepository } from '../repositories/whatsappAccountReposi
 import { CampaignRepository } from '../repositories/campaignRepository.js';
 import { FunnelRepository } from '../repositories/funnelRepository.js';
 import { KnowledgeBaseRepository } from '../repositories/knowledgeBaseRepository.js';
+import { BusinessDocumentRepository } from '../repositories/businessDocumentRepository.js';
 
 export type EntitlementDenialReason =
   | 'NO_ACTIVE_SUBSCRIPTION'
@@ -32,6 +33,7 @@ export class EntitlementService {
   private readonly campaignRepository: CampaignRepository;
   private readonly funnelRepository: FunnelRepository;
   private readonly knowledgeBaseRepository: KnowledgeBaseRepository;
+  private readonly businessDocumentRepository: BusinessDocumentRepository;
 
   constructor(private readonly db: Queryable) {
     this.planRepository = new PlanRepository(db);
@@ -41,6 +43,7 @@ export class EntitlementService {
     this.campaignRepository = new CampaignRepository(db);
     this.funnelRepository = new FunnelRepository(db);
     this.knowledgeBaseRepository = new KnowledgeBaseRepository(db);
+    this.businessDocumentRepository = new BusinessDocumentRepository(db);
   }
 
   async canCreateAgent(businessId: string): Promise<EntitlementCheckResult> {
@@ -70,6 +73,12 @@ export class EntitlementService {
   async canCreateKnowledgeBaseDocument(businessId: string): Promise<EntitlementCheckResult> {
     return this.checkCountLimit(businessId, 'max_knowledge_base_documents', () =>
       this.knowledgeBaseRepository.countByBusiness(businessId),
+    );
+  }
+
+  async canCreateBusinessDocument(businessId: string): Promise<EntitlementCheckResult> {
+    return this.checkCountLimit(businessId, 'max_business_documents', () =>
+      this.businessDocumentRepository.countByBusiness(businessId),
     );
   }
 

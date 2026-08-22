@@ -43,7 +43,21 @@ const SPAM_SIGNATURE_PATTERNS: RegExp[] = [
   /\b(wire\s+transfer|crypto\s+giveaway|double\s+your\s+(bitcoin|btc|crypto))\b/i,
 ];
 
-function checkExecutablePayload(input: HeuristicShieldInput): string | null {
+export interface ExecutablePayloadCheckInput {
+  mimetype: string | null;
+  fileName: string | null;
+}
+
+/**
+ * Exported (narrowed to just the two fields it actually uses) so a
+ * second, genuinely different upload path - business document uploads
+ * (Phase B, D1) - can reuse the exact same executable-payload check
+ * instead of a parallel copy. `HeuristicShieldInput` is a structural
+ * superset of this type, so the call from evaluateHeuristicShield()
+ * below is unchanged - this is not a behavior change to the existing
+ * WhatsApp message pipeline.
+ */
+export function checkExecutablePayload(input: ExecutablePayloadCheckInput): string | null {
   // normalizeMimeType strips any `;param=value` suffix (and lowercases) -
   // without it, a payload declaring e.g. "application/x-msdownload;
   // charset=utf-8" would silently bypass this exact-match check, since

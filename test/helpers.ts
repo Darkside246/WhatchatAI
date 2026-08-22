@@ -3,8 +3,11 @@ import { BusinessRepository } from '../src/repositories/businessRepository.js';
 import { WhatsAppAccountRepository } from '../src/repositories/whatsappAccountRepository.js';
 import { PlanRepository } from '../src/repositories/planRepository.js';
 import { SubscriptionRepository } from '../src/repositories/subscriptionRepository.js';
+import { UserRepository } from '../src/repositories/userRepository.js';
 
 const TABLES = [
+  'business_document_versions',
+  'business_documents',
   'openclaw_tool_executions',
   'openclaw_security_advisories',
   'openclaw_security_watcher_runs',
@@ -84,6 +87,30 @@ export async function createTestSubscription(businessId: string, planKey = 'star
   const subscriptionRepository = new SubscriptionRepository(pool);
   const subscription = await subscriptionRepository.ensureDefault(businessId, plan.id);
   return subscription.id;
+}
+
+/**
+ * A real users row + real business_memberships row, bypassing
+ * register()'s single-default-business provisioning gate - useful when
+ * a test needs a second, genuinely distinct user/business pair within
+ * one test case (register() only ever succeeds once per resetDatabase()
+ * call). Password fields are structural fixtures only - this user is
+ * never authenticated through, only referenced as a real FK target.
+ */
+export async function createTestUser(businessId: string, email = `test-user-${Math.random().toString(36).slice(2)}@example.com`): Promise<string> {
+  const userRepository = new UserRepository(pool);
+  const user = await userRepository.create({
+    email,
+    displayName: 'Test User',
+    passwordHash: 'test-fixture-hash',
+    passwordSalt: 'test-fixture-salt',
+    passwordParams: { memoryCostKib: 19_456, timeCost: 3, parallelism: 1, hashLengthBytes: 32 },
+  });
+  await pool.query(`INSERT INTO business_memberships (business_id, user_id, role, status) VALUES ($1, $2, 'OWNER', 'active')`, [
+    businessId,
+    user.id,
+  ]);
+  return user.id;
 }
 
 export { pool };
