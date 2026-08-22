@@ -1,5 +1,57 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - Phase 2B: formalize the Business Execution Context security model (design + verification only)
+
+**No migration. No Google Drive. No Dropbox. No document storage.** Per
+explicit instruction, this phase produces a written security model and
+real verification against the *existing* application only - Phase 2C
+(schema proposal) is reviewed separately before any table is created.
+
+New: `docs/BUSINESS_EXECUTION_CONTEXT.md`. Contents:
+
+1. **Audit** of where `businessId`, `userId`, `cellId`, `cellGeneration`,
+   permissions/role, and authenticated identity actually originate today,
+   each with a real file:line citation of its authoritative source, and
+   confirmation that none can be overridden by request/model/tool-call
+   input (backed by `grep` evidence and existing passing tests, not
+   assertion).
+2. **The invariant**, adopted verbatim as a standing rule for all future
+   work: *"Every AI execution has exactly one authoritative business
+   context. Every document operation, retrieval operation, storage
+   operation, and outbound document action must execute inside that
+   context. No model-visible argument can establish, replace, or
+   broaden the context."*
+3. A **prohibited-flows table** distinguishing what's already closed and
+   tested today (businessId injection, cross-tenant agent/entity access,
+   stale cellGeneration, wrong-tenant chat_id, quarantined-cell requests -
+   all re-verified fresh, 70/70 passing across
+   `openclawToolGateway.test.ts`, `openclawAdapterService.test.ts`,
+   `openclawMcpServer.test.ts`, `agentGuard.test.ts`,
+   `openclawCellService.test.ts`, `openclawSecurityWatcherService.test.ts`)
+   from what's genuinely deferred to Phase 2C+ because the schema it
+   depends on doesn't exist yet (document ids, storage references,
+   storage-provider ids) - writing a test against nonexistent code would
+   be fabricated verification, not real evidence.
+4. The Phase 1 repository-scoping rule (`getForBusiness`/`listForBusiness`/
+   etc., never `find(id)` + an app-level check) restated as mandatory
+   policy for every future document-related repository.
+5. The AI capability-boundary naming rule for Phase 2D+: no future AI
+   tool schema may ever declare a `businessId` argument - tools are named
+   for what they let the AI *do* (`search_company_knowledge`,
+   `get_company_document`, `request_send_document`), never what they let
+   it *reach*.
+
+**Also fixed in this pass:** a genuinely pre-existing flaky assertion in
+`agentGuard.test.ts` (a regex meant to catch phone-number-shaped values
+in audit metadata was also scanning the real UUID `agentId`, which by
+chance sometimes contains a 7+ digit run) - discovered because this
+phase relies on that exact file as evidence, so its reliability mattered.
+Narrowed the check to exclude the already-exactly-asserted `agentId`
+field.
+
+**Verification:** typecheck clean, full suite 683/683 passing (93
+files), the previously-flaky test now stable across repeated runs.
+
 ## 2026-08-22 - Phase 2A: fix the heuristicShield.ts executable-MIME bypass
 
 **The bug:** `checkExecutablePayload()` in `src/security/sentinel/heuristicShield.ts`

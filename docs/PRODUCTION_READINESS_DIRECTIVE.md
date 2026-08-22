@@ -91,6 +91,17 @@ entry, real tests, and a passing full suite at the time it landed:
    model, PDF/DOCX ingestion, Google Drive/Dropbox connectors, AI
    document-sending, adversarial real-world testing) remains explicitly
    gated behind this and not yet started.
+6. **Phase 2A + 2B of the Knowledge Base 2.0 roadmap** - `heuristicShield.ts`'s
+   executable-MIME bypass fixed (same class of bug as the Phase 1
+   voice-note MIME fix, but security-relevant). The Business Execution
+   Context security model formalized in `docs/BUSINESS_EXECUTION_CONTEXT.md`:
+   full audit of where businessId/userId/cellId/cellGeneration/permissions
+   originate, the governing invariant, and a prohibited-flows table
+   distinguishing what's closed-and-tested today from what's genuinely
+   deferred until Phase 2C's schema exists. `IMPLEMENTED AND VERIFIED`.
+   **Phase 2C (document schema) has not started - a proposal is pending
+   review before any migration is written.** No Google Drive/Dropbox/document
+   storage code exists.
 
 ## Real, currently-open gaps - this is the actual remaining backlog
 

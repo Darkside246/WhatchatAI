@@ -48,7 +48,12 @@ describe('agentGuard / AI Security Governor (real Postgres tenant, actor, and ra
     expect(log[0]?.eventType).toBe('ai_tool_invoked');
     expect(log[0]?.rawMetadata).toMatchObject({ toolName: 'get_current_time', risk: 'READ', chatId: 'chat-123', agentId });
     // Structural/diagnostic only - never message content or contact identity.
-    expect(JSON.stringify(log[0]?.rawMetadata)).not.toMatch(/\+?\d{7,}/); // no phone-number-shaped value
+    // agentId is a real UUID (already asserted exactly above) and is
+    // expected to contain digit runs by chance - excluded here so this
+    // check targets the actual concern (a phone-number-shaped value
+    // leaking into audit metadata) without flaking on unrelated hex.
+    const { agentId: _agentId, ...metadataWithoutAgentId } = log[0]?.rawMetadata as Record<string, unknown>;
+    expect(JSON.stringify(metadataWithoutAgentId)).not.toMatch(/\+?\d{7,}/); // no phone-number-shaped value
   });
 
   it('the get_current_time tool is registered as READ risk, and nothing else is registered yet', () => {
