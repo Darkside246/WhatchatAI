@@ -306,7 +306,24 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
       args.push('-e', `${key}=${value}`);
     }
     args.push(image);
-    args.push('node', 'dist/index.js', 'gateway', '--bind', 'lan', '--port', '18789', '--auth', 'token', '--allow-unconfigured');
+    // tools.elevated.enabled and browser.enabled are both real, documented
+    // OpenClaw config keys (openclaw config schema), on by default in an
+    // unconfigured cell - confirmed via a real in-cell security audit
+    // (2026-08-22) to shrink the attack-surface summary when disabled, and
+    // squarely matches this deployment's own use case (CRM tool invocation
+    // via MCP only - no browser automation is ever needed here). Using the
+    // same real `openclaw config set` CLI already proven to write this
+    // correctly, rather than hand-constructing a config file whose exact
+    // on-disk schema/merge behavior with --allow-unconfigured isn't
+    // separately verified. `exec` hands off to the actual gateway process
+    // as PID 1's replacement rather than leaving the shell as an extra
+    // parent process.
+    args.push(
+      'sh', '-lc',
+      'openclaw config set tools.elevated.enabled false && ' +
+      'openclaw config set browser.enabled false && ' +
+      'exec node dist/index.js gateway --bind lan --port 18789 --auth token --allow-unconfigured',
+    );
     return args;
   }
 

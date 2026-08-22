@@ -104,6 +104,17 @@ describe('DockerCellRuntime', () => {
     expect(runArgs.join(' ')).not.toMatch(/:latest/);
     // Real secrets passed via env, never as bare CLI args elsewhere.
     expect(runArgs).toEqual(expect.arrayContaining(['-e', 'OPENCLAW_GATEWAY_TOKEN=tok-a', '-e', 'OPENCLAW_CALLBACK_TOKEN=tok-b']));
+    // Attack-surface reduction, confirmed via a real in-cell security
+    // audit (2026-08-22) to shrink the attack-surface summary: elevated
+    // tool access and browser automation are both disabled before the
+    // gateway process starts, using the real `openclaw config set` CLI
+    // rather than a hand-constructed config file.
+    const command = runArgs[runArgs.length - 1] as string;
+    expect(runArgs[runArgs.length - 3]).toBe('sh');
+    expect(runArgs[runArgs.length - 2]).toBe('-lc');
+    expect(command).toContain('openclaw config set tools.elevated.enabled false');
+    expect(command).toContain('openclaw config set browser.enabled false');
+    expect(command).toContain('exec node dist/index.js gateway');
 
     // Health checking runs inside the container's own namespace via
     // docker exec, never as a host-side request against the published port.

@@ -314,16 +314,28 @@ pasted directive without our own verification (`unverified`).
    future automated invocation of `security audit --deep` against a cell
    needs a `timeout` wrapper.
 
-   Remaining, in order: (1) research the real config path for disabling
-   `tools.elevated`/browser control (do not guess a key name - the audit
-   only reports the derived state, not the setter); re-run the in-cell
-   audit to confirm the attack-surface summary shrinks and the exec-
-   approvals allowlist stays empty, no channel is logged in, no provider
-   credential or PostgreSQL credential is present; (2) only then design
-   the real WhatchatAI MCP server (the disposable test proved OpenClaw's
-   client behavior, not yet our own server implementation - likely via
-   the official MCP SDK, not another hand-rolled stand-in); (3) test that
-   real adapter against the existing Tool Gateway; (4) OpenClaw behind a
+   **Attack-surface reduction (2026-08-22): `IMPLEMENTED BUT NOT FULLY
+   VERIFIED`.** Real config paths found and live-verified by the user
+   directly against a real cell: `tools.elevated.enabled` and
+   `browser.enabled`, both real boolean keys in `openclaw config schema`,
+   both confirmed via a live audit re-run to shrink the attack-surface
+   summary when set to `false`. `dockerCellRuntime.ts`'s container command
+   now runs both `openclaw config set` calls before `exec`-ing the gateway
+   process - the same real CLI mechanism already proven correct, not a
+   hand-constructed config file. What's proven: the *values* are right.
+   What's not yet proven: this specific *boot-command mechanism* re-run
+   against a real container - needs one more real-hardware pass creating
+   a fresh cell with this commit and confirming the in-cell audit shows
+   both disabled by default with no manual `config set` step.
+
+   Remaining, in order: (1) that real-hardware re-verification; also
+   re-confirm the exec-approvals allowlist stays empty, no channel is
+   logged in, no provider credential or PostgreSQL credential is present;
+   (2) only then design the real WhatchatAI MCP server (the disposable
+   test proved OpenClaw's client behavior, not yet our own server
+   implementation - likely via the official MCP SDK, not another hand-
+   rolled stand-in); (3) test that real adapter against the existing Tool
+   Gateway; (4) OpenClaw behind a
    feature flag, tenant-allowlisted, only after all of the above - the
    existing Gemini/Baileys path on
    `phase-2-ai-repair` remains completely untouched throughout.

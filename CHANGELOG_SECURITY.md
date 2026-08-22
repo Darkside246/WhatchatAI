@@ -1,5 +1,54 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - OpenClaw Cell Runtime: disable elevated tools + browser control by default (attack-surface reduction)
+
+**Branch:** `openclaw-cell-runtime`.
+
+**Context:** the prior entry's in-cell audit reconfirmed `tools.elevated`
+and browser control are both enabled by default in a fresh, unconfigured
+cell. Real config paths for both were found and live-verified by the
+user directly - `tools.elevated.enabled` and `browser.enabled`, both real
+boolean keys in `openclaw config schema` - and manually confirmed via a
+live audit re-run that setting both to `false` shrinks the
+`summary.attack_surface` finding from `tools.elevated: enabled /
+browser control: enabled` to `tools.elevated: disabled / browser
+control: disabled`. Both keys' own schema descriptions directly match
+this deployment's use case: `tools.elevated.enabled` - "Keep disabled in
+public/shared channels and enable only for trusted owner-operated
+contexts"; `browser.enabled` - "Disable when browser automation is not
+needed to reduce surface area and startup work." Nothing in the current
+architecture (CRM tool invocation via MCP only) needs either.
+
+**Fix (`dockerCellRuntime.ts`, `buildRunArgs`):** the container's command
+is now `sh -lc 'openclaw config set tools.elevated.enabled false &&
+openclaw config set browser.enabled false && exec node dist/index.js
+gateway ...'` - reusing the exact real `openclaw config set` CLI already
+proven (by the user, live) to write these settings correctly, rather than
+hand-constructing a config file whose on-disk schema/merge behavior with
+`--allow-unconfigured` was never separately verified. `exec` hands off to
+the actual gateway process as the effective PID 1 replacement rather than
+leaving the shell as an extra parent process. The config write lands on
+the bind-mounted (not read-only) state directory, so it persists across
+restarts - idempotent and harmless to re-run on every `docker start`.
+
+**Tests:** the existing hardening-profile test now asserts the command
+tail is exactly this `sh -lc` wrapper containing both `config set` calls
+before the `exec node dist/index.js gateway` invocation. 613/613 tests
+passing, typecheck clean - against the mocked test double.
+
+**Status: `IMPLEMENTED BUT NOT FULLY VERIFIED`** - the *values* being set
+are proven correct (the user verified them live, manually, against a real
+cell), but this specific *mechanism* (the shell-wrapped boot command
+itself) has not yet been re-run against a real container. Needs one more
+real-hardware pass: create a fresh cell with this commit, confirm it
+still boots healthy, then run `docker exec <cid> openclaw security audit
+--deep --json` with **no manual `config set` step** and confirm the
+attack-surface summary already shows both disabled by default.
+
+**Still open, per the user's ordering:** once that re-verification lands,
+design the real WhatchatAI MCP server implementation (the disposable test
+proved OpenClaw's client behavior, not our own server yet).
+
 ## 2026-08-22 - OpenClaw Cell Runtime: real in-cell security audit + state-directory permission fix
 
 **Branch:** `openclaw-cell-runtime`.
