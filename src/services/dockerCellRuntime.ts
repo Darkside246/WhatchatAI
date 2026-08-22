@@ -9,10 +9,37 @@ const execFileAsync = promisify(execFile);
 
 const DOCKER_TIMEOUT_MS = 60_000;
 const HEALTH_CHECK_TIMEOUT_MS = 5_000;
+const RELAY_PORT = 8080;
+
+/**
+ * The relay's own image - built from this same repository (see the
+ * `relay-runtime` Dockerfile stage), never pulled from an external
+ * registry the way `OPENCLAW_PINNED_IMAGE` is. Must be built locally
+ * (`docker build --target relay-runtime -t whatchatai-openclaw-relay:local .`)
+ * before `create()` can succeed - not automatically built by this code,
+ * matching how the cell's own pinned image is expected to already exist
+ * rather than being pulled on demand mid-request.
+ */
+const RELAY_IMAGE = 'whatchatai-openclaw-relay:local';
 
 /** Root host directory for per-cell state - mirrors the existing WHATSAPP_SESSION_DIR/MEDIA_STORAGE_DIR env-var convention already used in this codebase. */
 function stateRootDir(): string {
   return process.env.OPENCLAW_CELL_STATE_DIR ?? path.join(process.cwd(), 'data', 'openclaw-cells');
+}
+
+/**
+ * The relay's two fixed upstream identities - read once at container-create
+ * time, never derived from anything cell-supplied. The Gemini upstream is
+ * deliberately optional/unset until the Stage 3 real-agent integration
+ * actually needs it; a relay with no Gemini upstream configured simply
+ * 404s that whole route (see `openclawRelayServer.ts`), which is the
+ * correct, safe behavior for right now, not a gap.
+ */
+function relayMcpUpstreamUrl(): string {
+  return process.env.OPENCLAW_RELAY_MCP_UPSTREAM_URL ?? 'http://host.docker.internal:3000/api/openclaw/mcp';
+}
+function relayGeminiUpstreamHost(): string | undefined {
+  return process.env.OPENCLAW_RELAY_GEMINI_UPSTREAM_HOST || undefined;
 }
 
 function containerName(cellId: string): string {
@@ -21,6 +48,15 @@ function containerName(cellId: string): string {
 
 function networkName(cellId: string): string {
   return `openclaw-cell-net-${cellId}`;
+}
+
+function relayContainerName(cellId: string): string {
+  return `openclaw-relay-${cellId}`;
+}
+
+/** Not `--internal` - the relay's own, only real route out. The cell itself is never attached to this network; it only ever reaches the relay over the cell's existing `--internal` network. */
+function relayEgressNetworkName(cellId: string): string {
+  return `openclaw-relay-egress-net-${cellId}`;
 }
 
 /**
@@ -159,10 +195,10 @@ async function findFreePort(): Promise<number> {
  * answers `/healthz` fine from inside its own namespace. `docker exec`
  * never crosses that network boundary at all, so it's unaffected by it.
  */
-async function execHealthCheck(cellId: string): Promise<boolean> {
+async function execHealthCheck(targetContainerName: string, port: number): Promise<boolean> {
   try {
     const stdout = await docker(
-      ['exec', containerName(cellId), 'curl', '-s', '-o', '/dev/null', '-w', '%{http_code}', '-m', '5', 'http://127.0.0.1:18789/healthz'],
+      ['exec', targetContainerName, 'curl', '-s', '-o', '/dev/null', '-w', '%{http_code}', '-m', '5', `http://127.0.0.1:${port}/healthz`],
       HEALTH_CHECK_TIMEOUT_MS + 2_000,
     );
     return stdout.trim() === '200';
@@ -171,10 +207,10 @@ async function execHealthCheck(cellId: string): Promise<boolean> {
   }
 }
 
-async function waitForHealthy(cellId: string, deadlineMs: number, pollIntervalMs = 1_000): Promise<boolean> {
+async function waitForHealthy(targetContainerName: string, port: number, deadlineMs: number, pollIntervalMs = 1_000): Promise<boolean> {
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
-    if (await execHealthCheck(cellId)) return true;
+    if (await execHealthCheck(targetContainerName, port)) return true;
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   }
   return false;
@@ -260,6 +296,58 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     await chmod(stateDir, 0o700);
   }
 
+  /**
+   * The relay's own dedicated egress network - not `--internal`, real
+   * outbound routing, but only ever attached to the relay container. The
+   * cell itself never joins this network; it only ever reaches the relay
+   * over the cell's own `--internal` network. One network per cell
+   * (mirroring the per-cell relay container), not shared across tenants -
+   * a compromised relay has no membership anywhere near another cell's
+   * relay or network, matching the approved design.
+   */
+  private async ensureRelayEgressNetwork(cellId: string): Promise<void> {
+    try {
+      await docker(['network', 'inspect', relayEgressNetworkName(cellId)]);
+    } catch {
+      await docker(['network', 'create', '--driver', 'bridge', relayEgressNetworkName(cellId)]);
+    }
+  }
+
+  /**
+   * Attached to the cell's own `--internal` network at creation (so the
+   * cell can reach it) and connected to the relay's dedicated egress
+   * network afterward (`docker run` only accepts one `--network` at
+   * creation time; a second attachment needs a separate `docker network
+   * connect` call). No published port - nothing outside the cell's own
+   * network needs to reach the relay. Lighter resource limits than the
+   * cell itself: this is a thin, single-purpose forwarder, not a full
+   * OpenClaw runtime.
+   */
+  private buildRelayRunArgs(cellId: string): string[] {
+    const args = [
+      'run',
+      '-d',
+      '--name', relayContainerName(cellId),
+      '--label', `whatchatai.openclaw.relay=${cellId}`,
+      '--user', '1000:1000',
+      '--read-only',
+      '--tmpfs', '/tmp',
+      '--cap-drop', 'ALL',
+      '--security-opt', 'no-new-privileges',
+      '--init',
+      '--pids-limit', '64',
+      '--memory', '256m',
+      '--cpus', '0.5',
+      '--network', networkName(cellId),
+      '-e', `RELAY_PORT=${RELAY_PORT}`,
+      '-e', `RELAY_MCP_UPSTREAM_URL=${relayMcpUpstreamUrl()}`,
+    ];
+    const geminiHost = relayGeminiUpstreamHost();
+    if (geminiHost) args.push('-e', `RELAY_GEMINI_UPSTREAM_HOST=${geminiHost}`);
+    args.push(RELAY_IMAGE);
+    return args;
+  }
+
   private buildRunArgs(cellId: string, image: string, env: Record<string, string>, port: number): string[] {
     const stateDir = path.join(stateRootDir(), cellId);
     const args = [
@@ -340,9 +428,21 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
       throw new Error(`docker run for cell ${cellId} failed: ${describeExecError(error)}`);
     }
 
-    const healthy = await waitForHealthy(cellId, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
+    const healthy = await waitForHealthy(containerName(cellId), 18789, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
     if (!healthy) {
       throw new Error(`Cell ${cellId} did not become healthy within ${this.healthCheckDeadlineMs}ms of starting (container ${containerId})`);
+    }
+
+    await this.ensureRelayEgressNetwork(cellId);
+    try {
+      await docker(this.buildRelayRunArgs(cellId));
+      await docker(['network', 'connect', relayEgressNetworkName(cellId), relayContainerName(cellId)]);
+    } catch (error) {
+      throw new Error(`relay creation for cell ${cellId} failed: ${describeExecError(error)}`);
+    }
+    const relayHealthy = await waitForHealthy(relayContainerName(cellId), RELAY_PORT, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
+    if (!relayHealthy) {
+      throw new Error(`Relay for cell ${cellId} did not become healthy within ${this.healthCheckDeadlineMs}ms of starting`);
     }
 
     return { containerId, gatewayEndpoint: `http://127.0.0.1:${port}`, port };
@@ -361,11 +461,15 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     // A routine status check on an already-running cell only needs to confirm
     // it's still answering right now, so this stays capped short rather than
     // using the full restart budget below.
-    const healthy = await waitForHealthy(cellId, Math.min(5_000, this.healthCheckDeadlineMs), this.healthCheckPollIntervalMs);
+    const healthy = await waitForHealthy(containerName(cellId), 18789, Math.min(5_000, this.healthCheckDeadlineMs), this.healthCheckPollIntervalMs);
     return { state: 'running', healthy };
   }
 
   async stop(cellId: string): Promise<void> {
+    // Best-effort - the relay serves only this cell, so a stopped cell
+    // leaving its relay briefly running is wasteful but harmless. A real
+    // stop failure on the cell itself is what actually needs to surface.
+    await docker(['stop', relayContainerName(cellId)]).catch(() => undefined);
     try {
       await docker(['stop', containerName(cellId)]);
     } catch (error) {
@@ -388,9 +492,19 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     } catch (error) {
       throw new Error(`docker start for cell ${cellId} failed: ${describeExecError(error)}`);
     }
-    const healthy = await waitForHealthy(cellId, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
+    const healthy = await waitForHealthy(containerName(cellId), 18789, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
     if (!healthy) {
       throw new Error(`Cell ${cellId} did not report healthy within ${this.healthCheckDeadlineMs}ms of restarting`);
+    }
+
+    try {
+      await docker(['start', relayContainerName(cellId)]);
+    } catch (error) {
+      throw new Error(`docker start for cell ${cellId}'s relay failed: ${describeExecError(error)}`);
+    }
+    const relayHealthy = await waitForHealthy(relayContainerName(cellId), RELAY_PORT, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
+    if (!relayHealthy) {
+      throw new Error(`Relay for cell ${cellId} did not report healthy within ${this.healthCheckDeadlineMs}ms of restarting`);
     }
   }
 
@@ -418,6 +532,10 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
 
     await docker(['stop', containerName(cellId)]).catch(() => undefined);
     await docker(['rm', containerName(cellId)]).catch(() => undefined);
+    // The relay is replaced too, same as the cell - `create()` below would
+    // otherwise fail trying to `docker run` a container name that's still
+    // in use by the pre-upgrade relay.
+    await docker(['rm', '--force', relayContainerName(cellId)]).catch(() => undefined);
 
     return this.create(cellId, image, previousEnv);
   }
@@ -434,6 +552,8 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
    * checks a real deletion has to pass first.
    */
   async remove(cellId: string, options: { purgeData: boolean }): Promise<void> {
+    await docker(['rm', '--force', relayContainerName(cellId)]).catch(() => undefined);
+    await docker(['network', 'rm', relayEgressNetworkName(cellId)]).catch(() => undefined);
     await docker(['rm', '--force', containerName(cellId)]).catch(() => undefined);
     await docker(['network', 'rm', networkName(cellId)]).catch(() => undefined);
     if (options.purgeData) {

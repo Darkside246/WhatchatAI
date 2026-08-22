@@ -61,7 +61,12 @@ describe('DockerCellRuntime', () => {
       .mockRejectedValueOnce(new Error('network not found')) // network inspect - doesn't exist
       .mockResolvedValueOnce({ stdout: '', stderr: '' }) // network create
       .mockResolvedValueOnce({ stdout: 'container123\n', stderr: '' }) // docker run
-      .mockResolvedValueOnce(HEALTHY); // docker exec health check
+      .mockResolvedValueOnce(HEALTHY) // docker exec health check
+      .mockRejectedValueOnce(new Error('network not found')) // relay egress network inspect - doesn't exist
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // relay egress network create
+      .mockResolvedValueOnce({ stdout: 'relaycontainer123\n', stderr: '' }) // relay docker run
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // relay docker network connect
+      .mockResolvedValueOnce(HEALTHY); // relay docker exec health check
 
     const result = await runtime.create(cellId, image, { OPENCLAW_GATEWAY_TOKEN: 'tok-a', OPENCLAW_CALLBACK_TOKEN: 'tok-b' });
 
@@ -69,7 +74,7 @@ describe('DockerCellRuntime', () => {
     expect(result.gatewayEndpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(result.port).toBeGreaterThan(0);
 
-    expect(execFileMock).toHaveBeenCalledTimes(4);
+    expect(execFileMock).toHaveBeenCalledTimes(9);
     const [inspectCall, createCall, runCall, healthCall] = execFileMock.mock.calls as [unknown[], unknown[], unknown[], unknown[]];
     expect(inspectCall[0]).toBe('docker');
     expect(inspectCall[1]).toEqual(expect.arrayContaining(['network', 'inspect']));
@@ -131,17 +136,91 @@ describe('DockerCellRuntime', () => {
     const dirStats = await stat(createdStateDir);
     expect(dirStats.isDirectory()).toBe(true);
     expect(dirStats.mode & 0o777).toBe(0o700);
+
+    // The relay - a separate, dedicated container attached to the cell's
+    // own --internal network (so the cell can reach it) plus a second,
+    // dedicated, NOT --internal egress network (its own only real route
+    // out). Lighter hardening limits than the cell itself - a thin
+    // forwarder, not a full OpenClaw runtime.
+    const relayNetworkInspectCall = execFileMock.mock.calls[4] as unknown[];
+    const relayNetworkCreateCall = execFileMock.mock.calls[5] as unknown[];
+    const relayRunCall = execFileMock.mock.calls[6] as unknown[];
+    const relayConnectCall = execFileMock.mock.calls[7] as unknown[];
+    const relayHealthCall = execFileMock.mock.calls[8] as unknown[];
+
+    expect(relayNetworkInspectCall[1]).toEqual(['network', 'inspect', `openclaw-relay-egress-net-${cellId}`]);
+    // Not --internal - real outbound routing, but only the relay ever joins this network.
+    expect(relayNetworkCreateCall[1]).toEqual(['network', 'create', '--driver', 'bridge', `openclaw-relay-egress-net-${cellId}`]);
+
+    const relayRunArgs = relayRunCall[1] as string[];
+    expect(relayRunArgs).toEqual(
+      expect.arrayContaining([
+        '--name', `openclaw-relay-${cellId}`,
+        '--user', '1000:1000',
+        '--read-only',
+        '--cap-drop', 'ALL',
+        '--security-opt', 'no-new-privileges',
+        '--init',
+        '--pids-limit', '64',
+        '--memory', '256m',
+        '--cpus', '0.5',
+        // Attached to the CELL's own --internal network at creation, not
+        // the relay's own egress network - the second attachment happens
+        // via a separate `docker network connect` call below.
+        '--network', `openclaw-cell-net-${cellId}`,
+        '-e', 'RELAY_PORT=8080',
+      ]),
+    );
+    // No published port at all - nothing outside the cell's own network needs to reach the relay.
+    expect(relayRunArgs).not.toContain('--publish');
+    expect(relayRunArgs).toEqual(expect.arrayContaining(['-e', expect.stringMatching(/^RELAY_MCP_UPSTREAM_URL=http/)]));
+    // No Gemini upstream configured in this test's environment - the env var must not be passed at all, not passed empty.
+    expect(relayRunArgs.join(' ')).not.toContain('RELAY_GEMINI_UPSTREAM_HOST');
+    expect(relayRunArgs).toContain('whatchatai-openclaw-relay:local');
+
+    expect(relayConnectCall[1]).toEqual(['network', 'connect', `openclaw-relay-egress-net-${cellId}`, `openclaw-relay-${cellId}`]);
+    expect(relayHealthCall[1]).toEqual(
+      expect.arrayContaining(['exec', `openclaw-relay-${cellId}`, 'curl', 'http://127.0.0.1:8080/healthz']),
+    );
+  });
+
+  it('passes RELAY_GEMINI_UPSTREAM_HOST to the relay only when configured', async () => {
+    const originalGeminiHost = process.env.OPENCLAW_RELAY_GEMINI_UPSTREAM_HOST;
+    process.env.OPENCLAW_RELAY_GEMINI_UPSTREAM_HOST = 'generativelanguage.googleapis.com';
+    try {
+      execFileMock
+        .mockResolvedValueOnce({ stdout: 'exists', stderr: '' }) // cell network inspect
+        .mockResolvedValueOnce({ stdout: 'container123\n', stderr: '' }) // cell run
+        .mockResolvedValueOnce(HEALTHY) // cell health check
+        .mockResolvedValueOnce({ stdout: 'exists', stderr: '' }) // relay egress network inspect
+        .mockResolvedValueOnce({ stdout: 'relaycontainer123\n', stderr: '' }) // relay run
+        .mockResolvedValueOnce({ stdout: '', stderr: '' }) // relay network connect
+        .mockResolvedValueOnce(HEALTHY); // relay health check
+
+      await runtime.create(cellId, image, {});
+
+      const relayRunArgs = execFileMock.mock.calls[4]?.[1] as string[];
+      expect(relayRunArgs).toEqual(
+        expect.arrayContaining(['-e', 'RELAY_GEMINI_UPSTREAM_HOST=generativelanguage.googleapis.com']),
+      );
+    } finally {
+      process.env.OPENCLAW_RELAY_GEMINI_UPSTREAM_HOST = originalGeminiHost;
+    }
   });
 
   it('skips network creation when the per-cell network already exists', async () => {
     execFileMock
-      .mockResolvedValueOnce({ stdout: 'exists', stderr: '' }) // network inspect succeeds
+      .mockResolvedValueOnce({ stdout: 'exists', stderr: '' }) // cell network inspect succeeds
       .mockResolvedValueOnce({ stdout: 'container123\n', stderr: '' }) // docker run
-      .mockResolvedValueOnce(HEALTHY); // docker exec health check
+      .mockResolvedValueOnce(HEALTHY) // docker exec health check
+      .mockResolvedValueOnce({ stdout: 'exists', stderr: '' }) // relay egress network inspect succeeds
+      .mockResolvedValueOnce({ stdout: 'relaycontainer123\n', stderr: '' }) // relay run
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // relay network connect
+      .mockResolvedValueOnce(HEALTHY); // relay health check
 
     await runtime.create(cellId, image, {});
 
-    expect(execFileMock).toHaveBeenCalledTimes(3); // inspect + run + health check, no network create
+    expect(execFileMock).toHaveBeenCalledTimes(7); // no network create for either the cell or the relay
   });
 
   it('throws a real error, never a silently-succeeded cell, if the container never becomes healthy', async () => {
@@ -191,21 +270,34 @@ describe('DockerCellRuntime', () => {
     expect(status).toEqual({ state: 'unknown', healthy: false });
   });
 
-  it('stop() and start() invoke the correct docker subcommand against the correct container name', async () => {
-    execFileMock.mockResolvedValueOnce({ stdout: '', stderr: '' });
+  it('stop() and start() invoke the correct docker subcommand against the correct container name, including the relay', async () => {
+    execFileMock
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // relay stop (best-effort)
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }); // cell stop
     await runtime.stop(cellId);
+    expect(execFileMock.mock.calls[0]).toEqual(['docker', ['stop', `openclaw-relay-${cellId}`], expect.anything()]);
     expect(execFileMock).toHaveBeenLastCalledWith('docker', ['stop', `openclaw-cell-${cellId}`], expect.anything());
 
     execFileMock.mockReset();
     execFileMock
-      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // start
-      .mockResolvedValueOnce(HEALTHY); // docker exec health check
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // cell start
+      .mockResolvedValueOnce(HEALTHY) // cell docker exec health check
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // relay start
+      .mockResolvedValueOnce(HEALTHY); // relay docker exec health check
 
     await runtime.start(cellId);
     expect(execFileMock.mock.calls[0]).toEqual(['docker', ['start', `openclaw-cell-${cellId}`], expect.anything()]);
-    // start() checks health directly via docker exec, not a host-side
-    // published-port request - exactly two docker calls (start, exec).
-    expect(execFileMock).toHaveBeenCalledTimes(2);
+    expect(execFileMock.mock.calls[2]).toEqual(['docker', ['start', `openclaw-relay-${cellId}`], expect.anything()]);
+    // start() checks health directly via docker exec for both the cell and its relay - four calls total.
+    expect(execFileMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('stop() still stops the cell even if stopping the relay fails - relay stop is best-effort', async () => {
+    execFileMock
+      .mockRejectedValueOnce(new Error('no such container')) // relay stop fails
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }); // cell stop still happens and succeeds
+
+    await expect(runtime.stop(cellId)).resolves.toBeUndefined();
   });
 
   it('start() throws if the container comes back up but never reports healthy', async () => {
@@ -214,6 +306,16 @@ describe('DockerCellRuntime', () => {
       .mockRejectedValue(new Error('exec failed'));
 
     await expect(runtime.start(cellId)).rejects.toThrow(/did not report healthy/);
+  });
+
+  it('start() throws if the cell comes up healthy but its relay never does', async () => {
+    execFileMock
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // cell start
+      .mockResolvedValueOnce(HEALTHY) // cell health check
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // relay start
+      .mockRejectedValue(new Error('exec failed')); // relay health check never succeeds
+
+    await expect(runtime.start(cellId)).rejects.toThrow(/Relay for cell .* did not report healthy/);
   });
 
   it('start() gives the restart health check the full configured deadline, not the shorter routine-status-check cap', async () => {
@@ -237,30 +339,42 @@ describe('DockerCellRuntime', () => {
     expect(calls).toBeGreaterThanOrEqual(4);
   });
 
-  it('upgrade() reads the existing environment, replaces the container, and reuses that same environment for the new one', async () => {
+  it('upgrade() reads the existing environment, replaces the container (and its relay), and reuses that same environment for the new one', async () => {
     execFileMock
       .mockResolvedValueOnce({ stdout: JSON.stringify(['OPENCLAW_GATEWAY_TOKEN=preserved-token', 'HOME=/home/node']), stderr: '' }) // inspect env
-      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // stop
-      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // rm
-      .mockResolvedValueOnce({ stdout: 'exists', stderr: '' }) // network inspect (inside create())
-      .mockResolvedValueOnce({ stdout: 'newcontainer\n', stderr: '' }) // docker run
-      .mockResolvedValueOnce(HEALTHY); // docker exec health check
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // stop cell
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // rm cell
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // rm --force relay (replaced too, before create() re-runs it)
+      .mockResolvedValueOnce({ stdout: 'exists', stderr: '' }) // cell network inspect (inside create())
+      .mockResolvedValueOnce({ stdout: 'newcontainer\n', stderr: '' }) // docker run (cell)
+      .mockResolvedValueOnce(HEALTHY) // cell docker exec health check
+      .mockResolvedValueOnce({ stdout: 'exists', stderr: '' }) // relay egress network inspect
+      .mockResolvedValueOnce({ stdout: 'newrelaycontainer\n', stderr: '' }) // docker run (relay)
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // relay network connect
+      .mockResolvedValueOnce(HEALTHY); // relay docker exec health check
 
     const newImage = 'ghcr.io/openclaw/openclaw@sha256:0000000000000000000000000000000000000000000000000000000000000001';
     const result = await runtime.upgrade(cellId, newImage);
 
     expect(result.containerId).toBe('newcontainer');
-    const runArgs = execFileMock.mock.calls[4]?.[1] as string[];
+    expect(execFileMock.mock.calls[3]).toEqual(['docker', ['rm', '--force', `openclaw-relay-${cellId}`], expect.anything()]);
+    const runArgs = execFileMock.mock.calls[5]?.[1] as string[];
     expect(runArgs).toContain(newImage);
     expect(runArgs).toEqual(expect.arrayContaining(['-e', 'OPENCLAW_GATEWAY_TOKEN=preserved-token']));
   });
 
-  it('remove() removes the container and network, and never throws even if either call fails', async () => {
-    execFileMock.mockRejectedValueOnce(new Error('no such container')).mockRejectedValueOnce(new Error('no such network'));
+  it('remove() removes the relay container/network first, then the cell container/network - never throws even if every call fails', async () => {
+    execFileMock
+      .mockRejectedValueOnce(new Error('no such container')) // relay rm
+      .mockRejectedValueOnce(new Error('no such network')) // relay network rm
+      .mockRejectedValueOnce(new Error('no such container')) // cell rm
+      .mockRejectedValueOnce(new Error('no such network')); // cell network rm
 
     await expect(runtime.remove(cellId, { purgeData: false })).resolves.toBeUndefined();
-    expect(execFileMock).toHaveBeenNthCalledWith(1, 'docker', ['rm', '--force', `openclaw-cell-${cellId}`], expect.anything());
-    expect(execFileMock).toHaveBeenNthCalledWith(2, 'docker', ['network', 'rm', `openclaw-cell-net-${cellId}`], expect.anything());
+    expect(execFileMock).toHaveBeenNthCalledWith(1, 'docker', ['rm', '--force', `openclaw-relay-${cellId}`], expect.anything());
+    expect(execFileMock).toHaveBeenNthCalledWith(2, 'docker', ['network', 'rm', `openclaw-relay-egress-net-${cellId}`], expect.anything());
+    expect(execFileMock).toHaveBeenNthCalledWith(3, 'docker', ['rm', '--force', `openclaw-cell-${cellId}`], expect.anything());
+    expect(execFileMock).toHaveBeenNthCalledWith(4, 'docker', ['network', 'rm', `openclaw-cell-net-${cellId}`], expect.anything());
   });
 
 });

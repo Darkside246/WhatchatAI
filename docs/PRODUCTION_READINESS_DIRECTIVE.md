@@ -380,12 +380,72 @@ pasted directive without our own verification (`unverified`).
    `CHANGELOG_SECURITY.md`'s matching 2026-08-22 entry for the complete
    evidence.
 
-   Remaining, per the user's explicit ordering: wire this MCP server into
-   a live OpenClaw agent/cell config (deliberately not done yet); enable
+   **Stage 0 real-hardware finding (2026-08-22): a hardened cell cannot
+   reach the MCP endpoint at all as things stood.** Real testing on the
+   user's machine (a disposable cell + the real MCP-flagged server)
+   confirmed `host.docker.internal` resolves, but `--internal` blocks the
+   actual route to the host entirely - not just general internet egress,
+   contrary to the plan's original assumption that host reachability was
+   a narrower, separate gap. Two candidate fixes were tested for real
+   before committing to either: a second bridge network with
+   `enable_ip_masquerade=false` was disproven (it did NOT block general
+   internet egress on this Docker Desktop/WSL2 setup - `example.com` and
+   `1.1.1.1` both returned real, successful responses); host-level
+   `DOCKER-USER` iptables allow-listing was ruled out for lack of
+   `iptables`/`nft` tooling in this Docker Desktop VM, and more
+   fundamentally because host firewall administration isn't something
+   this codebase's Docker-API-only orchestration could portably manage in
+   production regardless.
+
+   **Per-cell relay: `IMPLEMENTED AND UNIT-TESTED` (2026-08-22), real-
+   hardware Phase 2 verification pending.** The approved fix: a dedicated
+   per-cell relay container - a destination-specific egress gateway, not
+   a general proxy - with a structural (not merely checked) two-route
+   allow-list (`/mcp`, `/gemini/*`) and no code path anywhere capable of
+   accepting a caller-supplied forwarding target. One relay per cell,
+   attached into that cell's existing `--internal` network (reachable by
+   the cell, exactly as before) plus a second, dedicated, non-`--internal`
+   egress network only the relay ever joins - the cell itself never
+   touches it, so a compromised relay has no path to another cell or its
+   relay. Real protections built into the relay itself: DNS-rebinding
+   defense on the Gemini route (connects to the address it actually
+   resolved, rejects private/loopback/link-local/CGNAT results, with the
+   MCP route's private-range target as the sole deliberate exception), no
+   redirect-following, bounded body size and request timeout, and
+   metadata-only logging that never captures request/response bodies, the
+   `Authorization` header, or the query string (Gemini's own convention
+   can put an API key there, not just in a header). `dockerCellRuntime.ts`
+   now creates/health-gates/tears down the relay alongside the cell
+   through the same `create()`/`stop()`/`start()`/`upgrade()`/`remove()`
+   lifecycle, not a separate mechanism. Built from this repository (a new
+   `relay-runtime` Dockerfile stage), not pulled from a registry -
+   deliberately needs no `node_modules` at all, since the relay's own code
+   imports nothing but Node built-ins. 657/657 tests passing (30 new for
+   the relay's own routing/security logic against real local stand-in
+   upstreams, no Docker required; 37 for the runtime wiring, mocked
+   `execFile` matching this file's existing pattern), full typecheck
+   clean, a real `tsc` build confirmed. See `CHANGELOG_SECURITY.md`'s
+   matching entry for the complete evidence trail.
+
+   Remaining, per the user's own Phase 1/Phase 2 split: real-hardware
+   verification on the user's machine - build the relay's real Docker
+   image, then prove `cell → relay → MCP` genuinely works, `cell →
+   internet` still fails, `cell → another cell` still fails, `cell →
+   arbitrary IP` fails, a compromised relay cannot reach another cell,
+   and removing/restarting a cell correctly tears down/preserves its
+   relay - before any credential is introduced. Only after that passes:
+   design and verify the provider-specific (Gemini) egress path for real,
+   inject a disposable Gemini credential into one disposable hardened
+   cell under the constraints already agreed (dedicated key, lowest
+   practical spend/rate cap, explicit model, no persistence, time-boxed),
+   wire this MCP server into a live OpenClaw agent, and run the real
+   agent → relay → Gemini → MCP → Tool Gateway → PostgreSQL test plus the
+   adversarial cases (wrong-tenant `chat_id`, stale `cell_generation`,
+   quarantine, excluded tool, cross-tenant target, idempotency conflict)
+   from the agent itself. Only after all of that: enable
    `OPENCLAW_MCP_SERVER_ENABLED` and tenant-allowlist behind a feature
-   flag, only after that live-wiring step is itself reviewed - the
-   existing Gemini/Baileys path on `phase-2-ai-repair` remains completely
-   untouched throughout.
+   flag - the existing Gemini/Baileys path on `phase-2-ai-repair` remains
+   completely untouched throughout.
 4. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
    internal analytics, or customer-facing analytics for tenants? Different
    answers imply different event schemas and access control. Not started.

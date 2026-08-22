@@ -1,5 +1,109 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - OpenClaw Cell Runtime: per-cell relay - real network policy enforcement boundary (Phase 1: implemented, unit-tested; real-hardware Phase 2 verification pending)
+
+**Branch:** `openclaw-cell-runtime`. New: `src/relay/openclawRelayServer.ts`,
+`src/relay/privateAddressCheck.ts`, `src/relay/index.ts`,
+`test/openclawRelayServer.test.ts`, a `relay-runtime` Dockerfile stage.
+Modified: `src/services/dockerCellRuntime.ts` (relay lifecycle wiring) and
+its test suite.
+
+**Why:** real Stage 0 evidence (this session, on the user's machine) showed
+`--internal` blocks host-gateway routing entirely, not just general
+internet egress - a hardened cell cannot reach the WhatchatAI MCP endpoint
+at all as things stood. A candidate fix (`enable_ip_masquerade=false` on a
+second bridge network) was tested for real and disproven - it did NOT
+block general internet egress on this Docker Desktop/WSL2 setup
+(`example.com`/`1.1.1.1` both returned real 200/301, not blocked). A
+second candidate (host-level `DOCKER-USER` iptables allow-listing) was
+ruled out for a different reason: no `iptables`/`nft` tooling exists in
+this Docker Desktop VM at all, and more importantly, host-level firewall
+administration isn't something `dockerCellRuntime.ts` could portably
+manage in production anyway - it only orchestrates containers/networks
+through the Docker API, never the host OS.
+
+**Approved design:** a dedicated, per-cell relay container - not a
+general-purpose proxy, a destination-specific egress gateway with a
+structural two-route allow-list (`/mcp`, `/gemini/*`) and no mechanism
+anywhere in its code capable of accepting a caller-supplied forwarding
+target. One relay per cell (not shared across tenants), attached into
+that cell's own existing `--internal` network (so the cell can reach it,
+exactly as it always could reach anything else on that network) plus a
+second, dedicated, NOT-`--internal` egress network that only the relay
+ever joins - the cell itself never touches it. A compromised relay has no
+network membership anywhere near another cell or its relay.
+
+**`openclawRelayServer.ts` - the enforcement logic itself:**
+- Fixed upstream identities only (`mcpUpstreamUrl`, optional
+  `geminiUpstreamHost`), read once at server-construction time - never
+  derived from a request. Any path outside `/mcp` (POST) or `/gemini/*`
+  returns 404 before any outbound attempt at all.
+- DNS-rebinding defense on the Gemini route: resolves the configured
+  hostname itself, connects to the resolved IP directly (not a second,
+  separate lookup at connect time), and rejects private/loopback/
+  link-local/CGNAT-range results outright. The MCP route's target
+  (`host.docker.internal`) is the deliberate, sole exception.
+- No redirect-following - a 3xx from either upstream passes straight back
+  to the cell; since the cell has no route anywhere except the relay,
+  an attempted redirect to an unapproved host is simply unreachable.
+- Bounded request body size (413 before forwarding, not after), bounded
+  request timeout (60s default - a firm cap, learning from the earlier
+  `security audit --deep` hang that came from an uncapped outbound call).
+- Logging is metadata-only by construction: timestamp, route, method,
+  *path only* (never the query string - Gemini's own convention can put
+  the API key there, not just in a header), upstream status, latency,
+  byte counts. The `Authorization` header passes through untouched and
+  is never logged, matching the credential-handling discipline already
+  used for Gateway/callback tokens.
+
+**Tested standalone, no Docker required (30 tests):** real HTTP requests
+against the real relay via two local stand-in upstream servers - exact
+forwarding (method/headers/body verbatim), the full unknown-path 404
+allow-list (including a path-traversal-style segment that normalizes to
+a real route rather than bypassing the check), no-Gemini-upstream-
+configured 404, real private-address rejection (`localhost` resolving to
+loopback), oversized-body rejection, and two dedicated tests proving
+nothing sensitive - not the body, not the Authorization header, not the
+query string - ever reaches a log line. A private-address-check unit
+suite covers real IPv4/IPv6 private/loopback/link-local/CGNAT ranges
+against real public-range shapes.
+
+**`dockerCellRuntime.ts` wiring:** `create()` now also creates the
+relay's dedicated egress network, runs the relay container (own,
+lighter hardening profile: `--cap-drop ALL`, `--security-opt
+no-new-privileges`, `--read-only`, `--pids-limit 64`, `--memory 256m`,
+`--cpus 0.5`, no published port), connects it to the egress network, and
+health-gates on the relay the same way it already does for the cell
+itself. `stop()`/`start()`/`upgrade()`/`remove()` all extended
+symmetrically - relay stop is best-effort (a stopped cell can't reach it
+anyway), relay removal happens before cell removal in `remove()`, and
+`upgrade()` removes the pre-upgrade relay before `create()` re-runs it
+(otherwise the container-name collision would fail the upgrade). 37
+tests covering the full new lifecycle (mocked `execFile`, same pattern
+this file's tests already used - no real Docker daemon available in this
+sandbox to build/run the relay's own image against).
+
+**Relay image:** built from this same repository (new `relay-runtime`
+Dockerfile stage), not pulled from a registry - `docker build --target
+relay-runtime -t whatchatai-openclaw-relay:local .`. Needs no
+`node_modules` at all (the relay's own code imports nothing but Node
+built-ins), keeping its own supply-chain surface as small as its role -
+network policy enforcement boundary - calls for.
+
+**Status: `IMPLEMENTED AND UNIT-TESTED`, real-hardware Phase 2
+verification not yet run.** 657/657 tests passing, full typecheck clean,
+a real `tsc` build confirmed producing `dist/relay/{index,
+openclawRelayServer,privateAddressCheck}.js`. Per the user's own Phase
+1/Phase 2 split: this entry covers Phase 1 (design + implementation +
+unit tests) only. Phase 2 - proving `cell → relay → MCP` works, `cell →
+internet` fails, `cell → another cell` fails, `cell → arbitrary IP`
+fails, `relay A cannot become a path to cell B`, removing a cell removes
+its relay, restarting doesn't broaden access - requires the real Docker
+image build and real container tests this sandbox cannot run, and is the
+explicit next step on the user's own machine. No credential of any kind
+is involved yet; the feature flag and any live-agent wiring remain
+untouched.
+
 ## 2026-08-22 - OpenClaw Cell Runtime: real WhatchatAI MCP server (`update_lead`), standalone-tested against a real MCP client
 
 **Branch:** `openclaw-cell-runtime`. New files: `src/services/openclawMcpServer.ts`,

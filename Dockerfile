@@ -71,3 +71,28 @@ EXPOSE 3000
 # No default CMD: docker-compose.yml sets the real command per service
 # (API+in-process workers vs. the inbound-message worker process) - this
 # image is shared by both, distinguished only by the command it runs.
+
+# ---- relay-runtime: the per-cell network policy enforcement boundary -
+#      built separately, deliberately as small as possible. src/relay/**
+#      imports nothing but Node built-ins (node:http/https/dns/url/net),
+#      so unlike the runtime stage above this needs no node_modules at
+#      all - not a leftover omission, the actual point: the smaller this
+#      image's dependency footprint, the smaller its own supply-chain
+#      surface, which matters more here than for the main app given what
+#      this component is trusted to enforce. Built and tagged locally
+#      (`docker build --target relay-runtime -t whatchatai-openclaw-relay:local .`)
+#      - see dockerCellRuntime.ts's RELAY_IMAGE constant. ----
+FROM node:22-slim AS relay-runtime
+ENV NODE_ENV=production
+WORKDIR /app
+
+RUN groupadd --gid 10001 whatchatai \
+  && useradd --uid 10001 --gid whatchatai --shell /usr/sbin/nologin --no-create-home whatchatai
+
+COPY --from=build /app/dist/relay ./dist/relay
+USER whatchatai
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.RELAY_PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "dist/relay/index.js"]
