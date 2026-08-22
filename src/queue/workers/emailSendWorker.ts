@@ -22,11 +22,14 @@ const integrationSettingsRepository = new IntegrationSettingsRepository(pool);
  * claims.
  */
 async function processJob(job: Job<EmailSendJobData>): Promise<void> {
-  const { emailMessageId } = job.data;
+  const { emailMessageId, businessId } = job.data;
 
-  const email = await emailRepository.findById(emailMessageId);
+  // Business-scoped in the same query, not a bare findById - the job
+  // payload's own businessId is trusted only as far as this WHERE clause,
+  // never as a claim taken at face value.
+  const email = await emailRepository.findByIdForBusiness(businessId, emailMessageId);
   if (!email) {
-    console.warn(`[EmailSendWorker] No such email ${emailMessageId}`);
+    console.warn(`[EmailSendWorker] No such email ${emailMessageId} for business ${businessId}`);
     return;
   }
   if (email.status === 'sent') return; // a retry must never send twice

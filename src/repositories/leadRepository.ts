@@ -139,6 +139,22 @@ export class LeadRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /**
+   * Tenant-scoped read - a lead id from another business returns null,
+   * indistinguishable from a genuinely nonexistent one. Defense-in-depth
+   * for callers (e.g. openclawToolGateway.execute()) that re-fetch a lead
+   * after an earlier authorization step has already run - the boundary is
+   * re-enforced at the data-access layer instead of relying solely on that
+   * earlier check.
+   */
+  async findByIdForBusiness(id: string, businessId: string): Promise<LeadRecord | null> {
+    const { rows } = await this.db.query<LeadRow>('SELECT * FROM leads WHERE id = $1 AND business_id = $2', [
+      id,
+      businessId,
+    ]);
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
   async listByCrmContact(crmContactId: string): Promise<LeadRecord[]> {
     const { rows } = await this.db.query<LeadRow>(
       'SELECT * FROM leads WHERE crm_contact_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC',

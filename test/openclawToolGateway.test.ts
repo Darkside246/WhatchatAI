@@ -230,4 +230,37 @@ describe('OpenClawToolGateway - update_lead adversarial acceptance suite', () =>
     const decision = await entityOwnershipRegistry.resolve('invoice', businessId, chatId, 'anything');
     expect(decision).toBe('NOT_FOUND');
   });
+
+  /**
+   * E3 regression (Phase 0.1): execute() now re-scopes its lead lookups via
+   * findByIdForBusiness as defense in depth. invoke()'s EntityOwnershipRegistry
+   * check already makes a mismatched businessId/leadId pair unreachable through
+   * the normal path (proven above) - this suite calls the private execute()
+   * directly, bypassing invoke() entirely, to prove the scoped repository
+   * lookup itself - not just the earlier authorization step - refuses to
+   * retrieve or mutate another business's lead.
+   */
+  describe('execute() defense-in-depth - the scoped lookup holds even if invoke()\'s earlier check is bypassed', () => {
+    it('cannot retrieve or mutate another business\'s lead when called directly with a mismatched businessId/leadId pair', async () => {
+      const other = await setUpTenant('Victim Tenant');
+
+      await expect(
+        // @ts-expect-error - execute() is private; called directly to test this layer in isolation from invoke()'s authorization.
+        gateway.execute('update_lead', businessId, other.leadId, { status: 'WON' }),
+      ).rejects.toThrow(/vanished between ownership check and execution/);
+
+      const untouched = await leadRepo.findById(other.leadId);
+      expect(untouched?.status).toBe('NEW'); // never mutated by the attacker's own tenant id
+    });
+
+    it('leadRepository.findByIdForBusiness itself returns null for a real lead in a different business - the boundary this defense-in-depth relies on', async () => {
+      const other = await setUpTenant('Victim Tenant Repo Check');
+
+      const crossTenant = await leadRepo.findByIdForBusiness(other.leadId, businessId);
+      expect(crossTenant).toBeNull();
+
+      const ownTenant = await leadRepo.findByIdForBusiness(other.leadId, other.businessId);
+      expect(ownTenant?.id).toBe(other.leadId);
+    });
+  });
 });

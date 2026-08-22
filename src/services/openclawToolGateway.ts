@@ -202,7 +202,14 @@ export class OpenClawToolGateway {
    */
   private async execute(toolName: string, businessId: string, leadId: string, fields: Record<string, unknown>): Promise<unknown> {
     if (toolName === 'update_lead') {
-      const current = await this.leadRepo.findById(leadId);
+      // Re-scoped here as defense in depth, not because the earlier
+      // EntityOwnershipRegistry check (invoke(), above) is untrusted - it
+      // already proved this lead belongs to businessId. This keeps that
+      // boundary enforced at the data-access layer too, so a future tool
+      // added to this switch (or any call path that reaches execute()
+      // without going through invoke() first) can't silently inherit an
+      // unscoped lookup.
+      const current = await this.leadRepo.findByIdForBusiness(leadId, businessId);
       if (!current) throw new Error(`lead ${leadId} vanished between ownership check and execution`);
 
       if (typeof fields.status === 'string') {
@@ -219,7 +226,7 @@ export class OpenClawToolGateway {
         await this.leadRepo.update(businessId, leadId, input);
       }
 
-      return this.leadRepo.findById(leadId);
+      return this.leadRepo.findByIdForBusiness(leadId, businessId);
     }
     throw new Error(`"${toolName}" has a policy entry but no execute() handler - refusing rather than silently no-op`);
   }

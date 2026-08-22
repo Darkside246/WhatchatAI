@@ -822,8 +822,11 @@ app.post('/api/workspace/chats/:chatId/messages', requireWorkspaceContext, requi
  */
 app.get('/api/workspace/outbound-messages/:id', requireWorkspaceContext, async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
-  const outboundMessage = await new WhatsAppOutboundMessageRepository(pool).findById(String(req.params.id ?? ''));
-  if (!outboundMessage || outboundMessage.businessId !== businessId) {
+  const outboundMessage = await new WhatsAppOutboundMessageRepository(pool).findByIdForBusiness(
+    String(req.params.id ?? ''),
+    businessId,
+  );
+  if (!outboundMessage) {
     return res.status(404).json({ error: 'OUTBOUND_MESSAGE_NOT_FOUND' });
   }
   return res.status(200).json({

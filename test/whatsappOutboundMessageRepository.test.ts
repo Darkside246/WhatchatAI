@@ -282,6 +282,33 @@ describe('WhatsAppOutboundMessageRepository (real Postgres)', () => {
     const updated = await repository.findById(record.id);
     expect(updated?.messageId).toBe(messageId);
   });
+
+  /** E2 regression (Phase 0.1): findByIdForBusiness structurally enforces the same boundary the route used to check manually after a bare findById. */
+  it('findByIdForBusiness returns null for a real send that belongs to a different business - indistinguishable from nonexistent', async () => {
+    const repository = new WhatsAppOutboundMessageRepository(pool);
+    const record = await repository.createIdempotent({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      toJid,
+      idempotencyKey: 'idem-cross-tenant',
+      messageType: 'text',
+      textContent: 'Business A private send',
+    });
+
+    const otherBusinessId = await createTestBusiness('Other Business');
+    const genuinelyMissingId = '00000000-0000-0000-0000-000000000000';
+
+    const crossTenant = await repository.findByIdForBusiness(record.id, otherBusinessId);
+    const genuinelyMissing = await repository.findByIdForBusiness(genuinelyMissingId, otherBusinessId);
+    expect(crossTenant).toBeNull();
+    expect(genuinelyMissing).toBeNull();
+
+    // The real owner can still see it - this is a tenant boundary, not a broken lookup.
+    const ownRead = await repository.findByIdForBusiness(record.id, businessId);
+    expect(ownRead?.id).toBe(record.id);
+    expect(ownRead?.textContent).toBe('Business A private send');
+  });
 });
 
 describe('WhatsAppOutboundMessageService.send (real cross-tenant denial)', () => {

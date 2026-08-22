@@ -165,6 +165,19 @@ export class WhatsAppOutboundMessageRepository {
     return rows[0] ? toRecord(rows[0], false) : null;
   }
 
+  /**
+   * Tenant-scoped read - a cross-tenant id returns null, indistinguishable
+   * from a genuinely nonexistent one. The boundary lives in this query's
+   * own WHERE clause, not in a post-fetch JavaScript comparison.
+   */
+  async findByIdForBusiness(id: string, businessId: string): Promise<WhatsAppOutboundMessageRecord | null> {
+    const { rows } = await this.db.query<OutboundMessageRow>(
+      'SELECT * FROM whatsapp_outbound_messages WHERE id = $1 AND business_id = $2',
+      [id, businessId],
+    );
+    return rows[0] ? toRecord(rows[0], false) : null;
+  }
+
   async markSending(id: string): Promise<void> {
     await this.db.query(
       `UPDATE whatsapp_outbound_messages
