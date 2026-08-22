@@ -340,13 +340,52 @@ pasted directive without our own verification (`unverified`).
    machine, not a defect in the fix - production runs on native Linux,
    where this is already confirmed correct.
 
-   Remaining, per the user's ordering: design the real WhatchatAI MCP
-   server implementation (the disposable test proved OpenClaw's client
-   behavior, not yet our own server - likely via the official MCP SDK,
-   not another hand-rolled stand-in); test that real adapter against the
-   existing Tool Gateway; OpenClaw behind a feature flag, tenant-
-   allowlisted, only after all of the above - the existing Gemini/Baileys
-   path on `phase-2-ai-repair` remains completely untouched throughout.
+   **Real WhatchatAI MCP server: `IMPLEMENTED AND VERIFIED (standalone)`
+   (2026-08-22).** `src/services/openclawMcpServer.ts` +
+   `src/server/openclawMcpRouter.ts`, built on the official
+   `@modelcontextprotocol/sdk` (not hand-rolled), exposing exactly
+   `update_lead` as a thin translation layer in front of the unmodified
+   `OpenClawToolGateway.invoke()` - no new WRITE tools, no direct DB/
+   repository access from the MCP layer, no second policy engine or rate
+   limiter, no bypass around the gateway. Authentication mirrors the
+   existing REST adapter exactly (Bearer callback token, hash-looked-up,
+   `businessId`/`cellId` taken only from the authenticated cell record,
+   never a tool argument). `chat_id`/`cell_generation` are ordinary
+   model-visible tool arguments - not a new design decision, but a direct
+   mirror of the REST adapter's own already-reviewed precedent (both are
+   caller-claimed there too; a wrong value only ever produces a real
+   gateway DENY via the existing fencing check, never a privilege
+   escalation). Idempotency reuses the gateway's existing
+   `idempotencyKey` conflict-detection - no second scheme. Feature-gated
+   and disabled by default (`OPENCLAW_MCP_SERVER_ENABLED=true` required
+   to mount the route).
+
+   Tested standalone against a real MCP client, twice, per the user's
+   explicit requirement, before any live-agent wiring: (1)
+   `test/openclawMcpServer.test.ts`, 24 tests against real Postgres and
+   the real gateway, using the SDK's own `Client` +
+   `InMemoryTransport.createLinkedPair()` - a genuine MCP session, not a
+   protocol fake - covering the full 12-point acceptance list (tool
+   exposure, real gateway reach, cross-tenant denial, invalid-auth
+   denial, idempotent replay, conflicting-key denial, stale-generation
+   denial, quarantine denial, field-allow-list denial); (2) a real
+   disposable end-to-end round trip - the actual server booted with the
+   flag on, a real business/cell/lead provisioned, driven over genuine
+   HTTP via raw `curl` JSON-RPC through the full
+   `initialize`/`notifications/initialized`/`tools/list`/`tools/call`
+   sequence, confirming real protocol negotiation
+   (`protocolVersion: "2025-11-25"`), a real 401 DENY on a bad token, and
+   a real lead-row mutation driven purely through the wire protocol.
+   624/624 tests passing, full typecheck clean, no regressions. See
+   `CHANGELOG_SECURITY.md`'s matching 2026-08-22 entry for the complete
+   evidence.
+
+   Remaining, per the user's explicit ordering: wire this MCP server into
+   a live OpenClaw agent/cell config (deliberately not done yet); enable
+   `OPENCLAW_MCP_SERVER_ENABLED` and tenant-allowlist behind a feature
+   flag, only after that live-wiring step is itself reviewed - the
+   existing Gemini/Baileys path on `phase-2-ai-repair` remains completely
+   untouched throughout.
 4. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
    internal analytics, or customer-facing analytics for tenants? Different
    answers imply different event schemas and access control. Not started.

@@ -25,6 +25,7 @@ import {
 } from '../services/workspaceService.js';
 import { whatsappOutboundMessageService, isChatNotFoundError as isOutboundChatNotFoundError } from '../services/whatsappOutboundMessageService.js';
 import { openclawAdapterRouter } from './openclawAdapterRouter.js';
+import { openclawMcpRouter } from './openclawMcpRouter.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
 import { checkRedisHealth } from '../redis/client.js';
@@ -271,6 +272,18 @@ app.use(express.json({ limit: '20mb' }));
 // See openclawAdapterRouter.ts/openclawAdapterService.ts; entirely
 // separate authorization path from every route under /api/workspace.
 app.use('/api/openclaw', openclawAdapterRouter);
+
+/**
+ * Real MCP wire-protocol surface for OpenClaw's `update_lead` tool -
+ * feature-gated and disabled by default. Mounting the route is not the
+ * same as wiring a live agent to it: no cell is configured with this
+ * endpoint until that separate, later step happens. Same authentication
+ * boundary as the REST adapter above (per-cell callback token), just a
+ * different wire protocol (`openclawMcpServer.ts`).
+ */
+if (process.env.OPENCLAW_MCP_SERVER_ENABLED === 'true') {
+  app.use('/api/openclaw/mcp', openclawMcpRouter);
+}
 
 app.get('/api/health', (_req, res) => {
   res.status(200).json({

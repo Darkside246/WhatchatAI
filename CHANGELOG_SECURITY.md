@@ -1,5 +1,94 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - OpenClaw Cell Runtime: real WhatchatAI MCP server (`update_lead`), standalone-tested against a real MCP client
+
+**Branch:** `openclaw-cell-runtime`. New files: `src/services/openclawMcpServer.ts`,
+`src/server/openclawMcpRouter.ts`, `test/openclawMcpServer.test.ts`. Modified:
+`src/server/index.ts` (feature-gated mount), `package.json`
+(`@modelcontextprotocol/sdk` added, the official SDK - not hand-rolled).
+
+**Scope, exactly as approved:** a thin MCP protocol-translation layer in
+front of the existing, unmodified `OpenClawToolGateway.invoke()`. Exposes
+exactly one tool, `update_lead`. No new WRITE tools, no direct database
+or repository access from the MCP layer, no second policy engine, no
+second rate limiter, no bypass around `openclawToolGateway.ts` - the
+gateway remains the sole authorization authority, unchanged.
+
+**Authentication mirrors the existing REST adapter exactly:**
+`authenticateOpenClawMcpCaller()` in `openclawMcpServer.ts` is the same
+Bearer-token, hash-looked-up mechanism `openclawAdapterService.ts`
+already uses (`OpenClawCellRepository.findByCallbackTokenHash`) - just
+read from the MCP transport's own request headers instead of an Express
+`req`. `businessId`/`cellId` come ONLY from the authenticated cell record
+this resolves to, never from an MCP tool argument - a cell cannot
+present its own real token and then claim to act as a different tenant
+or cell by writing a different value into `tools/call` arguments.
+
+**`chat_id`/`cell_generation` are ordinary tool arguments, not a new
+design decision:** the existing, already-reviewed REST adapter already
+treats both as caller-claimed body fields (see its own doc comment) -
+a wrong `cell_generation` only ever produces a real gateway DENY via the
+existing fencing check, never a privilege escalation, so exposing it as
+a model-visible MCP argument carries the same safety property the REST
+path already has. No new trust boundary was invented for this.
+
+**Idempotency:** the model's own `idempotency_key` argument is passed
+straight through to the gateway's existing conflict-detection logic - no
+second idempotency scheme.
+
+**Feature-gated, disabled by default:** `openclawMcpRouter` is only
+mounted at `/api/openclaw/mcp` when `OPENCLAW_MCP_SERVER_ENABLED=true`.
+Stateless Streamable HTTP transport (`sessionIdGenerator: undefined`) - a
+fresh `McpServer`/transport pair per request, bound to that request's own
+authenticated identity, no session state.
+
+**Tested standalone against a real MCP client, twice, before any
+live-agent wiring:**
+1. `test/openclawMcpServer.test.ts` (24 tests, real Postgres, real
+   `OpenClawToolGateway`) drives the real `@modelcontextprotocol/sdk`
+   `Client` class against the real `createOpenClawMcpServer()` via the
+   SDK's own `InMemoryTransport.createLinkedPair()` - a genuine MCP
+   client/server session, not a hand-rolled protocol fake. Covers:
+   `tools/list` exposes only `update_lead`; a real `tools/call` reaches
+   the gateway and actually mutates the lead; a stolen token from a
+   different tenant is denied even when arguments claim the victim's
+   entity/chat; invalid auth never reaches tool registration; idempotent
+   replay; conflicting idempotency-key reuse denied; stale generation
+   denied by the real fencing check; a quarantined cell denied; an
+   unrecognized field denied by the existing allow-list.
+2. Separately, a real disposable end-to-end round trip: the actual
+   server booted with `OPENCLAW_MCP_SERVER_ENABLED=true`, a real
+   business/cell/lead provisioned against a real dev Postgres, then
+   driven over genuine HTTP (raw `curl` JSON-RPC, not a library) through
+   `initialize` -> `notifications/initialized` -> `tools/list` ->
+   `tools/call`. Confirmed real protocol negotiation
+   (`protocolVersion: "2025-11-25"`), the real tool schema, a real DENY
+   on a bad token (401, correct JSON-RPC error shape), and a real lead
+   row mutation (`status: QUALIFIED`, `notes` set) driven purely through
+   the wire protocol. Disposable server/DB rows only - no production
+   data, no real OpenClaw cell involved.
+
+**Explicitly NOT done yet, per the user's own ordering:** this MCP
+server is not wired into any live OpenClaw agent or cell config, and the
+feature flag is not enabled anywhere - both remain the next, separate
+step once the user reviews this standalone verification.
+
+**Full 12-point acceptance criteria - all met:** `tools/list` exposes
+only `update_lead`; `tools/call` reaches the real
+`OpenClawToolGateway.invoke()`; no direct database mutation from the MCP
+layer; cell identity authenticated server-side; `business_id`/`cell_id`
+not overridable by model-controlled parameters; existing entity-ownership,
+fencing, idempotency, and quarantine checks all still execute unmodified;
+cross-tenant attempts denied; invalid authentication denied; replayed
+operations remain idempotent; conflicting idempotency reuse denied; the
+existing Gemini/Baileys AI-reply path is completely untouched; the
+component is feature-gated and disabled by default.
+
+**Status: `IMPLEMENTED AND VERIFIED (standalone)`.** Full test suite (624
+tests) and typecheck (backend + frontend) both pass with no regressions.
+Live-agent wiring and feature-flag activation remain a deliberately
+separate, later step.
+
 ## 2026-08-22 - OpenClaw Cell Runtime: state-directory permission fix confirmed correct on a real Linux filesystem
 
 **Branch:** `openclaw-cell-runtime`. Verification only - no code changed.
