@@ -1,5 +1,57 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - OpenClaw Cell Runtime: encrypted Gateway-token storage
+
+**Branch:** `openclaw-cell-runtime`, on top of `2e3f1a8`.
+
+Replaces the prior gap (the Gateway token was generated, passed to a
+cell's container env, and returned once, but never persisted anywhere -
+"an explicitly tracked gap, not an oversight") with real encrypted
+storage, using the same AES-256-GCM envelope mechanism every other
+tenant secret in this codebase already uses (`business_email_settings`,
+`business_goose_settings`) - not a new encryption scheme invented for
+this one field.
+
+**Migration `066_openclaw_gateway_token_encrypted.sql`:** adds
+`gateway_token_encrypted TEXT` to `openclaw_cells`. Deliberately
+different from `callback_token_hash` (migration 064): that credential is
+only ever verified by equality, so a one-way hash was correct; the
+Gateway token is the opposite direction - WhatchatAI would need it back
+as plaintext to call OUT to a cell's own Gateway API - so it needs
+reversible encryption, not a hash.
+
+**`openclawCellRepository.ts`:** `setGatewayToken`/`getGatewayToken`/
+`hasGatewayToken`, using the identical `encryptSecret`/`decryptSecret`
+helper shape `integrationSettingsRepository.ts` already established.
+Deliberately kept out of `OpenClawCellRecord`/`toRecord()` entirely
+(mirroring `callback_token_hash`'s own exclusion) - an ordinary
+`findByBusinessId`/`listAll` read can never carry the token, encrypted or
+not; only the three dedicated methods touch that column.
+
+**`openclawCellService.ts`:** `provisionCellForBusiness` now calls
+`repo.setGatewayToken` right after creation. `CellProvisionResult
+.gatewayToken` still returns the plaintext once, at the moment of
+provisioning - the same "shown once" pattern the callback token already
+used - but every read after that point requires the narrow, explicit
+`getGatewayToken` accessor rather than being present on any general
+record.
+
+**Verification:** 613/613 tests passing (20 new - repository round-trip,
+raw-column-never-contains-plaintext, `hasGatewayToken` without
+decrypting, ordinary-record-never-carries-it, plus service-level
+provisioning coverage), typecheck clean, migration 066 applies cleanly
+against real Postgres. (One unrelated, pre-existing flaky test in
+`agentGuard.test.ts` - a regex occasionally matching a random UUID's
+digit run - failed once and passed on immediate retry; not touched by
+this change, not fixed here.) **`IMPLEMENTED AND VERIFIED`** - same as
+`purgeData`, this is pure application/DB logic with no Docker dependency,
+so no real-hardware re-test is needed.
+
+**Still open, per the user's ordering:** the OpenClaw internal-agent/
+tool-invocation research (next); the feature flag, only after that. No
+provider credential enters a cell - this phase only secured the
+credential WhatchatAI itself already generates and controls.
+
 ## 2026-08-22 - OpenClaw Cell Runtime: purgeData containment implemented
 
 **Branch:** `openclaw-cell-runtime`, on top of `65a3daf`.

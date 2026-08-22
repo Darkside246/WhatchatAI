@@ -1,0 +1,12 @@
+-- The Gateway token a cell's own OpenClaw process is started with, stored
+-- as a reversible AES-256-GCM envelope via the same EncryptionService
+-- every other tenant secret in this codebase uses (business_email_settings,
+-- business_goose_settings) - never plaintext.
+--
+-- Deliberately different from callback_token_hash (migration 064): that
+-- credential is only ever verified by equality (a cell presents it to
+-- WhatchatAI), so a one-way hash is correct and nothing needs to read it
+-- back. This one is the opposite direction - WhatchatAI would need it back
+-- as plaintext to call OUT to a cell's own Gateway API - so it needs
+-- reversible encryption, not a hash.
+ALTER TABLE openclaw_cells ADD COLUMN gateway_token_encrypted TEXT;

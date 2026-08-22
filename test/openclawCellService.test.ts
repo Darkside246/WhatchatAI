@@ -109,6 +109,14 @@ describe('OpenClawCellService (real Postgres, fake OpenClawCellRuntime)', () => 
     expect(persisted?.cellState).toBe('RUNNING');
     expect(persisted?.securityStatus).toBe('SAFE');
     expect(await repo.findByCallbackTokenHash(hashCallbackToken(result.callbackToken as string))).not.toBeNull();
+
+    // The Gateway token is persisted encrypted (Phase 2) as well as
+    // returned once - it round-trips back to the exact same plaintext via
+    // the one narrow, explicit accessor, and never appears on the
+    // ordinary record shape at all (not even encrypted).
+    expect(await repo.getGatewayToken(businessId)).toBe(result.gatewayToken);
+    expect(await repo.hasGatewayToken(businessId)).toBe(true);
+    expect(JSON.stringify(persisted)).not.toContain(result.gatewayToken as string);
   });
 
   it('is idempotent: a second provision call never invokes the runtime again', async () => {
@@ -175,5 +183,64 @@ describe('OpenClawCellService (real Postgres, fake OpenClawCellRuntime)', () => 
     const otherBusinessId = await createTestBusiness('No Cell Business');
     await expect(service.removeCellForBusiness(otherBusinessId, { purgeData: false })).resolves.toBeUndefined();
     expect(runtime.remove).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Gateway token encrypted-at-rest guarantees, tested directly against the
+ * repository - same discipline `integrationSettings.test.ts` uses for
+ * `business_email_settings`/`business_goose_settings`: the property that
+ * matters is a real, raw column value that never contains the plaintext.
+ */
+describe('OpenClawCellRepository - Gateway token encryption at rest', () => {
+  let businessId: string;
+  const repo = new OpenClawCellRepository(pool);
+  const cellId = 'wc-encryptiontest';
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness('Gateway Token Tenant');
+    await repo.create({
+      businessId,
+      cellId,
+      deploymentVersion: '2026.7.1-2',
+      imageDigest: 'ghcr.io/openclaw/openclaw@sha256:8789721d2e9b24b780a1504b56deb4c6bd5c7dbf96a1dd117e7c45c2ed72c8ac',
+    });
+  });
+
+  it('stores the Gateway token encrypted, never as plaintext in the column', async () => {
+    await repo.setGatewayToken(businessId, 'a-real-looking-gateway-token-value');
+
+    const { rows } = await pool.query<{ gateway_token_encrypted: string | null }>(
+      'SELECT gateway_token_encrypted FROM openclaw_cells WHERE business_id = $1',
+      [businessId],
+    );
+    const stored = rows[0]?.gateway_token_encrypted ?? '';
+
+    expect(stored).not.toContain('a-real-looking-gateway-token-value');
+    expect(stored.length).toBeGreaterThan(0);
+    expect(await repo.getGatewayToken(businessId)).toBe('a-real-looking-gateway-token-value');
+  });
+
+  it('hasGatewayToken reports presence without ever decrypting', async () => {
+    expect(await repo.hasGatewayToken(businessId)).toBe(false);
+    await repo.setGatewayToken(businessId, 'another-token');
+    expect(await repo.hasGatewayToken(businessId)).toBe(true);
+  });
+
+  it('getGatewayToken returns null when nothing has been stored', async () => {
+    expect(await repo.getGatewayToken(businessId)).toBeNull();
+  });
+
+  it('the ordinary record shape (findByBusinessId/listAll) never carries the token, encrypted or not', async () => {
+    await repo.setGatewayToken(businessId, 'should-never-appear-here');
+
+    const record = await repo.findByBusinessId(businessId);
+    expect(JSON.stringify(record)).not.toContain('should-never-appear-here');
+    expect(record).not.toHaveProperty('gatewayToken');
+    expect(record).not.toHaveProperty('gatewayTokenEncrypted');
+
+    const all = await repo.listAll();
+    expect(JSON.stringify(all)).not.toContain('should-never-appear-here');
   });
 });

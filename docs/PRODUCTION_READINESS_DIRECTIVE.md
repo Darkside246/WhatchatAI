@@ -250,16 +250,30 @@ pasted directive without our own verification (`unverified`).
    thrown error naming the cell, rather than being reported as a silent
    successful cleanup.
 
-   Remaining, in order: (1) encrypted Gateway-token storage; (2) research
-   OpenClaw's real mechanism for pointing its own agent/tool-calling loop
-   at an external webhook (genuinely unresearched - do not guess at a
-   config format; a real boot log from this pass shows the gateway has
-   its own independent agent/model capability defaulting to
-   `openai/gpt-5.5`, never exercised, worth investigating as part of this
-   item); (3) OpenClaw behind a feature flag, tenant-allowlisted, only
-   after all of the
-   above - the existing Gemini/Baileys path on `phase-2-ai-repair`
-   remains completely untouched throughout.
+   **Encrypted Gateway-token storage: `IMPLEMENTED AND VERIFIED`
+   (2026-08-22).** Migration 066 adds `gateway_token_encrypted` to
+   `openclaw_cells`; `OpenClawCellRepository.setGatewayToken`/
+   `getGatewayToken`/`hasGatewayToken` use the identical AES-256-GCM
+   envelope mechanism (`EncryptionService`) `business_email_settings`/
+   `business_goose_settings` already use - not a new scheme invented for
+   this field. Deliberately kept out of `OpenClawCellRecord` entirely
+   (mirroring `callback_token_hash`'s own exclusion), so an ordinary
+   record read can never carry it, encrypted or not.
+   `provisionCellForBusiness` still returns the plaintext once, at the
+   moment of provisioning - the same "shown once" pattern the callback
+   token uses - never again after that. 613/613 tests passing (20 new),
+   pure application/DB logic with no Docker dependency, so - like
+   `purgeData` - no real-hardware re-test was needed.
+
+   Remaining, in order: (1) research OpenClaw's real mechanism for
+   pointing its own agent/tool-calling loop at an external webhook
+   (genuinely unresearched - do not guess at a config format; a real boot
+   log from this pass shows the gateway has its own independent
+   agent/model capability defaulting to `openai/gpt-5.5`, never exercised,
+   worth investigating as part of this item); (2) OpenClaw behind a
+   feature flag, tenant-allowlisted, only after that - the existing
+   Gemini/Baileys path on `phase-2-ai-repair` remains completely untouched
+   throughout.
 4. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
    internal analytics, or customer-facing analytics for tenants? Different
    answers imply different event schemas and access control. Not started.

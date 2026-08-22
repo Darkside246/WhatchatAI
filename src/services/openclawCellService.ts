@@ -53,12 +53,13 @@ export interface CellProvisionResult {
   cell: OpenClawCellRecord;
   /**
    * The Gateway token this service generated for the cell (previously
-   * Fleet's own job) - returned exactly once, never persisted (no
-   * encrypted-secret-storage integration exists yet - a real, explicitly
-   * tracked gap, not an oversight; see CHANGELOG_SECURITY.md). Nothing
-   * built so far calls a cell's own Gateway API directly - every
-   * lifecycle operation here goes through `docker`, not the Gateway - so
-   * this gap does not block anything currently implemented.
+   * Fleet's own job). Persisted encrypted via `OpenClawCellRepository
+   * .setGatewayToken` (AES-256-GCM envelope, same mechanism as every
+   * other tenant secret in this codebase) - but still returned here in
+   * plaintext exactly once, at the moment of provisioning, the same
+   * "shown once" pattern the callback token already used. No route or
+   * record read after this point ever exposes it again; retrieving it
+   * later requires the explicit, narrow `repo.getGatewayToken` call.
    */
   gatewayToken: string | null;
   /** The credential this cell must present when calling into WhatchatAI's own Tool Gateway adapter - see openclawCallbackTokenService.ts. Null on an idempotent no-op. */
@@ -115,6 +116,7 @@ export class OpenClawCellService {
     });
     await this.repo.updateCellState(businessId, 'RUNNING');
     await this.repo.setCallbackTokenHash(businessId, hashCallbackToken(callbackToken));
+    await this.repo.setGatewayToken(businessId, gatewayToken);
 
     return { cell: { ...cell, cellState: 'RUNNING' }, gatewayToken, callbackToken };
   }

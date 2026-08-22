@@ -1,4 +1,23 @@
 import type { Queryable } from './types.js';
+import { getEncryptionService } from '../security/encryption/index.js';
+
+/**
+ * Same encrypt/decrypt helper shape as `integrationSettingsRepository.ts`
+ * uses for `business_email_settings`/`business_goose_settings` - AES-256-
+ * GCM envelopes via the shared `EncryptionService`, serialized to a TEXT
+ * column, keyed per business.
+ */
+async function encryptSecret(businessId: string, plaintext: string): Promise<string> {
+  const service = getEncryptionService();
+  return service.serialize(await service.encryptField(businessId, plaintext));
+}
+
+async function decryptSecret(businessId: string, stored: string): Promise<string> {
+  const service = getEncryptionService();
+  const envelope = service.tryParse(stored);
+  if (!envelope) return stored; // not an envelope - a hand-edited or pre-encryption value, returned as-is rather than crashing
+  return service.decryptField(businessId, envelope);
+}
 
 export const CELL_SECURITY_STATUSES = ['SAFE', 'WARNING', 'CRITICAL', 'SECURITY_QUARANTINED'] as const;
 export type CellSecurityStatus = (typeof CELL_SECURITY_STATUSES)[number];
@@ -121,6 +140,46 @@ export class OpenClawCellRepository {
       'UPDATE openclaw_cells SET callback_token_hash = $2, updated_at = now() WHERE business_id = $1',
       [businessId, callbackTokenHash],
     );
+  }
+
+  /**
+   * Stores the Gateway token as a reversible encrypted envelope - never
+   * plaintext, and deliberately kept out of `OpenClawCellRecord`/`toRecord`
+   * entirely (same as `callback_token_hash`) so an ordinary
+   * `findByBusinessId`/`listAll` read can never carry it, even encrypted.
+   * Only `getGatewayToken`/`hasGatewayToken` below touch this column.
+   */
+  async setGatewayToken(businessId: string, gatewayToken: string): Promise<void> {
+    const encrypted = await encryptSecret(businessId, gatewayToken);
+    await this.db.query(
+      'UPDATE openclaw_cells SET gateway_token_encrypted = $2, updated_at = now() WHERE business_id = $1',
+      [businessId, encrypted],
+    );
+  }
+
+  /**
+   * Decrypts and returns the Gateway token, or null if none is stored.
+   * The one deliberately narrow escape hatch out of ciphertext-only
+   * storage - restricted to whichever control-plane code genuinely needs
+   * to call OUT to a cell's own Gateway API (nothing does yet).
+   */
+  async getGatewayToken(businessId: string): Promise<string | null> {
+    const { rows } = await this.db.query<{ gateway_token_encrypted: string | null }>(
+      'SELECT gateway_token_encrypted FROM openclaw_cells WHERE business_id = $1',
+      [businessId],
+    );
+    const encrypted = rows[0]?.gateway_token_encrypted ?? null;
+    if (!encrypted) return null;
+    return decryptSecret(businessId, encrypted);
+  }
+
+  /** Whether a Gateway token is currently stored, without ever decrypting it - what any status check should use instead of getGatewayToken. */
+  async hasGatewayToken(businessId: string): Promise<boolean> {
+    const { rows } = await this.db.query<{ gateway_token_encrypted: string | null }>(
+      'SELECT gateway_token_encrypted FROM openclaw_cells WHERE business_id = $1',
+      [businessId],
+    );
+    return (rows[0]?.gateway_token_encrypted ?? null) !== null;
   }
 
   async findByCellId(cellId: string): Promise<OpenClawCellRecord | null> {
