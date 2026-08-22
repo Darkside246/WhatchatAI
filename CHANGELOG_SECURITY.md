@@ -1,5 +1,88 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - Business Isolation Hardening (Phase 1 of the Knowledge Base 2.0 roadmap)
+
+**Why now:** before adding Knowledge Base 2.0 (document ingestion, Google
+Drive/Dropbox connectors, an AI "send this document" tool - all new
+cross-tenant risk surface), a real, evidence-based, read-only audit
+checked whether the existing codebase enforces per-business isolation
+structurally or only "by convention" (every call site remembering to
+re-check ownership after a bare `findById`). The audit found the
+foundation already solid - `businessId` is derived exclusively
+server-side, never from AI tool-call arguments, model output, or
+unauthenticated request input - but several repositories exposed only an
+unscoped `findById(id)`, relying on every caller to manually re-check
+`record.businessId === businessId` afterward. That is correct today, but
+it is not a structural guarantee, and it is exactly the kind of check a
+new Knowledge-Base/document-sending code path could miss under time
+pressure.
+
+**What changed:** added a tenant-scoped `findByIdForBusiness(id,
+businessId)` (or, for notifications, `findByIdForUser(id, userId)` -
+the real ownership boundary there is per-user, stricter than
+per-business) to eight repositories: `whatsappMediaRepository`,
+`whatsappChatRepository`, `whatsappMessageRepository`,
+`aiAgentRepository`, `teamRepository`, `businessMembershipRepository`,
+`notificationRepository`, and `crmContactRepository` (which already had
+a scoped method - only its dead, unused, unscoped `findById` was
+removed). Every real production caller of the old unscoped `findById`
+for business-owned data (~20 call sites across
+`workspaceService.ts`, `agentGuard.ts`, `agentRoutingService.ts`,
+`emailService.ts`, `entityOwnershipRegistry.ts`,
+`messageRevocationService.ts`/`messageRevocationWorker.ts`,
+`incomingMessagesWorker.ts`, `whatsappOutboundMessageService.ts`,
+`workspaceMemberService.ts`, `promptOptimizationService.ts`, and the
+`/api/media/:mediaId` route) was migrated to the scoped method, with
+now-redundant manual `record.businessId !== businessId` re-checks
+removed (any additional, non-ownership check - e.g. `whatsappAccountId`
+matching, `deletedAt`/`status` state - was kept, since that is a
+separate business rule, not tenant isolation). A cross-tenant id now
+returns `null` identically to a genuinely nonexistent one - the caller
+can never distinguish "doesn't exist" from "belongs to another
+business."
+
+**New adversarial cross-tenant tests** for the areas the audit flagged
+as previously untested: funnels (read/activate/edit/enroll/delete all
+denied against another business's real funnel id), `whatsapp_media`
+(both the AI-reply media-resolution path and the repository's own
+scoped lookup deny a real cross-tenant media id), outbound messages
+(`WhatsAppOutboundMessageService.send` refused for a real chat
+belonging to another business, and nothing gets queued), and
+subscriptions (`findLiveByBusiness` never returns another business's
+live subscription). Message revocation already had a genuine adversarial
+test (`refuses to touch another workspace's message`) that the audit's
+keyword search had simply missed.
+
+**New foundation, not yet wired in:** `src/domain/businessExecutionContext.ts`
+defines the one context shape (`businessId`, `actorType`,
+`actorId`, `requestId`) every business-scoped operation should
+eventually carry, with factories for the three real actor shapes this
+app has (`user` via session, `ai` via OpenClaw cell, `system` for
+scheduled sweeps) - each deriving its fields only from something
+already authenticated, never from a model or unauthenticated input.
+Deliberately not retrofitted into existing services in this pass (that
+would be a broad refactor, not hardening); introduced now so Knowledge
+Base 2.0's new services build against one consistent context from day
+one.
+
+**Explicitly out of scope for this pass** (by design, not oversight):
+this is repository/test hardening only, not a rewrite of the
+already-sound authorization pattern used elsewhere in the app. Two
+related findings were surfaced but deliberately left for a separate,
+explicitly-scoped decision: (1) `src/security/sentinel/heuristicShield.ts`'s
+executable-MIME-type block lowercases but does not strip MIME
+parameters, so a payload declaring e.g. `application/x-msdownload;
+name=x` could bypass it - flagged in the MIME-normalization entry below,
+not fixed here; (2) a pre-existing inconsistency in scoped-method
+parameter order was found (`crmContactRepository`/`funnelRepository`'s
+existing `findByIdForBusiness(businessId, id)` vs. the new methods'
+`findByIdForBusiness(id, businessId)`) - not unified in this pass to
+avoid touching those repositories' existing call sites beyond the
+approved scope, but worth a future consistency pass.
+
+**Verification:** typecheck clean, full suite 676/676 passing (93
+files, 8 new cross-tenant tests), production build clean.
+
 ## 2026-08-22 - Fix: real WhatsApp voice notes never reached Gemini (MIME comparison bug, not a missing capability)
 
 **Not a security change; logged here because this is the project's one

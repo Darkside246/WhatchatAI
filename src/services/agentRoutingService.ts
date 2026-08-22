@@ -109,8 +109,7 @@ export async function routeInboundMessage(businessId: string, messageText: strin
  */
 export async function resolveEscalationAgent(agent: AiAgentRecord): Promise<AiAgentRecord | null> {
   if (!agent.escalateToAgentId) return null;
-  const target = await agentRepository.findById(agent.escalateToAgentId);
+  const target = await agentRepository.findByIdForBusiness(agent.escalateToAgentId, agent.businessId);
   if (!target || target.deletedAt || target.status !== 'ACTIVE') return null;
-  if (target.businessId !== agent.businessId) return null;
   return target;
 }

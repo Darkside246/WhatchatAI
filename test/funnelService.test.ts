@@ -17,7 +17,7 @@ import {
   isFunnelNotFoundError,
 } from '../src/services/funnelService.js';
 import { SecurityAuditLogRepository } from '../src/repositories/securityAuditLogRepository.js';
-import { createTestAccount, resetDatabase } from './helpers.js';
+import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 import { isEntitlementDeniedError } from '../src/services/workspaceService.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
@@ -245,5 +245,32 @@ describe('funnelService (real step execution, real backend actions only)', () =>
 
     const log = await new SecurityAuditLogRepository(pool).listRecent(businessId);
     expect(log.some((entry) => entry.eventType === 'funnel_deleted')).toBe(true);
+  });
+
+  it('never lets a business read, edit, enroll into, or delete a funnel that belongs to a different business', async () => {
+    const funnel = await createFunnel(businessId, accountId, ownerId, 'Business A Funnel', null);
+    await replaceFunnelSteps(businessId, funnel.id, [{ nodeType: 'MESSAGE', config: { text: 'Hi' } }]);
+
+    const otherBusinessId = await createTestBusiness('Other Business');
+    const otherAccountId = await createTestAccount(otherBusinessId);
+    const otherCrmContactId = await makeContactWithChat(otherBusinessId, otherAccountId, '15559991099@s.whatsapp.net');
+
+    // Business A's own real funnel id, presented under Business B's context.
+    await expect(getFunnel(otherBusinessId, funnel.id)).rejects.toThrow();
+    await expect(setFunnelActive(otherBusinessId, funnel.id, true)).rejects.toThrow();
+    await expect(replaceFunnelSteps(otherBusinessId, funnel.id, [{ nodeType: 'MESSAGE', config: { text: 'Hijacked' } }])).rejects.toThrow();
+    await expect(enrollContact(otherBusinessId, funnel.id, otherCrmContactId)).rejects.toThrow();
+    await expect(deleteFunnel(otherBusinessId, funnel.id)).rejects.toThrow();
+
+    try {
+      await getFunnel(otherBusinessId, funnel.id);
+    } catch (error) {
+      expect(isFunnelNotFoundError(error)).toBe(true);
+    }
+
+    // The funnel was never actually touched by any of the denied Business B calls.
+    const stillOwnedByA = await getFunnel(businessId, funnel.id);
+    expect(stillOwnedByA.funnel.id).toBe(funnel.id);
+    expect(stillOwnedByA.funnel.isActive).toBe(false);
   });
 });

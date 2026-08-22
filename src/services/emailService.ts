@@ -350,10 +350,8 @@ export async function draftWithAi(
 ): Promise<DraftWithAiResult> {
   if (!emailProvider.isPlausibleEmail(input.toEmail)) throw new InvalidEmailError('That recipient address is not a valid email address.');
 
-  // Tenant check is explicit: findById is not business-scoped, so an agent
-  // id from another workspace must be refused here.
-  const agent = await agentRepository.findById(input.agentId);
-  if (!agent || agent.businessId !== businessId) throw new EmailNotFoundError('Agent not found.');
+  const agent = await agentRepository.findByIdForBusiness(input.agentId, businessId);
+  if (!agent) throw new EmailNotFoundError('Agent not found.');
 
   const genAi = getGeminiClient();
   if (!genAi) return { status: 'unavailable', reason: 'GEMINI_API_KEY is not configured, so no draft can be generated.' };

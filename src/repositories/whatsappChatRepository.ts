@@ -203,6 +203,19 @@ export class WhatsAppChatRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /**
+   * Tenant-scoped lookup - a chat id belonging to another business returns
+   * null, identically to a genuinely nonexistent id. Prefer this over the
+   * bare findById() for any caller that has a businessId in scope.
+   */
+  async findByIdForBusiness(id: string, businessId: string): Promise<WhatsAppChatRecord | null> {
+    const { rows } = await this.db.query<ChatRow>(
+      'SELECT * FROM whatsapp_chats WHERE id = $1 AND business_id = $2',
+      [id, businessId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
   async listByAccount(businessId: string, whatsappAccountId: string): Promise<WhatsAppChatRecord[]> {
     const { rows } = await this.db.query<ChatRow>(
       `SELECT * FROM whatsapp_chats

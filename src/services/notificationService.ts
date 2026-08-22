@@ -60,8 +60,8 @@ export async function listNotifications(businessId: string, userId: string, limi
 }
 
 async function requireOwnNotification(userId: string, notificationId: string): Promise<NotificationRecord> {
-  const notification = await notificationRepository.findById(notificationId);
-  if (!notification || notification.userId !== userId) throw new NotificationNotFoundError('Notification not found.');
+  const notification = await notificationRepository.findByIdForUser(notificationId, userId);
+  if (!notification) throw new NotificationNotFoundError('Notification not found.');
   return notification;
 }
 

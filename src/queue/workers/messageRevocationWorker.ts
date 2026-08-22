@@ -40,14 +40,14 @@ function isFinalAttempt(job: Job): boolean {
 async function revokeMessage(job: Job<RevocationJobData>, data: MessageRevocationJobData): Promise<void> {
   const { messageId, businessId } = data;
 
-  const message = await messageRepository.findById(messageId);
+  const message = await messageRepository.findByIdForBusiness(messageId, businessId);
   if (!message) {
     console.warn(`[MessageRevocationWorker] No such message ${messageId}`);
     return;
   }
   if (message.revokeStatus === 'revoke_sent') return; // already done; a retry must not double-send
 
-  const chat = await chatRepository.findById(message.chatId);
+  const chat = await chatRepository.findByIdForBusiness(message.chatId, businessId);
   if (!chat) {
     await messageRepository.markRevokeFailed(messageId, 'Chat no longer exists');
     return;

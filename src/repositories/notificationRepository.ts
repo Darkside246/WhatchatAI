@@ -127,6 +127,23 @@ export class NotificationRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /**
+   * Owner-scoped lookup - a notification id belonging to another user
+   * returns null, identically to a genuinely nonexistent id. This is the
+   * real ownership boundary the app enforces for notifications (stricter
+   * than business-level - one member never sees another member's
+   * notification row, even within the same business), so this scopes by
+   * userId, not businessId. Prefer this over the bare findById() for any
+   * caller that has a userId in scope.
+   */
+  async findByIdForUser(id: string, userId: string): Promise<NotificationRecord | null> {
+    const { rows } = await this.db.query<NotificationRow>(
+      'SELECT * FROM notifications WHERE id = $1 AND user_id = $2',
+      [id, userId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
   async markRead(id: string): Promise<NotificationRecord | null> {
     const { rows } = await this.db.query<NotificationRow>(
       `UPDATE notifications SET read_at = now() WHERE id = $1 AND read_at IS NULL RETURNING *`,

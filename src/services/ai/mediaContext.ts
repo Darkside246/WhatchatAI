@@ -58,7 +58,7 @@ export interface InlineMediaPart {
  * retrieved - callers must treat null as "reply text-only", not an error.
  */
 export async function resolveInlineMediaPart(businessId: string, mediaId: string): Promise<InlineMediaPart | null> {
-  const media = await mediaRepository.findById(mediaId);
+  const media = await mediaRepository.findByIdForBusiness(mediaId, businessId);
   if (!media || media.downloadStatus !== 'downloaded' || !media.storageReference) return null;
 
   // WhatsApp/Baileys report real mimeTypes with parameters attached (a

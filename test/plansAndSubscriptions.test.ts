@@ -86,4 +86,16 @@ describe('Plans and subscriptions', () => {
     expect(byId?.planKey).toBe('starter');
     expect(byId?.priceMonthlyCents).toBe(starter!.priceMonthlyCents);
   });
+
+  it('findLiveByBusiness never returns another business’s subscription - it can only ever look up by businessId, not by a caller-supplied subscription id', async () => {
+    const starter = await plans.findByKey('starter');
+    const ownSubscription = await subscriptions.ensureDefault(businessId, starter!.id);
+
+    const otherBusinessId = await createTestBusiness('Other Business');
+    const otherLookup = await subscriptions.findLiveByBusiness(otherBusinessId);
+    expect(otherLookup).toBeNull();
+
+    const ownLookup = await subscriptions.findLiveByBusiness(businessId);
+    expect(ownLookup?.id).toBe(ownSubscription.id);
+  });
 });

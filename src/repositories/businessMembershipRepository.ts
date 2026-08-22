@@ -98,6 +98,19 @@ export class BusinessMembershipRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /**
+   * Tenant-scoped lookup - a membership id belonging to another business
+   * returns null, identically to a genuinely nonexistent id. Prefer this
+   * over the bare findById() for any caller that has a businessId in scope.
+   */
+  async findByIdForBusiness(id: string, businessId: string): Promise<BusinessMembershipRecord | null> {
+    const { rows } = await this.db.query<MembershipRow>(
+      'SELECT * FROM business_memberships WHERE id = $1 AND business_id = $2',
+      [id, businessId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
   async listForBusiness(businessId: string): Promise<MembershipWithUser[]> {
     const { rows } = await this.db.query<MembershipWithUserRow>(
       `SELECT bm.*, u.email, u.display_name

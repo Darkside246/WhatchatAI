@@ -157,6 +157,30 @@ describe('resolveInlineMediaPart (real Postgres media row, real encrypted-at-res
     const part = await resolveInlineMediaPart(businessId, '00000000-0000-0000-0000-000000000000');
     expect(part).toBeNull();
   });
+
+  it('never resolves a real, downloaded, Gemini-supported media id that belongs to a different business - a stolen/guessed mediaId gets exactly the same null as a nonexistent one', async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId, accountJid);
+
+    const mediaId = await insertMediaMessage({ mimetype: 'image/jpeg', contentType: 'image' });
+    const plaintext = randomBytes(2048);
+    const sha256 = createHash('sha256').update(plaintext).digest('hex');
+    const storageReference = await storeMedia(businessId, sha256, plaintext);
+    const mediaRepository = new WhatsAppMediaRepository(pool);
+    await mediaRepository.setDownloadResult(mediaId, 'downloaded', storageReference, sha256, plaintext.length);
+
+    const otherBusinessId = await createTestBusiness('Other Business');
+    const part = await resolveInlineMediaPart(otherBusinessId, mediaId);
+    expect(part).toBeNull();
+
+    // The repository's own scoped lookup denies it too - the AI path is not
+    // the only place this is enforced.
+    const scoped = await mediaRepository.findByIdForBusiness(mediaId, otherBusinessId);
+    expect(scoped).toBeNull();
+    const ownedByRealBusiness = await mediaRepository.findByIdForBusiness(mediaId, businessId);
+    expect(ownedByRealBusiness).not.toBeNull();
+  });
 });
 
 describe('mediaFallbackText (pure, honest placeholder text)', () => {

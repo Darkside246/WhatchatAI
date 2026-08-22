@@ -138,11 +138,6 @@ export class CrmContactRepository {
     return toRecord(row);
   }
 
-  async findById(id: string): Promise<CrmContactRecord | null> {
-    const { rows } = await this.db.query<CrmContactRow>('SELECT * FROM crm_contacts WHERE id = $1', [id]);
-    return rows[0] ? toRecord(rows[0]) : null;
-  }
-
   /** Tenant-scoped lookup - confirms a crm_contact id genuinely belongs to this business before it's used to attach anything (e.g. a new lead). */
   async findByIdForBusiness(businessId: string, id: string): Promise<CrmContactRecord | null> {
     const { rows } = await this.db.query<CrmContactRow>(

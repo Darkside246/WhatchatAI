@@ -40,8 +40,8 @@ export class LeadOwnershipResolver implements EntityOwnershipResolver {
     // another tenant" to the caller - both are NOT_FOUND.
     if (!lead || lead.businessId !== businessId) return 'NOT_FOUND';
 
-    const chat = await this.chatRepo.findById(chatId);
-    if (!chat || chat.businessId !== businessId || !chat.contactId) return 'NOT_AUTHORIZED';
+    const chat = await this.chatRepo.findByIdForBusiness(chatId, businessId);
+    if (!chat || !chat.contactId) return 'NOT_AUTHORIZED';
 
     const crmContact = await this.crmContactRepo.findByWhatsAppContact(businessId, chat.contactId);
     if (!crmContact) return 'NOT_AUTHORIZED';

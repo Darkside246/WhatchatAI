@@ -18,8 +18,8 @@ export class PromptOptimizationAlreadyDecidedError extends Error {}
 const MAX_INSTRUCTION_LENGTH = 8_000;
 
 async function requireOwnedAgent(businessId: string, agentId: string) {
-  const agent = await agentRepository.findById(agentId);
-  if (!agent || agent.businessId !== businessId || agent.deletedAt) {
+  const agent = await agentRepository.findByIdForBusiness(agentId, businessId);
+  if (!agent || agent.deletedAt) {
     throw new AgentNotFoundError('AI agent not found.');
   }
   return agent;

@@ -52,8 +52,8 @@ export class WhatsAppOutboundMessageService {
    * retry) always returns the one real send request, never enqueues a second.
    */
   async send(input: SendOutboundMessageInput): Promise<WhatsAppOutboundMessageRecord> {
-    const chat = await this.chatRepository.findById(input.chatId);
-    if (!chat || chat.businessId !== input.businessId || chat.whatsappAccountId !== input.whatsappAccountId) {
+    const chat = await this.chatRepository.findByIdForBusiness(input.chatId, input.businessId);
+    if (!chat || chat.whatsappAccountId !== input.whatsappAccountId) {
       const error = new Error('Chat not found for this business.') as ChatNotFoundError;
       error.code = 'CHAT_NOT_FOUND';
       throw error;

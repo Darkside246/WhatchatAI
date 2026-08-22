@@ -58,8 +58,8 @@ function isWithinWindow(timestamp: string): boolean {
  * back from WhatsApp.
  */
 export async function revokeMessage(businessId: string, messageId: string, requestedBy: string): Promise<void> {
-  const message = await messageRepository.findById(messageId);
-  if (!message || message.businessId !== businessId) throw new RevocationNotFoundError('Message not found.');
+  const message = await messageRepository.findByIdForBusiness(messageId, businessId);
+  if (!message) throw new RevocationNotFoundError('Message not found.');
 
   if (!message.fromMe) {
     throw new NotRevocableError('WhatsApp only lets the sender delete a message for everyone - this one is not yours.');
@@ -71,8 +71,8 @@ export async function revokeMessage(businessId: string, messageId: string, reque
     throw new NotRevocableError('This message is older than WhatsApp’s delete-for-everyone window, so it can no longer be deleted for everyone.');
   }
 
-  const chat = await chatRepository.findById(message.chatId);
-  if (!chat || chat.businessId !== businessId) throw new RevocationNotFoundError('Chat not found.');
+  const chat = await chatRepository.findByIdForBusiness(message.chatId, businessId);
+  if (!chat) throw new RevocationNotFoundError('Chat not found.');
 
   const claimed = await messageRepository.markRevokeRequested(messageId, businessId, requestedBy);
   if (!claimed) throw new NotRevocableError('This message can no longer be deleted for everyone.');
@@ -110,7 +110,7 @@ export async function recallCampaign(businessId: string, campaignId: string, req
   let queued = 0;
 
   for (const candidate of candidates) {
-    const message = await messageRepository.findById(candidate.messageId);
+    const message = await messageRepository.findByIdForBusiness(candidate.messageId, businessId);
     if (!message) continue;
     if (!isWithinWindow(message.timestamp)) {
       skipped.push({ messageId: candidate.messageId, reason: 'Past WhatsApp’s delete-for-everyone window' });

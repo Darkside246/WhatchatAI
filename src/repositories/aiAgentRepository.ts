@@ -220,6 +220,19 @@ export class AiAgentRepository {
   }
 
   /**
+   * Tenant-scoped lookup - an agent id belonging to another business
+   * returns null, identically to a genuinely nonexistent id. Prefer this
+   * over the bare findById() for any caller that has a businessId in scope.
+   */
+  async findByIdForBusiness(id: string, businessId: string): Promise<AiAgentRecord | null> {
+    const { rows } = await this.db.query<AiAgentRow>(
+      'SELECT * FROM ai_agents WHERE id = $1 AND business_id = $2',
+      [id, businessId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
    * No agent-to-conversation routing exists yet (see migration 022's own
    * comment) - single-agent-per-business is the honest v1 scope, so the
    * most recently created ACTIVE agent is the one used for every AI-driven

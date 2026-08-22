@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 import { WhatsAppOutboundMessageRepository } from '../src/repositories/whatsappOutboundMessageRepository.js';
+import { WhatsAppOutboundMessageService, isChatNotFoundError } from '../src/services/whatsappOutboundMessageService.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 
 describe('WhatsAppOutboundMessageRepository (real Postgres)', () => {
@@ -280,5 +281,50 @@ describe('WhatsAppOutboundMessageRepository (real Postgres)', () => {
 
     const updated = await repository.findById(record.id);
     expect(updated?.messageId).toBe(messageId);
+  });
+});
+
+describe('WhatsAppOutboundMessageService.send (real cross-tenant denial)', () => {
+  it('refuses to send into a real chat that belongs to a different business, even with a genuine chatId', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    const accountId = await createTestAccount(businessId);
+    const chatRepository = new WhatsAppChatRepository(pool);
+    const chat = await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550009999@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+
+    const otherBusinessId = await createTestBusiness('Other Business');
+    const otherAccountId = await createTestAccount(otherBusinessId);
+
+    const service = new WhatsAppOutboundMessageService();
+    await expect(
+      service.send({
+        businessId: otherBusinessId,
+        whatsappAccountId: otherAccountId,
+        chatId: chat.id,
+        messageType: 'text',
+        text: 'Hijacked send attempt',
+      }),
+    ).rejects.toThrow();
+
+    try {
+      await service.send({
+        businessId: otherBusinessId,
+        whatsappAccountId: otherAccountId,
+        chatId: chat.id,
+        messageType: 'text',
+        text: 'Hijacked send attempt',
+      });
+    } catch (error) {
+      expect(isChatNotFoundError(error)).toBe(true);
+    }
+
+    const { rows } = await pool.query<{ id: string }>('SELECT id FROM whatsapp_outbound_messages WHERE chat_id = $1', [chat.id]);
+    expect(rows).toHaveLength(0);
   });
 });

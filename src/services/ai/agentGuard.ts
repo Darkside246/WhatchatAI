@@ -123,8 +123,8 @@ export async function guardToolInvocation(toolName: string, context: ToolInvocat
     return denyAndAudit('Tool invocation for an unknown business', toolName, context, UnknownTenantError);
   }
 
-  const agent = await aiAgentRepository.findById(context.agentId).catch(() => null);
-  if (!agent || agent.businessId !== context.businessId || agent.status !== 'ACTIVE') {
+  const agent = await aiAgentRepository.findByIdForBusiness(context.agentId, context.businessId).catch(() => null);
+  if (!agent || agent.status !== 'ACTIVE') {
     return denyAndAudit('Tool invocation from an unknown or cross-tenant agent', toolName, context, UnknownActorError);
   }
 

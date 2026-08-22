@@ -173,6 +173,20 @@ export class WhatsAppMediaRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /**
+   * Tenant-scoped lookup - a media id belonging to another business returns
+   * null, identically to a genuinely nonexistent id, so a caller can never
+   * distinguish "not found" from "exists in another tenant." Prefer this
+   * over the bare findById() for any caller that has a businessId in scope.
+   */
+  async findByIdForBusiness(id: string, businessId: string): Promise<WhatsAppMediaRecord | null> {
+    const { rows } = await this.db.query<MediaRow>(
+      'SELECT * FROM whatsapp_media WHERE id = $1 AND business_id = $2',
+      [id, businessId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
   async findByIds(ids: string[]): Promise<WhatsAppMediaRecord[]> {
     if (ids.length === 0) return [];
     const { rows } = await this.db.query<MediaRow>('SELECT * FROM whatsapp_media WHERE id = ANY($1)', [ids]);

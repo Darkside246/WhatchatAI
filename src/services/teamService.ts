@@ -16,8 +16,8 @@ export class DuplicateTeamNameError extends Error {}
 export class UserNotBusinessMemberError extends Error {}
 
 async function requireOwnTeam(businessId: string, teamId: string): Promise<TeamRecord> {
-  const team = await teamRepository.findById(teamId);
-  if (!team || team.businessId !== businessId) throw new TeamNotFoundError('Team not found.');
+  const team = await teamRepository.findByIdForBusiness(teamId, businessId);
+  if (!team) throw new TeamNotFoundError('Team not found.');
   return team;
 }
 

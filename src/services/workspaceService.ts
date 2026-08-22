@@ -368,7 +368,7 @@ export class WorkspaceService {
       let lastMessagePreview: string | null = null;
       let lastMessageType: string | null = null;
       if (chat.lastMessageId) {
-        const lastMessage = await this.messageRepository.findById(chat.lastMessageId);
+        const lastMessage = await this.messageRepository.findByIdForBusiness(chat.lastMessageId, businessId);
         lastMessagePreview = lastMessage?.textContent ?? (lastMessage ? describeMessageType(lastMessage.messageType) : null);
         lastMessageType = lastMessage?.messageType ?? null;
       }
@@ -538,8 +538,8 @@ export class WorkspaceService {
   }
 
   async getChatDetail(businessId: string, whatsappAccountId: string, chatId: string) {
-    const chat = await this.chatRepository.findById(chatId);
-    if (!chat || chat.businessId !== businessId || chat.whatsappAccountId !== whatsappAccountId) {
+    const chat = await this.chatRepository.findByIdForBusiness(chatId, businessId);
+    if (!chat || chat.whatsappAccountId !== whatsappAccountId) {
       throw this.notFound();
     }
 
@@ -574,8 +574,8 @@ export class WorkspaceService {
     chatId: string,
     limit = 50,
   ): Promise<WorkspaceMessageSummary[]> {
-    const chat = await this.chatRepository.findById(chatId);
-    if (!chat || chat.businessId !== businessId || chat.whatsappAccountId !== whatsappAccountId) {
+    const chat = await this.chatRepository.findByIdForBusiness(chatId, businessId);
+    if (!chat || chat.whatsappAccountId !== whatsappAccountId) {
       throw this.notFound();
     }
     const messages = await this.messageRepository.listByChat(chatId, limit);
@@ -622,8 +622,8 @@ export class WorkspaceService {
   }
 
   async setAiMode(businessId: string, whatsappAccountId: string, chatId: string, aiMode: ChatAiMode) {
-    const chat = await this.chatRepository.findById(chatId);
-    if (!chat || chat.businessId !== businessId || chat.whatsappAccountId !== whatsappAccountId) {
+    const chat = await this.chatRepository.findByIdForBusiness(chatId, businessId);
+    if (!chat || chat.whatsappAccountId !== whatsappAccountId) {
       throw this.notFound();
     }
     const updated = await this.chatRepository.setAiMode(chatId, aiMode);
@@ -668,14 +668,14 @@ export class WorkspaceService {
     chatId: string,
     input: { assigneeUserId: string | null; assigneeTeamId: string | null },
   ) {
-    const chat = await this.chatRepository.findById(chatId);
-    if (!chat || chat.businessId !== businessId || chat.whatsappAccountId !== whatsappAccountId) {
+    const chat = await this.chatRepository.findByIdForBusiness(chatId, businessId);
+    if (!chat || chat.whatsappAccountId !== whatsappAccountId) {
       throw this.notFound();
     }
 
     if (input.assigneeTeamId) {
-      const team = await this.teamRepository.findById(input.assigneeTeamId);
-      if (!team || team.businessId !== businessId) throw this.invalidAssignment();
+      const team = await this.teamRepository.findByIdForBusiness(input.assigneeTeamId, businessId);
+      if (!team) throw this.invalidAssignment();
     }
 
     if (input.assigneeUserId) {
@@ -746,11 +746,11 @@ export class WorkspaceService {
    * this method's job ends at the send, not the bookkeeping.
    */
   async sendReaction(businessId: string, whatsappAccountId: string, messageId: string, emoji: string): Promise<void> {
-    const message = await this.messageRepository.findById(messageId);
-    if (!message || message.businessId !== businessId || message.whatsappAccountId !== whatsappAccountId) {
+    const message = await this.messageRepository.findByIdForBusiness(messageId, businessId);
+    if (!message || message.whatsappAccountId !== whatsappAccountId) {
       throw this.notFound();
     }
-    const chat = await this.chatRepository.findById(message.chatId);
+    const chat = await this.chatRepository.findByIdForBusiness(message.chatId, businessId);
     if (!chat) throw this.notFound();
 
     await whatsappConnectionService.sendReaction(
@@ -766,8 +766,8 @@ export class WorkspaceService {
 
   /** The user actually opened and viewed this conversation - resets the real unread counter, never fabricates a "seen" state otherwise. */
   async markChatRead(businessId: string, whatsappAccountId: string, chatId: string) {
-    const chat = await this.chatRepository.findById(chatId);
-    if (!chat || chat.businessId !== businessId || chat.whatsappAccountId !== whatsappAccountId) {
+    const chat = await this.chatRepository.findByIdForBusiness(chatId, businessId);
+    if (!chat || chat.whatsappAccountId !== whatsappAccountId) {
       throw this.notFound();
     }
     return this.chatRepository.resetUnreadCount(chatId);
@@ -804,14 +804,14 @@ export class WorkspaceService {
    * parent.
    */
   async updateAgent(businessId: string, agentId: string, input: CreateAgentInput): Promise<AiAgentRecord> {
-    const agent = await this.agentRepository.findById(agentId);
-    if (!agent || agent.businessId !== businessId || agent.deletedAt) throw this.notFound();
+    const agent = await this.agentRepository.findByIdForBusiness(agentId, businessId);
+    if (!agent || agent.deletedAt) throw this.notFound();
 
     for (const linkedId of [input.parentAgentId, input.escalateToAgentId]) {
       if (!linkedId) continue;
       if (linkedId === agentId) throw this.notFound();
-      const linked = await this.agentRepository.findById(linkedId);
-      if (!linked || linked.businessId !== businessId || linked.deletedAt) throw this.notFound();
+      const linked = await this.agentRepository.findByIdForBusiness(linkedId, businessId);
+      if (!linked || linked.deletedAt) throw this.notFound();
     }
 
     const updated = await this.agentRepository.update(agentId, input);
@@ -832,8 +832,8 @@ export class WorkspaceService {
    * never be able to alter routing behaviour.
    */
   async updateAgentPosition(businessId: string, agentId: string, x: number, y: number): Promise<void> {
-    const agent = await this.agentRepository.findById(agentId);
-    if (!agent || agent.businessId !== businessId || agent.deletedAt) throw this.notFound();
+    const agent = await this.agentRepository.findByIdForBusiness(agentId, businessId);
+    if (!agent || agent.deletedAt) throw this.notFound();
     await this.agentRepository.updatePosition(agentId, x, y);
   }
 
@@ -844,8 +844,8 @@ export class WorkspaceService {
    * without needing a separate "enabled" flag anywhere else.
    */
   async updateAgentStatus(businessId: string, agentId: string, status: AgentStatus): Promise<AiAgentRecord> {
-    const agent = await this.agentRepository.findById(agentId);
-    if (!agent || agent.businessId !== businessId || agent.deletedAt) {
+    const agent = await this.agentRepository.findByIdForBusiness(agentId, businessId);
+    if (!agent || agent.deletedAt) {
       throw this.notFound();
     }
     await this.agentRepository.updateStatus(agentId, status);

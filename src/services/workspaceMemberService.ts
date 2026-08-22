@@ -96,8 +96,8 @@ export async function createMember(
 }
 
 async function requireOwnMembership(businessId: string, membershipId: string) {
-  const membership = await membershipRepository.findById(membershipId);
-  if (!membership || membership.businessId !== businessId) throw new MembershipNotFoundError('Member not found.');
+  const membership = await membershipRepository.findByIdForBusiness(membershipId, businessId);
+  if (!membership) throw new MembershipNotFoundError('Member not found.');
   return membership;
 }
 

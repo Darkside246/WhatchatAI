@@ -2225,9 +2225,9 @@ app.post('/api/workspace/notifications/read-all', async (_req, res) => {
 app.get('/api/media/:mediaId', requireAuth, requireWorkspaceContext, async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const mediaId = String(req.params.mediaId ?? '');
-  const media = await new WhatsAppMediaRepository(pool).findById(mediaId);
+  const media = await new WhatsAppMediaRepository(pool).findByIdForBusiness(mediaId, businessId);
 
-  if (!media || media.businessId !== businessId) {
+  if (!media) {
     return res.status(404).json({ error: 'MEDIA_NOT_FOUND' });
   }
   if (media.downloadStatus === 'pending' || media.downloadStatus === 'downloading') {

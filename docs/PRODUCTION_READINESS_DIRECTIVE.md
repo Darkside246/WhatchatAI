@@ -73,6 +73,24 @@ entry, real tests, and a passing full suite at the time it landed:
    request path" producers were actually awaited by real HTTP routes
    (`scheduleStatus`, `approveAndSend`, all three revocation functions).
    All six remaining call sites now wrapped. `IMPLEMENTED AND VERIFIED`.
+5. **Business Isolation Hardening (Phase 1 of the Knowledge Base 2.0
+   roadmap)** - a real, evidence-based audit confirmed `businessId` is
+   already derived exclusively server-side everywhere (never from AI
+   tool-call arguments, model output, or unauthenticated request input),
+   but 8 repositories exposed only an unscoped `findById`, relying on
+   every caller to manually re-check ownership afterward. Added
+   tenant-scoped `findByIdForBusiness`/`findByIdForUser` variants to all
+   8 and migrated every real production caller (~20 call sites) to them,
+   removing now-redundant manual checks. Added the adversarial
+   cross-tenant tests the audit found missing (funnels, whatsapp_media,
+   outbound messages, subscriptions); message revocation already had
+   one. Introduced `src/domain/businessExecutionContext.ts` (the shared
+   context shape for Phase 2+) without retrofitting existing services.
+   `IMPLEMENTED AND VERIFIED` - see `CHANGELOG_SECURITY.md` for full
+   detail. Knowledge Base 2.0 itself (Phases 2-6: document security
+   model, PDF/DOCX ingestion, Google Drive/Dropbox connectors, AI
+   document-sending, adversarial real-world testing) remains explicitly
+   gated behind this and not yet started.
 
 ## Real, currently-open gaps - this is the actual remaining backlog
 

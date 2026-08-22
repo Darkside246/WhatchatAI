@@ -76,6 +76,19 @@ export class TeamRepository {
     return rows[0] ? toTeamRecord(rows[0]) : null;
   }
 
+  /**
+   * Tenant-scoped lookup - a team id belonging to another business returns
+   * null, identically to a genuinely nonexistent id. Prefer this over the
+   * bare findById() for any caller that has a businessId in scope.
+   */
+  async findByIdForBusiness(id: string, businessId: string): Promise<TeamRecord | null> {
+    const { rows } = await this.db.query<TeamRow>(
+      'SELECT * FROM teams WHERE id = $1 AND business_id = $2',
+      [id, businessId],
+    );
+    return rows[0] ? toTeamRecord(rows[0]) : null;
+  }
+
   async listForBusiness(businessId: string): Promise<TeamRecord[]> {
     const { rows } = await this.db.query<TeamRow>('SELECT * FROM teams WHERE business_id = $1 ORDER BY created_at', [businessId]);
     return rows.map(toTeamRecord);

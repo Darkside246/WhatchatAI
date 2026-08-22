@@ -260,7 +260,7 @@ async function maybeTriggerMediaAiHandoff(
 ): Promise<void> {
   if (message.fromMe || message.isHistorical) return;
 
-  const chat = await chatRepository.findById(message.chatId);
+  const chat = await chatRepository.findByIdForBusiness(message.chatId, message.businessId);
   if (!chat || chat.aiMode !== 'AI_ACTIVE') return;
 
   const mediaAvailable = media.downloadStatus === 'downloaded';
@@ -373,9 +373,9 @@ async function processMediaDownload(data: MediaDownloadJobData): Promise<void> {
 
   await mediaRepository.setDownloadResult(mediaId, status, storageReference, sha256Hex, fileSize);
 
-  const media = await mediaRepository.findById(mediaId);
+  const media = await mediaRepository.findByIdForBusiness(mediaId, businessId);
   if (media?.messageId) {
-    const message = await messageRepository.findById(media.messageId);
+    const message = await messageRepository.findByIdForBusiness(media.messageId, businessId);
     if (message) {
       await publishRealtimeEvent({ type: 'media.updated', businessId, mediaId, messageId: message.id, chatId: message.chatId });
       await maybeTriggerMediaAiHandoff(message, media);

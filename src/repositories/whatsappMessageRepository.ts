@@ -193,6 +193,19 @@ export class WhatsAppMessageRepository {
     return rows[0] ? toRecord(rows[0], false) : null;
   }
 
+  /**
+   * Tenant-scoped lookup - a message id belonging to another business
+   * returns null, identically to a genuinely nonexistent id. Prefer this
+   * over the bare findById() for any caller that has a businessId in scope.
+   */
+  async findByIdForBusiness(id: string, businessId: string): Promise<WhatsAppMessageRecord | null> {
+    const { rows } = await this.db.query<MessageRow>(
+      'SELECT * FROM whatsapp_messages WHERE id = $1 AND business_id = $2',
+      [id, businessId],
+    );
+    return rows[0] ? toRecord(rows[0], false) : null;
+  }
+
   async updateStatus(id: string, status: MessageStatus): Promise<void> {
     await this.db.query('UPDATE whatsapp_messages SET status = $2, updated_at = now() WHERE id = $1', [id, status]);
   }

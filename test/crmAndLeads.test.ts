@@ -129,7 +129,7 @@ describe('CRM contacts and leads', () => {
       });
       expect(result).toBeNull();
 
-      const untouched = await crmContacts.findById(crmContact.id);
+      const untouched = await crmContacts.findByIdForBusiness(businessId, crmContact.id);
       expect(untouched?.stage).toBeNull();
     });
   });
