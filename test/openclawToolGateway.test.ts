@@ -4,7 +4,7 @@ import { WhatsAppContactRepository } from '../src/repositories/whatsappContactRe
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 import { CrmContactRepository } from '../src/repositories/crmContactRepository.js';
 import { LeadRepository } from '../src/repositories/leadRepository.js';
-import { OpenClawFleetCellRepository } from '../src/repositories/openclawFleetCellRepository.js';
+import { OpenClawCellRepository } from '../src/repositories/openclawCellRepository.js';
 import { OpenClawToolGateway } from '../src/services/openclawToolGateway.js';
 import { entityOwnershipRegistry } from '../src/services/entityOwnershipRegistry.js';
 import { isToolRegistered, listRegisteredTools } from '../src/services/ai/aiToolPolicy.js';
@@ -19,7 +19,7 @@ import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.
  */
 describe('OpenClawToolGateway - update_lead adversarial acceptance suite', () => {
   const gateway = new OpenClawToolGateway();
-  const fleetCellRepo = new OpenClawFleetCellRepository(pool);
+  const cellRepo = new OpenClawCellRepository(pool);
   const leadRepo = new LeadRepository(pool);
   const crmContactRepo = new CrmContactRepository(pool);
   const chatRepo = new WhatsAppChatRepository(pool);
@@ -59,9 +59,9 @@ describe('OpenClawToolGateway - update_lead adversarial acceptance suite', () =>
 
     const lead = await leadRepo.create({ businessId: bizId, crmContactId: crmContact.id, stage: 'new' });
 
-    const cell = await fleetCellRepo.create({
+    const cell = await cellRepo.create({
       businessId: bizId,
-      fleetCellId: `wc-${bizId.replace(/-/g, '')}`.slice(0, 40),
+      cellId: `wc-${bizId.replace(/-/g, '')}`.slice(0, 40),
       deploymentVersion: '2026.7.1-2',
       imageDigest: 'ghcr.io/openclaw/openclaw@sha256:8789721d2e9b24b780a1504b56deb4c6bd5c7dbf96a1dd117e7c45c2ed72c8ac',
     });
@@ -72,7 +72,7 @@ describe('OpenClawToolGateway - update_lead adversarial acceptance suite', () =>
   function baseRequest(overrides: Partial<Parameters<OpenClawToolGateway['invoke']>[0]> = {}) {
     return {
       businessId,
-      fleetCellId: `wc-${businessId.replace(/-/g, '')}`.slice(0, 40),
+      cellId: `wc-${businessId.replace(/-/g, '')}`.slice(0, 40),
       cellGeneration: 1,
       chatId,
       toolName: 'update_lead',
@@ -196,7 +196,7 @@ describe('OpenClawToolGateway - update_lead adversarial acceptance suite', () =>
   });
 
   it('DENIES every request from a SECURITY_QUARANTINED cell', async () => {
-    await fleetCellRepo.quarantine(businessId, 'test quarantine');
+    await cellRepo.quarantine(businessId, 'test quarantine');
     const result = await gateway.invoke(baseRequest());
     expect(result.outcome).toBe('DENIED');
     if (result.outcome === 'DENIED') expect(result.reason).toMatch(/SECURITY_QUARANTINED/);

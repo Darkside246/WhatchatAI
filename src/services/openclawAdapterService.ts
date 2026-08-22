@@ -1,4 +1,4 @@
-import { OpenClawFleetCellRepository } from '../repositories/openclawFleetCellRepository.js';
+import { OpenClawCellRepository } from '../repositories/openclawCellRepository.js';
 import { hashCallbackToken } from './openclawCallbackTokenService.js';
 import { OpenClawToolGateway, openclawToolGateway } from './openclawToolGateway.js';
 import { pool } from '../db/pool.js';
@@ -21,7 +21,7 @@ function isNonEmptyString(value: unknown): value is string {
  *
  * Authentication is Bearer-token, hash-looked-up (mirrors session
  * cookies - see openclawCallbackTokenService.ts) - and critically, the
- * businessId/fleetCellId/generation used for the actual gateway call
+ * businessId/cellId/generation used for the actual gateway call
  * come ONLY from the authenticated cell record this token resolves to,
  * never from anything the request body claims. A cell cannot present
  * its own real token and then ask to act as a different tenant, a
@@ -36,7 +36,7 @@ function isNonEmptyString(value: unknown): value is string {
 export async function handleOpenClawToolInvokeRequest(
   authorizationHeader: string | undefined,
   body: unknown,
-  fleetCellRepo: OpenClawFleetCellRepository = new OpenClawFleetCellRepository(pool),
+  cellRepo: OpenClawCellRepository = new OpenClawCellRepository(pool),
   gateway: OpenClawToolGateway = openclawToolGateway,
 ): Promise<OpenClawAdapterResponse> {
   const bearerMatch = /^Bearer\s+(\S+)$/i.exec(authorizationHeader ?? '');
@@ -45,7 +45,7 @@ export async function handleOpenClawToolInvokeRequest(
   }
   const rawToken = bearerMatch[1] as string;
 
-  const cell = await fleetCellRepo.findByCallbackTokenHash(hashCallbackToken(rawToken));
+  const cell = await cellRepo.findByCallbackTokenHash(hashCallbackToken(rawToken));
   if (!cell) {
     return { httpStatus: 401, body: { error: 'invalid callback token' } };
   }
@@ -69,7 +69,7 @@ export async function handleOpenClawToolInvokeRequest(
   const outcome = await gateway.invoke({
     // Authenticated identity - never taken from the body, even if present.
     businessId: cell.businessId,
-    fleetCellId: cell.fleetCellId,
+    cellId: cell.cellId,
     // Caller-claimed, checked by the gateway against the cell's real
     // stored generation - a mismatch is a real DENY, not trusted input.
     cellGeneration: b.cellGeneration,

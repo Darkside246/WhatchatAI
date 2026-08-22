@@ -4,13 +4,13 @@ import { WhatsAppContactRepository } from '../src/repositories/whatsappContactRe
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 import { CrmContactRepository } from '../src/repositories/crmContactRepository.js';
 import { LeadRepository } from '../src/repositories/leadRepository.js';
-import { OpenClawFleetCellRepository } from '../src/repositories/openclawFleetCellRepository.js';
+import { OpenClawCellRepository } from '../src/repositories/openclawCellRepository.js';
 import { generateCallbackToken, hashCallbackToken } from '../src/services/openclawCallbackTokenService.js';
 import { handleOpenClawToolInvokeRequest } from '../src/services/openclawAdapterService.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 
 describe('handleOpenClawToolInvokeRequest (the real HTTP-facing adapter, called directly)', () => {
-  const fleetCellRepo = new OpenClawFleetCellRepository(pool);
+  const cellRepo = new OpenClawCellRepository(pool);
   const leadRepo = new LeadRepository(pool);
   const crmContactRepo = new CrmContactRepository(pool);
   const chatRepo = new WhatsAppChatRepository(pool);
@@ -18,7 +18,7 @@ describe('handleOpenClawToolInvokeRequest (the real HTTP-facing adapter, called 
   let businessId: string;
   let chatId: string;
   let leadId: string;
-  let fleetCellId: string;
+  let cellId: string;
   let rawToken: string;
 
   async function setUpTenant(label: string) {
@@ -45,15 +45,15 @@ describe('handleOpenClawToolInvokeRequest (the real HTTP-facing adapter, called 
 
     const token = generateCallbackToken();
     const cellId = `wc-${bizId.replace(/-/g, '')}`.slice(0, 40);
-    await fleetCellRepo.create({
+    await cellRepo.create({
       businessId: bizId,
-      fleetCellId: cellId,
+      cellId: cellId,
       deploymentVersion: '2026.7.1-2',
       imageDigest: 'ghcr.io/openclaw/openclaw@sha256:8789721d2e9b24b780a1504b56deb4c6bd5c7dbf96a1dd117e7c45c2ed72c8ac',
     });
-    await fleetCellRepo.setCallbackTokenHash(bizId, hashCallbackToken(token));
+    await cellRepo.setCallbackTokenHash(bizId, hashCallbackToken(token));
 
-    return { businessId: bizId, chatId: chat.id, leadId: lead.id, fleetCellId: cellId, token };
+    return { businessId: bizId, chatId: chat.id, leadId: lead.id, cellId: cellId, token };
   }
 
   beforeEach(async () => {
@@ -62,7 +62,7 @@ describe('handleOpenClawToolInvokeRequest (the real HTTP-facing adapter, called 
     businessId = t.businessId;
     chatId = t.chatId;
     leadId = t.leadId;
-    fleetCellId = t.fleetCellId;
+    cellId = t.cellId;
     rawToken = t.token;
   });
 
@@ -143,14 +143,14 @@ describe('handleOpenClawToolInvokeRequest (the real HTTP-facing adapter, called 
     expect(lead?.status).toBe('NEW'); // untouched
   });
 
-  it('ignores a businessId/fleetCellId the request body tries to claim - only the authenticated token\'s identity is ever used', async () => {
+  it('ignores a businessId/cellId the request body tries to claim - only the authenticated token\'s identity is ever used', async () => {
     const result = await handleOpenClawToolInvokeRequest(
       `Bearer ${rawToken}`,
-      validBody({ businessId: '00000000-0000-0000-0000-000000000000', fleetCellId: 'wc-someoneelse' }),
+      validBody({ businessId: '00000000-0000-0000-0000-000000000000', cellId: 'wc-someoneelse' }),
     );
     // Still resolves via the real token's own cell/tenant, so this still succeeds normally.
     expect(result.httpStatus).toBe(200);
     expect(result.body.outcome).toBe('APPROVED');
-    expect(fleetCellId).toBeTruthy(); // sanity: the real cell id was never the one claimed above
+    expect(cellId).toBeTruthy(); // sanity: the real cell id was never the one claimed above
   });
 });

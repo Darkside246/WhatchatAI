@@ -9,8 +9,8 @@ import { handleOpenClawToolInvokeRequest } from '../services/openclawAdapterServ
  * into that function's plain input/output.
  *
  * Mounted at `/api/openclaw` in `server/index.ts`, outside the
- * session-cookie `requireAuth` gate that guards `/api/workspace` - a
- * Fleet cell has no browser session, it authenticates with its own
+ * session-cookie `requireAuth` gate that guards `/api/workspace` - an
+ * OpenClaw cell has no browser session, it authenticates with its own
  * callback token instead.
  */
 export const openclawAdapterRouter = Router();

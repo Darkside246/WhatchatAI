@@ -1,5 +1,162 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - OpenClaw Cell Runtime: real-environment verification found Fleet doesn't exist in stable OpenClaw - pivoted to direct Docker orchestration
+
+**Branch:** `openclaw-cell-runtime` (split from `phase-2-ai-repair` at commit
+`02add1a` specifically for this pivot, per the user's own instruction not
+to touch the working, deployed branch while rearchitecting an unproven
+piece - merge back once this is itself verified)
+
+**Context:** the user personally ran real verification on their own
+Windows/WSL2 Docker machine, following this engagement's own "verify
+before trusting" discipline rather than accepting the prior four slices'
+"IMPLEMENTED BUT NOT FULLY VERIFIED" label at face value. That
+verification surfaced a critical, real finding that changes the
+architecture of everything built in the four prior OpenClaw entries.
+
+**The finding, in the user's own real terminal output:**
+
+```
+$ openclaw fleet --help
+[openclaw] Could not start the CLI.
+[openclaw] Reason: Unknown command: openclaw fleet. No built-in command or plugin CLI metadata owns "fleet".
+```
+
+Run against a genuinely installed `openclaw@2026.7.1-2` (`npm install -g
+openclaw`, confirmed via `openclaw --version` -> `OpenClaw 2026.7.1-2
+(0790d9f)`) - the exact version this platform had pinned. The CLI's real
+top-level command list confirms it has no multi-tenant orchestrator at
+all: `agent, agents, approvals, audit, channels, config, configure,
+cron, daemon, dashboard, doctor, gateway, health, mcp, nodes, sandbox,
+security, status`. Two commands sound adjacent but are not equivalents,
+also confirmed via real `--help` output on the user's machine:
+`sandbox` manages OpenClaw's own *internal* per-agent tool-execution
+containers (not a per-tenant multi-instance orchestrator); `nodes`
+manages *paired remote devices* (phones/laptops - camera, screen,
+location, notifications), a companion-app pairing feature, unrelated to
+SaaS multi-tenancy.
+
+**Root cause, traced back:** `docs/cli/fleet.md` - the source every
+prior OpenClaw slice in this engagement was built against - was read
+from a clone of the `openclaw/openclaw` repository's `main` branch HEAD,
+which was already ahead on the in-development `2026.8.1` line (the same
+line that, per the first OpenClaw slice's own changelog entry, only ever
+had beta tags published: `2026.8.1-beta.1`, `-beta.2`). Fleet is real
+documentation for real, in-progress work - it was verified against the
+wrong version's source. It should have been checked against the actual
+tagged release being pinned, not the tip of `main`.
+
+**Independently reconfirmed, not just asserted:**
+- `npm view openclaw` against the real npm registry: `latest:
+  2026.7.1-2`, `beta: 2026.8.1-beta.2` - same story as GHCR.
+- `openclaw doctor` on the real install: no mention of Fleet anywhere in
+  its plugin/skill inventory (32 plugins loaded, 0 disabled unrelated to
+  Fleet).
+- `openclaw gateway --help`: confirms the stable release's real
+  single-instance model - `run/start/stop/restart/status/install`
+  against exactly one Gateway service per host, config-driven
+  (`--port`/`--bind`/`--token`/`--auth`), no multi-instance concept at
+  all. This is the honest, narrower truth behind what
+  `docs/gateway/multi-tenant-hosting.md` already said in this
+  engagement's very first OpenClaw research pass ("one trusted operator
+  boundary per Gateway") - Fleet was supposed to be the exception to
+  that; in the stable release, it isn't there yet.
+
+**Decision (the user's, made explicit rather than assumed):** proceed
+with Option 2 of three real choices - build the per-tenant orchestration
+directly on Docker + the stable `openclaw gateway run` command, behind a
+clean runtime abstraction, rather than either waiting indefinitely for
+Fleet to ship or quietly pretending the old Fleet-CLI-wrapper code still
+described reality. Explicitly rejected: silently rewriting
+`OpenClawFleetService`'s internals while keeping its old name - the user
+called this out directly as something that "would make the code
+misleading."
+
+**What was built:**
+
+- Migration `065_openclaw_cell_rename.sql`: `openclaw_fleet_cells` ->
+  `openclaw_cells`, `fleet_cell_id` -> `cell_id` (both tables). No
+  production data existed under the old names - no real cell was ever
+  created, since Fleet was never actually callable - so this is a clean
+  rename, not a live data migration.
+- `openclawCellRuntime.ts`: the new abstraction boundary -
+  `OpenClawCellRuntime` (`create/status/stop/start/upgrade/remove`).
+  `DockerCellRuntime` is the real implementation for right now.
+  `FleetCellRuntime` is deliberately NOT built yet - implementing
+  against a CLI command that doesn't exist would be exactly the
+  speculative-code pattern this codebase's own governing principle
+  warns against - the interface exists so a future stable Fleet release
+  can implement it without any other code changing.
+- `dockerCellRuntime.ts`: real Docker orchestration - per-cell bridge
+  network, the full hardening profile independently sourced from real
+  OpenClaw documentation (`--cap-drop=ALL`, `--security-opt
+  no-new-privileges`, `--init`, `--pids-limit 512`, `--memory 2g`,
+  `--cpus 2`, read-only rootfs + `/tmp` tmpfs, loopback-only host port
+  publish), state-directory bind mount, and a real `/healthz` polling
+  health gate before `create()`/`start()` return successfully. The
+  container's own command line (`node dist/index.js gateway --bind lan
+  --port 18789`) is likewise taken directly from the same real
+  `fleet.md` source; `--auth token`/`--allow-unconfigured` come from the
+  real, verified `openclaw gateway --help` output gathered this session
+  - but the *combination* has never been run against a real container.
+- `openclawCellService.ts` (renamed from `openclawFleetService.ts`):
+  same DB-facing responsibilities as before (idempotent provisioning,
+  digest-pin enforcement on upgrade, quarantine, callback-token
+  issuance), now runtime-agnostic - delegates the actual container
+  lifecycle to whichever `OpenClawCellRuntime` it's given, defaulting to
+  `DockerCellRuntime`. The Gateway token is now generated by this
+  service itself (previously Fleet generated and returned it) - still
+  returned exactly once and NOT YET given real encrypted storage (an
+  explicitly tracked gap, not silently swept aside - nothing built so
+  far needs to call a cell's own Gateway API to retrieve it again, only
+  `docker` CLI operations, so this doesn't block anything currently
+  implemented).
+- `openclawCellRepository.ts` (renamed), `openclawToolExecutionRepository.ts`,
+  `openclawToolGateway.ts`, `openclawAdapterService.ts`,
+  `openclawSecurityWatcherService.ts`, `incomingMessagesWorker.ts`: all
+  downstream references to the old Fleet naming updated.
+
+**A real, explicitly-flagged gap left in `DockerCellRuntime.remove()`:**
+`purgeData` does not yet delete the host state directory. Doing that by
+shelling out an `rm -rf` from a string-built path is exactly the kind of
+operation that deserves the same containment checks Fleet's own docs
+described (resolve the real path, confirm it's the exact expected
+tenant leaf, never a symlink) rather than a quick, unguarded delete. It
+logs an explicit warning and leaves the directory in place rather than
+silently doing nothing or unsafely doing something.
+
+**Verification:** 588/588 tests passing (9 new `DockerCellRuntime`
+tests mocking `execFile`/`fetch`, `OpenClawCellService`'s own tests
+rewritten to exercise a fake `OpenClawCellRuntime` instead of a mocked
+CLI - a cleaner test architecture the interface split enabled).
+Typecheck clean. `npm run db:migrate` applies 065 cleanly against a real
+Postgres.
+
+**Status: `IMPLEMENTED BUT NOT FULLY VERIFIED`**, same honest label as
+before, for a different and more specific reason now: no real
+`docker run` of this exact command combination has ever been attempted
+against the real, pinned image. The user's own machine has the real
+image pulled (`docker inspect` confirmed the exact digest,
+`sha256:8789721d2e9b24b780a1504b56deb4c6bd5c7dbf96a1dd117e7c45c2ed72c8ac`,
+present locally, 1.73GB) and a working `openclaw` CLI installed - the
+next real step is running `DockerCellRuntime.create()` there and
+confirming the container actually reaches a healthy state, not assuming
+it from the code.
+
+**What's still open, in order:** (1) run `create()` for real on a
+Docker-capable machine and fix whatever the real container doesn't like
+about the assumed command/env combination; (2) implement the
+`purgeData` state-directory deletion with real containment checks; (3)
+encrypted Gateway-token storage; (4) wiring an actual OpenClaw cell's
+own tool-calling configuration to call the adapter (still genuinely
+unresearched - OpenClaw's real mechanism for pointing its own agent loop
+at an external tool/webhook has not been confirmed against real docs);
+(5) OpenClaw behind a feature flag, tenant-allowlisted, only after all
+of the above. The existing Gemini/Baileys production path on
+`phase-2-ai-repair` remains completely untouched - this entire pivot
+happened on its own branch specifically so a mid-flight architecture
+change never put the working system at risk.
+
 ## 2026-08-21 - OpenClaw Tool Gateway adapter: the HTTP seam a real cell would call (fourth slice)
 
 **Branch:** `phase-2-ai-repair`

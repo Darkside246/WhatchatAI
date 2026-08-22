@@ -1,5 +1,5 @@
 import { BusinessRepository } from '../repositories/businessRepository.js';
-import { OpenClawFleetCellRepository } from '../repositories/openclawFleetCellRepository.js';
+import { OpenClawCellRepository } from '../repositories/openclawCellRepository.js';
 import { OpenClawToolExecutionRepository } from '../repositories/openclawToolExecutionRepository.js';
 import { LeadRepository, type UpdateLeadInput } from '../repositories/leadRepository.js';
 import { entityOwnershipRegistry, type EntityOwnershipRegistry } from './entityOwnershipRegistry.js';
@@ -34,8 +34,8 @@ export function getOpenClawToolPolicy(toolName: string): OpenClawToolPolicyEntry
 
 export interface OpenClawToolRequest {
   businessId: string;
-  /** The Fleet cell the caller claims to be - must match the tenant's registered cell exactly, not merely a valid-looking id. */
-  fleetCellId: string;
+  /** The cell the caller claims to be - must match the tenant's registered cell exactly, not merely a valid-looking id. */
+  cellId: string;
   /** Fencing token: the container generation the caller believes it's running as. A mismatch means a stale/replaced cell instance. */
   cellGeneration: number;
   /** Identifies which real WhatsApp conversation this request originated from - the sole source of the requesting actor's identity. */
@@ -92,7 +92,7 @@ function stableStringify(value: Record<string, unknown>): string {
 export class OpenClawToolGateway {
   constructor(
     private readonly businessRepo: BusinessRepository = new BusinessRepository(pool),
-    private readonly fleetCellRepo: OpenClawFleetCellRepository = new OpenClawFleetCellRepository(pool),
+    private readonly cellRepo: OpenClawCellRepository = new OpenClawCellRepository(pool),
     private readonly executionRepo: OpenClawToolExecutionRepository = new OpenClawToolExecutionRepository(pool),
     private readonly leadRepo: LeadRepository = new LeadRepository(pool),
     private readonly ownershipRegistry: EntityOwnershipRegistry = entityOwnershipRegistry,
@@ -102,7 +102,7 @@ export class OpenClawToolGateway {
     await this.executionRepo
       .record({
         businessId: input.businessId,
-        fleetCellId: input.fleetCellId,
+        cellId: input.cellId,
         toolName: input.toolName,
         entityType,
         entityId: input.entityId,
@@ -136,9 +136,9 @@ export class OpenClawToolGateway {
     const business = await this.businessRepo.findById(input.businessId).catch(() => null);
     if (!business) return this.deny(input, policy.entityType, 'unknown business');
 
-    const cell = await this.fleetCellRepo.findByBusinessId(input.businessId);
-    if (!cell || cell.fleetCellId !== input.fleetCellId) {
-      return this.deny(input, policy.entityType, 'no matching Fleet cell registered for this business');
+    const cell = await this.cellRepo.findByBusinessId(input.businessId);
+    if (!cell || cell.cellId !== input.cellId) {
+      return this.deny(input, policy.entityType, 'no matching cell registered for this business');
     }
     if (cell.securityStatus === 'SECURITY_QUARANTINED') {
       return this.deny(input, policy.entityType, 'cell is SECURITY_QUARANTINED - quarantined cells never process new tool requests');
@@ -180,7 +180,7 @@ export class OpenClawToolGateway {
 
     const recorded = await this.executionRepo.record({
       businessId: input.businessId,
-      fleetCellId: input.fleetCellId,
+      cellId: input.cellId,
       toolName: input.toolName,
       entityType: policy.entityType,
       entityId: input.entityId,

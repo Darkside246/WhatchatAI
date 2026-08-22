@@ -8,7 +8,7 @@ const TABLES = [
   'openclaw_tool_executions',
   'openclaw_security_advisories',
   'openclaw_security_watcher_runs',
-  'openclaw_fleet_cells',
+  'openclaw_cells',
   'ai_agent_prompt_optimizations',
   'funnel_instances',
   'funnel_steps',

@@ -3,7 +3,7 @@ import type { Queryable } from './types.js';
 export interface OpenClawToolExecutionRecord {
   id: string;
   businessId: string;
-  fleetCellId: string;
+  cellId: string;
   toolName: string;
   entityType: string;
   entityId: string;
@@ -18,7 +18,7 @@ export interface OpenClawToolExecutionRecord {
 interface OpenClawToolExecutionRow {
   id: string;
   business_id: string;
-  fleet_cell_id: string;
+  cell_id: string;
   tool_name: string;
   entity_type: string;
   entity_id: string;
@@ -34,7 +34,7 @@ function toRecord(row: OpenClawToolExecutionRow): OpenClawToolExecutionRecord {
   return {
     id: row.id,
     businessId: row.business_id,
-    fleetCellId: row.fleet_cell_id,
+    cellId: row.cell_id,
     toolName: row.tool_name,
     entityType: row.entity_type,
     entityId: row.entity_id,
@@ -49,7 +49,7 @@ function toRecord(row: OpenClawToolExecutionRow): OpenClawToolExecutionRecord {
 
 export interface RecordExecutionInput {
   businessId: string;
-  fleetCellId: string;
+  cellId: string;
   toolName: string;
   entityType: string;
   entityId: string;
@@ -75,12 +75,12 @@ export class OpenClawToolExecutionRepository {
   async record(input: RecordExecutionInput): Promise<OpenClawToolExecutionRecord> {
     const { rows } = await this.db.query<OpenClawToolExecutionRow>(
       `INSERT INTO openclaw_tool_executions
-         (business_id, fleet_cell_id, tool_name, entity_type, entity_id, idempotency_key, requested_fields, outcome, denial_reason, result)
+         (business_id, cell_id, tool_name, entity_type, entity_id, idempotency_key, requested_fields, outcome, denial_reason, result)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         input.businessId,
-        input.fleetCellId,
+        input.cellId,
         input.toolName,
         input.entityType,
         input.entityId,

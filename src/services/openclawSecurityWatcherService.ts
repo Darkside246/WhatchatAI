@@ -1,11 +1,11 @@
 import { pool } from '../db/pool.js';
-import { OpenClawFleetCellRepository } from '../repositories/openclawFleetCellRepository.js';
+import { OpenClawCellRepository } from '../repositories/openclawCellRepository.js';
 import {
   OpenClawSecurityAdvisoryRepository,
   type AdvisoryRiskClassification,
   type AdvisorySeverity,
 } from '../repositories/openclawSecurityAdvisoryRepository.js';
-import { OpenClawFleetService, openclawFleetService } from './openclawFleetService.js';
+import { OpenClawCellService, openclawCellService } from './openclawCellService.js';
 
 const ADVISORIES_ENDPOINT = 'https://api.github.com/repos/openclaw/openclaw/security-advisories';
 const FETCH_TIMEOUT_MS = 15_000;
@@ -106,7 +106,7 @@ export interface SecurityWatcherRunResult {
  * OpenClaw version this platform actually has deployed
  * (`listDistinctDeployedVersions`, not every version that ever existed).
  * A CRITICAL classification quarantines every cell running that version
- * via the real Fleet CLI (`OpenClawFleetService.quarantineCell` - this
+ * via the DockerCellRuntime (`OpenClawCellService.quarantineCell` - this
  * actually stops the cell, not just a DB flag).
  *
  * NOT verified against a live call to api.github.com from this
@@ -123,9 +123,9 @@ export interface SecurityWatcherRunResult {
  * quarantining every cell over what might be a transient GitHub outage.
  */
 export async function runSecurityWatcher(
-  fleetCellRepo: OpenClawFleetCellRepository = new OpenClawFleetCellRepository(pool),
+  cellRepo: OpenClawCellRepository = new OpenClawCellRepository(pool),
   advisoryRepo: OpenClawSecurityAdvisoryRepository = new OpenClawSecurityAdvisoryRepository(pool),
-  fleetService: OpenClawFleetService = openclawFleetService,
+  cellService: OpenClawCellService = openclawCellService,
 ): Promise<SecurityWatcherRunResult> {
   const runId = await advisoryRepo.startRun();
   let versionsChecked = 0;
@@ -133,7 +133,7 @@ export async function runSecurityWatcher(
   let cellsQuarantined = 0;
 
   try {
-    const deployedVersions = await fleetCellRepo.listDistinctDeployedVersions();
+    const deployedVersions = await cellRepo.listDistinctDeployedVersions();
     if (deployedVersions.length === 0) {
       await advisoryRepo.finishRun(runId, { status: 'OK', versionsChecked: 0, advisoriesSeen: 0, cellsQuarantined: 0 });
       return { status: 'OK', versionsChecked: 0, advisoriesSeen: 0, cellsQuarantined: 0, errorMessage: null };
@@ -161,11 +161,11 @@ export async function runSecurityWatcher(
       }
 
       if (versionHasCritical) {
-        const businessIds = await fleetCellRepo.listBusinessIdsByDeploymentVersion(deploymentVersion);
+        const businessIds = await cellRepo.listBusinessIdsByDeploymentVersion(deploymentVersion);
         for (const businessId of businessIds) {
-          const cell = await fleetCellRepo.findByBusinessId(businessId);
+          const cell = await cellRepo.findByBusinessId(businessId);
           if (cell && cell.securityStatus !== 'SECURITY_QUARANTINED') {
-            await fleetService.quarantineCell(
+            await cellService.quarantineCell(
               businessId,
               `Security Watcher: deployed version ${deploymentVersion} has a CRITICAL-classified advisory - quarantined automatically, never silently upgraded.`,
             );

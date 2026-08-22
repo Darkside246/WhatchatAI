@@ -97,70 +97,98 @@ pasted directive without our own verification (`unverified`).
    phase since the one verified boot has been typechecked/tested/built
    natively, never re-booted in a real container. Stays documented as an
    open risk until run in an environment with real registry access.
-3. **OpenClaw Fleet integration** - *decided and in progress*: the user's
-   finalized architecture is one isolated Fleet cell per tenant (never a
-   shared Gateway), pinned version + digest (obtained from the real GHCR
+3. **OpenClaw Cell Runtime integration** (formerly "OpenClaw Fleet
+   integration" - renamed for a real reason, see below) - *decided and
+   in progress, on its own branch*: one isolated OpenClaw instance per
+   tenant, pinned version + digest (obtained from the real GHCR
    registry, never invented), a Security Watcher that can quarantine a
    cell, and OpenClaw treated as a permanently untrusted execution
    environment mediated through a dedicated Tool Gateway - never trusted
    with authorization itself, and never routed through the same
-   `agentGuard.ts`/`aiToolPolicy.ts` the live Gemini path uses (a
-   deliberate file-level isolation choice, not an oversight). Three
-   slices landed so far (see `CHANGELOG_SECURITY.md`'s three 2026-08-21
-   "OpenClaw" entries for full detail):
-   1. Mapping table + `OpenClawFleetService` Fleet CLI lifecycle wrapper.
-      `IMPLEMENTED BUT NOT FULLY VERIFIED` (no real Docker/Podman daemon
-      in this sandbox).
-   2. `openclawSecurityWatcherService.ts` - polls GitHub Security
-      Advisories per deployed version, severity-only classification
-      (never auto-clears SAFE, given OpenClaw's non-semver-compatible
-      rebuild-revision versioning), auto-quarantines on CRITICAL, wired
-      into the scheduler every 6 hours. `IMPLEMENTED BUT NOT FULLY
-      VERIFIED` (no live `api.github.com` access from this sandbox).
+   `agentGuard.ts`/`aiToolPolicy.ts` the live Gemini path uses. Four
+   slices landed on `phase-2-ai-repair` (see `CHANGELOG_SECURITY.md`'s
+   four 2026-08-21 "OpenClaw" entries), then a critical real-environment
+   finding required a fifth, architecture-level pivot, done on its own
+   branch (`openclaw-cell-runtime`, split at commit `02add1a`) rather
+   than touching the working, deployed branch mid-rearchitecture:
+
+   **The pivot (2026-08-22):** the user personally ran real verification
+   on their own machine - a genuinely installed `openclaw@2026.7.1-2`
+   (the exact pinned version) - and found `openclaw fleet --help`
+   returns "Unknown command: openclaw fleet." **Fleet does not exist in
+   any released, stable OpenClaw version.** `docs/cli/fleet.md`, the
+   source every prior OpenClaw slice was built against, had been read
+   from the `openclaw/openclaw` repo's `main` branch HEAD - already
+   ahead on the in-development, beta-only `2026.8.1` line - not the
+   actual tagged release being pinned. Full detail, including the exact
+   real terminal output and the two adjacent-but-different real commands
+   that exist instead (`sandbox`: internal per-agent tool sandboxing,
+   not multi-tenant orchestration; `nodes`: paired-device management,
+   unrelated to SaaS tenancy), is in `CHANGELOG_SECURITY.md`'s
+   2026-08-22 "OpenClaw Cell Runtime" entry.
+
+   Decision: build the per-tenant orchestration directly on Docker +
+   the stable `openclaw gateway run` command, behind a clean
+   `OpenClawCellRuntime` interface (`DockerCellRuntime` implemented now;
+   a future `FleetCellRuntime` can implement the same interface once
+   OpenClaw ships Fleet stable, without touching anything else). All
+   "fleet" naming in the schema and code was renamed to neutral "cell"
+   naming (migration 065) rather than silently keeping misleading names.
+
+   1. Mapping table (`openclaw_cells`) + `OpenClawCellService`, now
+      runtime-agnostic. `IMPLEMENTED BUT NOT FULLY VERIFIED` - no real
+      `docker run` of the exact command/env combination has been
+      attempted yet, though the user's own machine now has the real
+      pinned image pulled and a working `openclaw` CLI installed, ready
+      for that next step.
+   2. `openclawSecurityWatcherService.ts` - unchanged in behavior,
+      updated only for the cell-naming rename. `IMPLEMENTED BUT NOT
+      FULLY VERIFIED` (no live `api.github.com` access from this
+      sandbox).
    3. `openclawToolGateway.ts` + `entityOwnershipRegistry.ts` - the full
-      authorization pipeline (idempotency/conflict detection, tenant and
-      cell checks, fencing-generation check, rate limit, field/value
-      validation, entity ownership) protecting the first and only
-      WRITE-tier OpenClaw tool, `update_lead` (scoped to `status`/
-      `stage`/`notes` - narrower than first proposed, see the changelog
-      entry for the real schema reasons). `IMPLEMENTED AND VERIFIED` for
-      the authorization logic itself (15 tests, all real Postgres
-      outcomes matching an explicit adversarial acceptance table); still
-      not verified end-to-end since no real OpenClaw cell has ever called
-      it.
+      authorization pipeline protecting the first and only WRITE-tier
+      OpenClaw tool, `update_lead` (scoped to `status`/`stage`/`notes`).
+      `IMPLEMENTED AND VERIFIED` for the authorization logic itself (15
+      tests, all real Postgres outcomes matching an explicit adversarial
+      acceptance table); still not verified end-to-end since no real
+      OpenClaw cell has ever called it.
    4. `openclawAdapterService.ts`/`openclawAdapterRouter.ts` - the HTTP
-      seam a real cell would call (`POST /api/openclaw/tools/invoke`),
-      Bearer-token authenticated via a per-cell callback secret (hash-only
-      storage, mirroring `sessionTokenService.ts`). `IMPLEMENTED AND
-      VERIFIED` for the adapter's own logic, including a test proving a
-      stolen valid token from another tenant is denied by the gateway
-      when used against this tenant's real entity/chat IDs - not just an
-      HTTP auth failure, an actual cross-tenant business-logic DENY.
+      seam a real cell would call (`POST /api/openclaw/tools/invoke`).
+      `IMPLEMENTED AND VERIFIED` for the adapter's own logic, including
+      a test proving a stolen valid token from another tenant is denied
+      by the gateway when used against this tenant's real entity/chat
+      IDs - a real cross-tenant business-logic DENY, not just an HTTP
+      auth failure.
+   5. `openclawCellRuntime.ts`/`dockerCellRuntime.ts` - the new
+      per-tenant orchestration layer, replacing the nonexistent Fleet
+      CLI wrapper. Real hardening profile (cap-drop/no-new-privileges/
+      pids-limit/mem/cpus/read-only-rootfs/loopback-only-publish/
+      per-cell-network), real `/healthz` health gating. `IMPLEMENTED BUT
+      NOT FULLY VERIFIED` - see the changelog entry for exactly what's
+      unverified and why.
 
-   **Real environment finding from this fourth slice, relevant to every
-   future OpenClaw slice:** this sandbox actually runs a real Docker
-   daemon (`dockerd` starts fine) - what's genuinely blocked is narrower:
-   `docker pull` resolves the registry API/manifest for both Docker Hub
-   and GHCR, then fails at the layer-download step because both
-   registries redirect blobs to CDN domains
-   (`production.cloudfront.docker.com`, `pkg-containers.githubusercontent.com`)
-   outside this sandbox's egress allowlist. `fleet create` would fail at
-   the identical point. Real Fleet verification needs an environment
-   whose egress allows those two domains - not a Docker-daemon problem,
-   a network-policy one.
+   **Also reconfirmed this pass, independent of the Fleet finding:**
+   this sandbox genuinely runs a Docker daemon; what actually blocks
+   image pulls here is narrower - both Docker Hub and GHCR redirect blob
+   downloads to CDN domains (`production.cloudfront.docker.com`,
+   `pkg-containers.githubusercontent.com`) outside this sandbox's egress
+   allowlist, confirmed via a real `dockerd` start + real `docker pull`
+   attempts that resolved the manifest/auth but failed at the blob
+   layer. The user's own machine does not have this restriction - real
+   pull, real digest match, confirmed via raw `docker images --digests`/
+   `docker inspect` output.
 
-   Remaining, in order: (1) encrypted Gateway-token storage using the
-   existing `EncryptionService` envelope-encryption path - rotation/
-   revocation mechanics need re-verifying against the real Fleet CLI
-   before being named as such (Fleet's only documented rotation path may
-   be `fleet restore`, not a lightweight standalone operation); (2) a real
-   `fleet create` run against an environment with real registry blob
-   access; (3) wiring an actual OpenClaw cell's own tool-calling
-   configuration to call the adapter built in slice four; (4) OpenClaw
-   behind a feature flag for controlled testing against the existing
-   Gemini/Goose path, tenant-allowlisted, with an immediate rollback - the
-   existing AI path stays primary until all of the above is verified, not
-   just implemented.
+   Remaining, in order: (1) run `DockerCellRuntime.create()` for real
+   against the user's machine and fix whatever doesn't work about the
+   assumed command/env combination; (2) implement `purgeData`'s
+   state-directory deletion with real containment checks (currently an
+   explicit no-op with a logged warning, not silently skipped); (3)
+   encrypted Gateway-token storage; (4) research OpenClaw's real
+   mechanism for pointing its own agent/tool-calling loop at an external
+   webhook (genuinely unresearched - do not guess at a config format);
+   (5) OpenClaw behind a feature flag, tenant-allowlisted, only after all
+   of the above - the existing Gemini/Baileys path on `phase-2-ai-repair`
+   remains completely untouched throughout.
 4. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
    internal analytics, or customer-facing analytics for tenants? Different
    answers imply different event schemas and access control. Not started.

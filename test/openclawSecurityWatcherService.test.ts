@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { register } from '../src/services/authService.js';
-import { OpenClawFleetCellRepository } from '../src/repositories/openclawFleetCellRepository.js';
+import { OpenClawCellRepository } from '../src/repositories/openclawCellRepository.js';
 import { OpenClawSecurityAdvisoryRepository } from '../src/repositories/openclawSecurityAdvisoryRepository.js';
 import { classifyAdvisoryForVersion, runSecurityWatcher } from '../src/services/openclawSecurityWatcherService.js';
-import { OpenClawFleetService } from '../src/services/openclawFleetService.js';
+import { OpenClawCellService } from '../src/services/openclawCellService.js';
 import { createTestBusiness, resetDatabase } from './helpers.js';
 
 /**
@@ -14,7 +14,7 @@ import { createTestBusiness, resetDatabase } from './helpers.js';
  * research pass), so every test here mocks `fetch` directly rather than
  * making a live call. A real deployment reaches GitHub's public API
  * normally; this is the same "not fully verified against a live call"
- * honesty already applied to openclawFleetService's execFile mocking.
+ * honesty already applied to openclawCellService's execFile mocking.
  */
 const fetchMock = vi.fn<typeof fetch>();
 vi.stubGlobal('fetch', fetchMock);
@@ -39,14 +39,14 @@ describe('classifyAdvisoryForVersion', () => {
 
 describe('runSecurityWatcher (real Postgres, mocked fetch)', () => {
   let businessId: string;
-  const fleetCellRepo = new OpenClawFleetCellRepository(pool);
+  const cellRepo = new OpenClawCellRepository(pool);
   const advisoryRepo = new OpenClawSecurityAdvisoryRepository(pool);
   const execFileMock = vi.fn(async () => ({ stdout: '', stderr: '' }));
-  const fleetService = new OpenClawFleetService(fleetCellRepo);
+  const cellService = new OpenClawCellService(cellRepo);
   // quarantineCell shells out via execFile internally - stub it out on the
   // instance so this suite tests only the watcher's own decision logic,
-  // not Fleet CLI invocation (that's openclawFleetService.test.ts's job).
-  const quarantineSpy = vi.spyOn(fleetService, 'quarantineCell').mockResolvedValue(undefined);
+  // not real docker invocation (that's dockerCellRuntime.test.ts's job).
+  const quarantineSpy = vi.spyOn(cellService, 'quarantineCell').mockResolvedValue(undefined);
 
   beforeEach(async () => {
     await resetDatabase();
@@ -55,9 +55,9 @@ describe('runSecurityWatcher (real Postgres, mocked fetch)', () => {
       { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' },
     );
     businessId = owner.business.id;
-    await fleetCellRepo.create({
+    await cellRepo.create({
       businessId,
-      fleetCellId: 'wc-watchertest',
+      cellId: 'wc-watchertest',
       deploymentVersion: '2026.7.1-2',
       imageDigest: 'ghcr.io/openclaw/openclaw@sha256:8789721d2e9b24b780a1504b56deb4c6bd5c7dbf96a1dd117e7c45c2ed72c8ac',
     });
@@ -74,7 +74,7 @@ describe('runSecurityWatcher (real Postgres, mocked fetch)', () => {
       jsonResponse([{ ghsa_id: 'GHSA-aaaa', summary: 'A moderate issue', severity: 'moderate', html_url: 'https://x/1' }]),
     );
 
-    const result = await runSecurityWatcher(fleetCellRepo, advisoryRepo, fleetService);
+    const result = await runSecurityWatcher(cellRepo, advisoryRepo, cellService);
 
     expect(result.status).toBe('OK');
     expect(result.versionsChecked).toBe(1);
@@ -86,7 +86,7 @@ describe('runSecurityWatcher (real Postgres, mocked fetch)', () => {
     expect(stored).toHaveLength(1);
     expect(stored[0]?.riskClassification).toBe('WARNING');
 
-    const cell = await fleetCellRepo.findByBusinessId(businessId);
+    const cell = await cellRepo.findByBusinessId(businessId);
     expect(cell?.securityStatus).toBe('SAFE');
   });
 
@@ -95,7 +95,7 @@ describe('runSecurityWatcher (real Postgres, mocked fetch)', () => {
       jsonResponse([{ ghsa_id: 'GHSA-bbbb', summary: 'A critical issue', severity: 'critical', html_url: 'https://x/2' }]),
     );
 
-    const result = await runSecurityWatcher(fleetCellRepo, advisoryRepo, fleetService);
+    const result = await runSecurityWatcher(cellRepo, advisoryRepo, cellService);
 
     expect(result.cellsQuarantined).toBe(1);
     expect(quarantineSpy).toHaveBeenCalledWith(businessId, expect.stringContaining('2026.7.1-2'));
@@ -111,7 +111,7 @@ describe('runSecurityWatcher (real Postgres, mocked fetch)', () => {
       ]),
     );
 
-    const result = await runSecurityWatcher(fleetCellRepo, advisoryRepo, fleetService);
+    const result = await runSecurityWatcher(cellRepo, advisoryRepo, cellService);
 
     expect(result.cellsQuarantined).toBe(0);
     expect(await advisoryRepo.listByVersion('2026.7.1-2')).toHaveLength(0);
@@ -126,7 +126,7 @@ describe('runSecurityWatcher (real Postgres, mocked fetch)', () => {
       )
       .mockResolvedValueOnce(jsonResponse([{ ghsa_id: 'GHSA-page2', severity: 'low', html_url: 'https://x/5' }]));
 
-    const result = await runSecurityWatcher(fleetCellRepo, advisoryRepo, fleetService);
+    const result = await runSecurityWatcher(cellRepo, advisoryRepo, cellService);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(result.advisoriesSeen).toBe(2);
@@ -135,10 +135,10 @@ describe('runSecurityWatcher (real Postgres, mocked fetch)', () => {
   it('fails closed: a fetch failure records a FAILED run, rethrows, and never quarantines or touches existing state', async () => {
     fetchMock.mockRejectedValueOnce(new Error('network unreachable'));
 
-    await expect(runSecurityWatcher(fleetCellRepo, advisoryRepo, fleetService)).rejects.toThrow('network unreachable');
+    await expect(runSecurityWatcher(cellRepo, advisoryRepo, cellService)).rejects.toThrow('network unreachable');
     expect(quarantineSpy).not.toHaveBeenCalled();
 
-    const cell = await fleetCellRepo.findByBusinessId(businessId);
+    const cell = await cellRepo.findByBusinessId(businessId);
     expect(cell?.securityStatus).toBe('SAFE');
 
     const runs = await advisoryRepo.listRecentRuns(1);
@@ -147,20 +147,20 @@ describe('runSecurityWatcher (real Postgres, mocked fetch)', () => {
   });
 
   it('never re-quarantines a cell that is already SECURITY_QUARANTINED', async () => {
-    await fleetCellRepo.quarantine(businessId, 'manual test setup');
+    await cellRepo.quarantine(businessId, 'manual test setup');
     fetchMock.mockResolvedValueOnce(jsonResponse([{ ghsa_id: 'GHSA-dddd', severity: 'critical', html_url: 'https://x/6' }]));
 
-    const result = await runSecurityWatcher(fleetCellRepo, advisoryRepo, fleetService);
+    const result = await runSecurityWatcher(cellRepo, advisoryRepo, cellService);
 
     expect(result.cellsQuarantined).toBe(0);
     expect(quarantineSpy).not.toHaveBeenCalled();
   });
 
-  it('no-ops cleanly (no fetch at all) when no tenant has a Fleet cell deployed', async () => {
-    await createTestBusiness('No Fleet Business');
-    await fleetCellRepo.remove(businessId);
+  it('no-ops cleanly (no fetch at all) when no tenant has a OpenClaw cell deployed', async () => {
+    await createTestBusiness('No Cell Business');
+    await cellRepo.remove(businessId);
 
-    const result = await runSecurityWatcher(fleetCellRepo, advisoryRepo, fleetService);
+    const result = await runSecurityWatcher(cellRepo, advisoryRepo, cellService);
 
     expect(result.status).toBe('OK');
     expect(result.versionsChecked).toBe(0);

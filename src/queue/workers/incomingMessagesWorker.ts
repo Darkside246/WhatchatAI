@@ -662,8 +662,8 @@ const SECURITY_SCAN_INTERVAL_MS = 3_600_000;
 
 // OpenClaw Security Watcher - polls GitHub Security Advisories for the
 // exact OpenClaw version(s) this platform has deployed (see
-// openclawSecurityWatcherService.ts). No tenant has an OpenClaw Fleet
-// cell provisioned yet as of this phase (Fleet provisioning wiring is a
+// openclawSecurityWatcherService.ts). No tenant has an OpenClaw
+// cell provisioned yet as of this phase (cell provisioning wiring is a
 // later slice), so this job runs and correctly no-ops until one exists -
 // it is registered now rather than added later so there is no window
 // where a deployed cell exists without a watcher checking it. Every 6
