@@ -1,5 +1,31 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - Phase 2A: fix the heuristicShield.ts executable-MIME bypass
+
+**The bug:** `checkExecutablePayload()` in `src/security/sentinel/heuristicShield.ts`
+lowercased the sender-declared mimetype before checking it against
+`EXECUTABLE_MIME_TYPES`, but never stripped MIME parameters. A payload
+declaring `application/x-msdownload; charset=utf-8` (or any other
+parameter) never matched the bare `'application/x-msdownload'` entry in
+the set, so it sailed straight through Stage 1 of the Sentinel - the
+same class of bug as the voice-note MIME-comparison fix earlier this
+session, but this time genuinely security-relevant: it's the check that
+exists specifically to block executable payloads.
+
+**Fix:** applies the same shared `normalizeMimeType()` helper (already
+used for the voice-note fix) before the `EXECUTABLE_MIME_TYPES` lookup.
+Filename-extension blocking (`EXECUTABLE_EXTENSIONS`) was already
+independent of the MIME check and untouched.
+
+**Verification:** new adversarial tests - a parameterised executable
+MIME type, uppercase, stray whitespace around the parameter separator,
+and a misleading quoted-filename parameter, all now correctly blocked;
+plus explicit non-regression tests confirming a genuine image and a
+genuine parameterised PDF (`application/pdf; charset=binary`) are still
+allowed through, and that extension-only blocking (a real `.exe` file
+declared as `image/jpeg`) still works independently of this fix. Full
+suite 683/683 passing (93 files), typecheck clean, build clean.
+
 ## 2026-08-22 - Business Isolation Hardening (Phase 1 of the Knowledge Base 2.0 roadmap)
 
 **Why now:** before adding Knowledge Base 2.0 (document ingestion, Google

@@ -1,4 +1,5 @@
 import { redisClient } from '../../redis/client.js';
+import { normalizeMimeType } from '../../domain/whatsapp/mimeType.js';
 
 export interface HeuristicShieldVerdict {
   safe: boolean;
@@ -43,7 +44,12 @@ const SPAM_SIGNATURE_PATTERNS: RegExp[] = [
 ];
 
 function checkExecutablePayload(input: HeuristicShieldInput): string | null {
-  if (input.mimetype && EXECUTABLE_MIME_TYPES.has(input.mimetype.toLowerCase())) {
+  // normalizeMimeType strips any `;param=value` suffix (and lowercases) -
+  // without it, a payload declaring e.g. "application/x-msdownload;
+  // charset=utf-8" would silently bypass this exact-match check, since
+  // real WhatsApp/Baileys mimetypes (and a sender who wants to evade this
+  // check) can carry parameters the sender fully controls.
+  if (input.mimetype && EXECUTABLE_MIME_TYPES.has(normalizeMimeType(input.mimetype))) {
     return `Blocked executable MIME type: ${input.mimetype}`;
   }
   if (input.fileName && EXECUTABLE_EXTENSIONS.test(input.fileName)) {

@@ -48,6 +48,57 @@ describe('Tiered Security Sentinel (real heuristics, real Redis rate limit, real
       expect(verdict.safe).toBe(false);
     });
 
+    // Real regression fixture: a MIME parameter previously let an
+    // executable payload bypass this exact-match check entirely -
+    // src/security/sentinel/heuristicShield.ts's checkExecutablePayload
+    // lowercased the mimetype but never stripped parameters, so
+    // "application/x-msdownload; charset=utf-8" was never in
+    // EXECUTABLE_MIME_TYPES and slipped straight through.
+    it.each([
+      ['application/x-msdownload; charset=utf-8', 'a parameterised executable MIME type'],
+      ['APPLICATION/X-MSDOWNLOAD', 'an uppercase executable MIME type'],
+      ['application/x-msdownload ; charset=utf-8', 'stray whitespace around the parameter separator'],
+      ['application/x-msdownload;name="totally-safe.txt"', 'a misleading filename parameter with no space'],
+    ])('blocks an executable payload declared as %s (%s) - the parameter must never let it slip past the exact-match check', async (mimetype) => {
+      const verdict = await evaluateHeuristicShield({
+        senderJid: `stage1-exe-mime-variant-${Date.now()}-${Math.random()}@s.whatsapp.net`,
+        textContent: null,
+        mimetype,
+        fileName: null,
+      });
+      expect(verdict.safe).toBe(false);
+    });
+
+    it('blocks an executable file purely by its real extension, even when the sender-declared MIME type claims something harmless', async () => {
+      const verdict = await evaluateHeuristicShield({
+        senderJid: `stage1-exe-ext-mismatch-${Date.now()}@s.whatsapp.net`,
+        textContent: null,
+        mimetype: 'image/jpeg',
+        fileName: 'totally-a-photo.exe',
+      });
+      expect(verdict.safe).toBe(false);
+    });
+
+    it('never blocks a genuinely harmless payload - a real image with a real, matching MIME type is unaffected by the executable check', async () => {
+      const verdict = await evaluateHeuristicShield({
+        senderJid: `stage1-legit-image-${Date.now()}@s.whatsapp.net`,
+        textContent: null,
+        mimetype: 'image/jpeg',
+        fileName: 'vacation-photo.jpg',
+      });
+      expect(verdict.safe).toBe(true);
+    });
+
+    it('never blocks a real PDF upload just because it carries a parameter - application/pdf with a charset param is still an ordinary document', async () => {
+      const verdict = await evaluateHeuristicShield({
+        senderJid: `stage1-legit-pdf-${Date.now()}@s.whatsapp.net`,
+        textContent: null,
+        mimetype: 'application/pdf; charset=binary',
+        fileName: 'invoice.pdf',
+      });
+      expect(verdict.safe).toBe(true);
+    });
+
     it('blocks oversized text payloads', async () => {
       const verdict = await evaluateHeuristicShield({
         senderJid: `stage1-size-${Date.now()}@s.whatsapp.net`,
