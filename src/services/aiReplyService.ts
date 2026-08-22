@@ -348,11 +348,21 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
     geminiCircuitBreaker.recordSuccess();
 
     const text = response.text?.trim();
-    if (!text) return tryGooseFallback('Reply model returned an empty response', agent, context, contents);
+    if (!text) {
+      console.warn(`[aiReplyService] Gemini returned an empty response for chat ${context.chatId}; falling back to Goose.`);
+      return tryGooseFallback('Reply model returned an empty response', agent, context, contents);
+    }
 
     return { status: 'generated', text: text.slice(0, MAX_REPLY_CHARS) };
   } catch (error) {
     const reason = `Reply model call failed: ${error instanceof Error ? error.message : String(error)}`;
+    // Previously silent whenever Goose covered for the failure - a real
+    // Gemini error (wrong model name, unsupported modality, quota, bad
+    // key) could go unnoticed indefinitely as long as Goose kept masking
+    // it with a plausible-sounding reply. Logged here, not just fed to the
+    // circuit breaker, so the actual cause is visible the first time it
+    // happens rather than only once Goose also runs out.
+    console.warn(`[aiReplyService] ${reason} (chat ${context.chatId}); falling back to Goose.`);
     geminiCircuitBreaker.recordFailure(reason);
     return tryGooseFallback(reason, agent, context, contents);
   }
