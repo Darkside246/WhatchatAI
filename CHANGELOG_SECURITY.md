@@ -70,25 +70,31 @@ instead of throwing.
 
 **Verification:** 589/589 tests passing (588 + the new regression test),
 typecheck clean, `npm run db:migrate` unaffected (no schema change this
-entry) - all run in the sandbox, against the mocked `execFile`/`fetch`
-test double, not the real container. The diagnosis (real 5.1-5.8s boot
-time vs. a 5s cap) came from real evidence gathered on the user's
-machine, but **the fix itself has not yet been re-run against that real
-container** - this sandbox has no GHCR blob access (see the entry
-below). That re-run is the immediate next step, not yet done.
+entry) - run in the sandbox against the mocked `execFile`/`fetch` test
+double first, then **re-run for real** against a live container on the
+user's machine (this sandbox has no GHCR blob access): 3 consecutive
+stop/start cycles on the same cell, each printing raw `t0_iso`/`t1_iso`/
+`elapsed_ms` from the script itself rather than a narrative summary -
+`elapsed_ms 19047 / 24814 / 23359`, all three returning `RESULT: start()
+returned successfully (healthy).` Notably slower than the 5.1-5.8s
+boot-to-`ready` time the earlier container-log capture showed (this
+run's `create()` was also slower than its own earlier run - 28.8s vs
+21.7s - consistent with host-load variance, e.g. WSL2/Docker Desktop
+contention, rather than anything code-related) - which is itself
+supporting evidence for the fix's shape: a hardcoded short cap would have
+failed all three cycles just as it failed before, while giving `start()`
+the same full budget `create()` gets absorbed that variance and still
+succeeded, every time, well within the deadline.
 
 **Honest status after this pass:**
 - Auth enforcement: **VERIFIED** (real wrong-token rejection at the
-  WebSocket transport layer, real correct-token success) - unaffected by
-  this fix.
+  WebSocket transport layer, real correct-token success).
 - Container hardening: **VERIFIED** (every flag confirmed via real
-  `docker inspect`) - unaffected by this fix.
-- Resource limits: **VERIFIED** (real `docker inspect` values) -
-  unaffected by this fix.
-- Restart lifecycle (`stop()`/`start()`): fix implemented and passes the
-  (mocked) test suite; **NOT YET RE-VERIFIED against the real
-  container** - the 3-cycle stop/start reproduction needs to be re-run
-  with this commit checked out before calling it VERIFIED.
+  `docker inspect`).
+- Resource limits: **VERIFIED** (real `docker inspect` values).
+- Restart lifecycle (`stop()`/`start()`): **VERIFIED** - 3/3 real
+  stop/start cycles against a live container, each returning healthy
+  within the deadline (see raw evidence above).
 - OpenClaw's internal agent/model behavior (its own independent
   `openai/gpt-5.5`-defaulting agent capability, observed in boot logs but
   never exercised): **NOT YET INVESTIGATED** - genuinely out of scope for

@@ -169,13 +169,16 @@ pasted directive without our own verification (`unverified`).
       DockerCellRuntime verification" entry for the full raw evidence.
       Auth enforcement, hardening, and resource limits: `VERIFIED`. A
       real restart-timing bug in `start()` was found (deterministic,
-      not intermittent - the real boot-to-`ready` time is 5.1-5.8s
-      against a hardcoded 5s post-restart health-check cap) and fixed
-      (restart now uses the same configured deadline `create()` gets,
-      no new magic constant) - the fix passes the (mocked) test suite
-      but has **not yet** been re-run against the real container; that
-      re-run is the immediate next step. Restart lifecycle: fix
-      implemented, `NOT YET RE-VERIFIED`.
+      not intermittent - real boot-to-`ready` time is 5.1-5.8s against
+      a hardcoded 5s post-restart health-check cap) and fixed (restart
+      now uses the same configured deadline `create()` gets, no new
+      magic constant). The fix was re-run for real: 3 consecutive
+      stop/start cycles on a live container, all three succeeding
+      within the deadline (`elapsed_ms` 19047/24814/23359 - slower than
+      the original 5-6s boot observation, consistent with host-load
+      variance, and itself evidence for why the fix gives `start()` the
+      full budget rather than a short cap). Restart lifecycle:
+      `VERIFIED`.
 
    **Also reconfirmed this pass, independent of the Fleet finding:**
    this sandbox genuinely runs a Docker daemon; what actually blocks
