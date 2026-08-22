@@ -195,22 +195,45 @@ async function findFreePort(): Promise<number> {
  * answers `/healthz` fine from inside its own namespace. `docker exec`
  * never crosses that network boundary at all, so it's unaffected by it.
  */
-async function execHealthCheck(targetContainerName: string, port: number): Promise<boolean> {
+/** curl exists in the real OpenClaw image (real-hardware verified, repeatedly, throughout this whole runtime's history) - this stays the cell's own check. */
+function curlHealthCheckArgs(port: number): string[] {
+  return ['curl', '-s', '-o', '/dev/null', '-w', '%{http_code}', '-m', '5', `http://127.0.0.1:${port}/healthz`];
+}
+
+/**
+ * The relay's image deliberately ships no `curl` at all (see the
+ * `relay-runtime` Dockerfile stage's own comment - minimizing that
+ * image's dependency footprint is the actual point, not an oversight).
+ * Node's own built-in `fetch` is guaranteed to exist wherever the relay's
+ * process itself runs, so the relay's health check uses that instead of
+ * adding a dependency purely to satisfy this one check. Real evidence
+ * this gap existed: a real `docker exec <relay> curl ...` failed with
+ * "executable file not found in $PATH" while the relay's own real HTTP
+ * responses (and Docker's own `HEALTHCHECK`, which already used `fetch`)
+ * were working correctly the whole time - `create()` was timing out
+ * waiting on a relay that was actually fine, purely because of what
+ * *checked* it.
+ */
+function nodeFetchHealthCheckArgs(port: number): string[] {
+  return [
+    'node', '-e',
+    `fetch('http://127.0.0.1:${port}/healthz').then(r=>{process.stdout.write(String(r.status));process.exit(0)}).catch(()=>{process.stdout.write('0');process.exit(0)})`,
+  ];
+}
+
+async function execHealthCheck(targetContainerName: string, checkArgs: string[]): Promise<boolean> {
   try {
-    const stdout = await docker(
-      ['exec', targetContainerName, 'curl', '-s', '-o', '/dev/null', '-w', '%{http_code}', '-m', '5', `http://127.0.0.1:${port}/healthz`],
-      HEALTH_CHECK_TIMEOUT_MS + 2_000,
-    );
+    const stdout = await docker(['exec', targetContainerName, ...checkArgs], HEALTH_CHECK_TIMEOUT_MS + 2_000);
     return stdout.trim() === '200';
   } catch {
     return false;
   }
 }
 
-async function waitForHealthy(targetContainerName: string, port: number, deadlineMs: number, pollIntervalMs = 1_000): Promise<boolean> {
+async function waitForHealthy(targetContainerName: string, checkArgs: string[], deadlineMs: number, pollIntervalMs = 1_000): Promise<boolean> {
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
-    if (await execHealthCheck(targetContainerName, port)) return true;
+    if (await execHealthCheck(targetContainerName, checkArgs)) return true;
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   }
   return false;
@@ -428,7 +451,7 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
       throw new Error(`docker run for cell ${cellId} failed: ${describeExecError(error)}`);
     }
 
-    const healthy = await waitForHealthy(containerName(cellId), 18789, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
+    const healthy = await waitForHealthy(containerName(cellId), curlHealthCheckArgs(18789), this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
     if (!healthy) {
       throw new Error(`Cell ${cellId} did not become healthy within ${this.healthCheckDeadlineMs}ms of starting (container ${containerId})`);
     }
@@ -440,7 +463,7 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     } catch (error) {
       throw new Error(`relay creation for cell ${cellId} failed: ${describeExecError(error)}`);
     }
-    const relayHealthy = await waitForHealthy(relayContainerName(cellId), RELAY_PORT, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
+    const relayHealthy = await waitForHealthy(relayContainerName(cellId), nodeFetchHealthCheckArgs(RELAY_PORT), this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
     if (!relayHealthy) {
       throw new Error(`Relay for cell ${cellId} did not become healthy within ${this.healthCheckDeadlineMs}ms of starting`);
     }
@@ -461,7 +484,7 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     // A routine status check on an already-running cell only needs to confirm
     // it's still answering right now, so this stays capped short rather than
     // using the full restart budget below.
-    const healthy = await waitForHealthy(containerName(cellId), 18789, Math.min(5_000, this.healthCheckDeadlineMs), this.healthCheckPollIntervalMs);
+    const healthy = await waitForHealthy(containerName(cellId), curlHealthCheckArgs(18789), Math.min(5_000, this.healthCheckDeadlineMs), this.healthCheckPollIntervalMs);
     return { state: 'running', healthy };
   }
 
@@ -492,7 +515,7 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     } catch (error) {
       throw new Error(`docker start for cell ${cellId} failed: ${describeExecError(error)}`);
     }
-    const healthy = await waitForHealthy(containerName(cellId), 18789, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
+    const healthy = await waitForHealthy(containerName(cellId), curlHealthCheckArgs(18789), this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
     if (!healthy) {
       throw new Error(`Cell ${cellId} did not report healthy within ${this.healthCheckDeadlineMs}ms of restarting`);
     }
@@ -502,7 +525,7 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     } catch (error) {
       throw new Error(`docker start for cell ${cellId}'s relay failed: ${describeExecError(error)}`);
     }
-    const relayHealthy = await waitForHealthy(relayContainerName(cellId), RELAY_PORT, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
+    const relayHealthy = await waitForHealthy(relayContainerName(cellId), nodeFetchHealthCheckArgs(RELAY_PORT), this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
     if (!relayHealthy) {
       throw new Error(`Relay for cell ${cellId} did not report healthy within ${this.healthCheckDeadlineMs}ms of restarting`);
     }

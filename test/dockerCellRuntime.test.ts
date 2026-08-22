@@ -179,9 +179,15 @@ describe('DockerCellRuntime', () => {
     expect(relayRunArgs).toContain('whatchatai-openclaw-relay:local');
 
     expect(relayConnectCall[1]).toEqual(['network', 'connect', `openclaw-relay-egress-net-${cellId}`, `openclaw-relay-${cellId}`]);
-    expect(relayHealthCall[1]).toEqual(
-      expect.arrayContaining(['exec', `openclaw-relay-${cellId}`, 'curl', 'http://127.0.0.1:8080/healthz']),
-    );
+    // The relay's health check uses Node's built-in fetch, not curl - its
+    // image deliberately ships no curl at all (real finding: `docker exec
+    // <relay> curl ...` failed with "executable file not found in $PATH"
+    // even though the relay itself was working correctly the whole time).
+    expect(relayHealthCall[1][0]).toBe('exec');
+    expect(relayHealthCall[1][1]).toBe(`openclaw-relay-${cellId}`);
+    expect(relayHealthCall[1][2]).toBe('node');
+    expect(relayHealthCall[1][3]).toBe('-e');
+    expect(relayHealthCall[1][4]).toContain("fetch('http://127.0.0.1:8080/healthz')");
   });
 
   it('passes RELAY_GEMINI_UPSTREAM_HOST to the relay only when configured', async () => {
