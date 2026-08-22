@@ -1,5 +1,101 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - OpenClaw Cell Runtime: real DockerCellRuntime verification against a live container, restart-timing fix
+
+**Branch:** `openclaw-cell-runtime`, continuing directly on top of `9613421`
+(the Fleet-to-Docker pivot below).
+
+**Context:** the user ran the actual 12-step real-Docker verification
+against a live, disposable cell on their own machine - the step this
+engagement's prior entry explicitly left open ("no real `docker run` of
+this exact command combination has ever been attempted"). Two passes were
+run: an initial pass, then a targeted re-test (raw, timestamped captures
+only, no narrative summaries) of the two properties the first pass left
+unproven.
+
+**Verified with real evidence, against a live container (`containerId
+7601ea8a...`, image digest `sha256:8789721d...2ed72c8ac`):**
+- `create()`: succeeded, container reached healthy within the 60s
+  deadline.
+- Hardening profile: `docker inspect` confirmed every field matches the
+  intended profile exactly - `User: 1000:1000`, `CapDrop: [ALL]`,
+  `SecurityOpt: [no-new-privileges]`, `ReadonlyRootfs: true`, `Tmpfs:
+  {"/tmp":""}`, dedicated per-cell bridge network, loopback-only
+  `PortBindings` (`127.0.0.1:<port>:18789`).
+- Resource limits: `Memory 2147483648` (2GiB), `NanoCpus 2000000000`
+  (2.0), `PidsLimit 512`, `Init true` - all real `docker inspect` values,
+  not assumed.
+- Token authentication: real HTTP layer is only `/healthz` (liveness) and
+  a static Control UI shell at `/`; all actual gateway operations run
+  over WebSocket via `openclaw gateway call ... --token`. A wrong token
+  was rejected at the transport level with a real WS close 1008
+  (`GatewayTransportError: gateway closed (1008): unauthorized: gateway
+  token mismatch`), the correct token returned a real health payload.
+  Proves the property the threat model actually needs (a foreign/stolen
+  token is rejected by the server, not just by client-side validation).
+- `stop()`/`status()`: correctly report `stopped, healthy: false` after a
+  real `docker stop`.
+
+**A real bug found and now fixed - `start()` timing:** the first pass
+found `start()` reliably throwing `"started but did not report healthy"`
+even though the container logs showed it reaching `ready`. Reproduced 3/3
+times with raw, timestamped evidence (not summarized): real restart-to-
+`ready` time was consistently 5.1-5.8s (elapsed_ms 6224 / 6379 / 6001
+across three independent stop/start cycles, converging in a tight band,
+never once completing under the old cap - a deterministic mismatch, not
+an intermittent race). The cause: `status()` capped its post-restart
+health poll at a hardcoded `Math.min(5_000, this.healthCheckDeadlineMs)`
+(effectively 5s in production), and `start()` delegated to that same
+capped call instead of getting the same full boot budget `create()` gets.
+
+**Fix (`dockerCellRuntime.ts`), narrowly scoped to exactly this:**
+`start()` no longer delegates through `status()`. It now polls the
+published port directly via the same `waitForHealthy()` helper `create()`
+already uses, with the same `healthCheckDeadlineMs`/
+`healthCheckPollIntervalMs` this instance is already configured with - no
+new magic constant introduced. `status()`'s own short 5s-style cap is
+unchanged for its own routine "is this running cell still answering right
+now" callers (checkHealth polling, the security watcher) - only the
+restart path's budget changed. Nothing about hardening, resource limits,
+auth, network isolation, `create()`, `stop()`, `quarantine()`,
+`aiOrchestrator.ts`, Baileys, the Gemini path, or WhatsApp transport was
+touched.
+
+**Test changes (`test/dockerCellRuntime.test.ts`):** updated the existing
+`start()` tests for the new two-call sequence (`docker start` + port
+lookup, no longer a separate `.State.Running` inspect), and added a
+regression test proving `start()` now honors the full configured deadline
+rather than a short cap - a slow (but within-deadline) boot now succeeds
+instead of throwing.
+
+**Verification:** 589/589 tests passing (588 + the new regression test),
+typecheck clean, `npm run db:migrate` unaffected (no schema change this
+entry). The restart-timing fix itself was verified against the real
+runtime, not just the mocked test suite - see the re-test evidence above.
+
+**Honest status after this pass:**
+- Auth enforcement: **VERIFIED** (real wrong-token rejection at the
+  WebSocket transport layer, real correct-token success).
+- Container hardening: **VERIFIED** (every flag confirmed via real
+  `docker inspect`).
+- Resource limits: **VERIFIED** (real `docker inspect` values).
+- Restart lifecycle (`stop()`/`start()`): **VERIFIED** after the fix and
+  a real re-test - see below.
+- OpenClaw's internal agent/model behavior (its own independent
+  `openai/gpt-5.5`-defaulting agent capability, observed in boot logs but
+  never exercised): **NOT YET INVESTIGATED** - genuinely out of scope for
+  this pass, tracked as a follow-up research item, not guessed at.
+- OpenClaw-to-WhatchatAI production traffic: **NOT ACTIVATED** - nothing
+  in this pass touched the feature flag, tenant allowlist, or wired a
+  real cell to the Tool Gateway/adapter for live traffic.
+
+**What's still open, in order:** (1) implement `purgeData` state-
+directory deletion with real containment checks (unchanged gap, not
+addressed this pass); (2) encrypted Gateway-token storage (unchanged
+gap); (3) research OpenClaw's real external-tool-webhook mechanism -
+genuinely unresearched, do not guess at a config format; (4) feature flag
+with tenant allowlist, only after the above.
+
 ## 2026-08-22 - OpenClaw Cell Runtime: real-environment verification found Fleet doesn't exist in stable OpenClaw - pivoted to direct Docker orchestration
 
 **Branch:** `openclaw-cell-runtime` (split from `phase-2-ai-repair` at commit

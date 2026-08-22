@@ -156,22 +156,47 @@ describe('DockerCellRuntime', () => {
     execFileMock.mockReset();
     execFileMock
       .mockResolvedValueOnce({ stdout: '', stderr: '' }) // start
-      .mockResolvedValueOnce({ stdout: 'true\n', stderr: '' }) // status: running
-      .mockResolvedValueOnce({ stdout: '19104\n', stderr: '' }); // status: port
+      .mockResolvedValueOnce({ stdout: '19104\n', stderr: '' }); // port lookup
     fetchMock.mockResolvedValueOnce(okResponse());
 
     await runtime.start(cellId);
     expect(execFileMock.mock.calls[0]).toEqual(['docker', ['start', `openclaw-cell-${cellId}`], expect.anything()]);
+    // start() polls the port directly rather than delegating through
+    // status()'s separate .State.Running inspect - exactly two docker
+    // calls (start, port lookup), not three.
+    expect(execFileMock).toHaveBeenCalledTimes(2);
   });
 
   it('start() throws if the container comes back up but never reports healthy', async () => {
     execFileMock
       .mockResolvedValueOnce({ stdout: '', stderr: '' }) // start
-      .mockResolvedValueOnce({ stdout: 'true\n', stderr: '' })
-      .mockResolvedValueOnce({ stdout: '19104\n', stderr: '' });
+      .mockResolvedValueOnce({ stdout: '19104\n', stderr: '' }); // port lookup
     fetchMock.mockRejectedValue(new Error('connection refused'));
 
     await expect(runtime.start(cellId)).rejects.toThrow(/did not report healthy/);
+  });
+
+  it('start() gives the restart health check the full configured deadline, not the shorter routine-status-check cap', async () => {
+    // Regression test for the real-runtime finding: a restart that takes
+    // longer than a short routine-status cap (but well within the full
+    // create()-style deadline) must still succeed, not throw.
+    const slowRuntime = new (runtime.constructor as typeof DockerCellRuntime)(2_000, 50);
+    execFileMock
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // start
+      .mockResolvedValueOnce({ stdout: '19104\n', stderr: '' }); // port lookup
+
+    let calls = 0;
+    fetchMock.mockImplementation(async () => {
+      calls += 1;
+      // First few polls fail (simulating the real ~1s+ plugin/channel boot
+      // window), succeeding only after a delay that would have exceeded a
+      // 5s-style short cap if this instance's deadline were shorter.
+      if (calls < 4) throw new Error('connection refused');
+      return okResponse();
+    });
+
+    await expect(slowRuntime.start(cellId)).resolves.toBeUndefined();
+    expect(calls).toBeGreaterThanOrEqual(4);
   });
 
   it('upgrade() reads the existing environment, replaces the container, and reuses that same environment for the new one', async () => {

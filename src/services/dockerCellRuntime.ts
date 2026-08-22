@@ -162,6 +162,17 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     return { containerId, gatewayEndpoint: `http://127.0.0.1:${port}`, port };
   }
 
+  /** Reads the host port Docker published for this cell's Gateway, or null if the container isn't running or the mapping can't be read. */
+  private async readPublishedPort(cellId: string): Promise<number | null> {
+    try {
+      const stdout = await docker(['inspect', '--format', '{{(index (index .NetworkSettings.Ports "18789/tcp") 0).HostPort}}', containerName(cellId)]);
+      const port = Number(stdout.trim());
+      return Number.isFinite(port) ? port : null;
+    } catch {
+      return null;
+    }
+  }
+
   async status(cellId: string): Promise<CellStatus> {
     let running: boolean;
     try {
@@ -172,14 +183,11 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     }
     if (!running) return { state: 'stopped', healthy: false };
 
-    let port: number | null = null;
-    try {
-      const stdout = await docker(['inspect', '--format', '{{(index (index .NetworkSettings.Ports "18789/tcp") 0).HostPort}}', containerName(cellId)]);
-      port = Number(stdout.trim());
-    } catch {
-      // container running but port mapping couldn't be read - health unknown
-    }
-    const healthy = port && Number.isFinite(port) ? await waitForHealthy(port, Math.min(5_000, this.healthCheckDeadlineMs), this.healthCheckPollIntervalMs) : false;
+    const port = await this.readPublishedPort(cellId);
+    // A routine status check on an already-running cell only needs to confirm
+    // it's still answering right now, so this stays capped short rather than
+    // using the full restart budget below.
+    const healthy = port !== null ? await waitForHealthy(port, Math.min(5_000, this.healthCheckDeadlineMs), this.healthCheckPollIntervalMs) : false;
     return { state: 'running', healthy };
   }
 
@@ -191,15 +199,25 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     }
   }
 
+  /**
+   * Restarting a stopped cell means it needs the same full boot budget as
+   * `create()` - plugin load + channel/sidecar startup genuinely takes
+   * several seconds (confirmed against a real container: consistently
+   * 5.1-5.8s to `ready`, 3/3 runs). Polling this directly with the same
+   * `healthCheckDeadlineMs`/`healthCheckPollIntervalMs` this instance
+   * already uses for `create()`, rather than delegating to `status()`'s
+   * short routine-check cap, is what actually fixes the mismatch.
+   */
   async start(cellId: string): Promise<void> {
     try {
       await docker(['start', containerName(cellId)]);
     } catch (error) {
       throw new Error(`docker start for cell ${cellId} failed: ${describeExecError(error)}`);
     }
-    const status = await this.status(cellId);
-    if (!status.healthy) {
-      throw new Error(`Cell ${cellId} started but did not report healthy`);
+    const port = await this.readPublishedPort(cellId);
+    const healthy = port !== null ? await waitForHealthy(port, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs) : false;
+    if (!healthy) {
+      throw new Error(`Cell ${cellId} did not report healthy within ${this.healthCheckDeadlineMs}ms of restarting`);
     }
   }
 

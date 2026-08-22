@@ -163,9 +163,17 @@ pasted directive without our own verification (`unverified`).
       per-tenant orchestration layer, replacing the nonexistent Fleet
       CLI wrapper. Real hardening profile (cap-drop/no-new-privileges/
       pids-limit/mem/cpus/read-only-rootfs/loopback-only-publish/
-      per-cell-network), real `/healthz` health gating. `IMPLEMENTED BUT
-      NOT FULLY VERIFIED` - see the changelog entry for exactly what's
-      unverified and why.
+      per-cell-network), real `/healthz` health gating. **Real-runtime
+      verified 2026-08-22** against a live, disposable cell on the
+      user's machine - see `CHANGELOG_SECURITY.md`'s "real
+      DockerCellRuntime verification" entry for the full raw evidence.
+      Auth enforcement, hardening, and resource limits: `VERIFIED`. A
+      real restart-timing bug in `start()` was found (deterministic,
+      not intermittent - the real boot-to-`ready` time is 5.1-5.8s
+      against a hardcoded 5s post-restart health-check cap) and fixed
+      (restart now uses the same configured deadline `create()` gets,
+      no new magic constant); the fix itself was re-verified against
+      the real container. Restart lifecycle: `VERIFIED`.
 
    **Also reconfirmed this pass, independent of the Fleet finding:**
    this sandbox genuinely runs a Docker daemon; what actually blocks
@@ -178,16 +186,17 @@ pasted directive without our own verification (`unverified`).
    pull, real digest match, confirmed via raw `docker images --digests`/
    `docker inspect` output.
 
-   Remaining, in order: (1) run `DockerCellRuntime.create()` for real
-   against the user's machine and fix whatever doesn't work about the
-   assumed command/env combination; (2) implement `purgeData`'s
-   state-directory deletion with real containment checks (currently an
-   explicit no-op with a logged warning, not silently skipped); (3)
-   encrypted Gateway-token storage; (4) research OpenClaw's real
-   mechanism for pointing its own agent/tool-calling loop at an external
-   webhook (genuinely unresearched - do not guess at a config format);
-   (5) OpenClaw behind a feature flag, tenant-allowlisted, only after all
-   of the above - the existing Gemini/Baileys path on `phase-2-ai-repair`
+   Remaining, in order: (1) implement `purgeData`'s state-directory
+   deletion with real containment checks (currently an explicit no-op
+   with a logged warning, not silently skipped); (2) encrypted
+   Gateway-token storage; (3) research OpenClaw's real mechanism for
+   pointing its own agent/tool-calling loop at an external webhook
+   (genuinely unresearched - do not guess at a config format; a real
+   boot log from this pass shows the gateway has its own independent
+   agent/model capability defaulting to `openai/gpt-5.5`, never
+   exercised, worth investigating as part of this item); (4) OpenClaw
+   behind a feature flag, tenant-allowlisted, only after all of the
+   above - the existing Gemini/Baileys path on `phase-2-ai-repair`
    remains completely untouched throughout.
 4. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
    internal analytics, or customer-facing analytics for tenants? Different
