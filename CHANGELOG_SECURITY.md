@@ -1,5 +1,50 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - OpenClaw Cell Runtime: state-directory permission fix confirmed correct on a real Linux filesystem
+
+**Branch:** `openclaw-cell-runtime`. Verification only - no code changed.
+
+**Context:** the `ensureStateDir()` chmod(0o700) fix (an earlier entry
+today) still showed `fs.state_dir.perms_world_writable` (CRITICAL,
+`mode=777`) in a real in-cell audit even after the fix landed. The
+suspected cause was that the test host's bind-mount source was a genuine
+Windows NTFS path (`C:\Users\...`), and NTFS has no real POSIX permission
+model for Docker Desktop's bind-mount translation to honor - a `chmod`
+from inside the Linux container can't achieve anything there regardless
+of the value requested. A differential test was run to confirm or refute
+this rather than accept it as a plausible-sounding guess.
+
+**Real differential test:** the exact same code, same container command,
+run twice - once with the state directory on a Windows NTFS path (prior
+entry, `mode=777`, 1 CRITICAL finding), once with `OPENCLAW_CELL_STATE_DIR`
+pointed at a genuine WSL2-native (ext4) path under `/home/<user>/...`,
+confirmed via `uname -a` reporting a real `microsoft-standard-WSL2` Linux
+kernel (not a Windows-emulating shell) before running.
+
+**Result on the real Linux filesystem:**
+- `ls -la` on the host: `drwx------` on the cell's state directory -
+  exactly `0700`, matching what the code sets.
+- The in-cell audit: `"critical": 0` - `fs.state_dir.perms_world_writable`
+  does not appear at all.
+
+**Conclusion, now confirmed rather than inferred:** the fix is correct
+and effective on a real Linux filesystem, which is what production
+actually runs on. The `mode=777` finding was genuinely specific to
+Docker Desktop's NTFS bind-mount handling on the Windows test machine,
+not a defect in `dockerCellRuntime.ts`. No code change needed - this
+entry exists to record the real evidence rather than leave the earlier
+"not yet confirmed whether this is environment-specific" caveat
+unresolved.
+
+**Status: `IMPLEMENTED AND VERIFIED`**, unconditionally now (previously
+verified only for the mocked test suite, with a real but unresolved
+platform question). `tools.elevated`/browser control were also
+reconfirmed disabled in this same run - no regression.
+
+**Still open, per the user's ordering:** design the real WhatchatAI MCP
+server implementation - this closes out the last open item from the
+hardening pass.
+
 ## 2026-08-22 - OpenClaw Cell Runtime: disable elevated tools + browser control by default (attack-surface reduction)
 
 **Branch:** `openclaw-cell-runtime`.

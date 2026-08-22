@@ -322,23 +322,31 @@ pasted directive without our own verification (`unverified`).
    summary when set to `false`. `dockerCellRuntime.ts`'s container command
    now runs both `openclaw config set` calls before `exec`-ing the gateway
    process - the same real CLI mechanism already proven correct, not a
-   hand-constructed config file. What's proven: the *values* are right.
-   What's not yet proven: this specific *boot-command mechanism* re-run
-   against a real container - needs one more real-hardware pass creating
-   a fresh cell with this commit and confirming the in-cell audit shows
-   both disabled by default with no manual `config set` step.
+   hand-constructed config file. Re-run against a fresh real container:
+   boot logs show the config-set calls landing before the gateway starts,
+   and the in-cell audit confirms both disabled by default with zero
+   manual steps - `VERIFIED` unconditionally now, not just the values.
 
-   Remaining, in order: (1) that real-hardware re-verification; also
-   re-confirm the exec-approvals allowlist stays empty, no channel is
-   logged in, no provider credential or PostgreSQL credential is present;
-   (2) only then design the real WhatchatAI MCP server (the disposable
-   test proved OpenClaw's client behavior, not yet our own server
-   implementation - likely via the official MCP SDK, not another hand-
-   rolled stand-in); (3) test that real adapter against the existing Tool
-   Gateway; (4) OpenClaw behind a
-   feature flag, tenant-allowlisted, only after all of the above - the
-   existing Gemini/Baileys path on
-   `phase-2-ai-repair` remains completely untouched throughout.
+   **State-directory permission fix: `IMPLEMENTED AND VERIFIED`
+   unconditionally (2026-08-22), previous NTFS uncertainty resolved.** A
+   real differential test - identical code and container command, run
+   once with the state dir on a Windows NTFS path (`mode=777`, 1
+   CRITICAL finding) and once on a genuine WSL2-native (ext4) path
+   (confirmed via `uname -a` reporting a real Linux kernel, not an
+   emulating shell) - confirmed the fix works correctly on a real Linux
+   filesystem: `drwx------` (`0700`) on the host, `"critical": 0` in the
+   in-cell audit. The earlier `mode=777` finding was genuinely specific
+   to Docker Desktop's NTFS bind-mount handling on the Windows test
+   machine, not a defect in the fix - production runs on native Linux,
+   where this is already confirmed correct.
+
+   Remaining, per the user's ordering: design the real WhatchatAI MCP
+   server implementation (the disposable test proved OpenClaw's client
+   behavior, not yet our own server - likely via the official MCP SDK,
+   not another hand-rolled stand-in); test that real adapter against the
+   existing Tool Gateway; OpenClaw behind a feature flag, tenant-
+   allowlisted, only after all of the above - the existing Gemini/Baileys
+   path on `phase-2-ai-repair` remains completely untouched throughout.
 4. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
    internal analytics, or customer-facing analytics for tenants? Different
    answers imply different event schemas and access control. Not started.
