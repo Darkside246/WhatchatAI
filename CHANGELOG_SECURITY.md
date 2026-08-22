@@ -1,5 +1,81 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - OpenClaw Cell Runtime: MCP wire-protocol verified against a real, disposable server
+
+**Branch:** `openclaw-cell-runtime`. Pure research - no application code changed.
+
+**Context:** Phase 3's own research (below) found OpenClaw's tool-invocation
+mechanism is genuinely MCP-based (`openclaw mcp` config surface). Before
+building any adapter/translation layer against that assumption, the user
+required real proof of the actual wire protocol and, specifically,
+whether the `--include` tool allow-list is really enforced or just
+advisory - against a fully disposable target (a throwaway Node HTTP
+server, two harmless fake tools, a disposable low-limit API key, host-
+only, never a hardened cell).
+
+**Real evidence captured:**
+- Registration (`openclaw mcp add ... --no-probe`) writes to the real
+  local `openclaw.json` - confirmed via the tool's own printed path.
+- `openclaw mcp probe`: real `initialize` -> `notifications/initialized`
+  -> `tools/list` JSON-RPC 2.0 sequence, captured verbatim by the
+  disposable server's own request log (not inferred from OpenClaw's
+  side). Real client info: `{"name":"openclaw-bundle-mcp","version":
+  "0.0.0"}`. Real negotiated protocol version: `"2025-11-25"` -
+  corrected from an initial assumption of `"2025-03-26"` in the test
+  server's own default, which the real client's explicit request
+  overrode; recorded here as the real value, not the guess.
+- `openclaw mcp tools <name> --include echo_test` persists a real
+  `toolFilter: {"include": ["echo_test"]}` structure in `openclaw.json`.
+- `openclaw config set --help` confirmed a real `--ref-source env
+  --ref-id <ENV_VAR>` mode for `config set` - a credential can be
+  configured as a pointer to an environment variable rather than a
+  literal value written into a persisted config file, which is what the
+  disposable test used (nothing to scrub from a file afterward, only an
+  env var to unset).
+- **Allowed tool (`echo_test`), real agent turn:** the model decided to
+  call it; the disposable server's log shows a real `tools/call` request
+  with the exact arguments the prompt specified, and returned cleanly.
+- **Excluded tool (`blocked_test`), real agent turn:** `blocked_test` was
+  **not present in the tool schema sent to the model at all** - not
+  merely declined, structurally absent from what the model could see or
+  attempt to call. The disposable server's own independent log shows
+  **zero** `tools/call` requests for it. This is the strongest form of
+  the guarantee the user asked to prove: the allow-list operates before
+  the LLM ever has the tool in context, not as an after-the-fact
+  behavioral nudge a prompt-injection attempt could try to talk around.
+
+**Cleanup, confirmed:** the disposable API key's env var unset, the model
+config unset, the MCP server registration removed, the test server
+process stopped and its files deleted. No credential, real or disposable,
+touched any hardened cell, WhatchatAI code, or persisted config beyond
+the disposable local `openclaw.json` on the test machine, which was
+itself reverted.
+
+**What this proves, concretely, for the real integration design still to
+come:** WhatchatAI's own Tool Gateway/adapter can plausibly be registered
+as an `openclaw mcp` HTTP/streamable-http server, with an explicit
+`--include` list matching exactly the tools we intend to expose (today,
+only `update_lead`), and that inclusion boundary is real, not
+theoretical. **What this does NOT yet prove:** the actual JSON-RPC
+request/response shape our adapter would need to implement to *be* a
+correct MCP server (this test only exercised OpenClaw acting as an MCP
+*client* against a hand-written, not-necessarily-fully-spec-compliant
+stand-in) - a real MCP server implementation (likely via the official
+MCP SDK rather than another hand-rolled server) is still a real design
+task for a later step, not yet started.
+
+**Status: `IMPLEMENTED AND VERIFIED`** for the transport/enforcement
+questions this test was scoped to answer. No code in this repository was
+touched - this was infrastructure-external research using a throwaway
+server and a disposable credential, matching the user's explicit scope
+boundary.
+
+**Next, per the user's own ordering:** run `openclaw security audit
+--deep --json` from *inside* a real, provisioned, hardened WhatchatAI
+cell (not the bare host, which was already caught giving a misleading
+result for this exact reason in the prior research pass) - only after
+that should real MCP-adapter design work begin.
+
 ## 2026-08-22 - OpenClaw Cell Runtime: encrypted Gateway-token storage
 
 **Branch:** `openclaw-cell-runtime`, on top of `2e3f1a8`.

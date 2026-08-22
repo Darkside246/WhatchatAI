@@ -265,15 +265,51 @@ pasted directive without our own verification (`unverified`).
    pure application/DB logic with no Docker dependency, so - like
    `purgeData` - no real-hardware re-test was needed.
 
-   Remaining, in order: (1) research OpenClaw's real mechanism for
-   pointing its own agent/tool-calling loop at an external webhook
-   (genuinely unresearched - do not guess at a config format; a real boot
-   log from this pass shows the gateway has its own independent
-   agent/model capability defaulting to `openai/gpt-5.5`, never exercised,
-   worth investigating as part of this item); (2) OpenClaw behind a
-   feature flag, tenant-allowlisted, only after that - the existing
-   Gemini/Baileys path on `phase-2-ai-repair` remains completely untouched
-   throughout.
+   **OpenClaw internal-agent/tool-invocation research (2026-08-22):**
+   `openai/gpt-5.5` is real but configurable, not hardcoded -
+   `agents.defaults.model` accepts a provider/model string or a
+   `{primary, fallbacks}` object, and **Gemini is a first-class supported
+   provider** (`@openclaw/google-plugin` ships enabled by default; the
+   config schema's own example literally shows `"google/gemini-2.5-flash"`).
+   Tool invocation is genuinely MCP (Model Context Protocol)-based
+   (`openclaw mcp` config surface), and this was proven, not assumed -
+   see `CHANGELOG_SECURITY.md`'s "MCP wire-protocol verified" entry: a
+   real disposable MCP server + a real disposable Gemini credential, host-
+   only, confirmed the real JSON-RPC handshake (protocol version
+   `2025-11-25`), that an included tool is genuinely invoked, and -
+   critically - that an excluded tool is not merely declined but **absent
+   from the tool schema the model ever sees**, with the disposable
+   server's own log independently confirming zero invocation attempts.
+   Two more independent control layers exist beyond MCP filtering:
+   `openclaw approvals` (a per-agent exec-command allowlist, separate from
+   MCP tools) and `commands.ownerAllowFrom` (gates privileged commands via
+   a connected chat channel - moot as long as no channel is ever logged
+   into a cell, which nothing in this design does). OpenClaw's own
+   built-in `security audit` tool states its trust model explicitly:
+   *"personal assistant (one trusted operator boundary), not hostile
+   multi-tenant on one shared gateway"* - direct, first-party confirmation
+   of the premise this whole architecture has been built around since the
+   very first OpenClaw research pass. One important methodology note
+   preserved from this pass: an early `security audit --deep` run against
+   the bare host (not a hardened cell) produced a misleading CRITICAL
+   "no gateway auth" finding - it was auditing an unrelated, unconfigured
+   local install with nothing listening, not one of our real `--auth
+   token`-protected cells; caught before being treated as a real finding
+   about our architecture.
+
+   Remaining, in order: (1) run `security audit --deep --json` from
+   *inside* a real, provisioned, hardened cell (not the host) - verifying
+   gateway auth is on, `tools.elevated` and browser control are off, the
+   exec-approvals allowlist stays empty, no channel is logged in, no
+   provider credential or PostgreSQL credential is present, and egress
+   stays blocked except the deliberately-approved host-gateway path; (2)
+   only then design the real WhatchatAI MCP server (the disposable test
+   proved OpenClaw's client behavior, not yet our own server
+   implementation - likely via the official MCP SDK, not another hand-
+   rolled stand-in); (3) test that real adapter against the existing Tool
+   Gateway; (4) OpenClaw behind a feature flag, tenant-allowlisted, only
+   after all of the above - the existing Gemini/Baileys path on
+   `phase-2-ai-repair` remains completely untouched throughout.
 4. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
    internal analytics, or customer-facing analytics for tenants? Different
    answers imply different event schemas and access control. Not started.
