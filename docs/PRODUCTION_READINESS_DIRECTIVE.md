@@ -202,15 +202,22 @@ pasted directive without our own verification (`unverified`).
    `gatewayEndpoint`/`port` are kept as-is - not removed - reserved as
    transport metadata for a possible future authenticated Gateway path,
    deliberately decoupled from health checking rather than conflating the
-   two. **This fix has been verified against the mocked test suite only
-   (589/589, typecheck clean) - not yet re-run against a real container**;
-   that re-run is the immediate next step. Host-gateway reachability
-   (`host.docker.internal`) itself also remains unverified - deprioritized
-   in favor of the health-check fix, to be revisited.
+   two. **Re-verified for real (2026-08-22): `VERIFIED`.** A full
+   create→status→stop→start→status→remove lifecycle run against a live
+   container succeeded end to end (`create()` 22.7s, `start()` 16.8s,
+   both `status()` calls reporting `healthy: true`) - the exact restart
+   path that had been broken twice over (the timing-cap bug, then this
+   published-port conflict) is now confirmed working. Host-gateway
+   reachability (`host.docker.internal`) itself remains unverified -
+   deprioritized in favor of the health-check fix, to be revisited only
+   if/when the OpenClaw-agent research (below) determines it's actually
+   needed.
 
-   Explicitly still gates the next item: no provider credential (OpenAI,
-   Gemini, or otherwise) is to be placed in a cell until all of the above
-   is verified for real.
+   The full `DockerCellRuntime` lifecycle and its egress-containment
+   properties are now real-runtime `VERIFIED`, not assumed from code
+   review or mocked tests alone. Explicitly still gates the next item: no
+   provider credential (OpenAI, Gemini, or otherwise) is to be placed in
+   a cell until encrypted token storage is built.
 
    **Also reconfirmed this pass, independent of the Fleet finding:**
    this sandbox genuinely runs a Docker daemon; what actually blocks

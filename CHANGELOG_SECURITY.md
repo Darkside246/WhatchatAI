@@ -1,5 +1,38 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - OpenClaw Cell Runtime: real 5-step lifecycle re-verification, docker-exec health-check fix VERIFIED
+
+**Branch:** `openclaw-cell-runtime`, on top of `645a0ab`.
+
+Real re-run on the user's machine, one cell through the full lifecycle,
+raw output captured at every step:
+- `create()`: succeeded in 22.7s (well within the 60s deadline; no
+  timeout, unlike before the fix).
+- `status()`: `{"state":"running","healthy":true}`.
+- `stop()`: succeeded.
+- `start()`: succeeded in 16.8s, `healthy: true` - the exact restart path
+  that was previously broken twice over (first the 5s-cap timing bug,
+  then the `--internal`/published-port conflict), now confirmed working
+  end to end.
+- `status()` again: `{"state":"running","healthy":true}`.
+- `remove()`: container + network cleaned up.
+
+**Status: `VERIFIED`.** This closes out the docker-exec health-check fix
+from the entry below - moves from `IMPLEMENTED BUT NOT FULLY VERIFIED` to
+confirmed against a real container. Combined with the earlier real
+evidence for general-egress blocking and cross-cell isolation, the full
+`DockerCellRuntime` lifecycle (create/status/stop/start/remove) and its
+egress-containment properties are now real-runtime `VERIFIED`, not
+assumed from code review or mocked tests alone.
+
+**Still open, per the user's explicit ordering:** `purgeData` containment
+(next); encrypted Gateway-token storage; the OpenClaw internal-agent/
+tool-invocation research (including whether `host.docker.internal`
+reachability is ever actually needed, and the `openai/gpt-5.5` default
+observed in boot logs); the feature flag, only after all of the above. No
+provider credential goes into a cell before the credential-storage item
+is done.
+
 ## 2026-08-22 - OpenClaw Cell Runtime: health checking moved off the published port (CONFIGURATION MISMATCH, confirmed and fixed)
 
 **Branch:** `openclaw-cell-runtime`, continuing on top of `bcec22a`.
