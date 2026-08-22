@@ -42,7 +42,9 @@ export type SecurityEventType =
   | 'ai_prompt_optimization_rejected'
   | 'business_document_uploaded'
   | 'business_document_upload_blocked'
-  | 'business_document_deleted';
+  | 'business_document_deleted'
+  | 'business_document_parsed'
+  | 'business_document_parse_failed';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 

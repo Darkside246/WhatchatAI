@@ -12,6 +12,8 @@ import type { EntitlementDeniedError } from './workspaceService.js';
 import { storeMedia, retrieveMedia } from '../media/localEncryptedMediaStorage.js';
 import { isAllowedDocumentMime, classifyDocumentMimeFamily } from '../domain/documents/documentMime.js';
 import { checkExecutablePayload } from '../security/sentinel/heuristicShield.js';
+import { enqueueDocumentParse } from '../queue/queues/documentParseQueue.js';
+import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 
 const documentRepository = new BusinessDocumentRepository(pool);
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
@@ -146,6 +148,18 @@ export async function uploadDocument(input: UploadDocumentInput): Promise<Upload
       uploadedBy: input.createdBy,
     },
   });
+
+  // The document/version rows are already durably committed above, so a
+  // slow/unreachable Redis must never hang this caller (a real HTTP
+  // upload request) indefinitely - see enqueueWithTimeout. Parsing is
+  // D2's own, strictly separate stage (§ D2 directive: "document
+  // ingestion and document AI retrieval are two separate security
+  // boundaries") - this enqueue only ever leads to extraction/chunking/
+  // indexing, never to ai_retrievable being set.
+  await enqueueWithTimeout(
+    enqueueDocumentParse({ businessId: input.businessId, documentId: result.document.id, versionId: result.version.id }),
+    `document parse ${result.document.id}`,
+  );
 
   return result;
 }

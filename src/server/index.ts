@@ -150,6 +150,9 @@ import { messageRevocationWorker } from '../queue/workers/messageRevocationWorke
 import { emailSendWorker } from '../queue/workers/emailSendWorker.js';
 // Same reasoning - a WAIT-node resume may itself send a real WhatsApp message.
 import { funnelAdvanceWorker } from '../queue/workers/funnelAdvanceWorker.js';
+// No live-socket dependency - pure CPU/DB work, co-located here for the
+// same operational simplicity as emailSendWorker above.
+import { documentParseWorker } from '../queue/workers/documentParseWorker.js';
 import {
   createFunnel,
   listFunnels,
@@ -2548,6 +2551,7 @@ async function shutdown(signal: string): Promise<void> {
   await messageRevocationWorker.close();
   await emailSendWorker.close();
   await funnelAdvanceWorker.close();
+  await documentParseWorker.close();
   process.exit(0);
 }
 
