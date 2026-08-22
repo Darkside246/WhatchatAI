@@ -114,12 +114,12 @@ describe('resolveInlineMediaPart (real Postgres media row, real encrypted-at-res
     expect(part).toBeNull();
   });
 
-  it('returns null for a real voice note (audio/ogg) that is too large for one inline request, rather than blowing up the Gemini call', async () => {
+  it('returns null for a real voice note (audio/ogg; codecs=opus) that is too large for one inline request, rather than blowing up the Gemini call', async () => {
     await resetDatabase();
     businessId = await createTestBusiness();
     accountId = await createTestAccount(businessId, accountJid);
 
-    const mediaId = await insertMediaMessage({ mimetype: 'audio/ogg', contentType: 'voice_note' });
+    const mediaId = await insertMediaMessage({ mimetype: 'audio/ogg; codecs=opus', contentType: 'voice_note' });
     const mediaRepository = new WhatsAppMediaRepository(pool);
     // A real 20MB voice note is implausible but not impossible - simulate
     // the size gate directly rather than actually allocating 20MB in a test.
@@ -127,6 +127,28 @@ describe('resolveInlineMediaPart (real Postgres media row, real encrypted-at-res
 
     const part = await resolveInlineMediaPart(businessId, mediaId);
     expect(part).toBeNull();
+  });
+
+  it('resolves real, decrypted, base64 bytes for a real WhatsApp voice note - the actual mimeType is "audio/ogg; codecs=opus", not the bare "audio/ogg", and must still be accepted', async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId, accountJid);
+
+    const mediaId = await insertMediaMessage({ mimetype: 'audio/ogg; codecs=opus', contentType: 'voice_note' });
+    const plaintext = randomBytes(2048);
+    const sha256 = createHash('sha256').update(plaintext).digest('hex');
+    const storageReference = await storeMedia(businessId, sha256, plaintext);
+
+    const mediaRepository = new WhatsAppMediaRepository(pool);
+    await mediaRepository.setDownloadResult(mediaId, 'downloaded', storageReference, sha256, plaintext.length);
+
+    const part = await resolveInlineMediaPart(businessId, mediaId);
+    expect(part).not.toBeNull();
+    // Sent to Gemini in its normalized (bare) form - Gemini's own
+    // documented supported-type list is the bare form, and the codec
+    // parameter is not part of it.
+    expect(part?.mimeType).toBe('audio/ogg');
+    expect(Buffer.from(part!.data, 'base64').equals(plaintext)).toBe(true);
   });
 
   it('returns null (not a thrown error) for a nonexistent mediaId - the caller degrades to text-only, never crashes the reply', async () => {

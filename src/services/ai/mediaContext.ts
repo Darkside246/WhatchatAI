@@ -1,6 +1,7 @@
 import { pool } from '../../db/pool.js';
 import { WhatsAppMediaRepository } from '../../repositories/whatsappMediaRepository.js';
 import { retrieveMedia } from '../../media/localEncryptedMediaStorage.js';
+import { normalizeMimeType } from '../../domain/whatsapp/mimeType.js';
 import type { MessageType } from '../../domain/whatsapp/types.js';
 
 const mediaRepository = new WhatsAppMediaRepository(pool);
@@ -59,13 +60,23 @@ export interface InlineMediaPart {
 export async function resolveInlineMediaPart(businessId: string, mediaId: string): Promise<InlineMediaPart | null> {
   const media = await mediaRepository.findById(mediaId);
   if (!media || media.downloadStatus !== 'downloaded' || !media.storageReference) return null;
-  if (!media.mimeType || !SUPPORTED_MIME_TYPES.has(media.mimeType)) return null;
+
+  // WhatsApp/Baileys report real mimeTypes with parameters attached (a
+  // voice note is always `audio/ogg; codecs=opus`, never the bare
+  // `audio/ogg`) - normalize before checking the allow-list, or every real
+  // voice note fails this exact-match check and silently degrades to
+  // text-only. Gemini's own supported-type list is the bare form, so the
+  // normalized value is also what gets sent as inlineData.mimeType below,
+  // never the raw, parameter-bearing one - only whatsapp_media's stored
+  // value stays raw, since that is the real, complete media metadata.
+  const normalizedMimeType = normalizeMimeType(media.mimeType);
+  if (!normalizedMimeType || !SUPPORTED_MIME_TYPES.has(normalizedMimeType)) return null;
   if (media.fileSize !== null && media.fileSize > MAX_INLINE_MEDIA_BYTES) return null;
 
   const buffer = await retrieveMedia(businessId, media.storageReference).catch(() => null);
   if (!buffer) return null;
 
-  return { mimeType: media.mimeType, data: buffer.toString('base64') };
+  return { mimeType: normalizedMimeType, data: buffer.toString('base64') };
 }
 
 const MEDIA_LABELS: Partial<Record<MessageType, string>> = {

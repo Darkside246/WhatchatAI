@@ -10,7 +10,9 @@ import {
   requiresThumbnail,
   requiresTranscoding,
   classifyMimeFamily,
+  isInlineSafeMime,
 } from '../src/domain/whatsapp/mediaCompatibility.js';
+import { normalizeMimeType } from '../src/domain/whatsapp/mimeType.js';
 
 describe('MediaCompatibilityService (real MIME-driven decisions, no guessing)', () => {
   it('treats any real MIME type as supported, and a missing one as unsupported', () => {
@@ -85,5 +87,28 @@ describe('MediaCompatibilityService (real MIME-driven decisions, no guessing)', 
     expect(classifyMimeFamily('audio/opus')).toBe('audio');
     expect(classifyMimeFamily('application/pdf')).toBe('other');
     expect(classifyMimeFamily(null)).toBe('other');
+  });
+
+  // Real WhatsApp voice notes report `audio/ogg; codecs=opus`, never the
+  // bare `audio/ogg` - every one of these lookups must recognize the real
+  // value, not just the bare one, or a genuine voice note gets
+  // misclassified/rejected purely because of the codec parameter.
+  it('treats "audio/ogg; codecs=opus" (the real WhatsApp voice-note mimeType) identically to the bare "audio/ogg"', () => {
+    const real = 'audio/ogg; codecs=opus';
+
+    expect(classifyMimeFamily(real)).toBe(classifyMimeFamily('audio/ogg'));
+    expect(classifyMimeFamily(real)).toBe('audio');
+
+    expect(canPreview('voice_note', real)).toBe(canPreview('voice_note', 'audio/ogg'));
+    expect(canPreview('voice_note', real)).toBe(true);
+
+    expect(requiresConversion('voice_note', real)).toBe(requiresConversion('voice_note', 'audio/ogg'));
+    expect(requiresConversion('voice_note', real)).toBe(false);
+
+    expect(resolveExtension(real, null)).toBe(resolveExtension('audio/ogg', null));
+    expect(resolveExtension(real, null)).toBe('ogg');
+
+    expect(isInlineSafeMime(real)).toBe(isInlineSafeMime('audio/ogg'));
+    expect(isInlineSafeMime(real)).toBe(true);
   });
 });

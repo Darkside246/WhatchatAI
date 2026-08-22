@@ -1,5 +1,63 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - Fix: real WhatsApp voice notes never reached Gemini (MIME comparison bug, not a missing capability)
+
+**Not a security change; logged here because this is the project's one
+running changelog.** A Phase 0 read-only audit (requested after a report
+that the AI responds generically to voice notes) traced the real
+Baileys → media-download → AI-handoff → Gemini path and found the
+direct-to-Gemini inline-audio pipeline was already fully built
+(`src/services/ai/mediaContext.ts`'s `resolveInlineMediaPart`, wired
+through `aiContextGathererService`/`aiReplyService`) - it just never
+fired for a real voice note.
+
+**Root cause:** `SUPPORTED_MIME_TYPES` in `mediaContext.ts` was an
+exact-string `Set` containing the bare `'audio/ogg'`. Real WhatsApp voice
+notes report `audioMessage.mimetype` as `"audio/ogg; codecs=opus"`
+(confirmed by the codebase's own outbound-send default and its own
+inbound-persistence test fixture, both already using that exact string) -
+stored verbatim, with no normalization, by `whatsappMediaRepository`. The
+exact-match check therefore silently rejected every real voice note,
+`resolveInlineMediaPart` returned `null`, and the AI only ever saw the
+honest fallback placeholder text (`"[The customer sent a voice
+message.]"`) instead of the real audio - explaining the reported
+"generic response" symptom exactly. The same exact-match pattern existed
+in `src/domain/whatsapp/mediaCompatibility.ts` (audio/video/inline-safe
+classification, extension lookup), so voice-note preview/playback
+classification had the identical latent bug.
+
+**Fix:** added one shared, pure helper,
+`normalizeMimeType()` (`src/domain/whatsapp/mimeType.ts`) - strips any
+`;param=value` suffix, trims, lowercases - and applied it at every
+classification/allow-list comparison site in both files. The raw
+mimeType (with its real codec parameter) is still what gets stored in
+`whatsapp_media` and is never altered; only comparisons/classification
+use the normalized form, and the normalized (bare) form is what is now
+sent to Gemini as `inlineData.mimeType`, matching Gemini's own documented
+supported-type list.
+
+**Verification:** new dedicated unit tests (`test/mimeType.test.ts`) for
+the normalization helper against the real WhatsApp value and several
+parameter/whitespace/case variants; a corrected `test/mediaContext.test.ts`
+fixture (the existing "real voice note" test had been using the bare
+`'audio/ogg'`, not the real WhatsApp value, silently masking this bug)
+plus a new real end-to-end passing case proving `resolveInlineMediaPart`
+now returns real decrypted bytes for `"audio/ogg; codecs=opus"`; a new
+regression case in `test/mediaCompatibility.test.ts` asserting every
+affected function treats the real value identically to the bare one.
+Full suite: 666/666 passed (92 files), `tsc` clean, production build
+clean. No code changes beyond this MIME-comparison fix and its tests.
+
+**Related, deliberately not touched in this pass:** the same
+exact-string MIME comparison pattern (missing normalization, though
+already lowercased) also exists in
+`src/security/sentinel/heuristicShield.ts`'s `EXECUTABLE_MIME_TYPES`
+check - a MIME type with a spurious parameter appended (e.g.
+`application/x-msdownload; name=x`) would bypass the Sentinel's
+executable-payload block today. This is genuinely security-relevant
+(unlike the fix above) and is flagged for a separate, explicitly scoped
+decision rather than folded into this pass.
+
 ## 2026-08-22 - OpenClaw Cell Runtime: per-cell relay - Phase 2 real-hardware verification, all 8 tests passed
 
 **Branch:** `openclaw-cell-runtime`. Verification only, plus one real bug
