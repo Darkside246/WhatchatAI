@@ -1,5 +1,88 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - OpenClaw Cell Runtime: purgeData containment implemented
+
+**Branch:** `openclaw-cell-runtime`, on top of `65a3daf`.
+
+Replaces `DockerCellRuntime.remove()`'s `purgeData` no-op (which logged a
+warning and left state on disk) with real, containment-checked deletion.
+
+**`resolveContainedCellStateDir(cellId)`** (new, exported for direct
+testing) - every check runs before any filesystem mutation is even
+considered:
+- Rejects empty strings, path separators (`/`, `\`), null bytes, and
+  absolute paths outright.
+- Validates `cellId` against a strict allow-list regex (lowercase
+  alphanumerics and hyphens only) - deliberately independent of
+  `validateCellId()` in `openclawCellService.ts` rather than trusting an
+  upstream check to stay correct forever, the same mirror-not-share
+  pattern already used for the callback-token service vs. the session-
+  token service in this codebase.
+- Resolves `stateRootDir()` and the candidate target with `path.resolve`,
+  then confirms via `path.relative` that the target is exactly one direct
+  child of the root - never the root itself, never nested, never outside
+  it.
+
+**`purgeCellStateDir(cellId)`** (new, exported for direct testing):
+- `lstat`, never `stat` - a symlink at the target is rejected outright,
+  regardless of where it points (inside or outside the state root),
+  rather than followed.
+- Rejects anything at the target that isn't a real directory.
+- A second `realpath` + containment re-check on the (now confirmed
+  non-symlink) directory itself, catching the case where the state root
+  or an ancestor path component was itself replaced with a symlink.
+- Only then: `fs.rm(target, { recursive: true })` - a real Node fs call,
+  not a shelled-out `rm -rf`.
+- A target that doesn't exist is treated as an idempotent success, not an
+  error - matching this runtime's existing "already absent" semantics for
+  `stop`/`start`/`remove` on a missing container.
+
+**`remove()`'s two steps stay explicitly separate**, per the requirement
+that a purge failure never gets reported as a silent successful cleanup:
+container/network removal remains idempotent best-effort (unchanged);
+`purgeData`, when requested, now throws a real `Error` naming the cell if
+containment checks or the deletion itself fail - the message explicitly
+states that container/network removal already succeeded but state
+deletion did not, rather than conflating the two into one ambiguous
+outcome.
+
+**Tests (`test/dockerCellRuntime.test.ts`), real filesystem, not
+mocked** - `node:child_process` stays mocked (container/network removal
+isn't under test here), `node:fs/promises` is not, because this is
+exactly the class of bug a mocked fs would hide:
+- Valid cell directory is actually deleted from disk.
+- Idempotent no-op against a directory that never existed.
+- 11 parametrized rejection cases (`../` traversal, deeper traversal,
+  nested paths, bare `.`/`..`, empty string, malformed identifiers -
+  hyphen-prefixed, uppercase, null byte, percent-encoded) - each asserts
+  a real canary file *outside* the state root survives untouched, not
+  just that the call threw.
+- Absolute path rejected.
+- Resolved path is always exactly one level below the root, never the
+  root itself.
+- A symlink at the target pointing *inside* the state root is rejected -
+  neither the symlink nor its real target is touched.
+- A symlink at the target pointing *outside* the state root is rejected -
+  the real external directory and its contents survive untouched.
+- A file (not a directory) at the target is rejected rather than deleted.
+- Through `DockerCellRuntime.remove()`: container/network removal
+  succeeds independent of `purgeData`; `purgeData: true` actually deletes
+  a real directory on disk end to end; a purge failure surfaces as a
+  thrown error while confirming container/network removal still ran
+  first.
+
+**Verification:** 609/609 tests passing (589 + 20 new), typecheck clean.
+Unlike the Docker-orchestration code elsewhere in this file, this is pure
+Node `fs` logic with no Docker/GHCR dependency - the tests above run
+against a real filesystem in this sandbox, not a mock, so this is
+**`IMPLEMENTED AND VERIFIED`**, no real-hardware re-test required the way
+the Docker-specific changes needed one.
+
+**Still open, per the user's ordering:** encrypted Gateway-token storage
+(next); the OpenClaw internal-agent/tool-invocation research; the feature
+flag, only after both. No provider credential enters a cell before token
+storage is done.
+
 ## 2026-08-22 - OpenClaw Cell Runtime: real 5-step lifecycle re-verification, docker-exec health-check fix VERIFIED
 
 **Branch:** `openclaw-cell-runtime`, on top of `645a0ab`.

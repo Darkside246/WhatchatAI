@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:net';
+import { lstat, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { OpenClawCellRuntime, CellCreateResult, CellStatus } from './openclawCellRuntime.js';
 
@@ -20,6 +21,103 @@ function containerName(cellId: string): string {
 
 function networkName(cellId: string): string {
   return `openclaw-cell-net-${cellId}`;
+}
+
+/**
+ * Deliberately independent of `validateCellId()` in `openclawCellService.ts`
+ * - the same mirror-rather-than-share pattern already used for
+ * `openclawCallbackTokenService.ts` vs `sessionTokenService.ts` in this
+ * codebase, so this deletion-path guard doesn't quietly depend on an
+ * upstream check ever staying correct. This regex is intentionally
+ * stricter than it needs to be for currently-valid cell ids (letters,
+ * digits, hyphens only) precisely because it guards a real filesystem
+ * deletion.
+ */
+const SAFE_CELL_ID = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
+
+export class CellStatePurgeError extends Error {}
+
+/**
+ * Resolves and fully validates the on-disk directory for a cell's state
+ * before anything is allowed to delete it. Every check here is required,
+ * not defense-in-depth padding - see the `purgeData` containment tests
+ * for the adversarial cases each one exists to stop (`../` traversal, an
+ * absolute-path or separator-bearing `cellId`, a symlink planted at the
+ * target pointing anywhere - inside or outside the state root).
+ */
+export async function resolveContainedCellStateDir(cellId: string): Promise<string> {
+  if (typeof cellId !== 'string' || cellId.length === 0) {
+    throw new CellStatePurgeError('cellId must be a non-empty string');
+  }
+  if (cellId.includes('/') || cellId.includes('\\') || cellId.includes('\0')) {
+    throw new CellStatePurgeError(`cellId must not contain path separators or null bytes: ${JSON.stringify(cellId)}`);
+  }
+  if (path.isAbsolute(cellId)) {
+    throw new CellStatePurgeError(`cellId must not be an absolute path: ${JSON.stringify(cellId)}`);
+  }
+  if (!SAFE_CELL_ID.test(cellId)) {
+    throw new CellStatePurgeError(`cellId does not match the expected shape, refusing to derive a deletion path from it: ${JSON.stringify(cellId)}`);
+  }
+
+  const root = path.resolve(stateRootDir());
+  const target = path.resolve(root, cellId);
+
+  // Containment: the resolved target must be exactly one direct child of
+  // the resolved root - never the root itself, never nested, never
+  // outside it. path.relative() surfaces any escape as a leading `..` or
+  // an absolute path (a different-drive case on Windows).
+  const relative = path.relative(root, target);
+  const isDirectChild = relative.length > 0 && relative === cellId && !relative.startsWith('..') && !path.isAbsolute(relative);
+  if (!isDirectChild) {
+    throw new CellStatePurgeError(`resolved cell state path is not a direct child of the state root (root=${root}, target=${target})`);
+  }
+  if (target === root) {
+    throw new CellStatePurgeError('refusing to target the state root itself for deletion');
+  }
+
+  return target;
+}
+
+/**
+ * Deletes exactly one cell's state directory, after `lstat`-based
+ * containment checks - never `stat`, which would follow a symlink and
+ * defeat the whole point of checking. A symlink planted at the target
+ * (pointing anywhere, inside or outside the state root) is rejected
+ * outright rather than followed. A target that doesn't exist at all is
+ * treated as an idempotent success, not an error - matching this
+ * runtime's existing "already absent" semantics elsewhere (`stop`/
+ * `start`/`remove` on a missing container).
+ */
+export async function purgeCellStateDir(cellId: string): Promise<void> {
+  const target = await resolveContainedCellStateDir(cellId);
+
+  let stats;
+  try {
+    stats = await lstat(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; // nothing to purge - idempotent
+    throw new CellStatePurgeError(`could not inspect cell state path before deletion: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (stats.isSymbolicLink()) {
+    throw new CellStatePurgeError(`refusing to delete a symlink at the cell state path (${target}) - real target ownership cannot be trusted`);
+  }
+  if (!stats.isDirectory()) {
+    throw new CellStatePurgeError(`refusing to delete: cell state path (${target}) is not a directory`);
+  }
+
+  // Belt-and-suspenders beyond the lstat symlink check: resolve the real
+  // path of a directory we've now confirmed is not itself a symlink, and
+  // re-confirm it's still contained. Catches a symlink nested one level
+  // inside the directory tree that could otherwise redirect a recursive
+  // delete outside the state root.
+  const real = await realpath(target);
+  const root = path.resolve(stateRootDir());
+  if (real !== path.resolve(root, cellId)) {
+    throw new CellStatePurgeError(`cell state path's real location does not match its expected location (root=${root}, expected=${path.resolve(root, cellId)}, real=${real}) - refusing to delete`);
+  }
+
+  await rm(target, { recursive: true });
 }
 
 function describeExecError(error: unknown): string {
@@ -288,18 +386,28 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     return this.create(cellId, image, previousEnv);
   }
 
+  /**
+   * Container/network removal and host-state deletion are deliberately
+   * kept as two separate steps with two separate failure semantics.
+   * Container/network removal is idempotent best-effort - it already
+   * treats "not found" as success, matching this runtime's existing
+   * lifecycle semantics elsewhere. Host-state deletion, when requested,
+   * is NOT swallowed on failure - a caller that asked for purgeData and
+   * didn't get it needs to know that, not receive a silent, misleading
+   * "fully cleaned up." See `purgeCellStateDir` for the containment
+   * checks a real deletion has to pass first.
+   */
   async remove(cellId: string, options: { purgeData: boolean }): Promise<void> {
     await docker(['rm', '--force', containerName(cellId)]).catch(() => undefined);
     await docker(['network', 'rm', networkName(cellId)]).catch(() => undefined);
     if (options.purgeData) {
-      // Deliberately not implemented here as an `rm -rf` shelled out from
-      // this process - deleting a host directory by string-built path is
-      // exactly the kind of operation that deserves the same containment
-      // checks Fleet's own docs describe (resolve the real path, confirm
-      // it's the exact expected tenant leaf, never a symlink) rather than
-      // a quick fs.rm call. Left as an explicit gap: purge is a no-op for
-      // now, tracked as follow-up work, not silently "done."
-      console.warn(`[DockerCellRuntime] purgeData requested for cell ${cellId} but state-directory purge is not yet implemented - state remains on disk`);
+      try {
+        await purgeCellStateDir(cellId);
+      } catch (error) {
+        throw new Error(
+          `container/network for cell ${cellId} were removed, but state-directory purge failed and did NOT complete: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 }

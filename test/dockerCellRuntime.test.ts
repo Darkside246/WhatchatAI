@@ -1,4 +1,7 @@
 import { promisify } from 'node:util';
+import { mkdir, mkdtemp, rm as fsRm, stat, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -23,7 +26,9 @@ vi.mock('node:child_process', () => ({
   execFile: execFileMock,
 }));
 
-const { DockerCellRuntime } = await import('../src/services/dockerCellRuntime.js');
+const { DockerCellRuntime, resolveContainedCellStateDir, purgeCellStateDir, CellStatePurgeError } = await import(
+  '../src/services/dockerCellRuntime.js'
+);
 
 const HEALTHY = { stdout: '200\n', stderr: '' };
 
@@ -228,13 +233,182 @@ describe('DockerCellRuntime', () => {
     expect(execFileMock).toHaveBeenNthCalledWith(2, 'docker', ['network', 'rm', `openclaw-cell-net-${cellId}`], expect.anything());
   });
 
-  it('remove() with purgeData logs an explicit warning rather than silently deleting or silently doing nothing', async () => {
-    execFileMock.mockResolvedValue({ stdout: '', stderr: '' });
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+});
+
+/**
+ * purgeData containment - real filesystem, no mocking. This is exactly
+ * the class of bug that a mocked fs would hide: whether the containment
+ * checks actually stop a real symlink or a real `../` from escaping a
+ * real directory. `node:child_process` stays mocked (container/network
+ * removal aren't under test here); `node:fs/promises` is not.
+ */
+describe('purgeData containment (real filesystem)', () => {
+  let stateRoot: string;
+  let outsideCanaryDir: string;
+  let outsideCanaryFile: string;
+  const originalEnv = process.env.OPENCLAW_CELL_STATE_DIR;
+
+  beforeEach(async () => {
+    stateRoot = await mkdtemp(path.join(tmpdir(), 'openclaw-purge-root-'));
+    process.env.OPENCLAW_CELL_STATE_DIR = stateRoot;
+
+    // A real directory OUTSIDE the state root, with a real file in it -
+    // every rejection test below asserts this survives untouched, which
+    // is a much stronger proof than just "it threw."
+    outsideCanaryDir = await mkdtemp(path.join(tmpdir(), 'openclaw-purge-outside-'));
+    outsideCanaryFile = path.join(outsideCanaryDir, 'canary.txt');
+    await writeFile(outsideCanaryFile, 'do-not-delete-me');
+  });
+
+  afterEach(async () => {
+    process.env.OPENCLAW_CELL_STATE_DIR = originalEnv;
+    await fsRm(stateRoot, { recursive: true, force: true }).catch(() => undefined);
+    await fsRm(outsideCanaryDir, { recursive: true, force: true }).catch(() => undefined);
+  });
+
+  async function exists(p: string): Promise<boolean> {
+    try {
+      await stat(p);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it('deletes a valid cell directory', async () => {
+    const cellDir = path.join(stateRoot, 'valid-cell-1');
+    await mkdir(cellDir, { recursive: true });
+    await writeFile(path.join(cellDir, 'session.json'), '{}');
+
+    await purgeCellStateDir('valid-cell-1');
+
+    expect(await exists(cellDir)).toBe(false);
+    expect(await exists(stateRoot)).toBe(true); // the root itself survives
+  });
+
+  it('is idempotent - a nonexistent target is handled safely, not an error', async () => {
+    await expect(purgeCellStateDir('never-existed-cell')).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['../ traversal', '../escape'],
+    ['a deeper ../ traversal', '../../etc/passwd'],
+    ['nested path', 'foo/bar'],
+    ['nested path with leading segment', 'a/b/c'],
+    ['a bare dot-segment', '.'],
+    ['a bare parent-segment', '..'],
+    ['empty string', ''],
+    ['a malformed identifier with a hyphen prefix', '-bad'],
+    ['a malformed identifier with uppercase', 'Evil-Cell'],
+    ['a malformed identifier with a null byte', 'cell\0evil'],
+    ['a malformed identifier with percent-encoding', '%2e%2e%2fescape'],
+  ])('rejects %s ("%s") without touching anything', async (_label, badCellId) => {
+    await expect(resolveContainedCellStateDir(badCellId)).rejects.toThrow(CellStatePurgeError);
+    expect(await exists(outsideCanaryFile)).toBe(true);
+    expect(await exists(stateRoot)).toBe(true);
+  });
+
+  it('rejects an absolute path used as a cellId', async () => {
+    await expect(resolveContainedCellStateDir(path.join(stateRoot, 'valid-cell'))).rejects.toThrow(CellStatePurgeError);
+    await expect(resolveContainedCellStateDir('/etc/passwd')).rejects.toThrow(CellStatePurgeError);
+  });
+
+  it('never resolves to the state root itself - always exactly one level below it', async () => {
+    const resolved = await resolveContainedCellStateDir('some-valid-cell');
+    expect(resolved).not.toBe(stateRoot);
+    expect(path.dirname(resolved)).toBe(stateRoot);
+    expect(path.basename(resolved)).toBe('some-valid-cell');
+  });
+
+  it('rejects a symlink at the target, even one pointing inside the state root', async () => {
+    const realDir = path.join(stateRoot, 'real-cell');
+    await mkdir(realDir, { recursive: true });
+    await writeFile(path.join(realDir, 'keep.txt'), 'should survive');
+
+    const symlinkCellDir = path.join(stateRoot, 'symlink-cell');
+    await symlink(realDir, symlinkCellDir, 'dir');
+
+    await expect(purgeCellStateDir('symlink-cell')).rejects.toThrow(CellStatePurgeError);
+    // Neither the symlink nor what it points to was touched.
+    expect(await exists(symlinkCellDir)).toBe(true);
+    expect(await exists(realDir)).toBe(true);
+    expect(await exists(path.join(realDir, 'keep.txt'))).toBe(true);
+  });
+
+  it('rejects a symlink pointing outside the state root', async () => {
+    const escapeCellDir = path.join(stateRoot, 'escape-cell');
+    await symlink(outsideCanaryDir, escapeCellDir, 'dir');
+
+    await expect(purgeCellStateDir('escape-cell')).rejects.toThrow(CellStatePurgeError);
+    expect(await exists(outsideCanaryFile)).toBe(true); // the real target, untouched
+    expect(await exists(escapeCellDir)).toBe(true); // the symlink itself, untouched
+  });
+
+  it('refuses to delete a file (not a directory) at the target', async () => {
+    const filePath = path.join(stateRoot, 'not-a-dir');
+    await writeFile(filePath, 'unexpected file where a cell directory should be');
+
+    await expect(purgeCellStateDir('not-a-dir')).rejects.toThrow(CellStatePurgeError);
+    expect(await exists(filePath)).toBe(true);
+  });
+});
+
+describe('DockerCellRuntime.remove() wiring for purgeData', () => {
+  const cellId = 'wc-testcell';
+  let stateRoot: string;
+  const originalEnv = process.env.OPENCLAW_CELL_STATE_DIR;
+
+  beforeEach(async () => {
+    execFileMock.mockReset();
+    stateRoot = await mkdtemp(path.join(tmpdir(), 'openclaw-purge-wiring-'));
+    process.env.OPENCLAW_CELL_STATE_DIR = stateRoot;
+  });
+
+  afterEach(async () => {
+    process.env.OPENCLAW_CELL_STATE_DIR = originalEnv;
+    await fsRm(stateRoot, { recursive: true, force: true }).catch(() => undefined);
+    vi.clearAllMocks();
+  });
+
+  it('container removal succeeds even if the container/network are already absent, independent of purgeData', async () => {
+    execFileMock.mockRejectedValueOnce(new Error('no such container')).mockRejectedValueOnce(new Error('no such network'));
+    const runtime = new DockerCellRuntime();
+
+    await expect(runtime.remove(cellId, { purgeData: false })).resolves.toBeUndefined();
+  });
+
+  it('purgeData: true actually deletes the real cell state directory on disk', async () => {
+    const cellDir = path.join(stateRoot, cellId);
+    await mkdir(cellDir, { recursive: true });
+    await writeFile(path.join(cellDir, 'gateway-token.txt'), 'irrelevant, just proving the directory existed');
+
+    execFileMock.mockResolvedValue({ stdout: '', stderr: '' }); // docker rm + network rm both succeed
+    const runtime = new DockerCellRuntime();
 
     await runtime.remove(cellId, { purgeData: true });
 
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not yet implemented'));
-    warnSpy.mockRestore();
+    await expect(stat(cellDir)).rejects.toThrow();
+  });
+
+  it('surfaces a purge failure clearly rather than reporting a silent full cleanup - container/network removal already happened first', async () => {
+    // Plant a symlink so containment rejects it - proves the failure is
+    // reported, not swallowed, and that it happens AFTER container/network
+    // removal was already attempted (matching the documented separation).
+    const outsideDir = await mkdtemp(path.join(tmpdir(), 'openclaw-purge-wiring-outside-'));
+    try {
+      const escapeCellDir = path.join(stateRoot, cellId);
+      await symlink(outsideDir, escapeCellDir, 'dir');
+
+      execFileMock.mockResolvedValue({ stdout: '', stderr: '' }); // container/network removal succeeds
+      const runtime = new DockerCellRuntime();
+
+      await expect(runtime.remove(cellId, { purgeData: true })).rejects.toThrow(/state-directory purge failed/);
+      // The container/network removal calls still happened, despite the
+      // later purge failure - the two are genuinely separate steps.
+      expect(execFileMock).toHaveBeenCalledWith('docker', ['rm', '--force', `openclaw-cell-${cellId}`], expect.anything());
+      expect(execFileMock).toHaveBeenCalledWith('docker', ['network', 'rm', `openclaw-cell-net-${cellId}`], expect.anything());
+    } finally {
+      await fsRm(outsideDir, { recursive: true, force: true }).catch(() => undefined);
+    }
   });
 });

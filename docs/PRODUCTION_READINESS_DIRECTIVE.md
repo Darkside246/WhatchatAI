@@ -230,16 +230,34 @@ pasted directive without our own verification (`unverified`).
    pull, real digest match, confirmed via raw `docker images --digests`/
    `docker inspect` output.
 
-   Remaining, in order: (1) implement `purgeData`'s state-directory
-   deletion with real containment checks (currently an explicit no-op
-   with a logged warning, not silently skipped); (2) encrypted
-   Gateway-token storage; (3) research OpenClaw's real mechanism for
-   pointing its own agent/tool-calling loop at an external webhook
-   (genuinely unresearched - do not guess at a config format; a real
-   boot log from this pass shows the gateway has its own independent
-   agent/model capability defaulting to `openai/gpt-5.5`, never
-   exercised, worth investigating as part of this item); (4) OpenClaw
-   behind a feature flag, tenant-allowlisted, only after all of the
+   **`purgeData` containment: `IMPLEMENTED AND VERIFIED` (2026-08-22).**
+   `resolveContainedCellStateDir()`/`purgeCellStateDir()` (exported from
+   `dockerCellRuntime.ts` for direct testing) replace the prior no-op:
+   `lstat`-based symlink rejection (never followed, regardless of target),
+   strict allow-list validation of `cellId` independent of
+   `openclawCellService.ts`'s own check, and a `path.relative`-based
+   containment confirmation that the target is exactly one direct child
+   of the state root - never nested, never the root itself. Pure Node
+   `fs` logic with no Docker dependency, so unlike the rest of this
+   runtime it's verified directly in this sandbox against a real
+   filesystem (609/609 tests, 20 new - 11 parametrized adversarial
+   rejection cases plus symlink-inside/symlink-outside/non-directory/
+   idempotent-absent cases, each proving a real canary file outside the
+   state root survives untouched, not just that the call threw). No real-
+   hardware re-test needed the way the Docker-orchestration changes did.
+   `remove()`'s container/network removal and state-directory deletion
+   stay two genuinely separate steps - a purge failure now surfaces as a
+   thrown error naming the cell, rather than being reported as a silent
+   successful cleanup.
+
+   Remaining, in order: (1) encrypted Gateway-token storage; (2) research
+   OpenClaw's real mechanism for pointing its own agent/tool-calling loop
+   at an external webhook (genuinely unresearched - do not guess at a
+   config format; a real boot log from this pass shows the gateway has
+   its own independent agent/model capability defaulting to
+   `openai/gpt-5.5`, never exercised, worth investigating as part of this
+   item); (3) OpenClaw behind a feature flag, tenant-allowlisted, only
+   after all of the
    above - the existing Gemini/Baileys path on `phase-2-ai-repair`
    remains completely untouched throughout.
 4. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
