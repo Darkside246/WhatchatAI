@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:net';
-import { lstat, realpath, rm } from 'node:fs/promises';
+import { chmod, lstat, mkdir, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { OpenClawCellRuntime, CellCreateResult, CellStatus } from './openclawCellRuntime.js';
 
@@ -242,6 +242,24 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     }
   }
 
+  /**
+   * Creates (if needed) and locks down the host state directory ourselves,
+   * before Docker's bind mount can rely on whatever the daemon's own
+   * auto-creation default would produce. Confirmed necessary by a real
+   * in-cell security audit (2026-08-22): a fresh cell's
+   * `/home/node/.openclaw` bind-mount source came back `mode=777`
+   * (`fs.state_dir.perms_world_writable`, CRITICAL) on the test host -
+   * likely Docker Desktop/WSL2's NTFS bind-mount translation, though not
+   * yet confirmed whether that's specific to that dev environment or also
+   * occurs on a native Linux host. Either way, explicit chmod here means
+   * correctness never depends on host OS/Docker-daemon defaults.
+   */
+  private async ensureStateDir(cellId: string): Promise<void> {
+    const stateDir = path.join(stateRootDir(), cellId);
+    await mkdir(stateDir, { recursive: true });
+    await chmod(stateDir, 0o700);
+  }
+
   private buildRunArgs(cellId: string, image: string, env: Record<string, string>, port: number): string[] {
     const stateDir = path.join(stateRootDir(), cellId);
     const args = [
@@ -294,6 +312,7 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
 
   async create(cellId: string, image: string, env: Record<string, string>): Promise<CellCreateResult> {
     await this.ensureNetwork(cellId);
+    await this.ensureStateDir(cellId);
     const port = await findFreePort();
 
     let containerId: string;

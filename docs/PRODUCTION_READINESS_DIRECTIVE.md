@@ -297,18 +297,35 @@ pasted directive without our own verification (`unverified`).
    token`-protected cells; caught before being treated as a real finding
    about our architecture.
 
-   Remaining, in order: (1) run `security audit --deep --json` from
-   *inside* a real, provisioned, hardened cell (not the host) - verifying
-   gateway auth is on, `tools.elevated` and browser control are off, the
-   exec-approvals allowlist stays empty, no channel is logged in, no
-   provider credential or PostgreSQL credential is present, and egress
-   stays blocked except the deliberately-approved host-gateway path; (2)
-   only then design the real WhatchatAI MCP server (the disposable test
-   proved OpenClaw's client behavior, not yet our own server
-   implementation - likely via the official MCP SDK, not another hand-
-   rolled stand-in); (3) test that real adapter against the existing Tool
-   Gateway; (4) OpenClaw behind a feature flag, tenant-allowlisted, only
-   after all of the above - the existing Gemini/Baileys path on
+   **In-cell security audit (2026-08-22): run, real findings acted on
+   where the fix was self-contained.** `security audit --deep --json`
+   from inside a real hardened cell confirmed gateway auth is clean (no
+   longer flagged, unlike the earlier bare-host run) and reconfirmed
+   `tools.elevated`/browser control are still enabled by default. It also
+   surfaced a new CRITICAL finding not on the original checklist:
+   `/home/node/.openclaw` was `mode=777` (world-writable) - fixed:
+   `dockerCellRuntime.ts`'s `create()` now `mkdir`s and `chmod(0o700)`s
+   the state directory itself rather than trusting Docker's bind-mount
+   auto-creation default (`IMPLEMENTED AND VERIFIED`, real filesystem
+   test, no Docker dependency). One operational discovery, not a code
+   bug: `--deep` fires a real embedded-agent turn as part of its own
+   self-check, which - with no provider credential and `--internal`
+   blocking egress - hangs for minutes rather than failing fast; any
+   future automated invocation of `security audit --deep` against a cell
+   needs a `timeout` wrapper.
+
+   Remaining, in order: (1) research the real config path for disabling
+   `tools.elevated`/browser control (do not guess a key name - the audit
+   only reports the derived state, not the setter); re-run the in-cell
+   audit to confirm the attack-surface summary shrinks and the exec-
+   approvals allowlist stays empty, no channel is logged in, no provider
+   credential or PostgreSQL credential is present; (2) only then design
+   the real WhatchatAI MCP server (the disposable test proved OpenClaw's
+   client behavior, not yet our own server implementation - likely via
+   the official MCP SDK, not another hand-rolled stand-in); (3) test that
+   real adapter against the existing Tool Gateway; (4) OpenClaw behind a
+   feature flag, tenant-allowlisted, only after all of the above - the
+   existing Gemini/Baileys path on
    `phase-2-ai-repair` remains completely untouched throughout.
 4. **OpenPanel** - *deferred, needs a scoping answer*: operator-facing
    internal analytics, or customer-facing analytics for tenants? Different

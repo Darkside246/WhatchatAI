@@ -1,5 +1,65 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - OpenClaw Cell Runtime: real in-cell security audit + state-directory permission fix
+
+**Branch:** `openclaw-cell-runtime`.
+
+**Context:** ran `openclaw security audit --deep --json` from inside a
+real, provisioned, hardened cell for the first time (previous audit runs
+were against the bare host, which was already caught giving a misleading
+result for an unrelated reason - see the prior entry).
+
+**A real operational discovery, not a code bug:** the first `--deep` run
+hung for ~3.8 minutes (`durationMs=227986` in the Gateway's own logs).
+Root cause,
+confirmed directly from the Gateway's log output: `--deep` fires a real
+*embedded agent run* as part of its self-check, and that attempted an
+outbound HTTPS request to `https://api.openai.com/v1/responses` (the
+unconfigured `openai/gpt-5.5` default, no credential present). Because
+`--internal` blocks all egress, that request didn't fail fast - it hung
+until a genuine TCP-level connect timeout. Egress blocking worked
+correctly; the operational lesson is that `openclaw security audit
+--deep` needs a `timeout` wrapper when run against a hardened cell, or it
+can hang for minutes. A second `--deep` run (wrapped in `timeout 30`)
+took a different internal path and returned quickly with a distinct
+finding (`gateway.probe_failed: "missing scope: operator.read"`) -
+`--deep`'s exact behavior isn't fully understood to be deterministic
+across runs; recorded honestly rather than papering over the
+inconsistency with an invented explanation.
+
+**Confirmed, real findings from the in-cell audit:**
+- `tools.elevated: enabled`, `browser control: enabled` - as suspected
+  from the earlier bare-host/boot-log evidence, now independently
+  reconfirmed from inside a real hardened cell. Not yet remediated -
+  needs the real config path (next research step), not a guess.
+- Gateway auth: clean, no longer flagged (unlike the bare-host run,
+  which was auditing an unrelated unconfigured local install with no
+  gateway even running).
+- **New: `fs.state_dir.perms_world_writable` (CRITICAL)** -
+  `/home/node/.openclaw mode=777`. Likely Docker Desktop/WSL2's NTFS
+  bind-mount translation, though not confirmed whether that's specific
+  to that dev environment or also occurs on a native Linux host -
+  addressed either way (see fix below), not assumed to be environment-
+  specific without evidence.
+
+**Fix (`dockerCellRuntime.ts`):** `create()` now calls a new
+`ensureStateDir()` that explicitly `mkdir`s and `chmod(0o700)`s the host
+state directory itself, before Docker's bind mount can rely on whatever
+the daemon's own auto-creation default produces. Correctness no longer
+depends on host OS/Docker-daemon defaults.
+
+**Tests:** the existing `create()` hardening-profile test now asserts the
+real created directory's mode is exactly `0o700` (real filesystem, temp
+root, not mocked - `node:fs/promises` was never mocked in this file, only
+`node:child_process`). 613/613 tests passing, typecheck clean. Pure
+Node `fs` logic, same as `purgeData` - no real-hardware re-test needed;
+`IMPLEMENTED AND VERIFIED`.
+
+**Still open, per the user's ordering:** research the real config path
+for disabling `tools.elevated`/browser control (do not guess a key name);
+re-run the in-cell audit to confirm the attack-surface summary shrinks;
+only then design the real WhatchatAI MCP server implementation.
+
 ## 2026-08-22 - OpenClaw Cell Runtime: MCP wire-protocol verified against a real, disposable server
 
 **Branch:** `openclaw-cell-runtime`. Pure research - no application code changed.

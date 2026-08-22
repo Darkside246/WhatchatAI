@@ -36,14 +36,23 @@ describe('DockerCellRuntime', () => {
   const cellId = 'wc-testcell';
   const image = 'ghcr.io/openclaw/openclaw@sha256:8789721d2e9b24b780a1504b56deb4c6bd5c7dbf96a1dd117e7c45c2ed72c8ac';
   let runtime: InstanceType<typeof DockerCellRuntime>;
+  let stateRoot: string;
+  const originalEnv = process.env.OPENCLAW_CELL_STATE_DIR;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     execFileMock.mockReset();
+    // create() now touches the real filesystem (mkdir+chmod the state
+    // dir) - point it at a throwaway temp root rather than the repo's
+    // own data/openclaw-cells.
+    stateRoot = await mkdtemp(path.join(tmpdir(), 'openclaw-runtime-root-'));
+    process.env.OPENCLAW_CELL_STATE_DIR = stateRoot;
     // Fast health-check timing for tests - production uses 60s/1s.
     runtime = new DockerCellRuntime(300, 20);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    process.env.OPENCLAW_CELL_STATE_DIR = originalEnv;
+    await fsRm(stateRoot, { recursive: true, force: true }).catch(() => undefined);
     vi.clearAllMocks();
   });
 
@@ -101,6 +110,16 @@ describe('DockerCellRuntime', () => {
     expect(healthCall[1]).toEqual(
       expect.arrayContaining(['exec', `openclaw-cell-${cellId}`, 'curl', 'http://127.0.0.1:18789/healthz']),
     );
+
+    // Regression test for a real in-cell audit finding (2026-08-22): the
+    // host state directory must be created and locked down by us, not
+    // left to whatever Docker's own bind-mount auto-creation default is
+    // (observed as world-writable 0o777 on a real Docker Desktop/WSL2
+    // host).
+    const createdStateDir = path.join(stateRoot, cellId);
+    const dirStats = await stat(createdStateDir);
+    expect(dirStats.isDirectory()).toBe(true);
+    expect(dirStats.mode & 0o777).toBe(0o700);
   });
 
   it('skips network creation when the per-cell network already exists', async () => {
