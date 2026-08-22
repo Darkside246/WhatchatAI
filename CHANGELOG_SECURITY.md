@@ -1,5 +1,75 @@
 # CHANGELOG_SECURITY.md
 
+## 2026-08-22 - OpenClaw Cell Runtime: health checking moved off the published port (CONFIGURATION MISMATCH, confirmed and fixed)
+
+**Branch:** `openclaw-cell-runtime`, continuing on top of `bcec22a`.
+
+**Context:** real re-verification of the egress-containment change (below)
+found two of three properties confirmed clean with raw evidence -
+general-internet egress genuinely blocked (`curl` exit 6/7 against
+`example.com` and `1.1.1.1`), cross-cell isolation genuinely enforced
+(`curl` exit 6 from one cell's container to another's IP) - but
+`create()` itself now reliably fails: `"Cell verify-cell-3 did not become
+healthy within 60000ms of starting"`, reproduced cleanly.
+
+**Full diagnostic evidence, not just the failure:**
+- `docker logs --timestamps` on the still-running container: a completely
+  clean boot, `[gateway] ready` at +3.15s, no errors.
+- `docker exec <cid> curl http://127.0.0.1:18789/healthz` (inside the
+  container's own namespace): real `200 OK`, real body
+  `{"ok":true,"status":"live"}`.
+- `curl http://127.0.0.1:<published-port>/healthz` (from the host): real
+  `curl: (7) Failed to connect... Could not connect to server`.
+
+**Root cause, confirmed rather than inferred:** Docker's `--internal`
+network flag - the same flag that correctly blocks general egress -
+excludes the network from the NAT/forwarding plumbing `--publish` needs
+to work at all. The Gateway process itself is completely healthy; only
+its host-side reachability via the published port is broken. This is
+real, documented Docker behavior once looked into, not a bug in OpenClaw
+or in the hardening profile.
+
+**User's explicit design decision** (deliberately separating two
+concerns rather than conflating them): don't remove `--publish` yet - it
+was built around a not-yet-answered question (does the Tool Gateway/
+adapter ever need a host-side transport to a cell's own Gateway?) that
+removing it prematurely would foreclose. Instead: move health checking
+onto a mechanism that doesn't depend on the published port at all, and
+keep `--publish`/`gatewayEndpoint`/`port` as *transport metadata* for a
+possible future authenticated Gateway path, explicitly not currently
+functional and explicitly not the health-check mechanism.
+
+**Fix (`dockerCellRuntime.ts`):** `waitForHealthy()` (used by `create()`,
+`status()`, `start()`) now runs `docker exec <cid> curl ... http://127.0.0.1:18789/healthz`
+inside the container's own network namespace, replacing the host-side
+`fetch` against the published port. This never crosses the
+`--internal`/`--publish` boundary at all, so it's unaffected by the
+finding above. `readPublishedPort()` (now unused) was removed rather than
+left as dead code. `--publish`, `findFreePort()`, and the
+`gatewayEndpoint`/`port` fields on `CellCreateResult` are unchanged -
+kept deliberately, per the decision above, not because they currently
+function for anything.
+
+**Test changes (`test/dockerCellRuntime.test.ts`):** every health-check
+assertion now mocks the `docker exec ... curl` call instead of `fetch`;
+the now-unused `fetchMock`/`vi.stubGlobal('fetch', ...)` scaffolding was
+removed rather than left dangling.
+
+**Verification:** 589/589 tests passing, typecheck clean - against the
+mocked test double. **Not yet re-run against the real container** - this
+sandbox has no GHCR access. That re-run (confirm `create()`/`status()`/
+`start()` all succeed via the new mechanism, and that everything
+previously verified - hardening, resource limits, auth, egress
+containment, cross-cell isolation - is unaffected) is the immediate next
+step.
+
+**Status: `IMPLEMENTED BUT NOT FULLY VERIFIED`** for the health-check
+change specifically. Egress containment and cross-cell isolation
+themselves are `VERIFIED` (real evidence, unaffected by this fix -
+`--internal` still applies to both networks). Everything else previously
+verified (auth, hardening, resource limits, restart-timing budget) is
+unaffected and remains `VERIFIED`.
+
 ## 2026-08-22 - OpenClaw Cell Runtime: egress containment - per-cell networks are now `--internal`
 
 **Branch:** `openclaw-cell-runtime`, continuing on top of `ac36817`.

@@ -2,14 +2,16 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * `DockerCellRuntime` shells out to the real `docker` CLI and polls a
- * real HTTP `/healthz` endpoint - this sandbox has no OpenClaw image it
- * can actually run (see CHANGELOG_SECURITY.md's "OpenClaw Cell Runtime"
- * entry: a real Docker daemon exists here, but neither Docker Hub nor
- * GHCR blob downloads complete through this sandbox's egress policy), so
- * every test here mocks `execFile` and `fetch` directly rather than
- * pretending to run a real container. IMPLEMENTED BUT NOT FULLY
- * VERIFIED until exercised against a real daemon with the real image.
+ * `DockerCellRuntime` shells out to the real `docker` CLI for everything,
+ * including health checking (`docker exec ... curl .../healthz`, run
+ * inside the container's own namespace - see CHANGELOG_SECURITY.md's
+ * "egress containment" entry for why this isn't a host-side HTTP request
+ * against a published port: `--internal` networks block host reachability
+ * of published ports entirely, confirmed against a real container). This
+ * sandbox has no OpenClaw image it can actually run (neither Docker Hub
+ * nor GHCR blob downloads complete through this sandbox's egress policy),
+ * so every test here mocks `execFile` directly rather than pretending to
+ * run a real container.
  *
  * Same custom-promisify mocking approach as `openclawCellService.test.ts`
  * used for the (now-removed) Fleet CLI mock.
@@ -21,14 +23,9 @@ vi.mock('node:child_process', () => ({
   execFile: execFileMock,
 }));
 
-const fetchMock = vi.fn<typeof fetch>();
-vi.stubGlobal('fetch', fetchMock);
-
 const { DockerCellRuntime } = await import('../src/services/dockerCellRuntime.js');
 
-function okResponse(): Response {
-  return new Response(null, { status: 200 });
-}
+const HEALTHY = { stdout: '200\n', stderr: '' };
 
 describe('DockerCellRuntime', () => {
   const cellId = 'wc-testcell';
@@ -37,7 +34,6 @@ describe('DockerCellRuntime', () => {
 
   beforeEach(() => {
     execFileMock.mockReset();
-    fetchMock.mockReset();
     // Fast health-check timing for tests - production uses 60s/1s.
     runtime = new DockerCellRuntime(300, 20);
   });
@@ -50,8 +46,8 @@ describe('DockerCellRuntime', () => {
     execFileMock
       .mockRejectedValueOnce(new Error('network not found')) // network inspect - doesn't exist
       .mockResolvedValueOnce({ stdout: '', stderr: '' }) // network create
-      .mockResolvedValueOnce({ stdout: 'container123\n', stderr: '' }); // docker run
-    fetchMock.mockResolvedValueOnce(okResponse());
+      .mockResolvedValueOnce({ stdout: 'container123\n', stderr: '' }) // docker run
+      .mockResolvedValueOnce(HEALTHY); // docker exec health check
 
     const result = await runtime.create(cellId, image, { OPENCLAW_GATEWAY_TOKEN: 'tok-a', OPENCLAW_CALLBACK_TOKEN: 'tok-b' });
 
@@ -59,8 +55,8 @@ describe('DockerCellRuntime', () => {
     expect(result.gatewayEndpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(result.port).toBeGreaterThan(0);
 
-    expect(execFileMock).toHaveBeenCalledTimes(3);
-    const [inspectCall, createCall, runCall] = execFileMock.mock.calls as [unknown[], unknown[], unknown[]];
+    expect(execFileMock).toHaveBeenCalledTimes(4);
+    const [inspectCall, createCall, runCall, healthCall] = execFileMock.mock.calls as [unknown[], unknown[], unknown[], unknown[]];
     expect(inspectCall[0]).toBe('docker');
     expect(inspectCall[1]).toEqual(expect.arrayContaining(['network', 'inspect']));
     // --internal: no default route to the outside world for this network -
@@ -80,7 +76,9 @@ describe('DockerCellRuntime', () => {
         '--cpus', '2',
       ]),
     );
-    // Loopback-only publish - never a wildcard bind.
+    // Loopback-only publish - never a wildcard bind. Kept even though it's
+    // not currently reachable from the host under --internal (see the
+    // class doc comment) - health checking below does not depend on it.
     expect(runArgs.some((arg) => /^127\.0\.0\.1:\d+:18789$/.test(arg))).toBe(true);
     expect(runArgs.some((arg) => arg.startsWith('0.0.0.0:'))).toBe(false);
     // The one deliberate hole in the internal network - reaching the
@@ -92,24 +90,30 @@ describe('DockerCellRuntime', () => {
     expect(runArgs.join(' ')).not.toMatch(/:latest/);
     // Real secrets passed via env, never as bare CLI args elsewhere.
     expect(runArgs).toEqual(expect.arrayContaining(['-e', 'OPENCLAW_GATEWAY_TOKEN=tok-a', '-e', 'OPENCLAW_CALLBACK_TOKEN=tok-b']));
+
+    // Health checking runs inside the container's own namespace via
+    // docker exec, never as a host-side request against the published port.
+    expect(healthCall[1]).toEqual(
+      expect.arrayContaining(['exec', `openclaw-cell-${cellId}`, 'curl', 'http://127.0.0.1:18789/healthz']),
+    );
   });
 
   it('skips network creation when the per-cell network already exists', async () => {
     execFileMock
       .mockResolvedValueOnce({ stdout: 'exists', stderr: '' }) // network inspect succeeds
-      .mockResolvedValueOnce({ stdout: 'container123\n', stderr: '' }); // docker run
-    fetchMock.mockResolvedValueOnce(okResponse());
+      .mockResolvedValueOnce({ stdout: 'container123\n', stderr: '' }) // docker run
+      .mockResolvedValueOnce(HEALTHY); // docker exec health check
 
     await runtime.create(cellId, image, {});
 
-    expect(execFileMock).toHaveBeenCalledTimes(2); // inspect + run, no create
+    expect(execFileMock).toHaveBeenCalledTimes(3); // inspect + run + health check, no network create
   });
 
   it('throws a real error, never a silently-succeeded cell, if the container never becomes healthy', async () => {
     execFileMock
       .mockResolvedValueOnce({ stdout: 'exists', stderr: '' })
-      .mockResolvedValueOnce({ stdout: 'container123\n', stderr: '' });
-    fetchMock.mockRejectedValue(new Error('connection refused')); // never healthy within the deadline
+      .mockResolvedValueOnce({ stdout: 'container123\n', stderr: '' })
+      .mockRejectedValue(new Error('exec failed - process not listening yet')); // health check never succeeds
 
     await expect(runtime.create(cellId, image, {})).rejects.toThrow(/did not become healthy/);
   });
@@ -122,21 +126,19 @@ describe('DockerCellRuntime', () => {
     await expect(runtime.create(cellId, image, {})).rejects.toThrow(/docker run for cell/);
   });
 
-  it('status() reports running+healthy only when the container is running AND /healthz responds ok', async () => {
+  it('status() reports running+healthy only when the container is running AND the in-container health check succeeds', async () => {
     execFileMock
       .mockResolvedValueOnce({ stdout: 'true\n', stderr: '' }) // .State.Running
-      .mockResolvedValueOnce({ stdout: '19104\n', stderr: '' }); // HostPort
-    fetchMock.mockResolvedValueOnce(okResponse());
+      .mockResolvedValueOnce(HEALTHY); // docker exec health check
 
     const status = await runtime.status(cellId);
     expect(status).toEqual({ state: 'running', healthy: true });
   });
 
-  it('status() reports running+unhealthy when the container is running but /healthz never responds', async () => {
+  it('status() reports running+unhealthy when the container is running but the health check never succeeds', async () => {
     execFileMock
       .mockResolvedValueOnce({ stdout: 'true\n', stderr: '' })
-      .mockResolvedValueOnce({ stdout: '19104\n', stderr: '' });
-    fetchMock.mockRejectedValue(new Error('connection refused'));
+      .mockRejectedValue(new Error('exec failed'));
 
     const status = await runtime.status(cellId);
     expect(status).toEqual({ state: 'running', healthy: false });
@@ -162,22 +164,19 @@ describe('DockerCellRuntime', () => {
     execFileMock.mockReset();
     execFileMock
       .mockResolvedValueOnce({ stdout: '', stderr: '' }) // start
-      .mockResolvedValueOnce({ stdout: '19104\n', stderr: '' }); // port lookup
-    fetchMock.mockResolvedValueOnce(okResponse());
+      .mockResolvedValueOnce(HEALTHY); // docker exec health check
 
     await runtime.start(cellId);
     expect(execFileMock.mock.calls[0]).toEqual(['docker', ['start', `openclaw-cell-${cellId}`], expect.anything()]);
-    // start() polls the port directly rather than delegating through
-    // status()'s separate .State.Running inspect - exactly two docker
-    // calls (start, port lookup), not three.
+    // start() checks health directly via docker exec, not a host-side
+    // published-port request - exactly two docker calls (start, exec).
     expect(execFileMock).toHaveBeenCalledTimes(2);
   });
 
   it('start() throws if the container comes back up but never reports healthy', async () => {
     execFileMock
       .mockResolvedValueOnce({ stdout: '', stderr: '' }) // start
-      .mockResolvedValueOnce({ stdout: '19104\n', stderr: '' }); // port lookup
-    fetchMock.mockRejectedValue(new Error('connection refused'));
+      .mockRejectedValue(new Error('exec failed'));
 
     await expect(runtime.start(cellId)).rejects.toThrow(/did not report healthy/);
   });
@@ -187,18 +186,16 @@ describe('DockerCellRuntime', () => {
     // longer than a short routine-status cap (but well within the full
     // create()-style deadline) must still succeed, not throw.
     const slowRuntime = new (runtime.constructor as typeof DockerCellRuntime)(2_000, 50);
-    execFileMock
-      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // start
-      .mockResolvedValueOnce({ stdout: '19104\n', stderr: '' }); // port lookup
+    execFileMock.mockResolvedValueOnce({ stdout: '', stderr: '' }); // start
 
     let calls = 0;
-    fetchMock.mockImplementation(async () => {
+    execFileMock.mockImplementation(async () => {
       calls += 1;
       // First few polls fail (simulating the real ~1s+ plugin/channel boot
       // window), succeeding only after a delay that would have exceeded a
       // 5s-style short cap if this instance's deadline were shorter.
-      if (calls < 4) throw new Error('connection refused');
-      return okResponse();
+      if (calls < 4) throw new Error('exec failed - not up yet');
+      return HEALTHY;
     });
 
     await expect(slowRuntime.start(cellId)).resolves.toBeUndefined();
@@ -211,8 +208,8 @@ describe('DockerCellRuntime', () => {
       .mockResolvedValueOnce({ stdout: '', stderr: '' }) // stop
       .mockResolvedValueOnce({ stdout: '', stderr: '' }) // rm
       .mockResolvedValueOnce({ stdout: 'exists', stderr: '' }) // network inspect (inside create())
-      .mockResolvedValueOnce({ stdout: 'newcontainer\n', stderr: '' }); // docker run
-    fetchMock.mockResolvedValueOnce(okResponse());
+      .mockResolvedValueOnce({ stdout: 'newcontainer\n', stderr: '' }) // docker run
+      .mockResolvedValueOnce(HEALTHY); // docker exec health check
 
     const newImage = 'ghcr.io/openclaw/openclaw@sha256:0000000000000000000000000000000000000000000000000000000000000001';
     const result = await runtime.upgrade(cellId, newImage);

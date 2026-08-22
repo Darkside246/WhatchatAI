@@ -51,19 +51,32 @@ async function findFreePort(): Promise<number> {
   });
 }
 
-async function waitForHealthy(port: number, deadlineMs: number, pollIntervalMs = 1_000): Promise<boolean> {
+/**
+ * Health checking runs *inside* the container's own network namespace via
+ * `docker exec`, not as a host-side request against the published port.
+ * Confirmed by real evidence (2026-08-22): a cell's `--internal` network
+ * blocks host-side reachability of `--publish`ed ports entirely (Docker
+ * excludes internal networks from the NAT/forwarding plumbing publishing
+ * depends on), even though the Gateway process itself boots cleanly and
+ * answers `/healthz` fine from inside its own namespace. `docker exec`
+ * never crosses that network boundary at all, so it's unaffected by it.
+ */
+async function execHealthCheck(cellId: string): Promise<boolean> {
+  try {
+    const stdout = await docker(
+      ['exec', containerName(cellId), 'curl', '-s', '-o', '/dev/null', '-w', '%{http_code}', '-m', '5', 'http://127.0.0.1:18789/healthz'],
+      HEALTH_CHECK_TIMEOUT_MS + 2_000,
+    );
+    return stdout.trim() === '200';
+  } catch {
+    return false;
+  }
+}
+
+async function waitForHealthy(cellId: string, deadlineMs: number, pollIntervalMs = 1_000): Promise<boolean> {
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
-      const response = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: controller.signal }).finally(() =>
-        clearTimeout(timeout),
-      );
-      if (response.ok) return true;
-    } catch {
-      // not up yet - keep polling until the deadline
-    }
+    if (await execHealthCheck(cellId)) return true;
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   }
   return false;
@@ -88,12 +101,19 @@ async function waitForHealthy(port: number, deadlineMs: number, pollIntervalMs =
  * (`node dist/index.js gateway --bind lan --port 18789`) is likewise
  * taken directly from that same real source. The additional flags this
  * implementation appends (`--auth token`, `--allow-unconfigured`) come
- * from the real, verified `openclaw gateway --help` output gathered
- * during this session's verification pass - but the *combination* has
- * never been run against a real container. Treat this whole class as
- * IMPLEMENTED BUT NOT FULLY VERIFIED until someone with real Docker
- * access runs `create()` once and confirms the container actually
- * reaches a healthy state.
+ * from the real, verified `openclaw gateway --help` output.
+ *
+ * Real-runtime verified (2026-08-22, see CHANGELOG_SECURITY.md for the
+ * full raw evidence trail): auth enforcement, hardening profile, resource
+ * limits, restart lifecycle, general-internet egress blocking, and
+ * cross-cell network isolation are all confirmed against a live
+ * container. Two design iterations came out of that verification, not
+ * assumed correct on the first attempt: the restart health-check budget
+ * had to be widened to match `create()`'s, and health checking itself
+ * had to move from a host-side request against the published port to
+ * `docker exec`-based checking, once real evidence showed `--internal`
+ * blocks host reachability of published ports entirely (see
+ * `execHealthCheck` below).
  */
 export class DockerCellRuntime implements OpenClawCellRuntime {
   readonly name = 'docker';
@@ -141,6 +161,16 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
       '--memory', '2g',
       '--cpus', '2',
       '--network', networkName(cellId),
+      // Loopback-only, and NOT currently reachable from the host at all -
+      // Docker's `--internal` flag excludes this network from the
+      // NAT/forwarding plumbing `--publish` depends on (real, confirmed
+      // finding, not a theoretical concern). Kept deliberately anyway,
+      // reserved for a possible future authenticated host<->cell Gateway
+      // transport, not because anything uses it today - health checking
+      // does not depend on it (see `execHealthCheck` below). Treat
+      // `gatewayEndpoint`/`port` on `CellCreateResult` as transport
+      // metadata describing where that future path would go, not as a
+      // live, currently-reachable endpoint.
       '--publish', `127.0.0.1:${port}:18789`,
       // The one exception to the network's own `--internal` blackhole:
       // this lets the cell resolve/reach the Docker host machine (where
@@ -176,23 +206,12 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
       throw new Error(`docker run for cell ${cellId} failed: ${describeExecError(error)}`);
     }
 
-    const healthy = await waitForHealthy(port, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
+    const healthy = await waitForHealthy(cellId, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
     if (!healthy) {
       throw new Error(`Cell ${cellId} did not become healthy within ${this.healthCheckDeadlineMs}ms of starting (container ${containerId})`);
     }
 
     return { containerId, gatewayEndpoint: `http://127.0.0.1:${port}`, port };
-  }
-
-  /** Reads the host port Docker published for this cell's Gateway, or null if the container isn't running or the mapping can't be read. */
-  private async readPublishedPort(cellId: string): Promise<number | null> {
-    try {
-      const stdout = await docker(['inspect', '--format', '{{(index (index .NetworkSettings.Ports "18789/tcp") 0).HostPort}}', containerName(cellId)]);
-      const port = Number(stdout.trim());
-      return Number.isFinite(port) ? port : null;
-    } catch {
-      return null;
-    }
   }
 
   async status(cellId: string): Promise<CellStatus> {
@@ -205,11 +224,10 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     }
     if (!running) return { state: 'stopped', healthy: false };
 
-    const port = await this.readPublishedPort(cellId);
     // A routine status check on an already-running cell only needs to confirm
     // it's still answering right now, so this stays capped short rather than
     // using the full restart budget below.
-    const healthy = port !== null ? await waitForHealthy(port, Math.min(5_000, this.healthCheckDeadlineMs), this.healthCheckPollIntervalMs) : false;
+    const healthy = await waitForHealthy(cellId, Math.min(5_000, this.healthCheckDeadlineMs), this.healthCheckPollIntervalMs);
     return { state: 'running', healthy };
   }
 
@@ -236,8 +254,7 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
     } catch (error) {
       throw new Error(`docker start for cell ${cellId} failed: ${describeExecError(error)}`);
     }
-    const port = await this.readPublishedPort(cellId);
-    const healthy = port !== null ? await waitForHealthy(port, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs) : false;
+    const healthy = await waitForHealthy(cellId, this.healthCheckDeadlineMs, this.healthCheckPollIntervalMs);
     if (!healthy) {
       throw new Error(`Cell ${cellId} did not report healthy within ${this.healthCheckDeadlineMs}ms of restarting`);
     }

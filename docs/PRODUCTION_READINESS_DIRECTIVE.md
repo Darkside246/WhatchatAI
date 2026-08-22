@@ -184,17 +184,33 @@ pasted directive without our own verification (`unverified`).
    above):** the original hardening requirement list included "minimal
    outbound access" - never actually implemented until now. Per-cell
    networks now use Docker's `--internal` flag (no default outbound
-   route at all) with one deliberate exception (`--add-host
-   host.docker.internal:host-gateway`) so a cell can still reach
-   WhatchatAI's own Tool Gateway/adapter on the host. **Two real-world
-   assumptions this depends on are not yet verified against a real
-   daemon**: that host-gateway reachability actually survives on an
-   `--internal` network, and that two cells' separate networks genuinely
-   cannot reach each other. This sandbox cannot verify either (no GHCR
-   access, and `dockerd` itself won't start under this sandbox's process
-   restrictions this session). Explicitly gates the next item: no
-   provider credential (OpenAI, Gemini, or otherwise) is to be placed in
-   a cell until this is verified for real.
+   route at all). Re-verified for real against a live container:
+   general-internet egress genuinely blocked (`curl` exit 6/7 against
+   `example.com`/`1.1.1.1`) and cross-cell isolation genuinely enforced
+   (`curl` exit 6 from one cell's container to another's IP) - both
+   `VERIFIED`.
+
+   That same re-test surfaced a real, confirmed side effect: `--internal`
+   also excludes the network from the NAT/forwarding plumbing `--publish`
+   needs, so `create()` reliably failed its health gate even though the
+   Gateway itself booted cleanly (`docker exec` into the container showed
+   a real `200 OK` from `/healthz`; the host-side published-port request
+   got `curl: (7) Could not connect`). Fixed by moving health checking
+   (`create()`/`status()`/`start()`) onto `docker exec`-based checks run
+   inside the container's own namespace, which never crosses that
+   boundary. Per the user's explicit decision, `--publish`/
+   `gatewayEndpoint`/`port` are kept as-is - not removed - reserved as
+   transport metadata for a possible future authenticated Gateway path,
+   deliberately decoupled from health checking rather than conflating the
+   two. **This fix has been verified against the mocked test suite only
+   (589/589, typecheck clean) - not yet re-run against a real container**;
+   that re-run is the immediate next step. Host-gateway reachability
+   (`host.docker.internal`) itself also remains unverified - deprioritized
+   in favor of the health-check fix, to be revisited.
+
+   Explicitly still gates the next item: no provider credential (OpenAI,
+   Gemini, or otherwise) is to be placed in a cell until all of the above
+   is verified for real.
 
    **Also reconfirmed this pass, independent of the Fleet finding:**
    this sandbox genuinely runs a Docker daemon; what actually blocks
