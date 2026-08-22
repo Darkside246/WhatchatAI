@@ -201,3 +201,21 @@ describe('Context Trust Builder (CRM notes and knowledge base excerpts are untru
     expect(instruction).not.toContain('untrusted_data');
   });
 });
+
+describe('buildSystemInstruction (real audio-capability framing)', () => {
+  it('tells the model it can genuinely hear real audio when a media part is actually attached this turn', () => {
+    const instruction = buildSystemInstruction(
+      fakeAgent(),
+      fakeContext({ media: { mimeType: 'audio/ogg', data: 'ZmFrZS1hdWRpby1ieXRlcw==' } }),
+    );
+
+    expect(instruction).toContain('genuinely hearing and understanding');
+    expect(instruction).toContain('Never tell the customer you cannot hear or process voice notes');
+  });
+
+  it('never claims audio capability when there is no real media attached - the model has nothing to hear', () => {
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ media: null }));
+
+    expect(instruction).not.toContain('genuinely hearing and understanding');
+  });
+});

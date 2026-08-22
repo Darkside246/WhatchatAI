@@ -61,6 +61,20 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
       `${GET_CURRENT_TIME_TOOL_NAME} tool rather than guessing.`,
   ];
 
+  // Only added when a real audio part is actually attached to this turn
+  // (see toContents()/resolveInlineMediaPart) - without this, the model
+  // has no way to know it is genuinely hearing real audio rather than a
+  // placeholder, and defaults to hedging language like "I can't listen to
+  // voice notes" even while correctly using the audio's real content.
+  if (context.media) {
+    lines.push(
+      "The customer's most recent message includes a real audio attachment (a WhatsApp voice note) that you " +
+        'are genuinely hearing and understanding right now, not a placeholder or a summary written by someone ' +
+        'else. Respond to what was actually said in it, exactly as you would for typed text. Never tell the ' +
+        'customer you cannot hear or process voice notes - you can, for this message.',
+    );
+  }
+
   if (agent.persona) lines.push(`Persona: ${agent.persona}`);
   if (agent.tone) lines.push(`Tone: ${agent.tone}`);
   if (agent.language) lines.push(`Reply in: ${agent.language}`);
