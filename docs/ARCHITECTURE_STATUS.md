@@ -57,21 +57,33 @@ numbered-phase sequence, until W4 is explicitly authorized.
 
 ## 3. Next step (as of this checkpoint)
 
-**Real-world testing and stabilization of `60da62b`** — not a new phase.
-Recommended scenarios before treating this as the new baseline:
+Manual media retry (previously the deferred item here) shipped at
+`c06fde6`. Encryption-key-mismatch hardening (fingerprint registry +
+boot-time fail-loud check) shipped at `a2f408f`. Phase 7 (billing/
+pricing) and a combined Cloud Architecture + Multi-Tenant WhatsApp
+Connection audit are both written and awaiting authorization — see
+`docs/PHASE_7_BILLING_PRICING_AUDIT_AND_PROPOSAL.md` and
+`docs/CLOUD_ARCHITECTURE_MULTI_TENANT_WHATSAPP_AUDIT.md`.
 
-- Multi-message customer bursts (Phase 3 debounce coalescing)
-- AI replies after debounce, including ordering under real timing
-- Real 429s and transient Gemini failures (not just mocked ones)
-- Invalid Gemini configuration (bad key, wrong model name)
-- Media download failure and retry (Phase 2 state machine)
-- Worker restart/crash scenarios (both Phase 2's and Phase 3's
-  crash-recovery sweeps)
-- Historical status syncing after a fresh WhatsApp connection (Phase 1)
+**User's recommended order from here** (agreed, not yet started):
 
-Only after this window: fix anything found, treat the result as the new
-baseline, then open the manual media retry API/UI proposal. No phase
-past that point begins without its own explicit authorization.
+1. Cloud architecture Stage 1 (decision-free infra work: managed
+   Postgres/Redis, secrets out of `.env`, Cloud Run for the API) —
+   see the cloud/WhatsApp audit doc §4.
+2. Production key rotation with versioning (per-record `keyVersion`,
+   dual-key decrypt during migration, background re-encryption sweep)
+   — flagged as a real gap in the current `ALLOW_MASTER_KEY_CHANGE`
+   override, which detects/permits a key change but does not migrate
+   any data. Not yet scoped as its own audit doc.
+3. The Stage 2 WhatsApp-connection refactor (singleton → keyed map) —
+   see the cloud/WhatsApp audit doc §5.
+4. Phase 7 Track A (billing/pricing engine, buildable without a
+   payment-processor decision).
+5. Remaining deferred visual/UI work.
+6. Payment provider decision + Phase 7 Track B.
+7. Remaining master-directive phases (4, 5, 6, 8–12).
+
+No phase past this point begins without its own explicit authorization.
 
 ---
 
