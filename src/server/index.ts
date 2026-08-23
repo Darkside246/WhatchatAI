@@ -30,6 +30,7 @@ import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutbo
 import { checkDatabaseHealth, pool } from '../db/pool.js';
 import { checkRedisHealth } from '../redis/client.js';
 import { ensureDefaultBusinessProvisioned } from '../services/businessBootstrapService.js';
+import { verifyMasterKeyStability } from '../security/encryption/keyStabilityCheck.js';
 import { syncContactProfilePicture } from '../services/profilePictureSyncService.js';
 import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
 import { retrieveMedia } from '../media/localEncryptedMediaStorage.js';
@@ -2549,6 +2550,11 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const message = isDev ? (error instanceof Error ? error.message : String(error)) : 'An unexpected error occurred.';
   res.status(500).json({ error: 'INTERNAL_ERROR', message });
 });
+
+// Fail loud here, at boot, rather than silently later as scattered AES-GCM
+// decrypt failures the first time something reads older data - see
+// keyStabilityCheck.ts.
+await verifyMasterKeyStability();
 
 void whatsappConnectionService.connect().catch((error) => {
   console.error('[WhatsApp] Initial connection failed:', error);

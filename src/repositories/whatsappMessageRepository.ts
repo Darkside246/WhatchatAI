@@ -63,12 +63,34 @@ interface MessageRow {
  * Message bodies are stored at rest as serialized AES-256-GCM envelopes
  * (see src/security/encryption). tryParse() returns null for legacy/plain
  * text so pre-encryption rows keep reading correctly.
+ *
+ * A decrypt failure here means this specific row was encrypted under a
+ * master key that no longer matches the one currently configured -
+ * verifyMasterKeyStability() (src/security/encryption/keyStabilityCheck.ts)
+ * catches that at boot for the common case, but a row from before that
+ * check existed, or from a deliberate ALLOW_MASTER_KEY_CHANGE rotation,
+ * can still be unreadable. That plaintext cannot be recovered without the
+ * original key - by design, the same as any other lost key. What must not
+ * happen is one such row crashing every caller that reads a batch of
+ * messages (Promise.all rejects on the first failure) - logged loudly so
+ * it is never silently invisible, but the row itself degrades to
+ * "content unavailable" rather than taking the whole batch down.
  */
 async function decryptTextContent(businessId: string, textContent: string | null): Promise<string | null> {
   if (textContent === null) return null;
   const envelope = getEncryptionService().tryParse(textContent);
   if (!envelope) return textContent;
-  return getEncryptionService().decryptField(businessId, envelope);
+  try {
+    return await getEncryptionService().decryptField(businessId, envelope);
+  } catch (error) {
+    console.error(
+      `[whatsappMessageRepository] Failed to decrypt message content for business ${businessId} - ` +
+        'the row was likely encrypted under a different MASTER_ENCRYPTION_KEY than is currently configured. ' +
+        'Treating as unavailable rather than failing the whole read.',
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  }
 }
 
 async function toRecord(row: MessageRow, wasInserted: boolean): Promise<WhatsAppMessageRecord> {

@@ -48,6 +48,12 @@ import { runSecurityWatcher } from '../../services/openclawSecurityWatcherServic
 import type { WhatsAppMessageRecord } from '../../repositories/whatsappMessageRepository.js';
 import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaRepository.js';
 import type { MediaDownloadErrorCategory } from '../../domain/whatsapp/types.js';
+import { verifyMasterKeyStability } from '../../security/encryption/keyStabilityCheck.js';
+
+// Fail loud here, at boot, before either Worker below starts pulling jobs -
+// see keyStabilityCheck.ts. A top-level await, so nothing further in this
+// module (including the Worker constructions) runs until it resolves.
+await verifyMasterKeyStability();
 
 /**
  * Drains the incoming_messages queue and performs the real Postgres

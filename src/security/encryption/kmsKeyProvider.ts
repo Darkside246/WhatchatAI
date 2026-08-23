@@ -1,5 +1,29 @@
 import { createHmac, randomBytes } from 'node:crypto';
 
+/**
+ * A stable, non-secret fingerprint of a master key - never the key material
+ * itself. Used to detect at boot whether MASTER_ENCRYPTION_KEY has changed
+ * since data was last encrypted (see verifyMasterKeyStability below).
+ */
+export function deriveMasterKeyId(masterKey: Buffer): string {
+  return createHmac('sha256', masterKey).update('key-id').digest('hex').slice(0, 16);
+}
+
+/** Decodes and validates MASTER_ENCRYPTION_KEY from the environment, throwing the same real errors EnvMasterKeyProvider does. */
+export function readMasterKeyFromEnv(): Buffer {
+  const raw = process.env.MASTER_ENCRYPTION_KEY;
+  if (!raw) {
+    throw new Error(
+      'MASTER_ENCRYPTION_KEY is not configured. Set a 32-byte base64 key (e.g. `openssl rand -base64 32`) before starting the encryption service.',
+    );
+  }
+  const key = Buffer.from(raw, 'base64');
+  if (key.length !== 32) {
+    throw new Error('MASTER_ENCRYPTION_KEY must decode to exactly 32 bytes (AES-256).');
+  }
+  return key;
+}
+
 export interface TenantDataKey {
   keyId: string;
   key: Buffer;
@@ -25,20 +49,10 @@ export class EnvMasterKeyProvider implements KmsKeyProvider {
   private readonly masterKeyId: string;
 
   constructor() {
-    const raw = process.env.MASTER_ENCRYPTION_KEY;
-    if (!raw) {
-      throw new Error(
-        'MASTER_ENCRYPTION_KEY is not configured. Set a 32-byte base64 key (e.g. `openssl rand -base64 32`) before starting the encryption service.',
-      );
-    }
-    const key = Buffer.from(raw, 'base64');
-    if (key.length !== 32) {
-      throw new Error('MASTER_ENCRYPTION_KEY must decode to exactly 32 bytes (AES-256).');
-    }
-    this.masterKey = key;
+    this.masterKey = readMasterKeyFromEnv();
     // A real, stable identifier for which master key produced a given DEK - lets a future
     // key-rotation flow know which wrapping key to use for existing ciphertext.
-    this.masterKeyId = createHmac('sha256', this.masterKey).update('key-id').digest('hex').slice(0, 16);
+    this.masterKeyId = deriveMasterKeyId(this.masterKey);
   }
 
   async getDataKey(tenantId: string): Promise<TenantDataKey> {

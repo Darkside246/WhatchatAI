@@ -169,4 +169,55 @@ describe('WhatsAppMessageRepository', () => {
     const decrypted = await getEncryptionService().decryptField(businessId, envelope!);
     expect(decrypted).toBe(plaintext);
   });
+
+  it('findUnansweredInboundSince degrades an undecryptable row to textContent=null instead of throwing and failing the whole batch', async () => {
+    const good = await messages.insert({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      whatsappMessageId: 'WA-MSG-GOOD',
+      remoteJid: '15550002222@s.whatsapp.net',
+      senderJid: '15550002222@s.whatsapp.net',
+      direction: 'inbound',
+      messageType: 'text',
+      textContent: 'this one reads fine',
+      timestamp: new Date().toISOString(),
+      fromMe: false,
+      isHistorical: false,
+    });
+
+    const bad = await messages.insert({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      whatsappMessageId: 'WA-MSG-BAD',
+      remoteJid: '15550002222@s.whatsapp.net',
+      senderJid: '15550002222@s.whatsapp.net',
+      direction: 'inbound',
+      messageType: 'text',
+      textContent: 'placeholder, overwritten below',
+      timestamp: new Date().toISOString(),
+      fromMe: false,
+      isHistorical: false,
+    });
+
+    // Simulate exactly the real incident: this row's stored envelope was
+    // encrypted under a key this businessId's derived DEK no longer
+    // matches (a wrong-tenant envelope reproduces the same GCM auth
+    // failure a genuinely different master key would - see
+    // encryptionService.test.ts's own cross-tenant test).
+    const wrongTenantEnvelope = await getEncryptionService().encryptField('a-completely-different-tenant', 'unreadable to this business');
+    await pool.query('UPDATE whatsapp_messages SET text_content = $1 WHERE id = $2', [
+      getEncryptionService().serialize(wrongTenantEnvelope),
+      bad.id,
+    ]);
+
+    const unanswered = await messages.findUnansweredInboundSince(chatId, null);
+
+    expect(unanswered).toHaveLength(2);
+    const goodResult = unanswered.find((m) => m.id === good.id);
+    const badResult = unanswered.find((m) => m.id === bad.id);
+    expect(goodResult?.textContent).toBe('this one reads fine');
+    expect(badResult?.textContent).toBeNull();
+  });
 });
