@@ -85,6 +85,7 @@ import {
   isDocumentNotFoundError,
   isInvalidDocumentError,
 } from '../services/documentService.js';
+import { searchBusinessDocuments, MAX_QUERY_LENGTH as MAX_DOCUMENT_SEARCH_QUERY_LENGTH } from '../services/documentSearchService.js';
 import {
   importPromptOptimization,
   listPromptOptimizations,
@@ -1356,6 +1357,27 @@ app.post('/api/workspace/documents', requirePermission('settings.manage'), async
     }
     throw error;
   }
+});
+
+const documentSearchQuerySchema = z.object({
+  q: z.string().trim().min(1).max(MAX_DOCUMENT_SEARCH_QUERY_LENGTH),
+});
+
+/**
+ * D3: human document search only. Registered before the /:documentId
+ * route below so Express never mistakes "search" for a document id -
+ * route registration order matters here, not just the path shape.
+ * Never requires ai_retrievable (see documentSearchService.ts /
+ * searchReadyDocumentChunksForBusiness) - this is ordinary authenticated-
+ * business-member access, the same model every other document route
+ * already uses.
+ */
+app.get('/api/workspace/documents/search', requirePermission('settings.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = documentSearchQuerySchema.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_QUERY', details: parsed.error.flatten() });
+  const result = await searchBusinessDocuments(auth.businessId, parsed.data.q);
+  return res.status(200).json(result);
 });
 
 app.get('/api/workspace/documents/:documentId', requirePermission('settings.manage'), async (req, res) => {

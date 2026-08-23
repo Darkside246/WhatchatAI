@@ -320,6 +320,93 @@ export class BusinessDocumentRepository {
     );
     return Number(rows[0]?.count ?? 0);
   }
+
+  // --- D3: search & retrieval ---
+  //
+  // Two dedicated methods, not one generic method with a flag. The
+  // predicates below are structural (enforced by the SQL join itself,
+  // never by a caller checking afterward) per docs/PHASE_D3B_...:
+  //   - business_id = the authenticated caller's own business
+  //   - business_documents.deleted_at IS NULL
+  //   - business_documents.status = 'ready'
+  //   - business_documents.current_version_id = business_document_chunks.version_id
+  //     (excludes a chunk from an obsolete version, once a future phase
+  //     can produce one - correct today even though nothing can yet)
+  // The AI method adds exactly one further predicate: ai_retrievable = true.
+  // Neither method reads or writes ai_sendable/customer_visible/human_only.
+  //
+  // Deliberately NOT applied to findVersionForBusiness/createChunks/
+  // countChunksForVersion above: those remain generic, used only by the
+  // already-tenant-scoped D2 parser worker, which legitimately needs to
+  // reach a version that is not yet (or will never be) 'ready'.
+
+  private async searchDocumentChunks(
+    businessId: string,
+    queryText: string,
+    limit: number,
+    requireAiRetrievable: boolean,
+  ): Promise<DocumentSearchResultRow[]> {
+    const aiPredicate = requireAiRetrievable ? 'AND bd.ai_retrievable = true' : '';
+    const { rows } = await this.db.query<{
+      chunk_id: string;
+      document_id: string;
+      version_id: string;
+      filename: string;
+      text: string;
+      char_start: number;
+      char_end: number;
+      rank: number;
+    }>(
+      `SELECT bdc.id AS chunk_id, bdc.document_id, bdc.version_id, bd.filename,
+              bdc.text, bdc.char_start, bdc.char_end,
+              ts_rank(bdc.search_vector, query) AS rank
+       FROM business_document_chunks bdc
+       JOIN business_documents bd
+         ON bd.id = bdc.document_id
+        AND bd.business_id = bdc.business_id
+        AND bd.deleted_at IS NULL
+        AND bd.status = 'ready'
+        AND bd.current_version_id = bdc.version_id
+        ${aiPredicate}
+          , to_tsquery('english', regexp_replace(strip(to_tsvector('english', $2))::text, '\\s+', ' | ', 'g')) AS query
+       WHERE bdc.business_id = $1
+         AND bdc.search_vector @@ query
+       ORDER BY rank DESC
+       LIMIT $3`,
+      [businessId, queryText, limit],
+    );
+    return rows.map((row) => ({
+      chunkId: row.chunk_id,
+      documentId: row.document_id,
+      versionId: row.version_id,
+      filename: row.filename,
+      text: row.text,
+      charStart: row.char_start,
+      charEnd: row.char_end,
+      rank: row.rank,
+    }));
+  }
+
+  /** Human search: business-scoped + not-deleted + ready + current-version. Never requires ai_retrievable. */
+  async searchReadyDocumentChunksForBusiness(businessId: string, queryText: string, limit: number): Promise<DocumentSearchResultRow[]> {
+    return this.searchDocumentChunks(businessId, queryText, limit, false);
+  }
+
+  /** AI retrieval: the same predicate, plus ai_retrievable = true - a separate method so the AI-facing call site can never omit it. */
+  async searchAiRetrievableDocumentChunksForBusiness(businessId: string, queryText: string, limit: number): Promise<DocumentSearchResultRow[]> {
+    return this.searchDocumentChunks(businessId, queryText, limit, true);
+  }
+}
+
+export interface DocumentSearchResultRow {
+  chunkId: string;
+  documentId: string;
+  versionId: string;
+  filename: string;
+  text: string;
+  charStart: number;
+  charEnd: number;
+  rank: number;
 }
 
 export interface DocumentChunkInput {
