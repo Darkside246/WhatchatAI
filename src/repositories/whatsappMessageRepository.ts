@@ -274,6 +274,35 @@ export class WhatsAppMessageRepository {
     return Promise.all(rows.map((row) => toRecord(row, false)));
   }
 
+  /**
+   * Phase 3B debounce: the authoritative "what has this chat's AI not yet
+   * addressed" query, re-run at debounce-fire time rather than trusting
+   * anything carried in the BullMQ job payload. Ordered by the real
+   * WhatsApp-reported `timestamp` (true conversation order) with
+   * `created_at` as a same-value tiebreak; inclusion itself is gated on
+   * `created_at` against `sinceMessageId` (this system's own, strictly
+   * monotonic insertion order - immune to WhatsApp clock skew or two
+   * messages sharing one second-granularity timestamp). `sinceMessageId`
+   * null means "everything" (no prior watermark yet). Media messages are
+   * deliberately excluded - they reach the AI via the separate, already-
+   * correct maybeTriggerMediaAiHandoff path once their real download
+   * outcome is known, not this text-debounce window.
+   */
+  async findUnansweredInboundSince(chatId: string, sinceMessageId: string | null): Promise<WhatsAppMessageRecord[]> {
+    const { rows } = await this.db.query<MessageRow>(
+      `SELECT * FROM whatsapp_messages m
+       WHERE m.chat_id = $1 AND m.from_me = false AND m.is_historical = false
+         AND m.has_media = false AND m.deleted_at IS NULL
+         AND (
+           $2::uuid IS NULL
+           OR m.created_at > (SELECT created_at FROM whatsapp_messages WHERE id = $2::uuid)
+         )
+       ORDER BY m."timestamp" ASC, m.created_at ASC`,
+      [chatId, sinceMessageId],
+    );
+    return Promise.all(rows.map((row) => toRecord(row, false)));
+  }
+
   /** Real dashboard aggregate - inbound vs outbound message counts since a real timestamp, never estimated. */
   async countByDirectionSince(
     businessId: string,

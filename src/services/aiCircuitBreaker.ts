@@ -55,15 +55,24 @@ export class CircuitBreaker {
     this.lastFailureReason = null;
   }
 
-  recordFailure(reason: string): void {
+  /**
+   * @returns `justOpened` - true only on the transition into OPEN (a fresh
+   * trip from CLOSED, or a failed HALF_OPEN probe reopening it) - never
+   * true for a subsequent failure recorded while already OPEN. Callers
+   * that want a one-time signal (e.g. an operator notification) should key
+   * off this return value rather than the breaker's state alone, which
+   * stays OPEN across every repeat failure.
+   */
+  recordFailure(reason: string): boolean {
     this.lastFailureReason = reason;
     if (this.state === 'HALF_OPEN') {
       // The probe attempt failed - stay open and reset the cooldown clock.
       this.state = 'OPEN';
       this.openedAt = Date.now();
       console.warn(`[CircuitBreaker:${this.name}] Probe failed, reopening circuit.`);
-      return;
+      return true;
     }
+    const wasClosed = this.state === 'CLOSED';
     this.consecutiveFailures += 1;
     if (this.consecutiveFailures >= this.config.failureThreshold) {
       this.state = 'OPEN';
@@ -71,7 +80,9 @@ export class CircuitBreaker {
       console.warn(
         `[CircuitBreaker:${this.name}] Opened after ${this.consecutiveFailures} consecutive failures: ${reason}`,
       );
+      return wasClosed;
     }
+    return false;
   }
 
   describeUnavailable(): string {
@@ -92,3 +103,23 @@ export class CircuitBreaker {
 }
 
 export const geminiCircuitBreaker = new CircuitBreaker('gemini');
+
+/**
+ * Phase 3B: a second, independent breaker for the "will never recover
+ * without a human" failure classes (auth/authz, provider/model-config -
+ * see docs/PHASE_3A_AI_RELIABILITY_AUDIT_AND_PROPOSAL.md sections 2-4).
+ * Unlike `geminiCircuitBreaker`, nothing ever calls `canAttempt()` on this
+ * instance - it does not gate whether a real call is attempted (a
+ * misconfigured key must still surface honestly on every real call, never
+ * be silently skipped). Its only purpose is to gate a one-time operator
+ * notification: `failureThreshold: 1` means the very first classified
+ * failure trips it, and `recordFailure`'s `justOpened` return value fires
+ * exactly once per incident - repeat failures while still open do not
+ * re-notify, and a later real success (recordSuccess) closes it so a
+ * genuinely new incident can notify again.
+ */
+const DEFAULT_CONFIG_BREAKER_CONFIG: CircuitBreakerConfig = {
+  failureThreshold: envInt('GEMINI_CONFIG_FAILURE_THRESHOLD', 1),
+  cooldownMs: envInt('GEMINI_CONFIG_NOTIFY_COOLDOWN_MS', 3_600_000),
+};
+export const geminiConfigCircuitBreaker = new CircuitBreaker('gemini-config', DEFAULT_CONFIG_BREAKER_CONFIG);

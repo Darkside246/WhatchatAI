@@ -23,6 +23,30 @@ function envInt(name: string, fallback: number): number {
 export const MEDIA_DOWNLOAD_MAX_ATTEMPTS = envInt('MEDIA_DOWNLOAD_MAX_ATTEMPTS', 3);
 export const MEDIA_DOWNLOAD_BACKOFF_DELAY_MS = envInt('MEDIA_DOWNLOAD_BACKOFF_DELAY_MS', 1000);
 
+// Phase 3B trailing-edge AI debounce config (see
+// docs/PHASE_3A_AI_RELIABILITY_AUDIT_AND_PROPOSAL.md section 5). Bounded
+// rather than an unconstrained env override: too low defeats the point
+// (barely coalesces a fast typist), too high makes every reply feel
+// sluggish even for a single, complete message.
+export const AI_DEBOUNCE_MIN_DELAY_MS = 1_000;
+export const AI_DEBOUNCE_MAX_DELAY_MS = 30_000;
+const AI_DEBOUNCE_DEFAULT_DELAY_MS = 6_000;
+
+function clampedEnvInt(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+export const AI_DEBOUNCE_DELAY_MS = clampedEnvInt(
+  'AI_DEBOUNCE_DELAY_MS',
+  AI_DEBOUNCE_DEFAULT_DELAY_MS,
+  AI_DEBOUNCE_MIN_DELAY_MS,
+  AI_DEBOUNCE_MAX_DELAY_MS,
+);
+
 export interface MessageStatusJobData {
   businessId: string;
   whatsappAccountId: string;
@@ -65,6 +89,12 @@ export interface PresenceUpdateJobData {
   whatsappAccountId: string;
   contactJid: string;
   presence: PresenceData;
+}
+
+export interface AiDebounceJobData {
+  businessId: string;
+  whatsappAccountId: string;
+  chatId: string;
 }
 
 /**
@@ -124,4 +154,52 @@ export function enqueueMessageReaction(data: MessageReactionJobData): Promise<un
 
 export function enqueuePresenceUpdate(data: PresenceUpdateJobData): Promise<unknown> {
   return realtimeEventsQueue.add('presence-update', data);
+}
+
+/**
+ * Trailing-edge debounce (Phase 3B, see
+ * docs/PHASE_3A_AI_RELIABILITY_AUDIT_AND_PROPOSAL.md section 5). The
+ * deterministic jobId (`ai-debounce-<chatId>`) is a "check now" signal
+ * only, never a data carrier - the debounce job's handler
+ * (processAiDebounce in incomingMessagesWorker.ts) never trusts this
+ * payload as authoritative; it re-queries every real unanswered message
+ * from Postgres at fire time. A new eligible message resets the countdown
+ * via `Job.changeDelay()` rather than letting the first message's own
+ * timer run out unmodified, so a customer typing across several messages
+ * gets one combined reply after they've gone quiet for
+ * `AI_DEBOUNCE_DELAY_MS`, not one reply per message.
+ */
+export async function scheduleAiDebounce(data: AiDebounceJobData): Promise<void> {
+  const jobId = `ai-debounce-${data.chatId}`;
+  const existing = await realtimeEventsQueue.getJob(jobId);
+
+  if (existing) {
+    const state = await existing.getState();
+    if (state === 'delayed') {
+      try {
+        await existing.changeDelay(AI_DEBOUNCE_DELAY_MS);
+        return;
+      } catch {
+        // Raced past 'delayed' (now active/completed) between getState()
+        // and changeDelay() - fall through to a fresh add below.
+      }
+    } else {
+      // Already active (a debounce round is running right now for this
+      // chat) or waiting/completed with the same jobId still cached - a
+      // fresh add would either be rejected (active) or is redundant.
+      // Any message arriving during this window is still safe: it is
+      // picked up either by the next new message's own scheduling
+      // attempt once this jobId frees up, or by the backstop sweep
+      // (sweepStaleAiHandoff) - never silently lost, just possibly
+      // delayed until the next natural trigger.
+      return;
+    }
+  }
+
+  await realtimeEventsQueue.add('ai-debounce', data, { jobId, delay: AI_DEBOUNCE_DELAY_MS }).catch((error: Error) => {
+    // A concurrent scheduling attempt may have just created this exact
+    // jobId between our getJob() check and this add() - safe to ignore,
+    // it already scheduled the check this call was trying to make.
+    console.warn(`[RealtimeEventsQueue] Failed to schedule AI debounce for chat ${data.chatId}: ${error.message}`);
+  });
 }

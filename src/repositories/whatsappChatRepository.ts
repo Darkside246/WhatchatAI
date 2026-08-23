@@ -25,6 +25,10 @@ export interface WhatsAppChatRecord {
   aiMode: ChatAiMode;
   assigneeUserId: string | null;
   assigneeTeamId: string | null;
+  /** Phase 3B debounce watermark: the last inbound message this chat's AI handoff has already considered - see claimAiHandoff/releaseAiHandoff. */
+  lastAiHandoffMessageId: string | null;
+  /** Phase 3B debounce mutex: non-null while a debounce job is actively generating a reply for this chat - guards against duplicate/stale job delivery. */
+  aiHandoffClaimedAt: string | null;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -51,6 +55,8 @@ interface ChatRow {
   ai_mode: ChatAiMode;
   assignee_user_id: string | null;
   assignee_team_id: string | null;
+  last_ai_handoff_message_id: string | null;
+  ai_handoff_claimed_at: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -78,6 +84,8 @@ function toRecord(row: ChatRow): WhatsAppChatRecord {
     aiMode: row.ai_mode,
     assigneeUserId: row.assignee_user_id,
     assigneeTeamId: row.assignee_team_id,
+    lastAiHandoffMessageId: row.last_ai_handoff_message_id,
+    aiHandoffClaimedAt: row.ai_handoff_claimed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
@@ -249,6 +257,85 @@ export class WhatsAppChatRepository {
       [id, aiMode],
     );
     return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
+   * Phase 3B debounce mutex: guarded claim, only succeeds when the chat is
+   * currently AI_ACTIVE and no other invocation already holds the claim.
+   * Callers MUST check for a null return and treat it as a safe no-op
+   * (another debounce job is already processing this chat, or a human
+   * took over since it was scheduled) - never assume success. Always
+   * paired with releaseAiHandoff, ideally in a finally block.
+   */
+  async claimAiHandoff(chatId: string): Promise<WhatsAppChatRecord | null> {
+    const { rows } = await this.db.query<ChatRow>(
+      `UPDATE whatsapp_chats
+       SET ai_handoff_claimed_at = now()
+       WHERE id = $1 AND ai_mode = 'AI_ACTIVE' AND ai_handoff_claimed_at IS NULL
+       RETURNING *`,
+      [chatId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
+   * Releases a claim taken by claimAiHandoff. `lastConsideredMessageId`
+   * advances the debounce watermark only when non-null - pass null when no
+   * real unanswered message was actually processed this round (nothing to
+   * advance past).
+   */
+  async releaseAiHandoff(chatId: string, lastConsideredMessageId: string | null): Promise<void> {
+    await this.db.query(
+      `UPDATE whatsapp_chats
+       SET ai_handoff_claimed_at = NULL,
+           last_ai_handoff_message_id = COALESCE($2::uuid, last_ai_handoff_message_id),
+           updated_at = now()
+       WHERE id = $1`,
+      [chatId, lastConsideredMessageId],
+    );
+  }
+
+  /**
+   * Crash-recovery: a worker that died mid-handoff leaves a claim held
+   * forever with nothing left to release it - this finds and clears claims
+   * older than a real timeout, the same "reconcile a state a crash could
+   * have interrupted" pattern as the existing call/sync-job/outbound-
+   * message/email/media-download sweeps.
+   */
+  async releaseStaleAiHandoffClaims(staleSeconds: number): Promise<WhatsAppChatRecord[]> {
+    const { rows } = await this.db.query<ChatRow>(
+      `UPDATE whatsapp_chats
+       SET ai_handoff_claimed_at = NULL
+       WHERE ai_handoff_claimed_at IS NOT NULL
+         AND ai_handoff_claimed_at < now() - ($1 || ' seconds')::interval
+       RETURNING *`,
+      [staleSeconds],
+    );
+    return rows.map(toRecord);
+  }
+
+  /**
+   * Backstop sweep support: AI_ACTIVE chats with a real unanswered inbound
+   * message (per the same has_media=false/is_historical=false criteria as
+   * findUnansweredInboundSince) and no debounce claim in progress. Covers
+   * both a crashed debounce job and the rarer race where a new message
+   * arrived while the chat's jobId was still active/waiting and its own
+   * scheduling attempt was a safe no-op - either way, nothing else would
+   * ever re-arm a debounce job for it on its own.
+   */
+  async findAiActiveChatsWithUnansweredMessages(): Promise<WhatsAppChatRecord[]> {
+    const { rows } = await this.db.query<ChatRow>(
+      `SELECT DISTINCT c.* FROM whatsapp_chats c
+       JOIN whatsapp_messages m ON m.chat_id = c.id
+       WHERE c.ai_mode = 'AI_ACTIVE' AND c.deleted_at IS NULL AND c.ai_handoff_claimed_at IS NULL
+         AND m.from_me = false AND m.is_historical = false AND m.has_media = false AND m.deleted_at IS NULL
+         AND (
+           c.last_ai_handoff_message_id IS NULL
+           OR m.created_at > (SELECT created_at FROM whatsapp_messages WHERE id = c.last_ai_handoff_message_id)
+         )`,
+      [],
+    );
+    return rows.map(toRecord);
   }
 
   /** Human assignment belongs to the specific conversation, same as ai_mode - never a separate table. */

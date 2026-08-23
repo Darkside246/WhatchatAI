@@ -9,12 +9,14 @@ import {
   realtimeEventsQueue,
   MEDIA_DOWNLOAD_MAX_ATTEMPTS,
   MEDIA_DOWNLOAD_BACKOFF_DELAY_MS,
+  scheduleAiDebounce,
   type MessageStatusJobData,
   type CallEventJobData,
   type StatusUpdateJobData,
   type MediaDownloadJobData,
   type MessageReactionJobData,
   type PresenceUpdateJobData,
+  type AiDebounceJobData,
 } from '../queues/realtimeEventsQueue.js';
 import { whatsappMessagePersistenceService } from '../../services/whatsappMessagePersistenceService.js';
 import { persistStatusUpdate } from '../../services/whatsappStatusPersistenceService.js';
@@ -106,6 +108,12 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
   // called from processMediaDownload. Firing here too would mean the AI
   // either replies before it can see/hear the media, or (worse) never gets
   // asked at all for a caption-less one.
+  //
+  // Phase 3B: this no longer calls runAiHandoff directly. Instead it
+  // schedules (or resets) a trailing-edge debounce - see scheduleAiDebounce
+  // and processAiDebounce below - so a customer typing a thought across
+  // several rapid messages gets one combined reply, not one Gemini call per
+  // message. See docs/PHASE_3A_AI_RELIABILITY_AUDIT_AND_PROPOSAL.md section 5.
   const needsAiHandoff =
     result.message.wasInserted &&
     !message.fromMe &&
@@ -115,15 +123,7 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     Boolean(result.message.textContent);
 
   if (needsAiHandoff) {
-    await runAiHandoff({
-      businessId,
-      whatsappAccountId,
-      chatId: result.chat.id,
-      contactId: result.chat.contactId,
-      messageId: result.message.id,
-      queryText: result.message.textContent as string,
-      mediaId: null,
-    });
+    await scheduleAiDebounce({ businessId, whatsappAccountId, chatId: result.chat.id });
   }
 }
 
@@ -230,19 +230,37 @@ async function runAiHandoff(params: {
 
   // Idempotency key derived from the inbound message's own id: if this job
   // is ever retried/redelivered, the exact same reply is never sent twice.
-  await whatsappOutboundMessageService.send({
-    businessId,
-    whatsappAccountId,
-    chatId,
-    idempotencyKey: `ai-reply:${messageId}`,
-    messageType: 'text',
-    text: outcome.text,
-    requestedBy: 'ai',
-    // The operator's real configured pacing, so replies do not land
-    // unnaturally fast. 0 dispatches immediately.
-    ...(agent.responseDelaySeconds > 0 ? { delayMs: agent.responseDelaySeconds * 1000 } : {}),
-  });
-  console.log(`[IncomingMessagesWorker] AI reply queued for chat ${chatId} (agent ${agent.id}).`);
+  //
+  // Phase 3B fix: the reply text was already successfully generated above
+  // (a real Gemini/Goose call) by the time this runs - a failure here is
+  // about *delivery*, not generation. Previously unguarded, so a thrown
+  // error (e.g. a transient DB error on the insert) would propagate out of
+  // processJob and cause BullMQ to retry the *whole* incoming_messages job.
+  // Sentinel screening and message persistence are idempotent, so that part
+  // of a retry is safe, but it would also silently re-run AI generation -
+  // a second real Gemini/Goose call for a failure that had nothing to do
+  // with AI at all (see docs/PHASE_3A_AI_RELIABILITY_AUDIT_AND_PROPOSAL.md
+  // section 1/2.6). Caught and logged instead: never rethrown.
+  try {
+    await whatsappOutboundMessageService.send({
+      businessId,
+      whatsappAccountId,
+      chatId,
+      idempotencyKey: `ai-reply:${messageId}`,
+      messageType: 'text',
+      text: outcome.text,
+      requestedBy: 'ai',
+      // The operator's real configured pacing, so replies do not land
+      // unnaturally fast. 0 dispatches immediately.
+      ...(agent.responseDelaySeconds > 0 ? { delayMs: agent.responseDelaySeconds * 1000 } : {}),
+    });
+    console.log(`[IncomingMessagesWorker] AI reply queued for chat ${chatId} (agent ${agent.id}).`);
+  } catch (error) {
+    console.error(
+      `[IncomingMessagesWorker] AI reply was generated but failed to send for chat ${chatId} (not retrying generation):`,
+      error instanceof Error ? error.message : error,
+    );
+  }
 }
 
 /**
@@ -522,6 +540,58 @@ async function processStatusUpdate(data: StatusUpdateJobData): Promise<void> {
   await persistStatusUpdate(data.businessId, data.whatsappAccountId, data.ingested);
 }
 
+/**
+ * The debounce job's handler (Phase 3B, see
+ * docs/PHASE_3A_AI_RELIABILITY_AUDIT_AND_PROPOSAL.md section 5) - fired
+ * after a chat has gone quiet for AI_DEBOUNCE_DELAY_MS. The job payload
+ * (`data`) is deliberately treated as nothing more than a "check this chat
+ * now" signal: everything this function actually acts on is re-read fresh
+ * from Postgres, so a duplicate/stale/redelivered job can never cause a
+ * duplicate reply and a message that arrived after the job was originally
+ * scheduled is still included.
+ *
+ * claimAiHandoff/releaseAiHandoff (both real, guarded UPDATEs on
+ * whatsapp_chats) are the actual mutex - a second concurrent invocation
+ * for the same chat (a genuine duplicate delivery, or this job racing the
+ * backstop sweep) finds the claim already held and safely no-ops.
+ */
+async function processAiDebounce(data: AiDebounceJobData): Promise<void> {
+  const { businessId, whatsappAccountId, chatId } = data;
+
+  const claimed = await chatRepository.claimAiHandoff(chatId);
+  if (!claimed) return; // Not AI_ACTIVE anymore, or another invocation already holds the claim.
+
+  let lastConsideredMessageId: string | null = null;
+  try {
+    const unanswered = await messageRepository.findUnansweredInboundSince(chatId, claimed.lastAiHandoffMessageId);
+    if (unanswered.length === 0) return;
+
+    lastConsideredMessageId = unanswered[unanswered.length - 1]!.id;
+    const combinedText = unanswered
+      .map((message) => message.textContent)
+      .filter((text): text is string => Boolean(text && text.trim()))
+      .join('\n');
+    if (!combinedText) return; // Nothing with real text among the unanswered batch.
+
+    await runAiHandoff({
+      businessId,
+      whatsappAccountId,
+      chatId,
+      contactId: claimed.contactId,
+      messageId: lastConsideredMessageId,
+      queryText: combinedText,
+      mediaId: null,
+    });
+  } finally {
+    // Always releases, even if runAiHandoff somehow throws (it is designed
+    // not to, but this is the actual crash/duplicate-reply safety net, not
+    // an optimization) - a claim left held would otherwise block every
+    // future message in this chat until the backstop sweep's stale-claim
+    // timeout eventually clears it.
+    await chatRepository.releaseAiHandoff(chatId, lastConsideredMessageId);
+  }
+}
+
 async function processMessageStatus(data: MessageStatusJobData): Promise<void> {
   const { businessId, whatsappAccountId, whatsappMessageId, status } = data;
   const message = await messageRepository.findByWhatsAppId(businessId, whatsappAccountId, whatsappMessageId);
@@ -709,6 +779,51 @@ export async function sweepStaleDownloadingMedia(): Promise<void> {
   }
 }
 
+// Generous relative to how long a real claimAiHandoff->runAiHandoff round
+// should ever take (a Gemini/Goose call plus an outbound-send insert) -
+// this exists purely to recover from a worker dying mid-handoff, not to
+// bound normal latency.
+const AI_HANDOFF_CLAIM_STALE_SECONDS = 300;
+const AI_HANDOFF_SWEEP_INTERVAL_MS = 60_000;
+
+/**
+ * Backstop for the Phase 3B AI debounce mechanism (see
+ * docs/PHASE_3A_AI_RELIABILITY_AUDIT_AND_PROPOSAL.md section 5): two real
+ * gaps neither the debounce job nor its own claim/release guard can close
+ * on their own -
+ *
+ * 1. A worker process dies between claimAiHandoff and releaseAiHandoff,
+ *    leaving the claim held forever with no job left to release it.
+ * 2. A new message arrives for a chat while its debounce jobId is still
+ *    active/waiting, so scheduleAiDebounce's own attempt to (re)schedule
+ *    is a safe no-op (see its own doc comment) - correct in the moment,
+ *    but nothing else would ever re-arm a debounce job for that leftover
+ *    message once the busy jobId frees up.
+ *
+ * Both converge on the same fix: clear any stale claim, then re-arm
+ * scheduleAiDebounce for every AI_ACTIVE chat that still has a real
+ * unanswered message - which is itself a safe, idempotent no-op for a
+ * chat that is already fine.
+ */
+export async function sweepStaleAiHandoff(): Promise<void> {
+  const released = await chatRepository.releaseStaleAiHandoffClaims(AI_HANDOFF_CLAIM_STALE_SECONDS);
+  if (released.length > 0) {
+    console.log(`[RealtimeEventsWorker] Released ${released.length} stale AI-handoff claim(s)`);
+  }
+
+  const pending = await chatRepository.findAiActiveChatsWithUnansweredMessages();
+  for (const chat of pending) {
+    await scheduleAiDebounce({ businessId: chat.businessId, whatsappAccountId: chat.whatsappAccountId, chatId: chat.id }).catch(
+      (error: Error) => {
+        console.error(`[RealtimeEventsWorker] Failed to re-arm AI debounce for chat ${chat.id}:`, error.message);
+      },
+    );
+  }
+  if (pending.length > 0) {
+    console.log(`[RealtimeEventsWorker] Re-armed AI debounce for ${pending.length} chat(s) with unanswered messages`);
+  }
+}
+
 // Documented rule: incrementCounts() bumps updated_at on every real batch of
 // sync progress. A 'running' job with no progress in this long has no
 // process left driving it - WhatsApp will never send it a completion signal
@@ -823,6 +938,7 @@ async function processRealtimeEventJob(
     | MediaDownloadJobData
     | MessageReactionJobData
     | PresenceUpdateJobData
+    | AiDebounceJobData
   >,
 ): Promise<void> {
   if (job.name === 'message-status') {
@@ -837,6 +953,10 @@ async function processRealtimeEventJob(
     await sweepStaleSyncJobs();
   } else if (job.name === 'media-download-timeout-sweep') {
     await sweepStaleDownloadingMedia();
+  } else if (job.name === 'ai-handoff-sweep') {
+    await sweepStaleAiHandoff();
+  } else if (job.name === 'ai-debounce') {
+    await processAiDebounce(job.data as AiDebounceJobData);
   } else if (job.name === 'outbound-message-timeout-sweep') {
     await sweepStaleOutboundMessages();
   } else if (job.name === 'email-timeout-sweep') {
@@ -939,6 +1059,11 @@ void realtimeEventsQueue
   .catch((error: Error) =>
     console.error('[RealtimeEventsWorker] Failed to schedule media-download-timeout-sweep:', error.message),
   );
+
+void realtimeEventsQueue
+  .upsertJobScheduler('ai-handoff-sweep', { every: AI_HANDOFF_SWEEP_INTERVAL_MS }, { name: 'ai-handoff-sweep' })
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled ai-handoff-sweep every ${AI_HANDOFF_SWEEP_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule ai-handoff-sweep:', error.message));
 
 void realtimeEventsQueue
   .upsertJobScheduler(

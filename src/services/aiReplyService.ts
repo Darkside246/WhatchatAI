@@ -8,11 +8,27 @@ import { ADVICE_RESTRICTED_CATEGORIES, type AiAgentRecord } from '../repositorie
 import type { AiHandoffContext } from './aiContextGathererService.js';
 import { describeTimeContext } from './time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME, getCurrentTimeFunctionDeclaration } from './time/getCurrentTimeTool.js';
-import { geminiCircuitBreaker } from './aiCircuitBreaker.js';
+import { geminiCircuitBreaker, geminiConfigCircuitBreaker } from './aiCircuitBreaker.js';
 import { guardToolInvocation } from './ai/agentGuard.js';
 import { mediaFallbackText, type InlineMediaPart } from './ai/mediaContext.js';
+import { classifyAiError } from './ai/aiErrorClassification.js';
+import { notifyBusiness } from './notificationService.js';
 
-export type AiReplyResult = { status: 'generated'; text: string } | { status: 'unavailable'; reason: string };
+export type AiReplyResult =
+  | { status: 'generated'; text: string }
+  /**
+   * `skipEscalation` (Phase 3B): true when the failure reason is
+   * agent-independent - no API key, circuit open, a capacity/auth/
+   * provider-config classified failure, or a programming bug - so trying
+   * a second, escalation-configured agent with an identical call would
+   * almost certainly fail identically. false only for failure classes a
+   * *different* agent's own configuration could plausibly avoid (a
+   * malformed-request 400 tied to this agent's specific prompt shape, or
+   * an empty response). See
+   * docs/PHASE_3A_AI_RELIABILITY_AUDIT_AND_PROPOSAL.md section 5 (escalation
+   * hop) and the aiOrchestrator caller that reads this field.
+   */
+  | { status: 'unavailable'; reason: string; skipEscalation: boolean };
 
 // A runaway generation should never be relayed to a real customer verbatim,
 // regardless of what the model returns.
@@ -211,6 +227,7 @@ async function tryGooseFallback(
   agent: AiAgentRecord,
   context: AiHandoffContext,
   contents: ReturnType<typeof toContents>,
+  skipEscalation: boolean,
 ): Promise<AiReplyResult> {
   /*
    * Workspace settings win over the environment, and a workspace that has
@@ -230,10 +247,18 @@ async function tryGooseFallback(
     settings?.isEnabled && settings.serviceUrl ? { serviceUrl: settings.serviceUrl, apiKey: settings.apiKey } : undefined;
 
   if (settings && !settings.isEnabled) {
-    return { status: 'unavailable', reason: `Gemini unavailable (${geminiReason}); Goose failover is turned off for this workspace` };
+    return {
+      status: 'unavailable',
+      reason: `Gemini unavailable (${geminiReason}); Goose failover is turned off for this workspace`,
+      skipEscalation,
+    };
   }
   if (!workspaceEndpoint && !gooseService.getCapabilities().configured) {
-    return { status: 'unavailable', reason: `Gemini unavailable (${geminiReason}); Goose fallback not configured` };
+    return {
+      status: 'unavailable',
+      reason: `Gemini unavailable (${geminiReason}); Goose fallback not configured`,
+      skipEscalation,
+    };
   }
 
   // Goose's own contract is text-only - it has no multimodal understanding
@@ -257,6 +282,7 @@ async function tryGooseFallback(
   return {
     status: 'unavailable',
     reason: `Gemini unavailable (${geminiReason}); Goose fallback also unavailable (${gooseResult.reason})`,
+    skipEscalation,
   };
 }
 
@@ -308,18 +334,24 @@ async function resolveTimeToolCall(
 export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffContext): Promise<AiReplyResult> {
   const contents = toContents(context.conversationHistory, context.media);
   if (contents.length === 0) {
-    return { status: 'unavailable', reason: 'No real message text to reply to' };
+    return { status: 'unavailable', reason: 'No real message text to reply to', skipEscalation: true };
   }
 
   const genAi = getGeminiClient();
-  if (!genAi) return tryGooseFallback('GEMINI_API_KEY is not configured', agent, context, contents);
+  if (!genAi) return tryGooseFallback('GEMINI_API_KEY is not configured', agent, context, contents, true);
 
   // Sustained Gemini outages must not cost every queued message a full
   // network timeout before falling back - once several consecutive real
   // calls have failed, skip straight to Goose (or "unavailable") until the
   // cooldown elapses and a single probe call is allowed through again.
   if (!geminiCircuitBreaker.canAttempt()) {
-    return tryGooseFallback(`Gemini unavailable (${geminiCircuitBreaker.describeUnavailable()})`, agent, context, contents);
+    return tryGooseFallback(
+      `Gemini unavailable (${geminiCircuitBreaker.describeUnavailable()})`,
+      agent,
+      context,
+      contents,
+      true,
+    );
   }
 
   const model = process.env.GEMINI_REPLY_MODEL || process.env.GEMINI_MODEL || 'gemini-3.5-flash';
@@ -373,26 +405,86 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
     // A response object came back from the API layer at all - Gemini is
     // reachable and functioning, regardless of whether the text itself
     // ended up empty (a different failure class, not a transport/outage
-    // signal, so it does not feed the circuit breaker below).
+    // signal, so it does not feed the circuit breaker below). A real
+    // success also proves the API key and model config are currently
+    // valid, so it closes the config breaker too - a later config failure
+    // is a genuinely new incident, not a continuation, and should be able
+    // to notify again promptly rather than staying suppressed by history.
     geminiCircuitBreaker.recordSuccess();
+    geminiConfigCircuitBreaker.recordSuccess();
 
     const text = response.text?.trim();
     if (!text) {
       console.warn(`[aiReplyService] Gemini returned an empty response for chat ${context.chatId}; falling back to Goose.`);
-      return tryGooseFallback('Reply model returned an empty response', agent, context, contents);
+      return tryGooseFallback('Reply model returned an empty response', agent, context, contents, false);
     }
 
     return { status: 'generated', text: text.slice(0, MAX_REPLY_CHARS) };
   } catch (error) {
-    const reason = `Reply model call failed: ${error instanceof Error ? error.message : String(error)}`;
-    // Previously silent whenever Goose covered for the failure - a real
-    // Gemini error (wrong model name, unsupported modality, quota, bad
-    // key) could go unnoticed indefinitely as long as Goose kept masking
-    // it with a plausible-sounding reply. Logged here, not just fed to the
-    // circuit breaker, so the actual cause is visible the first time it
-    // happens rather than only once Goose also runs out.
+    const classified = classifyAiError(error);
+    const reason = `Reply model call failed (${classified.category}): ${classified.message}`;
+
+    // Phase 3B safeguard: a genuine bug in this codebase's own request/
+    // response handling must never be laundered through the same path as
+    // an ordinary provider failure - no Goose fallback (a different
+    // provider cannot fix OUR bug, and silently "working around" it via
+    // Goose is exactly what would let a real bug go unnoticed
+    // indefinitely), no escalation hop, no circuit-breaker feed of any
+    // kind. It fails loud (a distinctly prefixed console.error, not the
+    // ordinary console.warn every other class gets) and lets the existing
+    // AI_FAILURE notification (fired by the orchestrator/worker once this
+    // 'unavailable' outcome reaches it) carry the real cause to an operator.
+    if (classified.category === 'programming') {
+      console.error(`[aiReplyService] INTERNAL BUG in AI reply generation (chat ${context.chatId}): ${classified.message}`);
+      return { status: 'unavailable', reason: `Internal error, not a provider failure: ${classified.message}`, skipEscalation: true };
+    }
+
     console.warn(`[aiReplyService] ${reason} (chat ${context.chatId}); falling back to Goose.`);
-    geminiCircuitBreaker.recordFailure(reason);
-    return tryGooseFallback(reason, agent, context, contents);
+
+    if (classified.category === 'capacity') {
+      // The only class that feeds the short-recovery breaker - a 429/5xx/
+      // network blip is exactly what that breaker exists to protect
+      // against. Escalating to a second agent right now is pointless: the
+      // same outage almost certainly still applies.
+      geminiCircuitBreaker.recordFailure(reason);
+      return tryGooseFallback(reason, agent, context, contents, true);
+    }
+
+    if (classified.category === 'auth' || classified.category === 'provider_config') {
+      // Never-self-recovering, global (not per-agent) config problems -
+      // must not repeatedly trip the short-recovery breaker (retrying via
+      // its probe cannot fix a bad key or a wrong model name), and
+      // escalating to a second agent would hit the identical broken
+      // env-level config. Gets its own one-time operator signal instead.
+      const justOpened = geminiConfigCircuitBreaker.recordFailure(reason);
+      if (justOpened) {
+        // Best-effort and isolated per the Phase 3B safeguard: a failure
+        // to notify must never block or alter the reply outcome itself.
+        await notifyBusiness({
+          businessId: agent.businessId,
+          type: 'AI_FAILURE',
+          severity: 'warning',
+          title: 'The AI reply model needs attention',
+          body:
+            `Gemini is failing in a way that will not recover on its own ` +
+            `(${classified.category === 'auth' ? 'authentication' : 'model/provider configuration'}): ${classified.message}. ` +
+            'Check GEMINI_API_KEY and GEMINI_REPLY_MODEL/GEMINI_MODEL.',
+          targetType: 'ai_configuration',
+          targetId: null,
+        }).catch((notifyError: unknown) => {
+          console.error(
+            '[aiReplyService] Failed to notify business of a persistent Gemini configuration failure:',
+            notifyError instanceof Error ? notifyError.message : notifyError,
+          );
+        });
+      }
+      return tryGooseFallback(reason, agent, context, contents, true);
+    }
+
+    // 'malformed_request' - the one class where a *different* agent's own
+    // prompt shape could plausibly avoid the same 400, so escalation stays
+    // worth trying. Feeds neither breaker: retrying via a probe cannot fix
+    // a request shape problem.
+    return tryGooseFallback(reason, agent, context, contents, false);
   }
 }

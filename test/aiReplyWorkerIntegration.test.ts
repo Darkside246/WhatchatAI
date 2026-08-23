@@ -6,7 +6,8 @@ import { WhatsAppChatRepository } from '../src/repositories/whatsappChatReposito
 import { NotificationRepository } from '../src/repositories/notificationRepository.js';
 import { register } from '../src/services/authService.js';
 import { enqueueIncomingMessage, incomingMessagesQueue } from '../src/queue/queues/incomingMessagesQueue.js';
-import { incomingMessagesWorker } from '../src/queue/workers/incomingMessagesWorker.js';
+import { realtimeEventsQueue } from '../src/queue/queues/realtimeEventsQueue.js';
+import { incomingMessagesWorker, realtimeEventsWorker } from '../src/queue/workers/incomingMessagesWorker.js';
 import type { IngestedWhatsAppMessage } from '../src/services/whatsappMessageIngestionService.js';
 import { createTestAccount, resetDatabase } from './helpers.js';
 
@@ -39,10 +40,22 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
 
   afterAll(async () => {
     await incomingMessagesWorker.close();
+    await realtimeEventsWorker.close();
     await incomingMessagesQueue.close();
+    await realtimeEventsQueue.close();
   });
 
-  async function sendInboundAndWait(messageId: string, textPreview: string): Promise<void> {
+  /**
+   * Phase 3B: a genuinely new, live, AI-eligible inbound message no longer
+   * triggers the AI handoff synchronously within the incoming_messages job
+   * - it schedules a trailing-edge debounce (see scheduleAiDebounce /
+   * processAiDebounce) that fires AI_DEBOUNCE_DELAY_MS later on a
+   * different queue/worker. This waits for both: the message actually
+   * persisted, and the debounce round for this business actually ran to
+   * completion, so assertions below see the real, final outcome rather
+   * than racing ahead of it.
+   */
+  async function sendInboundAndWaitForAiHandoff(messageId: string, textPreview: string): Promise<void> {
     const ingested: IngestedWhatsAppMessage = {
       messageId,
       remoteJid: '15550003333@s.whatsapp.net',
@@ -63,7 +76,7 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
       ingestedAt: new Date().toISOString(),
     };
 
-    const completion = new Promise<void>((resolve, reject) => {
+    const persisted = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Timed out waiting for worker to process job')), 10_000);
       incomingMessagesWorker.on('completed', function onCompleted(job) {
         if (job.data.message.messageId !== messageId) return;
@@ -79,13 +92,27 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
       });
     });
 
+    // Scoped by businessId (fresh per test via resetDatabase + register),
+    // not messageId, since the debounce job's own payload never carries
+    // message content - only "check this business's chat now".
+    const debounced = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timed out waiting for AI debounce round to fire')), 20_000);
+      realtimeEventsWorker.on('completed', function onCompleted(job) {
+        if (job.name !== 'ai-debounce' || job.data.businessId !== businessId) return;
+        clearTimeout(timeout);
+        realtimeEventsWorker.off('completed', onCompleted);
+        resolve();
+      });
+    });
+
     await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid, message: ingested });
-    await completion;
+    await persisted;
+    await debounced;
   }
 
   it('never fabricates an outbound send when the business has no active AI agent configured', async () => {
     const messageId = `AI-NOAGENT-${Date.now()}`;
-    await sendInboundAndWait(messageId, 'Do you have any availability tomorrow?');
+    await sendInboundAndWaitForAiHandoff(messageId, 'Do you have any availability tomorrow?');
 
     const messageRepository = new WhatsAppMessageRepository(pool);
     const persisted = await messageRepository.findByWhatsAppId(businessId, accountId, messageId);
@@ -95,7 +122,7 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
       businessId,
     ]);
     expect(Number(rows[0].count)).toBe(0);
-  });
+  }, 25_000);
 
   it('a "no_agent" outcome is never silent - it hands the chat to a human and notifies the business, not just a server log', async () => {
     // Reproduces the real reported symptom: an operator's only agent is
@@ -108,7 +135,7 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
     await agents.create({ businessId, name: 'Bookings', triggerKeywords: ['appointment'] });
 
     const messageId = `AI-NOAGENT-VISIBLE-${Date.now()}`;
-    await sendInboundAndWait(messageId, 'hey, are you open on weekends?');
+    await sendInboundAndWaitForAiHandoff(messageId, 'hey, are you open on weekends?');
 
     const messageRepository = new WhatsAppMessageRepository(pool);
     const persisted = await messageRepository.findByWhatsAppId(businessId, accountId, messageId);
@@ -121,7 +148,7 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
     const notifications = new NotificationRepository(pool);
     const list = await notifications.listForUser(businessId, ownerId, 10);
     expect(list.some((n) => n.type === 'HUMAN_HANDOFF' && n.targetId === persisted!.chatId)).toBe(true);
-  });
+  }, 25_000);
 
   it('never fabricates an outbound send when an agent exists but the AI model is unavailable (no GEMINI_API_KEY) - and makes that visible, not silent', async () => {
     if (process.env.GEMINI_API_KEY) return; // This test asserts the honest-unavailable path specifically.
@@ -130,7 +157,7 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
     await agents.create({ businessId, name: 'Reception Agent', systemInstruction: 'Help qualify inbound leads.' });
 
     const messageId = `AI-UNAVAILABLE-${Date.now()}`;
-    await sendInboundAndWait(messageId, 'What time do you open?');
+    await sendInboundAndWaitForAiHandoff(messageId, 'What time do you open?');
 
     const { rows } = await pool.query('SELECT count(*) AS count FROM whatsapp_outbound_messages WHERE business_id = $1', [
       businessId,
@@ -153,5 +180,5 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
     const failure = list.find((n) => n.type === 'AI_FAILURE' && n.targetId === persisted!.chatId);
     expect(failure).toBeDefined();
     expect(failure?.body).toContain('GEMINI_API_KEY is not configured');
-  });
+  }, 25_000);
 });

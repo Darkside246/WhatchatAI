@@ -51,23 +51,32 @@ export async function orchestrateAiReply(input: OrchestrateAiReplyInput): Promis
   }
 
   const agent = decision.agent;
-  let reply = await generateAiReply(agent, context);
+  const reply = await generateAiReply(agent, context);
+
+  if (reply.status === 'generated') {
+    return { kind: 'reply', agent, text: reply.text };
+  }
 
   // A real escalation hop: if the selected agent could not produce a
   // reply and the operator configured someone to escalate to, try that
   // agent once. Exactly one hop - never a chain that could loop between
-  // two agents pointing at each other.
-  if (reply.status !== 'generated') {
+  // two agents pointing at each other. Phase 3B: only attempted when the
+  // failure reason is one a *different* agent's own configuration could
+  // plausibly avoid (reply.skipEscalation is false) - a capacity/auth/
+  // provider-config/programming failure is agent-independent, and
+  // immediately repeating an identical call against a second agent would
+  // almost certainly fail identically, wasting a real call for nothing
+  // (see docs/PHASE_3A_AI_RELIABILITY_AUDIT_AND_PROPOSAL.md section 2/5).
+  if (!reply.skipEscalation) {
     const escalationAgent = await resolveEscalationAgent(agent);
     if (escalationAgent) {
-      reply = await generateAiReply(escalationAgent, context);
-      if (reply.status === 'generated') {
-        return { kind: 'reply', agent: escalationAgent, text: reply.text };
+      const escalatedReply = await generateAiReply(escalationAgent, context);
+      if (escalatedReply.status === 'generated') {
+        return { kind: 'reply', agent: escalationAgent, text: escalatedReply.text };
       }
-      return { kind: 'unavailable', agent: escalationAgent, reason: reply.reason };
+      return { kind: 'unavailable', agent: escalationAgent, reason: escalatedReply.reason };
     }
-    return { kind: 'unavailable', agent, reason: reply.reason };
   }
 
-  return { kind: 'reply', agent, text: reply.text };
+  return { kind: 'unavailable', agent, reason: reply.reason };
 }
