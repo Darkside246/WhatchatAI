@@ -6,6 +6,23 @@ import type { IngestedWhatsAppMessage } from '../../services/whatsappMessageInge
 
 export const REALTIME_EVENTS_QUEUE = 'realtime_events';
 
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+// Phase 2B media-retry config (see
+// docs/PHASE_2A_MEDIA_RETRY_AUDIT_AND_PROPOSAL.md sections 3/5) - set as
+// explicit per-job options on the media-download job below rather than
+// relying on this queue's shared defaultJobOptions, since that default
+// (attempts: 3, backoff 1000ms exponential) is also used by every other job
+// type on this queue (call-event, message-status, etc.), which are outside
+// this phase's scope and must not change behavior.
+export const MEDIA_DOWNLOAD_MAX_ATTEMPTS = envInt('MEDIA_DOWNLOAD_MAX_ATTEMPTS', 3);
+export const MEDIA_DOWNLOAD_BACKOFF_DELAY_MS = envInt('MEDIA_DOWNLOAD_BACKOFF_DELAY_MS', 1000);
+
 export interface MessageStatusJobData {
   businessId: string;
   whatsappAccountId: string;
@@ -79,8 +96,26 @@ export function enqueueStatusUpdate(data: StatusUpdateJobData): Promise<unknown>
   return realtimeEventsQueue.add('status-update', data);
 }
 
+/**
+ * Deterministic jobId (Phase 2B, see
+ * docs/PHASE_2A_MEDIA_RETRY_AUDIT_AND_PROPOSAL.md section 4): BullMQ
+ * rejects a second `.add()` for a jobId that is already
+ * waiting/active/delayed, so two enqueue attempts for the same mediaId
+ * (e.g. a future manual retry racing an in-flight automatic one) can never
+ * produce two concurrent jobs for the same media. Automatic retries within
+ * the state machine's attempts budget reuse this same job instance via
+ * BullMQ's own attempts/backoff (the handler throws rather than
+ * re-enqueuing), so this only guards against duplicate *enqueue* calls, not
+ * retry scheduling.
+ */
 export function enqueueMediaDownload(data: MediaDownloadJobData): Promise<unknown> {
-  return realtimeEventsQueue.add('media-download', data);
+  return realtimeEventsQueue.add('media-download', data, {
+    // BullMQ rejects a custom jobId containing ':' (it uses colons as its
+    // own Redis key separator) - dash-joined instead.
+    jobId: `media-download-${data.mediaId}`,
+    attempts: MEDIA_DOWNLOAD_MAX_ATTEMPTS,
+    backoff: { type: 'exponential', delay: MEDIA_DOWNLOAD_BACKOFF_DELAY_MS },
+  });
 }
 
 export function enqueueMessageReaction(data: MessageReactionJobData): Promise<unknown> {

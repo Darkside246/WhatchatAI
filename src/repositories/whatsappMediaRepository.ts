@@ -1,5 +1,6 @@
 import type { Queryable } from './types.js';
 import type {
+  MediaDownloadErrorCategory,
   MediaDownloadStatus,
   MediaProcessingStatus,
   MediaStorageProvider,
@@ -28,6 +29,12 @@ export interface WhatsAppMediaRecord {
   processingStatus: MediaProcessingStatus;
   transcript: string | null;
   aiInterpretation: Record<string, unknown> | null;
+  downloadAttempts: number;
+  lastAttemptedAt: string | null;
+  lastErrorCategory: MediaDownloadErrorCategory | null;
+  lastErrorMessage: string | null;
+  nextRetryAt: string | null;
+  terminalReason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -54,8 +61,25 @@ interface MediaRow {
   processing_status: MediaProcessingStatus;
   transcript: string | null;
   ai_interpretation: Record<string, unknown> | null;
+  download_attempts: number;
+  last_attempted_at: string | null;
+  last_error_category: MediaDownloadErrorCategory | null;
+  last_error_message: string | null;
+  next_retry_at: string | null;
+  terminal_reason: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// Defense in depth against an accidental raw error object/stack trace
+// reaching this column (see Phase 2A proposal section 8's logging
+// discipline) - callers are expected to already pass a short, classified
+// message, but this caps length regardless of what a caller sends.
+const MAX_ERROR_MESSAGE_LENGTH = 300;
+
+function sanitizeErrorMessage(message: string): string {
+  const singleLine = message.replace(/\s+/g, ' ').trim();
+  return singleLine.length > MAX_ERROR_MESSAGE_LENGTH ? `${singleLine.slice(0, MAX_ERROR_MESSAGE_LENGTH)}…` : singleLine;
 }
 
 function toRecord(row: MediaRow): WhatsAppMediaRecord {
@@ -81,6 +105,12 @@ function toRecord(row: MediaRow): WhatsAppMediaRecord {
     processingStatus: row.processing_status,
     transcript: row.transcript,
     aiInterpretation: row.ai_interpretation,
+    downloadAttempts: row.download_attempts,
+    lastAttemptedAt: row.last_attempted_at,
+    lastErrorCategory: row.last_error_category,
+    lastErrorMessage: row.last_error_message,
+    nextRetryAt: row.next_retry_at,
+    terminalReason: row.terminal_reason,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -159,6 +189,99 @@ export class WhatsAppMediaRepository {
       `UPDATE whatsapp_media SET download_status = 'downloading', updated_at = now() WHERE id = $1`,
       [id],
     );
+  }
+
+  /**
+   * Phase 2B guarded retry state machine (see
+   * docs/PHASE_2A_MEDIA_RETRY_AUDIT_AND_PROPOSAL.md sections 2/6). Every
+   * transition below is a conditional `UPDATE ... WHERE download_status =
+   * <expected>` rather than an unconditional write, so a duplicate job
+   * delivery, a crash-recovery sweep racing a real in-flight download, or
+   * two concurrent attempts targeting the same row all resolve safely: the
+   * transition that arrives second finds the row no longer in the expected
+   * state and affects zero rows. Callers must check the returned boolean
+   * rather than assuming success - this is the actual concurrency guard,
+   * not an optimization. Scoped to the message/status media pipeline only;
+   * profile pictures continue using the unconditional setDownloading/
+   * setDownloadResult above (see the Phase 2A proposal's scope note).
+   */
+  async beginDownloadAttempt(
+    id: string,
+    fromStatuses: MediaDownloadStatus[],
+  ): Promise<{ started: boolean; attempts: number }> {
+    const result = await this.db.query<{ download_attempts: number }>(
+      `UPDATE whatsapp_media
+       SET download_status = 'downloading', download_attempts = download_attempts + 1,
+           last_attempted_at = now(), updated_at = now()
+       WHERE id = $1 AND download_status = ANY($2::text[])
+       RETURNING download_attempts`,
+      [id, fromStatuses],
+    );
+    const row = result.rows[0];
+    return row ? { started: true, attempts: row.download_attempts } : { started: false, attempts: 0 };
+  }
+
+  /** downloading -> downloaded: real, terminal success. */
+  async completeDownload(id: string, storageReference: string, sha256: string, fileSize: number): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE whatsapp_media
+       SET download_status = 'downloaded', storage_reference = $2, storage_provider = 'local', sha256 = $3,
+           file_size = $4, next_retry_at = NULL, terminal_reason = NULL, updated_at = now()
+       WHERE id = $1 AND download_status = 'downloading'`,
+      [id, storageReference, sha256, fileSize],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /** downloading -> retry_scheduled: a classified-retryable failure, attempts remain. */
+  async scheduleRetry(
+    id: string,
+    category: MediaDownloadErrorCategory,
+    errorMessage: string,
+    nextRetryAt: Date,
+  ): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE whatsapp_media
+       SET download_status = 'retry_scheduled', last_error_category = $2, last_error_message = $3,
+           next_retry_at = $4, updated_at = now()
+       WHERE id = $1 AND download_status = 'downloading'`,
+      [id, category, sanitizeErrorMessage(errorMessage), nextRetryAt.toISOString()],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /** downloading -> failed | unavailable: a terminal outcome (retries exhausted, non-retryable, or 404/410). */
+  async failTerminally(
+    id: string,
+    status: Extract<MediaDownloadStatus, 'failed' | 'unavailable'>,
+    category: MediaDownloadErrorCategory | null,
+    errorMessage: string | null,
+    terminalReason: string,
+  ): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE whatsapp_media
+       SET download_status = $2, last_error_category = $3, last_error_message = $4, terminal_reason = $5,
+           next_retry_at = NULL, updated_at = now()
+       WHERE id = $1 AND download_status = 'downloading'`,
+      [id, status, category, errorMessage ? sanitizeErrorMessage(errorMessage) : null, terminalReason],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Crash-recovery sweep support: rows a worker started downloading and
+   * never finished (process crash/restart mid-download - see
+   * sweepStaleDownloadingMedia in incomingMessagesWorker.ts). Mirrors the
+   * existing findStaleRingingCalls/findStaleRunning/findStalePending sweep
+   * queries elsewhere in this codebase.
+   */
+  async findStaleDownloading(staleSeconds: number): Promise<WhatsAppMediaRecord[]> {
+    const { rows } = await this.db.query<MediaRow>(
+      `SELECT * FROM whatsapp_media
+       WHERE download_status = 'downloading' AND updated_at < now() - ($1 || ' seconds')::interval`,
+      [staleSeconds],
+    );
+    return rows.map(toRecord);
   }
 
   async setTranscript(id: string, transcript: string): Promise<void> {

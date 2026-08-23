@@ -7,6 +7,8 @@ import { INCOMING_MESSAGES_QUEUE, type IncomingMessageJobData } from '../queues/
 import {
   REALTIME_EVENTS_QUEUE,
   realtimeEventsQueue,
+  MEDIA_DOWNLOAD_MAX_ATTEMPTS,
+  MEDIA_DOWNLOAD_BACKOFF_DELAY_MS,
   type MessageStatusJobData,
   type CallEventJobData,
   type StatusUpdateJobData,
@@ -43,7 +45,7 @@ import { runSecurityScan } from '../../services/securityScanService.js';
 import { runSecurityWatcher } from '../../services/openclawSecurityWatcherService.js';
 import type { WhatsAppMessageRecord } from '../../repositories/whatsappMessageRepository.js';
 import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaRepository.js';
-import type { MediaDownloadStatus } from '../../domain/whatsapp/types.js';
+import type { MediaDownloadErrorCategory } from '../../domain/whatsapp/types.js';
 
 /**
  * Drains the incoming_messages queue and performs the real Postgres
@@ -312,64 +314,87 @@ interface HttpLikeError {
 }
 
 /**
- * Downloads the real media bytes for a message via Baileys' own
- * downloadMediaMessage, verifies them, encrypts-at-rest, and records an
- * honest outcome - never a fabricated success. No `ctx` (reupload-request
- * callback) is passed: this worker has no live Baileys socket, so an
- * expired-media reupload isn't possible from here and is reported as
- * UNAVAILABLE rather than faked.
+ * A checksum mismatch could be transient corruption in transit, but a
+ * *repeated* mismatch strongly suggests a real integrity problem - capped
+ * at one retry (never the full general budget) regardless of
+ * MEDIA_DOWNLOAD_MAX_ATTEMPTS, per PHASE_2A proposal section 3. Never
+ * higher than the general cap either, in case an operator sets that below 2.
  */
-async function processMediaDownload(data: MediaDownloadJobData): Promise<void> {
-  const { businessId, mediaId, mediaDescriptor } = data;
-  await mediaRepository.setDownloading(mediaId);
+const MAX_CHECKSUM_MISMATCH_ATTEMPTS = Math.min(2, MEDIA_DOWNLOAD_MAX_ATTEMPTS);
 
-  const decoded = decodeBuffersFromQueue(mediaDescriptor) as { key: WAMessageKey; message: proto.IMessage };
-  const waMessage = { key: decoded.key, message: decoded.message } as WAMessage;
+type MediaDownloadOutcome =
+  | { kind: 'success'; storageReference: string; sha256Hex: string; fileSize: number }
+  | { kind: 'unavailable'; message: string }
+  | { kind: 'terminal'; category: MediaDownloadErrorCategory; message: string }
+  | { kind: 'retryable'; category: MediaDownloadErrorCategory; message: string; maxAttempts: number };
 
-  // Single real outcome computed once, then recorded and reacted to exactly
-  // once below - every failure branch (transport error, empty buffer,
-  // oversized, checksum mismatch) used to duplicate the same
-  // setDownloadResult('failed'/'unavailable') call and then return early,
-  // silently skipping the message/AI-handoff lookup that only the success
-  // path reached. A caption-only-visible message whose media then failed to
-  // download would otherwise never trigger a reply at all.
-  let status: MediaDownloadStatus;
-  let storageReference: string | null = null;
-  let sha256Hex: string | null = null;
-  let fileSize: number | null = null;
-
+/**
+ * Attempts one real download+verify+store of the media bytes and classifies
+ * the outcome per PHASE_2A proposal section 3's retryable/terminal
+ * taxonomy. Never writes to the database itself - the caller (
+ * processMediaDownload) owns every state transition via the guarded
+ * repository methods, so this function can be a pure "what happened"
+ * classifier.
+ */
+async function attemptMediaDownload(
+  businessId: string,
+  mediaId: string,
+  waMessage: WAMessage,
+  declaredSha256: Buffer | null,
+): Promise<MediaDownloadOutcome> {
   try {
     const buffer = await downloadMediaMessage(waMessage, 'buffer', {});
     if (!buffer || buffer.length === 0) {
-      console.error(`[RealtimeEventsWorker] Media download for ${mediaId} returned an empty buffer`);
-      status = 'failed';
-    } else if (buffer.length > MAX_MEDIA_DOWNLOAD_BYTES) {
-      console.error(
-        `[RealtimeEventsWorker] Media ${mediaId} (${buffer.length} bytes) exceeds MEDIA_MAX_DOWNLOAD_BYTES (${MAX_MEDIA_DOWNLOAD_BYTES})`,
-      );
-      status = 'failed';
-    } else {
-      const actualSha256 = createHash('sha256').update(buffer).digest();
-      const declaredSha256 = extractDeclaredSha256(decoded.message);
-      if (declaredSha256 && !actualSha256.equals(declaredSha256)) {
-        console.error(`[RealtimeEventsWorker] Media ${mediaId} failed checksum verification against sender-declared SHA-256`);
-        status = 'failed';
-      } else {
-        sha256Hex = actualSha256.toString('hex');
-        storageReference = await storeMedia(businessId, sha256Hex, buffer);
-        fileSize = buffer.length;
-        status = 'downloaded';
-      }
+      return {
+        kind: 'retryable',
+        category: 'network',
+        message: 'Download returned an empty buffer',
+        maxAttempts: MEDIA_DOWNLOAD_MAX_ATTEMPTS,
+      };
     }
+    if (buffer.length > MAX_MEDIA_DOWNLOAD_BYTES) {
+      return {
+        kind: 'terminal',
+        category: 'oversized',
+        message: `Media (${buffer.length} bytes) exceeds MEDIA_MAX_DOWNLOAD_BYTES (${MAX_MEDIA_DOWNLOAD_BYTES}) - will not become smaller on retry`,
+      };
+    }
+    const actualSha256 = createHash('sha256').update(buffer).digest();
+    if (declaredSha256 && !actualSha256.equals(declaredSha256)) {
+      return {
+        kind: 'retryable',
+        category: 'checksum_mismatch',
+        message: 'Downloaded bytes failed checksum verification against sender-declared SHA-256',
+        maxAttempts: MAX_CHECKSUM_MISMATCH_ATTEMPTS,
+      };
+    }
+    const sha256Hex = actualSha256.toString('hex');
+    const storageReference = await storeMedia(businessId, sha256Hex, buffer);
+    return { kind: 'success', storageReference, sha256Hex, fileSize: buffer.length };
   } catch (error) {
     const httpError = error as HttpLikeError;
     const statusCode = httpError.output?.statusCode ?? httpError.status;
-    status = statusCode === 404 || statusCode === 410 ? 'unavailable' : 'failed';
-    console.error(`[RealtimeEventsWorker] Media download failed for media ${mediaId}: ${(error as Error).message}`);
+    if (statusCode === 404 || statusCode === 410) {
+      return { kind: 'unavailable', message: `Media expired on WhatsApp's CDN (HTTP ${statusCode})` };
+    }
+    return {
+      kind: 'retryable',
+      category: 'network',
+      message: (error as Error).message || 'Unknown download error',
+      maxAttempts: MEDIA_DOWNLOAD_MAX_ATTEMPTS,
+    };
   }
+}
 
-  await mediaRepository.setDownloadResult(mediaId, status, storageReference, sha256Hex, fileSize);
-
+/**
+ * Shared terminal-outcome follow-up (success, failed, or unavailable):
+ * publishes the realtime update and, for message media, evaluates the
+ * deferred AI handoff. Deliberately NOT called on a retry_scheduled
+ * transition - firing the AI handoff while a retry is still pending would
+ * mean the AI answers "I can't see the media" on attempt 1 even though
+ * attempt 2 might still succeed. Only a real, final outcome reaches this.
+ */
+async function publishMediaOutcome(businessId: string, mediaId: string): Promise<void> {
   const media = await mediaRepository.findByIdForBusiness(mediaId, businessId);
   if (media?.messageId) {
     const message = await messageRepository.findByIdForBusiness(media.messageId, businessId);
@@ -380,6 +405,110 @@ async function processMediaDownload(data: MediaDownloadJobData): Promise<void> {
   } else if (media?.statusId) {
     await publishRealtimeEvent({ type: 'status.media.updated', businessId, mediaId, statusId: media.statusId });
   }
+}
+
+/**
+ * Downloads the real media bytes for a message via Baileys' own
+ * downloadMediaMessage, verifies them, encrypts-at-rest, and records an
+ * honest outcome via the Phase 2B guarded state machine - never a
+ * fabricated success, and never silently absorbing a failure BullMQ's own
+ * attempts/backoff could otherwise recover from. See
+ * docs/PHASE_2A_MEDIA_RETRY_AUDIT_AND_PROPOSAL.md sections 2/3/5. No `ctx`
+ * (reupload-request callback) is passed to downloadMediaMessage: this
+ * worker has no live Baileys socket, so an expired-media reupload isn't
+ * possible from here and is reported as UNAVAILABLE rather than faked.
+ */
+async function processMediaDownload(data: MediaDownloadJobData): Promise<void> {
+  const { businessId, mediaId, mediaDescriptor } = data;
+
+  // Guarded transition: a duplicate job delivery, or a job that raced the
+  // crash-recovery sweep and lost, finds the row no longer in an eligible
+  // starting state and no-ops here rather than re-downloading or
+  // re-recording anything (PHASE_2A section 4/6).
+  const { started, attempts } = await mediaRepository.beginDownloadAttempt(mediaId, ['pending', 'retry_scheduled']);
+  if (!started) {
+    console.log(
+      `[RealtimeEventsWorker] Media ${mediaId} download attempt skipped - not in an eligible state (duplicate delivery or already resolved)`,
+    );
+    return;
+  }
+
+  let decoded: { key: WAMessageKey; message: proto.IMessage };
+  try {
+    decoded = decodeBuffersFromQueue(mediaDescriptor) as { key: WAMessageKey; message: proto.IMessage };
+  } catch (error) {
+    // A malformed descriptor is a programming/data bug, not a capacity
+    // problem - retrying it can never succeed differently, so it fails
+    // closed immediately and never consumes retry budget pretending
+    // otherwise (PHASE_2A section 3's "non-HTTP-shaped error" case).
+    console.error(`[RealtimeEventsWorker] Media ${mediaId} descriptor could not be decoded:`, (error as Error).message);
+    await mediaRepository.failTerminally(
+      mediaId,
+      'failed',
+      'internal',
+      (error as Error).message,
+      'Media job descriptor could not be decoded',
+    );
+    await publishMediaOutcome(businessId, mediaId);
+    return;
+  }
+
+  const waMessage = { key: decoded.key, message: decoded.message } as WAMessage;
+  const declaredSha256 = extractDeclaredSha256(decoded.message);
+  const outcome = await attemptMediaDownload(businessId, mediaId, waMessage, declaredSha256);
+
+  if (outcome.kind === 'success') {
+    await mediaRepository.completeDownload(mediaId, outcome.storageReference, outcome.sha256Hex, outcome.fileSize);
+    await publishMediaOutcome(businessId, mediaId);
+    return;
+  }
+
+  if (outcome.kind === 'unavailable') {
+    console.error(`[RealtimeEventsWorker] Media ${mediaId} unavailable: ${outcome.message}`);
+    await mediaRepository.failTerminally(mediaId, 'unavailable', null, null, outcome.message);
+    await publishMediaOutcome(businessId, mediaId);
+    return;
+  }
+
+  if (outcome.kind === 'terminal') {
+    console.error(`[RealtimeEventsWorker] Media ${mediaId} terminally failed (${outcome.category}): ${outcome.message}`);
+    await mediaRepository.failTerminally(mediaId, 'failed', outcome.category, outcome.message, outcome.message);
+    await publishMediaOutcome(businessId, mediaId);
+    return;
+  }
+
+  // outcome.kind === 'retryable' from here.
+  if (attempts >= outcome.maxAttempts) {
+    const terminalReason = `Exhausted ${attempts} attempt(s): ${outcome.message}`;
+    console.error(`[RealtimeEventsWorker] Media ${mediaId} ${terminalReason}`);
+    await mediaRepository.failTerminally(mediaId, 'failed', outcome.category, outcome.message, terminalReason);
+    await publishMediaOutcome(businessId, mediaId);
+    return;
+  }
+
+  // Matches BullMQ's own exponential backoff formula for this job's
+  // configured delay - observability only (see whatsapp_media.next_retry_at
+  // in PHASE_2A section 8); BullMQ's own scheduler is the actual source of
+  // truth for when the retry fires.
+  const nextRetryAt = new Date(Date.now() + MEDIA_DOWNLOAD_BACKOFF_DELAY_MS * 2 ** (attempts - 1));
+  const scheduled = await mediaRepository.scheduleRetry(mediaId, outcome.category, outcome.message, nextRetryAt);
+  if (!scheduled) {
+    // The row moved out of 'downloading' under us since beginDownloadAttempt
+    // (should not happen - only this job instance holds that state - but if
+    // it ever does, do not blindly throw and let BullMQ retry a row whose
+    // real state has already moved on independently).
+    console.warn(`[RealtimeEventsWorker] Media ${mediaId} retry scheduling skipped - row state changed concurrently`);
+    return;
+  }
+  console.warn(
+    `[RealtimeEventsWorker] Media ${mediaId} retry ${attempts}/${outcome.maxAttempts} scheduled (${outcome.category}): ${outcome.message}`,
+  );
+
+  // Throwing is what actually activates BullMQ's own attempts/backoff
+  // timing (PHASE_2A section 5) - the DB write above already recorded the
+  // real outcome; this is a thin signal on top of it, not a separate
+  // judgment, and it is the ONLY throw in this function.
+  throw new Error(`Retryable media download failure (${outcome.category}): ${outcome.message}`);
 }
 
 /**
@@ -534,6 +663,52 @@ export async function sweepStaleRingingCalls(): Promise<void> {
   }
 }
 
+// Long enough that a real in-flight download (network-bound, can
+// legitimately take a while for a large file) is never mistaken for stuck;
+// short enough that a genuine crash is caught promptly. See
+// sweepStaleDownloadingMedia below for why this always reconciles to
+// 'failed', never a scheduled retry.
+const MEDIA_DOWNLOAD_STALE_SECONDS = 300;
+const MEDIA_DOWNLOAD_TIMEOUT_SWEEP_INTERVAL_MS = 60_000;
+
+/**
+ * Crash-recovery sweep (PHASE_2A proposal sections 4/6): finds
+ * whatsapp_media rows left in 'downloading' with no progress for
+ * MEDIA_DOWNLOAD_STALE_SECONDS - a worker process died mid-download before
+ * it could record any outcome, so nothing else will ever transition that
+ * row again on its own.
+ *
+ * This always reconciles straight to 'failed', never 'retry_scheduled':
+ * the raw Baileys media descriptor (mediaKey, CDN URL, etc.) exists only in
+ * the original BullMQ job's payload - it is never persisted to Postgres (a
+ * deliberate choice; it is sensitive, single-use decryption material, and
+ * persisting it would be a separate security decision this phase does not
+ * make). A row recovered here has no way to be automatically re-downloaded,
+ * so promising a future automatic retry would be dishonest - this matches
+ * the existing sweepStaleOutboundMessages precedent below (reconciles
+ * directly to a terminal state, never a promise of automatic resumption).
+ * BullMQ's own stalled-job redelivery (a separate, existing mechanism this
+ * phase relies on rather than duplicates - PHASE_2A section 6) is the real
+ * first line of defense for a same-process crash where Redis survives; this
+ * sweep is what guarantees a row is never left silently claiming to be
+ * in-progress forever even when that does not recover it.
+ */
+export async function sweepStaleDownloadingMedia(): Promise<void> {
+  const stale = await mediaRepository.findStaleDownloading(MEDIA_DOWNLOAD_STALE_SECONDS);
+  for (const media of stale) {
+    const reason = `Worker crash or restart interrupted this download - no progress for over ${MEDIA_DOWNLOAD_STALE_SECONDS}s, reconciled by the stale-download sweep. The original download cannot be automatically resumed; a fresh message/status sync is required.`;
+    const recovered = await mediaRepository.failTerminally(media.id, 'failed', 'internal', reason, reason);
+    if (recovered) {
+      await publishMediaOutcome(media.businessId, media.id).catch((error: Error) => {
+        console.error(`[RealtimeEventsWorker] Failed to publish stale-download outcome for media ${media.id}:`, error.message);
+      });
+    }
+  }
+  if (stale.length > 0) {
+    console.log(`[RealtimeEventsWorker] Reconciled ${stale.length} stale downloading media row(s) to failed`);
+  }
+}
+
 // Documented rule: incrementCounts() bumps updated_at on every real batch of
 // sync progress. A 'running' job with no progress in this long has no
 // process left driving it - WhatsApp will never send it a completion signal
@@ -660,6 +835,8 @@ async function processRealtimeEventJob(
     await sweepStaleRingingCalls();
   } else if (job.name === 'sync-job-timeout-sweep') {
     await sweepStaleSyncJobs();
+  } else if (job.name === 'media-download-timeout-sweep') {
+    await sweepStaleDownloadingMedia();
   } else if (job.name === 'outbound-message-timeout-sweep') {
     await sweepStaleOutboundMessages();
   } else if (job.name === 'email-timeout-sweep') {
@@ -746,6 +923,21 @@ void realtimeEventsQueue
   )
   .catch((error: Error) =>
     console.error('[RealtimeEventsWorker] Failed to schedule sync-job-timeout-sweep:', error.message),
+  );
+
+void realtimeEventsQueue
+  .upsertJobScheduler(
+    'media-download-timeout-sweep',
+    { every: MEDIA_DOWNLOAD_TIMEOUT_SWEEP_INTERVAL_MS },
+    { name: 'media-download-timeout-sweep' },
+  )
+  .then(() =>
+    console.log(
+      `[RealtimeEventsWorker] Scheduled media-download-timeout-sweep every ${MEDIA_DOWNLOAD_TIMEOUT_SWEEP_INTERVAL_MS}ms`,
+    ),
+  )
+  .catch((error: Error) =>
+    console.error('[RealtimeEventsWorker] Failed to schedule media-download-timeout-sweep:', error.message),
   );
 
 void realtimeEventsQueue

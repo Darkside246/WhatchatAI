@@ -46,7 +46,28 @@ export type MediaType = 'image' | 'video' | 'audio' | 'voice_note' | 'document' 
 
 export type MediaStorageProvider = 'pending' | 'local' | 's3' | 'gcs';
 
-export type MediaDownloadStatus = 'pending' | 'downloading' | 'downloaded' | 'failed' | 'unavailable';
+/**
+ * 'retry_scheduled' (Phase 2B): a classified-retryable failure occurred and
+ * a further attempt (automatic or manual) is expected but not yet running -
+ * distinct from 'failed', which is now specifically terminal (retries
+ * exhausted, or a non-retryable error). See
+ * docs/PHASE_2A_MEDIA_RETRY_AUDIT_AND_PROPOSAL.md section 2.
+ */
+export type MediaDownloadStatus =
+  | 'pending'
+  | 'downloading'
+  | 'downloaded'
+  | 'retry_scheduled'
+  | 'failed'
+  | 'unavailable';
+
+/** Phase 2B retryable/terminal error taxonomy - see PHASE_2A proposal section 3. */
+export type MediaDownloadErrorCategory =
+  | 'network'
+  | 'oversized'
+  | 'checksum_mismatch'
+  | 'expired'
+  | 'internal';
 
 export type MediaProcessingStatus = 'pending' | 'processing' | 'processed' | 'failed' | 'skipped';
 

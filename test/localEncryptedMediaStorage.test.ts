@@ -1,9 +1,24 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { readFile, rm, stat } from 'node:fs/promises';
+import { readFile, readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { storeMedia, retrieveMedia, buildStorageReference } from '../src/media/localEncryptedMediaStorage.js';
+
+// Only `rename` is overridden below (Phase 2B atomic-write test) - every
+// other real disk I/O in this file stays real. Defaults to delegating to
+// the actual implementation, so every test except the one that explicitly
+// arms a rejection still exercises real rename() behavior. vi.hoisted is
+// required here (not a plain top-level const) because vi.mock itself is
+// hoisted above ordinary statements, and this file also statically imports
+// from 'node:fs/promises' for its own use.
+const { renameMock } = vi.hoisted(() => ({ renameMock: vi.fn() }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  renameMock.mockImplementation(actual.rename);
+  return { ...actual, rename: (...args: Parameters<typeof actual.rename>) => renameMock(...args) };
+});
+
+const { storeMedia, retrieveMedia, buildStorageReference } = await import('../src/media/localEncryptedMediaStorage.js');
 
 const MEDIA_STORAGE_DIR = path.resolve(process.env.MEDIA_STORAGE_DIR ?? './data/media-storage');
 const createdBusinessIds: string[] = [];
@@ -102,5 +117,49 @@ describe('LocalEncryptedMediaStorage (real disk I/O, real AES-256-GCM at rest)',
     const businessId = trackedBusinessId();
     const fakeSha256 = 'a'.repeat(64);
     await expect(retrieveMedia(businessId, buildStorageReference(businessId, fakeSha256))).rejects.toThrow();
+  });
+
+  /**
+   * Phase 2B: closes the defect docs/PHASE_2A_MEDIA_RETRY_AUDIT_AND_PROPOSAL.md
+   * section 7 found - storeMedia() used to writeFile() directly to its final,
+   * content-addressed path with no temp-file-then-rename, so a crash or
+   * thrown error mid-write could leave a truncated file there. fileExists()'s
+   * dedup check would then treat that corrupt file as a valid cache hit
+   * forever after, permanently poisoning that sha256 for the tenant. This
+   * forces a real rename() failure (the actual OS call the fix relies on) to
+   * prove the interruption leaves nothing at the final path.
+   */
+  it('a write failure leaves no corrupt file at the final path and no dangling temp file', async () => {
+    const businessId = trackedBusinessId();
+    const plaintext = randomBytes(512);
+    const sha256 = sha256Hex(plaintext);
+
+    renameMock.mockImplementationOnce(async () => {
+      throw new Error('simulated crash during rename');
+    });
+
+    await expect(storeMedia(businessId, sha256, plaintext)).rejects.toThrow('simulated crash during rename');
+
+    const dirEntries = await readdir(path.join(MEDIA_STORAGE_DIR, businessId)).catch(() => []);
+    expect(dirEntries).not.toContain(`${sha256}.enc`); // never a corrupt file at the final, content-addressed path
+    expect(dirEntries.filter((name) => name.includes('.tmp-'))).toHaveLength(0); // the catch/unlink cleanup removed it
+  });
+
+  it('a retry after an interrupted write succeeds cleanly - no poisoned dedup entry from the earlier failure', async () => {
+    const businessId = trackedBusinessId();
+    const plaintext = randomBytes(512);
+    const sha256 = sha256Hex(plaintext);
+
+    renameMock.mockImplementationOnce(async () => {
+      throw new Error('simulated crash during rename');
+    });
+    await expect(storeMedia(businessId, sha256, plaintext)).rejects.toThrow();
+
+    // A subsequent real attempt (no interruption this time) must succeed -
+    // this is exactly what the old bug made permanently impossible (the
+    // corrupt file at the final path satisfied fileExists() forever after).
+    const reference = await storeMedia(businessId, sha256, plaintext);
+    const retrieved = await retrieveMedia(businessId, reference);
+    expect(retrieved.equals(plaintext)).toBe(true);
   });
 });

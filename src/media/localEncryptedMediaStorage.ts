@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile, access } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, access, rename, unlink } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { getEncryptionService } from '../security/encryption/index.js';
 
@@ -35,7 +36,19 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
-/** Encrypts and writes `plaintext`, deduping by sha256 within the tenant. Returns the storage reference to persist on the media row. */
+/**
+ * Encrypts and writes `plaintext`, deduping by sha256 within the tenant.
+ * Returns the storage reference to persist on the media row.
+ *
+ * Writes to a temp file and rename()s it into place (Phase 2B fix, see
+ * docs/PHASE_2A_MEDIA_RETRY_AUDIT_AND_PROPOSAL.md section 7): a crash or
+ * thrown error mid-write previously could leave a truncated file at the
+ * final, content-addressed path - fileExists()'s dedup check treats that
+ * corrupt file as a valid cache hit forever after, permanently poisoning
+ * that sha256 for the tenant. rename() on the same filesystem is atomic, so
+ * the final path only ever holds a complete write; an interrupted attempt
+ * leaves nothing but an orphaned `.tmp-*` file.
+ */
 export async function storeMedia(businessId: string, sha256: string, plaintext: Buffer): Promise<string> {
   const reference = buildStorageReference(businessId, sha256);
   const filePath = resolveSafePath(reference);
@@ -44,7 +57,14 @@ export async function storeMedia(businessId: string, sha256: string, plaintext: 
 
   await mkdir(path.dirname(filePath), { recursive: true });
   const envelope = await getEncryptionService().encryptBuffer(businessId, plaintext);
-  await writeFile(filePath, JSON.stringify(envelope), { mode: 0o600 });
+  const tempPath = `${filePath}.tmp-${randomBytes(8).toString('hex')}`;
+  try {
+    await writeFile(tempPath, JSON.stringify(envelope), { mode: 0o600 });
+    await rename(tempPath, filePath);
+  } catch (error) {
+    await unlink(tempPath).catch(() => {}); // Best-effort cleanup - a failed write must not leave a stray temp file behind.
+    throw error;
+  }
   return reference;
 }
 
