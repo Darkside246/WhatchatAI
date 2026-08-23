@@ -62,7 +62,7 @@ export interface WorkspaceMedia {
   durationSeconds: number | null;
   width: number | null;
   height: number | null;
-  downloadStatus: 'pending' | 'downloading' | 'downloaded' | 'failed' | 'unavailable';
+  downloadStatus: 'pending' | 'downloading' | 'downloaded' | 'failed' | 'unavailable' | 'retry_scheduled';
 }
 
 export interface WorkspaceReaction {
@@ -882,6 +882,9 @@ export const api = {
   /** Empty emoji removes any existing reaction - WhatsApp's own convention. */
   sendReaction: (messageId: string, emoji: string) =>
     request(`/workspace/messages/${messageId}/reactions`, { method: 'POST', body: JSON.stringify({ emoji }) }),
+  /** Only valid on media in the 'failed' state - the real outcome (success/failed/unavailable) arrives later via the 'media.updated' realtime event. */
+  retryMediaDownload: (mediaId: string) =>
+    request<{ media: WorkspaceMedia }>(`/workspace/media/${mediaId}/retry`, { method: 'POST' }),
   getBilling: () => request<WorkspaceBillingOverview>('/workspace/billing'),
   getPlanCatalogue: () => request<PlanCatalogueDto>('/workspace/billing/plans'),
   getDashboard: () => request<WorkspaceDashboardOverview>('/workspace/dashboard'),

@@ -13,6 +13,7 @@ import {
   FileText,
   ImageOff,
   FileWarning,
+  RotateCw,
   Bot,
   User as UserIcon,
   SmilePlus,
@@ -281,19 +282,23 @@ function MediaContent({
   media,
   caption,
   onImageClick,
+  onRetry,
+  retrying,
 }: {
   media: WorkspaceMedia;
   caption: string | null;
   onImageClick: (url: string, fileName: string | null) => void;
+  onRetry: (mediaId: string) => void;
+  retrying: boolean;
 }) {
   // These states render inside either bubble color (outgoing solid-accent or
   // incoming white), so they inherit the bubble's own text color rather than
   // forcing a neutral fg tone that could go illegible against it.
-  if (media.downloadStatus === 'pending' || media.downloadStatus === 'downloading') {
+  if (media.downloadStatus === 'pending' || media.downloadStatus === 'downloading' || media.downloadStatus === 'retry_scheduled') {
     return (
       <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-caption opacity-90">
         <Loader2 size={16} className="animate-spin" aria-hidden />
-        Downloading media…
+        {media.downloadStatus === 'retry_scheduled' ? 'Retrying download…' : 'Downloading media…'}
       </div>
     );
   }
@@ -310,6 +315,15 @@ function MediaContent({
       <div className="flex items-center gap-2 rounded-lg bg-black/10 px-3 py-4 text-caption text-error">
         <FileWarning size={16} aria-hidden />
         Media download failed
+        <button
+          type="button"
+          onClick={() => onRetry(media.id)}
+          disabled={retrying}
+          className="ml-1 flex items-center gap-1 rounded-full border border-current/30 px-2 py-0.5 text-caption hover:bg-black/10 disabled:opacity-50"
+        >
+          {retrying ? <Loader2 size={12} className="animate-spin" aria-hidden /> : <RotateCw size={12} aria-hidden />}
+          Retry
+        </button>
       </div>
     );
   }
@@ -406,6 +420,8 @@ export function ChatThread({ onOpenDetail }: Props) {
   const [reactionError, setReactionError] = useState<string | null>(null);
   const [revokeError, setRevokeError] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
+  const [mediaRetryError, setMediaRetryError] = useState<string | null>(null);
+  const [retryingMediaId, setRetryingMediaId] = useState<string | null>(null);
   const [members, setMembers] = useState<MemberDto[]>([]);
   const [teams, setTeams] = useState<TeamDto[]>([]);
   const [savingAssignee, setSavingAssignee] = useState(false);
@@ -525,6 +541,30 @@ export function ChatThread({ onOpenDetail }: Props) {
       setRevokeError(err instanceof Error ? err.message : 'Could not delete that message.');
     } finally {
       setRevoking(null);
+    }
+  }
+
+  /**
+   * Only ever called on media already in the 'failed' state. The response
+   * flips it to 'retry_scheduled' locally for immediate feedback - the real
+   * outcome (success/failed/unavailable) arrives later via the
+   * 'media.updated' realtime event, which already triggers a full load()
+   * above, so no further local reconciliation is needed here.
+   */
+  async function handleMediaRetry(mediaId: string) {
+    setMediaRetryError(null);
+    setRetryingMediaId(mediaId);
+    try {
+      const { media } = await api.retryMediaDownload(mediaId);
+      setMessages((current) =>
+        current?.map((message) =>
+          message.media?.id === mediaId ? { ...message, media: { ...message.media, downloadStatus: media.downloadStatus } } : message,
+        ) ?? current,
+      );
+    } catch (err) {
+      setMediaRetryError(err instanceof Error ? err.message : 'Could not retry that media download.');
+    } finally {
+      setRetryingMediaId(null);
     }
   }
 
@@ -819,6 +859,7 @@ export function ChatThread({ onOpenDetail }: Props) {
         {error && <p className="text-caption text-error">{error}</p>}
         {reactionError && <p className="text-caption text-error">{reactionError}</p>}
         {revokeError && <p className="text-caption text-error">{revokeError}</p>}
+        {mediaRetryError && <p className="text-caption text-error">{mediaRetryError}</p>}
         {messages === null && !error && <p className="text-caption text-fg-muted">Loading real message history…</p>}
         {messages?.length === 0 && <p className="text-caption text-fg-muted">No messages persisted for this chat yet.</p>}
 
@@ -906,6 +947,8 @@ export function ChatThread({ onOpenDetail }: Props) {
                     media={message.media}
                     caption={message.caption}
                     onImageClick={(url, fileName) => setLightbox({ url, fileName })}
+                    onRetry={(mediaId) => void handleMediaRetry(mediaId)}
+                    retrying={retryingMediaId === message.media.id}
                   />
                   {(message.caption ?? message.textContent) && (
                     <p className="whitespace-pre-wrap break-words">{message.caption ?? message.textContent}</p>

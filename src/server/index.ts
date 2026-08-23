@@ -34,6 +34,7 @@ import { verifyMasterKeyStability } from '../security/encryption/keyStabilityChe
 import { syncContactProfilePicture } from '../services/profilePictureSyncService.js';
 import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
 import { retrieveMedia } from '../media/localEncryptedMediaStorage.js';
+import { enqueueManualMediaRetry } from '../queue/queues/realtimeEventsQueue.js';
 import {
   getLockStatus,
   getUnlockChallenge,
@@ -2424,6 +2425,68 @@ app.get('/api/media/:mediaId', requireAuth, requireWorkspaceContext, async (req,
   res.setHeader('Content-Length', String(totalSize));
   return res.end(plaintext);
 });
+
+/**
+ * Manual media retry (deferred item from Phase 2A's own proposal, section
+ * 9 - the automatic retry state machine already existed; this is the
+ * operator-facing recovery surface for a `failed` row). Tenant-scoped via
+ * findByIdForBusiness like every other media-adjacent route, and layered
+ * under the same expensiveActionLimiter as the other click-triggered,
+ * real-cost actions (Gemini calls, WhatsApp sends) - a retry re-downloads
+ * real bytes from WhatsApp's CDN.
+ *
+ * Only permits the transition from 'failed' - never 'retry_scheduled'
+ * (already going to retry automatically soon), 'downloaded' (nothing to
+ * do), or 'unavailable' (retrying cannot help; the content is gone). The
+ * Postgres row is flipped to 'retry_scheduled' before the BullMQ job is
+ * confirmed enqueued so the UI reflects "retrying" immediately; if the
+ * queue layer can't actually enqueue a job (the original download
+ * descriptor was evicted from Redis - see enqueueManualMediaRetry), the
+ * row is explicitly reverted to 'failed' rather than left waiting forever
+ * on a job that will never arrive.
+ */
+app.post(
+  '/api/workspace/media/:mediaId/retry',
+  requireWorkspaceContext,
+  requirePermission('whatsapp.manage'),
+  expensiveActionLimiter,
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string };
+    const mediaId = String(req.params.mediaId ?? '');
+    const mediaRepo = new WhatsAppMediaRepository(pool);
+
+    const existing = await mediaRepo.findByIdForBusiness(mediaId, businessId);
+    if (!existing) {
+      return res.status(404).json({ error: 'MEDIA_NOT_FOUND' });
+    }
+    if (existing.downloadStatus !== 'failed') {
+      return res.status(409).json({
+        error: 'MEDIA_NOT_RETRYABLE',
+        downloadStatus: existing.downloadStatus,
+        message: 'Only media in the failed state can be manually retried.',
+      });
+    }
+
+    const updated = await mediaRepo.resetForManualRetry(mediaId, businessId);
+    if (!updated) {
+      return res.status(409).json({ error: 'MEDIA_NOT_RETRYABLE' });
+    }
+
+    const outcome = await enqueueManualMediaRetry(mediaId);
+    if (outcome === 'original-job-data-unavailable') {
+      await mediaRepo.revertManualRetry(
+        mediaId,
+        'Manual retry could not be queued: original download data is no longer available.',
+      );
+      return res.status(410).json({
+        error: 'MEDIA_RETRY_DATA_UNAVAILABLE',
+        message: 'This media can no longer be retried automatically - ask the sender to resend it.',
+      });
+    }
+
+    return res.status(200).json({ media: updated });
+  },
+);
 
 const messageSchema = z.object({
   text: z.string().min(1).max(10000),

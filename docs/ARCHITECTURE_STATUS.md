@@ -22,9 +22,9 @@ document exists, no code written) · **Not Started**.
 |---|---|---|---|---|
 | 0 | Master architecture/security/reliability audit | Complete | `309671e` | Read-only audit establishing the baseline every later phase built on; root-caused the status-text bug and the media-retry gap. |
 | 1 | WhatsApp historical status text fix | Complete | `efe754b` (proposal), `43e8cf8` (implementation) | `status@broadcast` messages from `messaging-history.set` now route through the same `whatsappStatusPersistenceService` the live path already used, via a shared `STATUS_BROADCAST_JID` constant. |
-| 2 | Media/status download reliability | **Complete**, one piece deferred | `cb69718` (2A proposal), `90b3a2a` (2B implementation) | Real guarded retry state machine (`pending → downloading → downloaded / retry_scheduled / failed / unavailable`); atomic temp-file-then-rename storage; deterministic BullMQ `jobId`; crash-recovery sweep. **Manual retry API/UI explicitly deferred** — proposed in 2A's design but never implemented; requires its own separate authorization before it's built. |
+| 2 | Media/status download reliability | Complete | `cb69718` (2A proposal), `90b3a2a` (2B implementation), `PENDING_HASH` (manual retry) | Real guarded retry state machine (`pending → downloading → downloaded / retry_scheduled / failed / unavailable`); atomic temp-file-then-rename storage; deterministic BullMQ `jobId`; crash-recovery sweep; manual retry API (`POST /api/workspace/media/:id/retry`) + UI control for a `failed` row, per 2A section 9. |
 | 3 | AI reliability / Gemini 429 protection | Complete | `9ac85b2` (3A proposal), `60da62b` (3B implementation) | Five-way error taxonomy (capacity/auth/malformed_request/provider_config/programming); split circuit breakers; one-time operator notification; escalation-hop fix; trailing-edge AI debounce; outbound-send boundary fix. |
-| 4 | Multilingual/slang/dialect intelligence (Caribbean English, Bajan, Jamaican Patois, Trinidadian patterns, code-switching) | Not Started | — | Next in the recommended priority order after testing + manual retry. |
+| 4 | Multilingual/slang/dialect intelligence (Caribbean English, Bajan, Jamaican Patois, Trinidadian patterns, code-switching) | Not Started | — | Next in the recommended priority order now that manual media retry (§1 note) has shipped. |
 | 5 | Document/knowledge security | Not Started | — | Recommended ahead of further feature expansion (security before growth), even though it sits after Phase 4 in the directive's original numbering. |
 | 6 | AI email system | Not Started | — | Recommended to reuse Phase 3's error classification, idempotency, execution-context, and observability patterns rather than reinventing them. |
 | 7 | Billing, fees, taxes, pricing | Not Started | — | Should become its own isolated, deterministic pricing/calculation domain — not scattered across the app. |
@@ -33,14 +33,6 @@ document exists, no code written) · **Not Started**.
 | 10 | Campaign/funnel lifecycle | Not Started (needs confirmation audit first) | — | Earlier funnel-deletion-lifecycle hardening and campaign-lifecycle-semantics audits already exist. Audit before building. |
 | 11 | Contact identity/WhatsApp sync | Not Started (needs confirmation audit first) | — | Earlier contact/chat identity reconciliation work already exists. Audit before building. |
 | 12 | Recent activity/audit | Not Started (needs confirmation audit first) | — | Likely partially covered by existing `security_audit_logs`/notification infrastructure. Audit before building. |
-
-### Deferred, not a numbered phase
-
-**Manual media retry API/UI** (Phase 2A's own explicit deferral) —
-backend state machine, guards, and observability already exist; what
-remains is the operator-facing recovery surface (route + UI control) for
-a `failed` media row. Recommended next implementation step after the
-current testing window, per its own proposal review gate.
 
 ---
 

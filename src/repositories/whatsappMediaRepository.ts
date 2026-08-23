@@ -269,6 +269,45 @@ export class WhatsAppMediaRepository {
   }
 
   /**
+   * failed -> retry_scheduled: the manual-retry entry point (Phase 2A
+   * proposal section 9). Tenant-scoped and only permits this transition from
+   * the terminal 'failed' state - never from 'retry_scheduled' (already
+   * going to retry automatically), 'downloaded' (nothing to do), or
+   * 'unavailable' (retrying cannot help; the content is gone on WhatsApp's
+   * side). Resets the existing row rather than creating a new one, exactly
+   * like every other transition in this state machine; the caller is still
+   * responsible for enqueueing the BullMQ job that actually performs the
+   * download.
+   */
+  async resetForManualRetry(id: string, businessId: string): Promise<WhatsAppMediaRecord | null> {
+    const { rows } = await this.db.query<MediaRow>(
+      `UPDATE whatsapp_media
+       SET download_status = 'retry_scheduled', next_retry_at = now(), terminal_reason = NULL, updated_at = now()
+       WHERE id = $1 AND business_id = $2 AND download_status = 'failed'
+       RETURNING *`,
+      [id, businessId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
+   * Compensating rollback for resetForManualRetry: used only when the queue
+   * layer could not actually enqueue a job for a row this method already
+   * flipped to 'retry_scheduled' (e.g. the original job data was evicted
+   * from Redis - see enqueueManualMediaRetry's 'original-job-data-unavailable'
+   * outcome). Reverts the row back to 'failed' so it is never left waiting
+   * on a job that will never arrive.
+   */
+  async revertManualRetry(id: string, terminalReason: string): Promise<void> {
+    await this.db.query(
+      `UPDATE whatsapp_media
+       SET download_status = 'failed', terminal_reason = $2, updated_at = now()
+       WHERE id = $1 AND download_status = 'retry_scheduled'`,
+      [id, terminalReason],
+    );
+  }
+
+  /**
    * Crash-recovery sweep support: rows a worker started downloading and
    * never finished (process crash/restart mid-download - see
    * sweepStaleDownloadingMedia in incomingMessagesWorker.ts). Mirrors the

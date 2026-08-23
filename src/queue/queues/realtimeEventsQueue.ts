@@ -157,6 +157,47 @@ export function enqueueMediaDownload(data: MediaDownloadJobData): Promise<unknow
   });
 }
 
+export type ManualMediaRetryOutcome = 'enqueued' | 'already-in-flight' | 'original-job-data-unavailable';
+
+/**
+ * Manual retry entry point (Phase 2A proposal section 9). The route calling
+ * this only has a mediaId/businessId from Postgres - the raw Baileys
+ * mediaDescriptor needed to actually redownload was never persisted there
+ * (it only ever existed as BullMQ job data at ingestion time), so rather
+ * than requiring the caller to reconstruct it, this reuses the *existing*
+ * job's own `.data` under the same deterministic jobId. That job is
+ * guaranteed to exist for any row a caller can legitimately retry (the row
+ * only reaches 'failed' after that exact job ran), unless Redis's
+ * removeOnFail retention has since evicted it - reported honestly as
+ * 'original-job-data-unavailable' rather than silently failing.
+ *
+ * Explicitly checks the existing job's state first: still
+ * waiting/active/delayed/prioritized means an automatic retry is genuinely
+ * in flight, and the manual attempt is rejected here rather than racing it.
+ * Only a job in a real terminal state (completed/failed) is removed and
+ * re-added under the same id, since BullMQ will not let two jobs share one
+ * otherwise.
+ */
+export async function enqueueManualMediaRetry(mediaId: string): Promise<ManualMediaRetryOutcome> {
+  const jobId = `media-download-${mediaId}`;
+  const existing = await realtimeEventsQueue.getJob(jobId);
+  if (!existing) {
+    return 'original-job-data-unavailable';
+  }
+  const state = await existing.getState();
+  if (state === 'waiting' || state === 'active' || state === 'delayed' || state === 'prioritized' || state === 'waiting-children') {
+    return 'already-in-flight';
+  }
+  const data = existing.data as MediaDownloadJobData;
+  await existing.remove();
+  await realtimeEventsQueue.add('media-download', data, {
+    jobId,
+    attempts: MEDIA_DOWNLOAD_MAX_ATTEMPTS,
+    backoff: { type: 'exponential', delay: MEDIA_DOWNLOAD_BACKOFF_DELAY_MS },
+  });
+  return 'enqueued';
+}
+
 export function enqueueMessageReaction(data: MessageReactionJobData): Promise<unknown> {
   return realtimeEventsQueue.add('message-reaction', data);
 }
