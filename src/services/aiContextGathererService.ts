@@ -3,6 +3,7 @@ import { BusinessRepository } from '../repositories/businessRepository.js';
 import { CrmContactRepository, type CrmContactRecord } from '../repositories/crmContactRepository.js';
 import { WhatsAppMessageRepository, type WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { searchKnowledgeBase, type KnowledgeBaseSearchResult } from './knowledgeBaseSearchService.js';
+import { retrieveAiDocumentContext, type AiDocumentRetrievalResponse } from './aiDocumentRetrievalService.js';
 import { timeService, resolveBusinessTimezone, type TimeContext } from './time/timeService.js';
 import { resolveInlineMediaPart, type InlineMediaPart } from './ai/mediaContext.js';
 
@@ -22,6 +23,8 @@ export interface AiHandoffContext {
   chatId: string;
   crmContact: CrmContactRecord | null;
   knowledgeBase: KnowledgeBaseSearchResult;
+  /** D4-B: AI-retrievable business documents (D3-C's retrieveAiDocumentContext), gathered the same way and with the same {available, results, reason} contract as knowledgeBase above - never a second retrieval/trust pattern. */
+  documentContext: AiDocumentRetrievalResponse;
   conversationHistory: WhatsAppMessageRecord[];
   /** Real IANA name from the business's own Settings, defaulting to 'UTC' - never guessed from the server's own clock. */
   businessTimezone: string;
@@ -44,11 +47,17 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
   const messageRepository = new WhatsAppMessageRepository(pool);
   const businessRepository = new BusinessRepository(pool);
 
-  const [crmContact, knowledgeBase, conversationHistory, business, media] = await Promise.all([
+  const [crmContact, knowledgeBase, documentContext, conversationHistory, business, media] = await Promise.all([
     input.contactId
       ? crmContactRepository.findByWhatsAppContact(input.businessId, input.contactId)
       : Promise.resolve(null),
     searchKnowledgeBase(input.businessId, input.queryText),
+    // Same businessId and queryText already used for searchKnowledgeBase
+    // above - never a value derived from AI output, tool arguments, or
+    // document content. retrieveAiDocumentContext's own repository query is
+    // the sole enforcement point for tenant/version/deletion/ai_retrievable
+    // scoping (D3-C); nothing here duplicates or bypasses it.
+    retrieveAiDocumentContext(input.businessId, input.queryText),
     messageRepository.listByChat(input.chatId, input.historyLimit ?? 20),
     businessRepository.findById(input.businessId),
     input.mediaId ? resolveInlineMediaPart(input.businessId, input.mediaId) : Promise.resolve(null),
@@ -62,6 +71,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     chatId: input.chatId,
     crmContact,
     knowledgeBase,
+    documentContext,
     conversationHistory,
     businessTimezone,
     timeContext,
