@@ -36,10 +36,14 @@ function playChime(): void {
  * line label and an urgency tier (see securityAlertService.ts) - this
  * component has no *customer* message text, contact name, or phone number
  * available to render even by mistake. Clicking an alert opens the
- * triggering chat directly.
+ * triggering chat directly and dismisses that banner immediately - it
+ * only reappears if `triggeredAt` moves forward (a genuinely new event on
+ * that chat), not merely because the underlying HUMAN_TAKEOVER condition
+ * is still true on the next poll.
  */
 export function AlertNotifier() {
   const [alerts, setAlerts] = useState<HumanTakeoverAlertDto[]>([]);
+  const [dismissed, setDismissed] = useState<Record<string, string>>({});
   const seenChatIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -68,14 +72,17 @@ export function AlertNotifier() {
     };
   }, []);
 
-  if (alerts.length === 0) return null;
+  const visibleAlerts = alerts.filter((alert) => dismissed[alert.chatId] !== alert.triggeredAt);
+
+  if (visibleAlerts.length === 0) return null;
 
   return (
     <div className="pointer-events-none fixed inset-x-0 top-0 z-[60] flex flex-col items-center gap-2 p-3">
-      {alerts.map((alert) => (
+      {visibleAlerts.map((alert) => (
         <Link
           key={alert.chatId}
           to={`/chats/${alert.chatId}`}
+          onClick={() => setDismissed((prev) => ({ ...prev, [alert.chatId]: alert.triggeredAt }))}
           className={`pointer-events-auto flex animate-pulse items-center gap-2 rounded-full border px-4 py-2 text-body font-medium shadow-2xl transition hover:animate-none ${
             alert.urgency === 'HIGH' ? 'border-error/60 bg-error/15 text-error' : 'border-warning/60 bg-warning/15 text-warning'
           }`}
