@@ -44,7 +44,13 @@ export type SecurityEventType =
   | 'business_document_upload_blocked'
   | 'business_document_deleted'
   | 'business_document_parsed'
-  | 'business_document_parse_failed';
+  | 'business_document_parse_failed'
+  | 'writing_twin_learning_enabled'
+  | 'writing_twin_learning_disabled'
+  | 'writing_twin_backfill_requested'
+  | 'writing_twin_deleted'
+  | 'writing_twin_profile_reset'
+  | 'writing_twin_example_removed';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 
