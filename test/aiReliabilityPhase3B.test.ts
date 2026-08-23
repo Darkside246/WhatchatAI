@@ -52,7 +52,9 @@ vi.mock('../src/services/notificationService.js', async (importOriginal) => {
 const { generateAiReply } = await import('../src/services/aiReplyService.js');
 const { orchestrateAiReply } = await import('../src/services/ai/aiOrchestrator.js');
 const { enqueueIncomingMessage, incomingMessagesQueue } = await import('../src/queue/queues/incomingMessagesQueue.js');
-const { realtimeEventsQueue, AI_DEBOUNCE_DELAY_MS } = await import('../src/queue/queues/realtimeEventsQueue.js');
+const { realtimeEventsQueue, scheduleAiDebounce, AI_DEBOUNCE_DELAY_MS } = await import(
+  '../src/queue/queues/realtimeEventsQueue.js'
+);
 const { incomingMessagesWorker, realtimeEventsWorker, sweepStaleAiHandoff } = await import(
   '../src/queue/workers/incomingMessagesWorker.js'
 );
@@ -565,6 +567,47 @@ describe('AI debounce - bursts, ordering, duplicate/stale jobs, crash safety, cr
 
     expect(aiReplyGenerateContentMock).toHaveBeenCalledTimes(2);
   }, 30_000);
+
+  it("6c. scheduleAiDebounce also recovers from a 'failed' terminal job under the same jobId, not just 'completed'", async () => {
+    // A malformed chatId makes claimAiHandoff's own UPDATE ... WHERE id = $1
+    // throw (invalid UUID for a uuid column) before processAiDebounce's
+    // try/finally even starts - a real, uncaught processor exception, so
+    // BullMQ genuinely marks this job 'failed' (not something faked via
+    // internal APIs).
+    const chatId = 'not-a-real-uuid';
+    const businessId = await createTestBusiness();
+    const data = { businessId, whatsappAccountId: 'irrelevant-for-this-test', chatId };
+
+    // The queue's defaultJobOptions retries a failed job (attempts: 3,
+    // exponential backoff) - BullMQ emits 'failed' on every attempt, not
+    // just the last, and the job sits in 'delayed' between retries. Must
+    // wait for the attempt that actually exhausts the budget, or this test
+    // could race scheduleAiDebounce against a job that is 'delayed' for its
+    // own retry rather than genuinely terminal.
+    const finalFailure = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timed out waiting for the ai-debounce job to exhaust retries')), 15_000);
+      realtimeEventsWorker.on('failed', function onFailed(job) {
+        if (job?.name !== 'ai-debounce' || job.data.chatId !== chatId) return;
+        if (job.attemptsMade < (job.opts.attempts ?? 1)) return; // still retrying, not terminal yet
+        clearTimeout(timeout);
+        realtimeEventsWorker.off('failed', onFailed);
+        resolve();
+      });
+    });
+    await scheduleAiDebounce(data);
+    await finalFailure;
+
+    const failedJob = await realtimeEventsQueue.getJob(`ai-debounce-${chatId}`);
+    expect(await failedJob?.getState()).toBe('failed');
+
+    // The bug: scheduleAiDebounce used to see this same jobId, treat
+    // 'failed' like 'active'/'waiting', and silently return without
+    // scheduling anything. The fix removes the terminal job first.
+    await scheduleAiDebounce(data);
+    const freshJob = await realtimeEventsQueue.getJob(`ai-debounce-${chatId}`);
+    expect(freshJob).not.toBeNull();
+    expect(await freshJob?.getState()).toBe('delayed');
+  }, 25_000);
 
   it('7. a duplicate/redelivered debounce attempt against a chat whose claim is already held is a safe no-op', async () => {
     const { businessId, accountId } = await setupBusinessWithAgent();
