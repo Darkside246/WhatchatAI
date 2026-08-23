@@ -12,7 +12,9 @@ import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMapping
 import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobRepository.js';
 import { whatsappMessageIngestionService } from './whatsappMessageIngestionService.js';
 import { whatsappMessagePersistenceService } from './whatsappMessagePersistenceService.js';
+import { persistStatusUpdate } from './whatsappStatusPersistenceService.js';
 import { whatsappReconciliationService } from './whatsappReconciliationService.js';
+import { STATUS_BROADCAST_JID } from '../domain/whatsapp/types.js';
 import type { WAMessage } from '@whiskeysockets/baileys';
 
 export interface HistorySetPayload {
@@ -233,9 +235,36 @@ export class WhatsAppSyncService {
     // Historical messages are never 'notify' (live) - reuses the same, already-tested
     // classification/dedup pipeline as the live messages.upsert path.
     const ingested = whatsappMessageIngestionService.ingestUpsert({ messages, type: 'append' });
+    // Same split the live messages.upsert handler already applies
+    // (whatsappConnectionService.ts) - status@broadcast is WhatsApp's
+    // fixed JID for Status updates, never a real conversation, and must
+    // never reach whatsapp_messages/whatsapp_chats. Historical statuses
+    // (a business's already-active Statuses at pairing time, delivered
+    // via messaging-history.set) previously had no such split here and
+    // were silently misfiled as ordinary messages - see
+    // docs/PHASE_1_STATUS_TEXT_FIX_PROPOSAL.md.
+    const statusUpdates = ingested.filter((message) => message.remoteJid === STATUS_BROADCAST_JID);
+    const chatMessages = ingested.filter((message) => message.remoteJid !== STATUS_BROADCAST_JID);
+
     let processed = 0;
     let failed = 0;
-    for (const message of ingested) {
+
+    // Synchronous, in-process, same execution model this method already
+    // used before this change - no queue hop introduced. Uses the same
+    // shared persistence logic (persistStatusUpdate) the live, queued
+    // status path uses, so both paths stay behaviorally identical rather
+    // than maintaining two copies of the same logic.
+    for (const status of statusUpdates) {
+      try {
+        await persistStatusUpdate(businessId, whatsappAccountId, status);
+        processed += 1;
+      } catch (error) {
+        failed += 1;
+        console.error('[Sync] Failed to persist historical status', status.messageId, error);
+      }
+    }
+
+    for (const message of chatMessages) {
       try {
         await whatsappMessagePersistenceService.persist({ businessId, whatsappAccountId, accountJid, ingested: message });
         processed += 1;

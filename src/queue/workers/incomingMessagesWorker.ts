@@ -13,9 +13,9 @@ import {
   type MediaDownloadJobData,
   type MessageReactionJobData,
   type PresenceUpdateJobData,
-  enqueueMediaDownload,
 } from '../queues/realtimeEventsQueue.js';
 import { whatsappMessagePersistenceService } from '../../services/whatsappMessagePersistenceService.js';
+import { persistStatusUpdate } from '../../services/whatsappStatusPersistenceService.js';
 import { runSentinel } from '../../security/sentinel/sentinel.js';
 import { orchestrateAiReply } from '../../services/ai/aiOrchestrator.js';
 import { timeService } from '../../services/time/timeService.js';
@@ -26,7 +26,6 @@ import { publishRealtimeEvent } from '../../realtime/pubsub.js';
 import { pool } from '../../db/pool.js';
 import { WhatsAppMessageRepository } from '../../repositories/whatsappMessageRepository.js';
 import { WhatsAppCallRepository } from '../../repositories/whatsappCallRepository.js';
-import { WhatsAppStatusRepository } from '../../repositories/whatsappStatusRepository.js';
 import { WhatsAppMediaRepository } from '../../repositories/whatsappMediaRepository.js';
 import { WhatsAppMessageReactionRepository } from '../../repositories/whatsappMessageReactionRepository.js';
 import { WhatsAppPresenceRepository } from '../../repositories/whatsappPresenceRepository.js';
@@ -42,10 +41,9 @@ import { mediaFallbackText } from '../../services/ai/mediaContext.js';
 import { sweepStaleFunnelInstances } from '../../services/funnelService.js';
 import { runSecurityScan } from '../../services/securityScanService.js';
 import { runSecurityWatcher } from '../../services/openclawSecurityWatcherService.js';
-import { enqueueWithTimeout } from '../enqueueWithTimeout.js';
 import type { WhatsAppMessageRecord } from '../../repositories/whatsappMessageRepository.js';
 import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaRepository.js';
-import type { MediaDownloadStatus, MediaType, StatusType } from '../../domain/whatsapp/types.js';
+import type { MediaDownloadStatus } from '../../domain/whatsapp/types.js';
 
 /**
  * Drains the incoming_messages queue and performs the real Postgres
@@ -281,7 +279,6 @@ const messageRepository = new WhatsAppMessageRepository(pool);
 const callRepository = new WhatsAppCallRepository(pool);
 const syncJobRepository = new WhatsAppSyncJobRepository(pool);
 const accountRepository = new WhatsAppAccountRepository(pool);
-const statusRepository = new WhatsAppStatusRepository(pool);
 const mediaRepository = new WhatsAppMediaRepository(pool);
 const reactionRepository = new WhatsAppMessageReactionRepository(pool);
 const presenceRepository = new WhatsAppPresenceRepository(pool);
@@ -385,67 +382,15 @@ async function processMediaDownload(data: MediaDownloadJobData): Promise<void> {
   }
 }
 
-const STATUS_TTL_MS = 24 * 60 * 60 * 1000; // WhatsApp Status entries always expire 24h after posting - a real product rule, not a guess.
-
-function mapContentTypeToStatusType(contentType: string): StatusType {
-  if (contentType === 'text' || contentType === 'image' || contentType === 'video') return contentType;
-  if (contentType === 'audio' || contentType === 'voice_note') return 'audio';
-  return 'unknown';
-}
-
-function mapStatusTypeToMediaType(statusType: StatusType): MediaType | null {
-  if (statusType === 'image' || statusType === 'video' || statusType === 'audio') return statusType;
-  return null;
-}
-
 /**
- * Baileys has no dedicated status/stories event - status updates arrive as
- * ordinary messages.upsert events on the fixed status@broadcast JID. They
- * are routed here (never into whatsapp_messages/whatsapp_chats) into the
- * real whatsapp_statuses table. A media-bearing status gets the exact same
- * real download treatment as chat media (whatsapp_media row -> queued
- * download -> checksum-verified, encrypted-at-rest bytes) - only ever
- * queued once, on the genuinely new status insert, never re-queued for a
- * duplicate history-set replay of the same status_id.
+ * Thin wrapper - the real status-persistence logic (insert, media
+ * placeholder, queued download) lives in whatsappStatusPersistenceService.ts,
+ * shared with the historical messaging-history.set sync path so both
+ * paths route status@broadcast content into the same tested logic
+ * instead of duplicating it. See docs/PHASE_1_STATUS_TEXT_FIX_PROPOSAL.md.
  */
 async function processStatusUpdate(data: StatusUpdateJobData): Promise<void> {
-  const { businessId, whatsappAccountId, ingested } = data;
-  const publisherJid = ingested.participant ?? ingested.remoteJid;
-  const createdAt = ingested.messageTimestamp ?? ingested.ingestedAt;
-  const statusType = mapContentTypeToStatusType(ingested.contentType);
-
-  const status = await statusRepository.insert({
-    businessId,
-    whatsappAccountId,
-    statusId: ingested.messageId,
-    publisherJid,
-    statusType,
-    textContent: ingested.textPreview,
-    expiresAt: new Date(new Date(createdAt).getTime() + STATUS_TTL_MS).toISOString(),
-  });
-
-  if (!status.wasInserted) return;
-
-  const mediaType = mapStatusTypeToMediaType(statusType);
-  if (mediaType && ingested.mediaDescriptor) {
-    const media = await mediaRepository.insert({
-      businessId,
-      whatsappAccountId,
-      statusId: status.id,
-      mediaType,
-      mimeType: ingested.mimetype,
-      fileName: ingested.fileName,
-    });
-    await statusRepository.attachMedia(status.id, media.id);
-    // Same reasoning as whatsappMessagePersistenceService.persist(): the
-    // status/media rows are already durably committed above, so wrapped
-    // for the uniform guarantee even though this path is never a
-    // synchronous HTTP request either.
-    await enqueueWithTimeout(
-      enqueueMediaDownload({ businessId, whatsappAccountId, mediaId: media.id, mediaDescriptor: ingested.mediaDescriptor }),
-      `status media download ${media.id}`,
-    );
-  }
+  await persistStatusUpdate(data.businessId, data.whatsappAccountId, data.ingested);
 }
 
 async function processMessageStatus(data: MessageStatusJobData): Promise<void> {

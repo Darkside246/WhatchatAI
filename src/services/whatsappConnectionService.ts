@@ -19,9 +19,9 @@ import {
   enqueuePresenceUpdate,
 } from '../queue/queues/realtimeEventsQueue.js';
 
-const STATUS_BROADCAST_JID = 'status@broadcast';
 import { mapBaileysMessageStatus } from '../domain/whatsapp/messageStatus.js';
 import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
+import { STATUS_BROADCAST_JID } from '../domain/whatsapp/types.js';
 import { pool } from '../db/pool.js';
 import { ensureDefaultBusinessProvisioned } from './businessBootstrapService.js';
 import { syncAccountProfilePicture } from './profilePictureSyncService.js';

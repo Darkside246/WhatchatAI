@@ -56,6 +56,14 @@ export type CallStatus = 'offer' | 'ringing' | 'accepted' | 'rejected' | 'missed
 
 export type StatusType = 'text' | 'image' | 'video' | 'audio' | 'unknown';
 
+/**
+ * WhatsApp's fixed JID for Status updates - not a real conversation.
+ * Single shared source so every ingestion path (live messages.upsert,
+ * historical messaging-history.set) tests the same value rather than
+ * each maintaining its own private copy of this literal.
+ */
+export const STATUS_BROADCAST_JID = 'status@broadcast';
+
 export type ConnectionEventType =
   | 'connecting'
   | 'qr_generated'
