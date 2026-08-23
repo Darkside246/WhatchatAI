@@ -122,6 +122,22 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     !result.media &&
     Boolean(result.message.textContent);
 
+  // TEMPORARY DIAGNOSTIC - remove once the needsAiHandoff gate is confirmed. See conversation.
+  console.log('[AI-DIAGNOSTIC]', {
+    messageId: message.messageId,
+    chatId: result.chat.id,
+    wasInserted: result.message.wasInserted,
+    fromMe: message.fromMe,
+    isLive: message.isLive,
+    isHistorical: result.message.isHistorical,
+    hasMedia: Boolean(result.media),
+    direction: result.message.direction,
+    messageType: result.message.messageType,
+    hasTextContent: Boolean(result.message.textContent),
+    aiMode: result.chat.aiMode,
+    needsAiHandoff,
+  });
+
   if (needsAiHandoff) {
     await scheduleAiDebounce({ businessId, whatsappAccountId, chatId: result.chat.id });
   }
