@@ -370,11 +370,11 @@ export class WhatsAppChatRepository {
   async listHumanTakeoverAlerts(businessId: string): Promise<HumanTakeoverAlertRow[]> {
     const { rows } = await this.db.query<HumanTakeoverAlertRow>(
       `WITH numbered_accounts AS (
-         SELECT id, ROW_NUMBER() OVER (ORDER BY created_at) AS line_number
+         SELECT id, account_name, phone_number, ROW_NUMBER() OVER (ORDER BY created_at) AS line_number
          FROM whatsapp_accounts
          WHERE business_id = $1
        )
-       SELECT c.id AS chat_id, c.unread_count, c.updated_at, na.line_number
+       SELECT c.id AS chat_id, c.unread_count, c.updated_at, na.line_number, na.account_name, na.phone_number
        FROM whatsapp_chats c
        JOIN numbered_accounts na ON na.id = c.whatsapp_account_id
        WHERE c.business_id = $1 AND c.ai_mode = 'HUMAN_TAKEOVER' AND c.deleted_at IS NULL
@@ -390,4 +390,6 @@ export interface HumanTakeoverAlertRow {
   unread_count: number;
   updated_at: string;
   line_number: string;
+  account_name: string | null;
+  phone_number: string | null;
 }

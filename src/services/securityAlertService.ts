@@ -18,9 +18,13 @@ function urgencyFromUnreadCount(unreadCount: number): AlertUrgency {
 
 /**
  * Zero-Leak Rule: this service exposes only real, derived, non-PII fields to
- * the lock-screen AlertNotifier - a stable per-business line ordinal and an
- * unread-count-based urgency tier. It never selects message text, contact
- * names, or phone numbers.
+ * the lock-screen AlertNotifier - the triggering chat's own WhatsApp
+ * *business* line (never the customer's name, phone number, or message
+ * text) and an unread-count-based urgency tier. The line label identifies
+ * one of the business's own connected accounts (public-facing, already
+ * shown elsewhere in the app as "Connected as ..."), not the contact on the
+ * other end of the conversation - it never selects anything from the
+ * `whatsapp_chats`/contact side of the join.
  */
 export async function listHumanTakeoverAlerts(businessId: string): Promise<HumanTakeoverAlert[]> {
   const chatRepository = new WhatsAppChatRepository(pool);
@@ -28,7 +32,7 @@ export async function listHumanTakeoverAlerts(businessId: string): Promise<Human
 
   return rows.map((row) => ({
     chatId: row.chat_id,
-    lineLabel: `Line ${row.line_number}`,
+    lineLabel: row.account_name?.trim() || row.phone_number?.trim() || `Line ${row.line_number}`,
     urgency: urgencyFromUnreadCount(row.unread_count),
     triggeredAt: row.updated_at,
   }));

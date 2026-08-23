@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api, type HumanTakeoverAlertDto } from '../lib/api.js';
 
 const POLL_MS = 5000;
@@ -31,10 +32,11 @@ function playChime(): void {
  * screen's locked/unlocked state - background handoffs must stay visible
  * even while the UI is locked.
  *
- * Zero-Leak Rule: the API response carries only a line ordinal and an
- * urgency tier (see securityAlertService.ts) - this component has no
- * message text, contact name, or phone number available to render even by
- * mistake.
+ * Zero-Leak Rule: the API response carries only the business's own WhatsApp
+ * line label and an urgency tier (see securityAlertService.ts) - this
+ * component has no *customer* message text, contact name, or phone number
+ * available to render even by mistake. Clicking an alert opens the
+ * triggering chat directly.
  */
 export function AlertNotifier() {
   const [alerts, setAlerts] = useState<HumanTakeoverAlertDto[]>([]);
@@ -71,15 +73,16 @@ export function AlertNotifier() {
   return (
     <div className="pointer-events-none fixed inset-x-0 top-0 z-[60] flex flex-col items-center gap-2 p-3">
       {alerts.map((alert) => (
-        <div
+        <Link
           key={alert.chatId}
-          className={`pointer-events-auto flex animate-pulse items-center gap-2 rounded-full border px-4 py-2 text-body font-medium shadow-2xl ${
+          to={`/chats/${alert.chatId}`}
+          className={`pointer-events-auto flex animate-pulse items-center gap-2 rounded-full border px-4 py-2 text-body font-medium shadow-2xl transition hover:animate-none ${
             alert.urgency === 'HIGH' ? 'border-error/60 bg-error/15 text-error' : 'border-warning/60 bg-warning/15 text-warning'
           }`}
         >
           <span className="h-2 w-2 shrink-0 rounded-full bg-current" />
           {alert.lineLabel}: Urgent Lead Handover
-        </div>
+        </Link>
       ))}
     </div>
   );

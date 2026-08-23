@@ -28,9 +28,18 @@ export const MEDIA_DOWNLOAD_BACKOFF_DELAY_MS = envInt('MEDIA_DOWNLOAD_BACKOFF_DE
 // rather than an unconstrained env override: too low defeats the point
 // (barely coalesces a fast typist), too high makes every reply feel
 // sluggish even for a single, complete message.
+//
+// Default is a 3s coalescing window (a customer's burst of messages is
+// ingested as one turn once they've gone quiet for 3s), leaving the
+// remaining ~1s of a 4s reply-latency target to the actual Gemini call and
+// send - the fastest the pipeline can honestly land a reply on the 4th
+// second without cutting the ingest window short. This is independent of
+// AiAgentRecord.responseDelaySeconds (the per-agent, dashboard-configurable
+// human-pacing delay applied after generation) - that is a deliberate
+// slow-down knob, not part of this latency budget.
 export const AI_DEBOUNCE_MIN_DELAY_MS = 1_000;
 export const AI_DEBOUNCE_MAX_DELAY_MS = 30_000;
-const AI_DEBOUNCE_DEFAULT_DELAY_MS = 6_000;
+const AI_DEBOUNCE_DEFAULT_DELAY_MS = 3_000;
 
 function clampedEnvInt(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name];
