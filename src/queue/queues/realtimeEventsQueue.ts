@@ -192,16 +192,28 @@ export async function scheduleAiDebounce(data: AiDebounceJobData): Promise<void>
         // Raced past 'delayed' (now active/completed) between getState()
         // and changeDelay() - fall through to a fresh add below.
       }
-    } else {
-      // Already active (a debounce round is running right now for this
-      // chat) or waiting/completed with the same jobId still cached - a
-      // fresh add would either be rejected (active) or is redundant.
-      // Any message arriving during this window is still safe: it is
-      // picked up either by the next new message's own scheduling
-      // attempt once this jobId frees up, or by the backstop sweep
-      // (sweepStaleAiHandoff) - never silently lost, just possibly
-      // delayed until the next natural trigger.
+    } else if (state === 'active' || state === 'waiting') {
+      // A debounce round is genuinely in flight right now for this chat -
+      // a fresh add would be rejected/redundant. Any message arriving
+      // during this window is still safe: it is picked up either by the
+      // next new message's own scheduling attempt once this jobId frees
+      // up, or by the backstop sweep (sweepStaleAiHandoff) - never
+      // silently lost, just possibly delayed until the next natural
+      // trigger.
       return;
+    } else {
+      // completed/failed: a terminal, stale leftover jobId from a PRIOR
+      // round. BullMQ's removeOnComplete/removeOnFail retention is
+      // count-based (keeps up to N finished jobs), so on a low-volume
+      // queue a finished job can sit under this jobId indefinitely - and
+      // `.add()` with an already-existing jobId silently reuses that old,
+      // terminal job instead of scheduling a new one. Once a chat's first
+      // round ever finished, every later message would otherwise never
+      // debounce again. Must be explicitly removed before a fresh round
+      // can be scheduled.
+      await existing.remove().catch(() => {
+        // A concurrent caller may have already removed it - fine, fall through to add() below.
+      });
     }
   }
 

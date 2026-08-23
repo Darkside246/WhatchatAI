@@ -546,6 +546,26 @@ describe('AI debounce - bursts, ordering, duplicate/stale jobs, crash safety, cr
     expect(Number(rows[0].count)).toBe(1);
   }, 20_000);
 
+  it('6b. a chat that already completed one debounce round still gets a real reply for a later, unrelated message (a finished job under the deterministic jobId must not permanently block future rounds)', async () => {
+    aiReplyGenerateContentMock.mockResolvedValueOnce({ text: 'First reply' }).mockResolvedValueOnce({ text: 'Second reply' });
+    const { businessId, accountId, accountJid } = await setupBusinessWithAgent();
+
+    const firstRound = waitForDebounceRound(businessId, 15_000);
+    await sendAndWaitPersisted(businessId, accountId, accountJid, `ROUND1-${Date.now()}`, 'first message');
+    await firstRound;
+    expect(aiReplyGenerateContentMock).toHaveBeenCalledTimes(1);
+
+    // Same chat (buildIngested always targets the same remoteJid) - its
+    // ai-debounce-<chatId> job is now 'completed'. Without removing that
+    // stale job before re-adding, scheduleAiDebounce would silently reuse
+    // it and this second round would never fire.
+    const secondRound = waitForDebounceRound(businessId, 15_000);
+    await sendAndWaitPersisted(businessId, accountId, accountJid, `ROUND2-${Date.now()}`, 'second message, much later');
+    await secondRound;
+
+    expect(aiReplyGenerateContentMock).toHaveBeenCalledTimes(2);
+  }, 30_000);
+
   it('7. a duplicate/redelivered debounce attempt against a chat whose claim is already held is a safe no-op', async () => {
     const { businessId, accountId } = await setupBusinessWithAgent();
     const chatRepo = new WhatsAppChatRepository(pool);
