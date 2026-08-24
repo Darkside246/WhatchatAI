@@ -117,6 +117,95 @@ describe('generateAiReply (real GEMINI_API_KEY state in this environment - never
       expect(['generated', 'unavailable']).toContain(result.status);
     }
   });
+
+  it('a trailing outbound message (a human reply, or an unrelated automated send, landed in the chat after the customer\'s message but before this ran) is trimmed, not sent to Gemini as the final turn', async () => {
+    // Real incident: conversationHistory is just "the last N messages in
+    // this chat," independent of the AI debounce's own "unanswered inbound"
+    // watermark - a human/funnel/campaign message reaching the chat in that
+    // window becomes the newest entry. Gemini rejects any request whose
+    // final turn is 'model' outright ("Requests ending with a model turn
+    // are not supported"), so toContents must trim it back to the
+    // customer's real, still-unanswered question rather than crash or drop
+    // it.
+    const customerQuestion = fakeMessage({
+      id: 'message-customer',
+      textContent: 'What are your opening hours?',
+      fromMe: false,
+      timestamp: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const humanReplySentInBetween = fakeMessage({
+      id: 'message-human-reply',
+      textContent: 'Thanks for reaching out, someone will be with you shortly.',
+      fromMe: true,
+      timestamp: new Date().toISOString(),
+    });
+    // conversationHistory comes back newest-first (see WhatsAppMessageRepository.listByChat).
+    const result = await generateAiReply(
+      fakeAgent(),
+      fakeContext({ conversationHistory: [humanReplySentInBetween, customerQuestion] }),
+    );
+
+    // Never the empty-history outcome - the trim must preserve the real
+    // customer question, not discard the whole history along with the
+    // trailing outbound message.
+    if (result.status === 'unavailable') {
+      expect(result.reason).not.toContain('No real message text to reply to');
+      // The actual regression this guards: whatever the real outcome is in
+      // this environment (no API key here), it must never be the malformed-
+      // request 400 the untrimmed history used to produce.
+      expect(result.reason).not.toContain('Requests ending with a model turn');
+    }
+
+    if (!process.env.GEMINI_API_KEY) {
+      expect(result.status).toBe('unavailable');
+      if (result.status === 'unavailable') {
+        expect(result.reason).toContain('GEMINI_API_KEY');
+      }
+    } else {
+      expect(['generated', 'unavailable']).toContain(result.status);
+    }
+  });
+
+  it('multiple trailing outbound messages are all trimmed back to the real customer question', async () => {
+    const customerQuestion = fakeMessage({
+      id: 'message-customer',
+      textContent: 'Do you deliver on weekends?',
+      fromMe: false,
+      timestamp: new Date(Date.now() - 120_000).toISOString(),
+    });
+    const firstOutbound = fakeMessage({
+      id: 'message-outbound-1',
+      textContent: 'One moment please.',
+      fromMe: true,
+      timestamp: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const secondOutbound = fakeMessage({
+      id: 'message-outbound-2',
+      textContent: 'Checking on that for you now.',
+      fromMe: true,
+      timestamp: new Date().toISOString(),
+    });
+    const result = await generateAiReply(
+      fakeAgent(),
+      fakeContext({ conversationHistory: [secondOutbound, firstOutbound, customerQuestion] }),
+    );
+
+    if (result.status === 'unavailable') {
+      expect(result.reason).not.toContain('No real message text to reply to');
+    }
+  });
+
+  it('a history that is entirely outbound (no real customer question at all) degrades to the same honest "nothing to reply to" outcome, not a crash', async () => {
+    const result = await generateAiReply(
+      fakeAgent(),
+      fakeContext({ conversationHistory: [fakeMessage({ fromMe: true, textContent: 'An outbound-only history.' })] }),
+    );
+
+    expect(result.status).toBe('unavailable');
+    if (result.status === 'unavailable') {
+      expect(result.reason).toContain('No real message text to reply to');
+    }
+  });
 });
 
 describe('Context Trust Builder (CRM notes and knowledge base excerpts are untrusted data, never instructions)', () => {

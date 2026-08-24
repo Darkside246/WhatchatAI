@@ -178,9 +178,22 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
 /**
  * `conversationHistory` comes back newest-first (see WhatsAppMessageRepository.listByChat)
  * and, because gatherAiHandoffContext runs after the triggering inbound
- * message is already persisted, its first element IS that message - so it
- * doubles as the final conversation turn. Reversed here into the
- * chronological order a real conversation actually happened in.
+ * message is already persisted, its first element USUALLY is that message -
+ * so it usually doubles as the final conversation turn. Reversed here into
+ * the chronological order a real conversation actually happened in.
+ *
+ * That assumption can be violated: conversationHistory is simply "the last
+ * N messages in this chat," independent of the AI debounce's own
+ * "unanswered inbound" watermark (findUnansweredInboundSince). If a human
+ * agent replies from the dashboard, or an unrelated automated send (a
+ * funnel step, a campaign) reaches this same chat after the customer's
+ * message but before the debounce fires, that newer outbound message
+ * becomes the chat's actual latest entry - and Gemini rejects any request
+ * whose final turn is 'model' outright ("Requests ending with a model turn
+ * are not supported"), a real incident this trailing-trim guards against.
+ * Trimming restores a valid history ending on the customer's real (still
+ * genuinely unanswered) message, rather than crashing the call or silently
+ * dropping a real customer question.
  *
  * A media message with no caption is no longer dropped from history (it
  * used to be, silently) - it gets an honest, factual placeholder instead of
@@ -190,10 +203,16 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
  * this codebase never stored image/audio understanding retroactively.
  */
 function toContents(history: AiHandoffContext['conversationHistory'], media: InlineMediaPart | null) {
-  const ordered = history
+  const chronological = history
     .filter((message) => Boolean(message.textContent) || message.hasMedia)
     .slice()
     .reverse();
+
+  while (chronological.length > 0 && chronological[chronological.length - 1]!.fromMe) {
+    chronological.pop();
+  }
+
+  const ordered = chronological;
 
   return ordered.map((message, index) => {
     const isTriggeringMessage = index === ordered.length - 1;
