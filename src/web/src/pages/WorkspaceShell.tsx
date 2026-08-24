@@ -1,19 +1,30 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import type { SyncStatusResponse, WhatsAppConnectionSnapshot } from '../lib/api.js';
 import { SaasNavRail, SaasNavBottomBar } from '../components/SaasNavRail.js';
 import { NotificationCenter } from '../components/NotificationCenter.js';
 import { CommandPalette } from '../components/CommandPalette.js';
-import { ChatsRoute } from './ChatsRoute.js';
-import { AgentsPage } from './AgentsPage.js';
-import { CrmRoute } from './CrmRoute.js';
-import { BillingRoute } from './BillingRoute.js';
-import { SettingsRoute } from './SettingsRoute.js';
-import { DashboardRoute } from './DashboardRoute.js';
-import { MarketingRoute } from './MarketingRoute.js';
-import { EmailRoute } from './EmailRoute.js';
-import { FunnelsRoute } from './FunnelsRoute.js';
+// Lazily loaded so a user who only opens Chats never downloads the CRM,
+// funnel-builder (@xyflow/react), marketing, or billing bundles - each
+// route below ships as its own chunk instead of all landing in main.js.
+const ChatsRoute = lazy(() => import('./ChatsRoute.js').then((m) => ({ default: m.ChatsRoute })));
+const AgentsPage = lazy(() => import('./AgentsPage.js').then((m) => ({ default: m.AgentsPage })));
+const CrmRoute = lazy(() => import('./CrmRoute.js').then((m) => ({ default: m.CrmRoute })));
+const BillingRoute = lazy(() => import('./BillingRoute.js').then((m) => ({ default: m.BillingRoute })));
+const SettingsRoute = lazy(() => import('./SettingsRoute.js').then((m) => ({ default: m.SettingsRoute })));
+const DashboardRoute = lazy(() => import('./DashboardRoute.js').then((m) => ({ default: m.DashboardRoute })));
+const MarketingRoute = lazy(() => import('./MarketingRoute.js').then((m) => ({ default: m.MarketingRoute })));
+const EmailRoute = lazy(() => import('./EmailRoute.js').then((m) => ({ default: m.EmailRoute })));
+const FunnelsRoute = lazy(() => import('./FunnelsRoute.js').then((m) => ({ default: m.FunnelsRoute })));
+
+function RouteFallback() {
+  return (
+    <div className="flex h-full flex-1 items-center justify-center text-caption text-fg-muted">
+      Loading…
+    </div>
+  );
+}
 
 interface Props {
   connection: WhatsAppConnectionSnapshot | null;
@@ -58,20 +69,22 @@ export function WorkspaceShell({ connection, sync }: Props) {
           </header>
 
           <div className="flex min-h-0 flex-1">
-            <Routes>
-              <Route path="/" element={<Navigate to="/chats" replace />} />
-              <Route path="/chats" element={<ChatsRoute />} />
-              <Route path="/chats/:chatId" element={<ChatsRoute />} />
-              <Route path="/agents" element={<AgentsPage />} />
-              <Route path="/dashboard" element={<DashboardRoute />} />
-              <Route path="/crm" element={<CrmRoute />} />
-              <Route path="/automations" element={<FunnelsRoute />} />
-              <Route path="/marketing" element={<MarketingRoute />} />
-              <Route path="/email" element={<EmailRoute />} />
-              <Route path="/billing" element={<BillingRoute />} />
-              <Route path="/settings" element={<SettingsRoute connection={connection} />} />
-              <Route path="*" element={<Navigate to="/chats" replace />} />
-            </Routes>
+            <Suspense fallback={<RouteFallback />}>
+              <Routes>
+                <Route path="/" element={<Navigate to="/chats" replace />} />
+                <Route path="/chats" element={<ChatsRoute />} />
+                <Route path="/chats/:chatId" element={<ChatsRoute />} />
+                <Route path="/agents" element={<AgentsPage />} />
+                <Route path="/dashboard" element={<DashboardRoute />} />
+                <Route path="/crm" element={<CrmRoute />} />
+                <Route path="/automations" element={<FunnelsRoute />} />
+                <Route path="/marketing" element={<MarketingRoute />} />
+                <Route path="/email" element={<EmailRoute />} />
+                <Route path="/billing" element={<BillingRoute />} />
+                <Route path="/settings" element={<SettingsRoute connection={connection} />} />
+                <Route path="*" element={<Navigate to="/chats" replace />} />
+              </Routes>
+            </Suspense>
           </div>
         </div>
       </div>

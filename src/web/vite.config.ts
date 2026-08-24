@@ -21,5 +21,24 @@ export default defineConfig({
   build: {
     outDir: '../../dist/web',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // @xyflow/react (the agent canvas builder) is only needed on
+        // /agents - keep it out of every other route's chunk. This build
+        // uses Vite's rolldown bundler, which requires manualChunks as a
+        // function rather than the classic Rollup object-map form.
+        manualChunks(id: string) {
+          if (id.includes('node_modules/@xyflow')) return 'xyflow';
+          if (
+            id.includes('node_modules/react-dom') ||
+            id.includes('node_modules/react-router-dom') ||
+            /node_modules\/react\//.test(id)
+          ) {
+            return 'react-vendor';
+          }
+          return undefined;
+        },
+      },
+    },
   },
 });
