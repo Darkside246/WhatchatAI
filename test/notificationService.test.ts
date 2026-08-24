@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { pool } from '../src/db/pool.js';
 import { register } from '../src/services/authService.js';
 import { createMember } from '../src/services/workspaceMemberService.js';
 import {
@@ -79,19 +80,32 @@ describe('notificationService (real, per-user, never a shared broadcast row)', (
     expect(agentAfter.notifications).toHaveLength(1);
   });
 
-  it('markAllNotificationsRead clears unread count for exactly that business+user, not other businesses', async () => {
+  it('markAllNotificationsRead clears the whole visible inbox (not just the unread count) for exactly that business+user', async () => {
     const otherBusinessId = await createTestBusiness('Other Business');
     await notifyUser(ownerId, { businessId, type: 'NEW_LEAD', severity: 'info', title: 'A' });
-    await notifyUser(ownerId, { businessId, type: 'NEW_LEAD', severity: 'info', title: 'B' });
+    const alreadyRead = await notifyUser(ownerId, { businessId, type: 'NEW_LEAD', severity: 'info', title: 'B' });
+    await markNotificationRead(ownerId, alreadyRead.id); // an already-read row must be cleared too, not just unread ones
 
     const updatedCount = await markAllNotificationsRead(businessId, ownerId);
     expect(updatedCount).toBe(2);
 
     const inbox = await listNotifications(businessId, ownerId);
     expect(inbox.unreadCount).toBe(0);
+    expect(inbox.notifications).toHaveLength(0); // gone from the visible list, not merely marked read
 
     // Sanity: a different business id for the same user id finds nothing (real tenant scoping in the query).
     const otherInbox = await listNotifications(otherBusinessId, ownerId);
     expect(otherInbox.notifications).toHaveLength(0);
+  });
+
+  it('markAllNotificationsRead does not delete the underlying rows - they remain real history, just no longer listed', async () => {
+    const notification = await notifyUser(ownerId, { businessId, type: 'NEW_LEAD', severity: 'info', title: 'Kept as history' });
+
+    await markAllNotificationsRead(businessId, ownerId);
+
+    const { rows } = await pool.query('SELECT read_at, dismissed_at FROM notifications WHERE id = $1', [notification.id]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].read_at).not.toBeNull();
+    expect(rows[0].dismissed_at).not.toBeNull();
   });
 });

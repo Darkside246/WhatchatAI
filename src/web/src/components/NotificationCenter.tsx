@@ -82,9 +82,9 @@ export function NotificationCenter() {
     }
   }
 
+  /** Clears the visible list, not just the unread highlight - the backend dismisses every currently-listed notification, keeping the underlying rows as real history rather than deleting them. */
   async function handleMarkAllRead() {
-    const now = new Date().toISOString();
-    setNotifications((prev) => prev.map((n) => ({ ...n, readAt: n.readAt ?? now })));
+    setNotifications([]);
     setUnreadCount(0);
     try {
       await api.markAllNotificationsRead();

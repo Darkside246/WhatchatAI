@@ -79,8 +79,9 @@ export async function markNotificationDismissed(userId: string, notificationId: 
   return updated;
 }
 
+/** Clears the whole visible inbox (see NotificationRepository.dismissAllForUser) - every row stays in Postgres as real history, just no longer listed. */
 export async function markAllNotificationsRead(businessId: string, userId: string): Promise<number> {
-  return notificationRepository.markAllRead(businessId, userId);
+  return notificationRepository.dismissAllForUser(businessId, userId);
 }
 
 export function isNotificationNotFoundError(error: unknown): error is NotificationNotFoundError {

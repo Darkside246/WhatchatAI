@@ -161,9 +161,20 @@ export class NotificationRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
-  async markAllRead(businessId: string, userId: string): Promise<number> {
+  /**
+   * The "mark all read" action clears the whole visible inbox, not just
+   * the unread rows within it - same dismissed_at + read_at pairing as
+   * the single-row markDismissed above, just bulk. Nothing is deleted:
+   * every row stays in the table as real history, it just no longer
+   * matches listForUser's `dismissed_at IS NULL` filter. Note: title/body
+   * are still stored as plain TEXT today, not through EncryptionService -
+   * encrypting them at rest is real, separate work, tracked in
+   * docs/ARCHITECTURE_STATUS.md's backlog, not part of this change.
+   */
+  async dismissAllForUser(businessId: string, userId: string): Promise<number> {
     const { rowCount } = await this.db.query(
-      `UPDATE notifications SET read_at = now() WHERE business_id = $1 AND user_id = $2 AND read_at IS NULL`,
+      `UPDATE notifications SET read_at = COALESCE(read_at, now()), dismissed_at = now()
+       WHERE business_id = $1 AND user_id = $2 AND dismissed_at IS NULL`,
       [businessId, userId],
     );
     return rowCount ?? 0;
