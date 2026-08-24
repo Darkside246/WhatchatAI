@@ -48,10 +48,10 @@ export function WorkspaceShell({ connection, sync }: Props) {
               <span className="hidden sm:inline">Search…</span>
               <kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-meta sm:inline">⌘K</kbd>
             </button>
-            <p className="hidden text-caption text-fg-muted md:block">
-              Connected as {connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'}
-            </p>
             <div className="flex items-center gap-3">
+              <p className="hidden text-caption text-fg-muted md:block">
+                Connected as {connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'}
+              </p>
               <NotificationCenter />
               <span className="rounded-full bg-success/15 px-2 py-0.5 text-meta text-success">Live</span>
             </div>

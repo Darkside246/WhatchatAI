@@ -85,6 +85,42 @@ Connection audit are both written and awaiting authorization — see
 
 No phase past this point begins without its own explicit authorization.
 
+### Small fixes landed alongside the above
+
+- **Header layout**: `Connected as <account>` moved from the header's
+  center slot into the right-hand group next to the notification bell —
+  it was rendering directly under `AlertNotifier`'s `fixed`/centered
+  "Urgent Lead Handover" banner, visually overlapping it.
+
+### Backlog item for a future phase (explicitly deferred, not scoped yet)
+
+**Notification-center data minimization + a broader privacy directive**,
+in the user's own words, captured here so it isn't lost before its turn
+comes:
+
+- "Mark all read" should clear the visible notification list from the
+  bell dropdown entirely (not just mark items read and leave them
+  listed), while still keeping a server-side log of the underlying
+  events — encrypted, the same way everything else in this codebase's
+  data-at-rest is (`EncryptionService`, per-tenant HKDF-derived keys).
+- A standing principle for this log and for the app more broadly: never
+  retain information that isn't needed, and never retain information
+  that could function as an evidence trail against the client's
+  customers. The bar named explicitly: **Telegram- and ProtonMail-level
+  privacy, taken further** — while still keeping real chat history
+  usable/functional (this is not a "delete everything" request; it's
+  "keep only what's actually needed, encrypted, and nothing that
+  becomes a liability").
+- Needs its own audit + proposal before implementation (mirrors Phase 7
+  and the cloud/WhatsApp audit's own discipline) — real decisions live
+  here: what "not needed" means concretely per data category (messages,
+  notifications, audit logs, media), a retention/expiry policy, whether
+  "cleared" notifications become a distinct state from "read" or are
+  hard-deleted from the visible table while the encrypted log lives
+  elsewhere, and how this interacts with existing compliance-adjacent
+  tables (`security_audit_logs`) that Phase 12 (Recent activity/audit)
+  already expects to build on.
+
 ---
 
 ## 4. Architectural decisions future work must not accidentally undo
