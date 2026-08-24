@@ -65,23 +65,29 @@ Connection audit are both written and awaiting authorization — see
 `docs/PHASE_7_BILLING_PRICING_AUDIT_AND_PROPOSAL.md` and
 `docs/CLOUD_ARCHITECTURE_MULTI_TENANT_WHATSAPP_AUDIT.md`.
 
-**User's recommended order from here** (agreed, not yet started):
+**Superseded by `docs/SCALING_SIGNUP_PRIVACY_SAFETY_AUDIT.md` §6**, which
+merges this order with the newer self-serve-signup and production-safety
+findings into one cost-tagged, risk-tagged tier list (Tier 0: fix the
+cross-tenant business-resolution bug + stand up backups, before anything
+else; Tier 1: encryption/retention sweeps, monitoring, CI; Tier 2: Cloud
+Stage 1 + the real public signup flow; Tier 3: payment processor, real
+KMS, WhatsApp Stage 2 — each still gated on its own explicit
+authorization). The list below is kept for the historical record of what
+was agreed before that audit existed:
 
-1. Cloud architecture Stage 1 (decision-free infra work: managed
-   Postgres/Redis, secrets out of `.env`, Cloud Run for the API) —
-   see the cloud/WhatsApp audit doc §4.
+1. ~~Cloud architecture Stage 1~~ — now Tier 2 in the merged roadmap.
 2. Production key rotation with versioning (per-record `keyVersion`,
    dual-key decrypt during migration, background re-encryption sweep)
    — flagged as a real gap in the current `ALLOW_MASTER_KEY_CHANGE`
    override, which detects/permits a key change but does not migrate
-   any data. Not yet scoped as its own audit doc.
-3. The Stage 2 WhatsApp-connection refactor (singleton → keyed map) —
-   see the cloud/WhatsApp audit doc §5.
+   any data. Not yet scoped as its own audit doc; still pending.
+3. ~~The Stage 2 WhatsApp-connection refactor~~ — now Tier 3, gated on
+   Tier 2's signup flow actually producing a second connected business.
 4. Phase 7 Track A (billing/pricing engine, buildable without a
-   payment-processor decision).
-5. Remaining deferred visual/UI work.
-6. Payment provider decision + Phase 7 Track B.
-7. Remaining master-directive phases (4, 5, 6, 8–12).
+   payment-processor decision) — still pending.
+5. Remaining deferred visual/UI work — still pending.
+6. ~~Payment provider decision + Phase 7 Track B~~ — now Tier 3.
+7. Remaining master-directive phases (4, 5, 6, 8–12) — still pending.
 
 No phase past this point begins without its own explicit authorization.
 
@@ -92,34 +98,20 @@ No phase past this point begins without its own explicit authorization.
   it was rendering directly under `AlertNotifier`'s `fixed`/centered
   "Urgent Lead Handover" banner, visually overlapping it.
 
-### Backlog item for a future phase (explicitly deferred, not scoped yet)
+### Privacy directive — now audited
 
-**Notification-center data minimization + a broader privacy directive**,
-in the user's own words, captured here so it isn't lost before its turn
-comes:
-
-- "Mark all read" should clear the visible notification list from the
-  bell dropdown entirely (not just mark items read and leave them
-  listed), while still keeping a server-side log of the underlying
-  events — encrypted, the same way everything else in this codebase's
-  data-at-rest is (`EncryptionService`, per-tenant HKDF-derived keys).
-- A standing principle for this log and for the app more broadly: never
-  retain information that isn't needed, and never retain information
-  that could function as an evidence trail against the client's
-  customers. The bar named explicitly: **Telegram- and ProtonMail-level
-  privacy, taken further** — while still keeping real chat history
-  usable/functional (this is not a "delete everything" request; it's
-  "keep only what's actually needed, encrypted, and nothing that
-  becomes a liability").
-- Needs its own audit + proposal before implementation (mirrors Phase 7
-  and the cloud/WhatsApp audit's own discipline) — real decisions live
-  here: what "not needed" means concretely per data category (messages,
-  notifications, audit logs, media), a retention/expiry policy, whether
-  "cleared" notifications become a distinct state from "read" or are
-  hard-deleted from the visible table while the encrypted log lives
-  elsewhere, and how this interacts with existing compliance-adjacent
-  tables (`security_audit_logs`) that Phase 12 (Recent activity/audit)
-  already expects to build on.
+The "mark all read" clearing behavior shipped (see the commit ledger
+below). The broader privacy/data-minimization directive (Telegram-/
+ProtonMail-level privacy, no evidence trail, keep only what's needed and
+encrypted) now has its own full audit — see
+`docs/SCALING_SIGNUP_PRIVACY_SAFETY_AUDIT.md` §3, produced alongside a
+combined self-serve-signup and production-safety audit per the user's
+"fastest and safest way to scale into multi-tenant, with a bootstrap
+budget" ask. That document's §6 gives one merged, cost-tagged,
+priority-tiered roadmap covering privacy, signup, and production safety
+together — it supersedes this section as the source of truth for what's
+next on all three fronts. Nothing in it is implemented yet; each tier
+awaits its own explicit authorization, same as every prior phase.
 
 ---
 
