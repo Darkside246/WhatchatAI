@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import { queueConnection } from '../connection.js';
+import { queueConnection, attachQueueErrorLogging } from '../connection.js';
 
 export const SCHEDULED_STATUSES_QUEUE = 'scheduled_statuses';
 
@@ -16,6 +16,7 @@ export const scheduledStatusesQueue = new Queue<ScheduledStatusJobData>(SCHEDULE
     removeOnFail: { count: 2000 },
   },
 });
+attachQueueErrorLogging(scheduledStatusesQueue, 'scheduledStatusesQueue');
 
 /** delayMs is real time-until-publish (scheduledAt - now), a genuine BullMQ delayed job, never a fabricated "Scheduled" label with nothing behind it. */
 export function enqueueScheduledStatus(data: ScheduledStatusJobData, delayMs: number): Promise<unknown> {

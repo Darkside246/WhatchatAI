@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import { queueConnection } from '../connection.js';
+import { queueConnection, attachQueueErrorLogging } from '../connection.js';
 
 export const MESSAGE_REVOCATIONS_QUEUE = 'message_revocations';
 
@@ -31,6 +31,7 @@ export const messageRevocationsQueue = new Queue<RevocationJobData>(MESSAGE_REVO
     removeOnFail: 500,
   },
 });
+attachQueueErrorLogging(messageRevocationsQueue, 'messageRevocationsQueue');
 
 export async function enqueueRevocation(data: RevocationJobData, delayMs = 0): Promise<void> {
   await messageRevocationsQueue.add(`revoke-${data.kind}`, data, delayMs > 0 ? { delay: delayMs } : undefined);

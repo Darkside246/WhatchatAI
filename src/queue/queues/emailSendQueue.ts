@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import { queueConnection } from '../connection.js';
+import { queueConnection, attachQueueErrorLogging } from '../connection.js';
 
 export const EMAIL_SEND_QUEUE = 'email_send';
 
@@ -18,6 +18,7 @@ export const emailSendQueue = new Queue<EmailSendJobData>(EMAIL_SEND_QUEUE, {
     removeOnFail: 500,
   },
 });
+attachQueueErrorLogging(emailSendQueue, 'emailSendQueue');
 
 export async function enqueueEmailSend(data: EmailSendJobData): Promise<void> {
   await emailSendQueue.add('send-email', data);

@@ -32,6 +32,18 @@ export function attachWebSocketServer(server: HttpServer): void {
   const wss = new WebSocketServer({ server, path: WS_PATH });
 
   wss.on('connection', (socket: AuthenticatedSocket, request: IncomingMessage) => {
+    // The `ws` library's own connection guard only covers handshake-time
+    // failures (see websocket-server.js) - the WebSocket instance itself
+    // still emits 'error' later for a bad frame or a mid-read connection
+    // reset, and with zero listeners Node's default behavior is to throw
+    // synchronously outside any awaited call stack, crashing the whole
+    // API/WhatsApp-connection process over one flaky client (see
+    // src/queue/connection.ts's attachQueueErrorLogging for the same
+    // class of gap on the Queue producer side).
+    socket.on('error', (error: Error) => {
+      console.error('[Realtime] WebSocket connection error:', error.message);
+    });
+
     void (async () => {
       const cookies = parseCookies(request.headers.cookie);
       const token = cookies[SESSION_COOKIE_NAME];

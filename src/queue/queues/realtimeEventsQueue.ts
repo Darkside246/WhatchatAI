@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import { queueConnection } from '../connection.js';
+import { queueConnection, attachQueueErrorLogging } from '../connection.js';
 import type { MessageStatus } from '../../domain/whatsapp/types.js';
 import type { WACallEvent, PresenceData, proto } from '@whiskeysockets/baileys';
 import type { IngestedWhatsAppMessage } from '../../services/whatsappMessageIngestionService.js';
@@ -122,6 +122,7 @@ export const realtimeEventsQueue = new Queue(REALTIME_EVENTS_QUEUE, {
     removeOnFail: { count: 5000 },
   },
 });
+attachQueueErrorLogging(realtimeEventsQueue, 'realtimeEventsQueue');
 
 export function enqueueMessageStatus(data: MessageStatusJobData): Promise<unknown> {
   return realtimeEventsQueue.add('message-status', data);

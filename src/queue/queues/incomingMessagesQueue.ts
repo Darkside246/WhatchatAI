@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import { queueConnection } from '../connection.js';
+import { queueConnection, attachQueueErrorLogging } from '../connection.js';
 import type { IngestedWhatsAppMessage } from '../../services/whatsappMessageIngestionService.js';
 
 export const INCOMING_MESSAGES_QUEUE = 'incoming_messages';
@@ -26,6 +26,7 @@ export const incomingMessagesQueue = new Queue<IncomingMessageJobData>(INCOMING_
     removeOnFail: { count: 5000 },
   },
 });
+attachQueueErrorLogging(incomingMessagesQueue, 'incomingMessagesQueue');
 
 /**
  * Enqueues a single ingested message without blocking the caller on a DB

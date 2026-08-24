@@ -1,4 +1,4 @@
-import type { ConnectionOptions } from 'bullmq';
+import type { ConnectionOptions, Queue } from 'bullmq';
 
 const redisUrl = new URL(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379');
 
@@ -24,3 +24,24 @@ export const queueConnection: ConnectionOptions = {
 
 /** Exposed so the test bootstrap can assert it is genuinely isolated from a dev instance. */
 export const queueDatabaseIndex = databaseIndex;
+
+/**
+ * Every BullMQ `Queue` (the producer side - `.add()` callers, not the
+ * `Worker`s that already handle this) is a real EventEmitter that BullMQ's
+ * own internals wire straight to its Redis connection: `QueueBase`
+ * forwards the connection's own `'error'` events (redis-restart,
+ * network blip, timeout - all routine in production) via
+ * `this.backend.on('error', (error) => this.emit('error', error))`.
+ * With zero listeners, Node's default behavior for an unlistened
+ * `'error'` event is to throw - synchronously, outside any awaited call
+ * stack, the same shape as the stream-pipe bug crashSafety.ts guards
+ * against, just far more likely to actually fire. Every `Worker` in this
+ * codebase already has its own `.on('error', ...)`; only the `Queue`
+ * producer instances were missed. Call this once per Queue, right after
+ * construction.
+ */
+export function attachQueueErrorLogging(queue: Queue, label: string): void {
+  queue.on('error', (error) => {
+    console.error(`[${label}] Redis connection error:`, error.message);
+  });
+}

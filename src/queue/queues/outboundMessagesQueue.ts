@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import { queueConnection } from '../connection.js';
+import { queueConnection, attachQueueErrorLogging } from '../connection.js';
 
 export const OUTBOUND_MESSAGES_QUEUE = 'outbound_messages';
 
@@ -24,6 +24,7 @@ export const outboundMessagesQueue = new Queue<OutboundMessageJobData>(OUTBOUND_
     removeOnFail: { count: 5000 },
   },
 });
+attachQueueErrorLogging(outboundMessagesQueue, 'outboundMessagesQueue');
 
 /**
  * delayMs staggers dispatch (real BullMQ job delay, not a blocking

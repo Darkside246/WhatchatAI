@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import { queueConnection } from '../connection.js';
+import { queueConnection, attachQueueErrorLogging } from '../connection.js';
 
 export const DOCUMENT_PARSE_QUEUE = 'document_parse';
 
@@ -18,6 +18,7 @@ export const documentParseQueue = new Queue<DocumentParseJobData>(DOCUMENT_PARSE
     removeOnFail: { count: 2000 },
   },
 });
+attachQueueErrorLogging(documentParseQueue, 'documentParseQueue');
 
 export async function enqueueDocumentParse(data: DocumentParseJobData): Promise<void> {
   await documentParseQueue.add('parse-document', data);
