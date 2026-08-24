@@ -31,6 +31,7 @@ import { checkDatabaseHealth, pool } from '../db/pool.js';
 import { checkRedisHealth } from '../redis/client.js';
 import { ensureDefaultBusinessProvisioned } from '../services/businessBootstrapService.js';
 import { verifyMasterKeyStability } from '../security/encryption/keyStabilityCheck.js';
+import { installCrashSafetyHandlers } from '../process/crashSafety.js';
 import { syncContactProfilePicture } from '../services/profilePictureSyncService.js';
 import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
 import { retrieveMedia } from '../media/localEncryptedMediaStorage.js';
@@ -2635,16 +2636,26 @@ httpServer.listen(port, () => {
   console.log(`[WhatchatAI] API listening on http://localhost:${port}`);
 });
 
-async function shutdown(signal: string): Promise<void> {
-  console.log(`[WhatchatAI] Received ${signal}, closing outbound dispatch worker...`);
+async function closeWorkers(): Promise<void> {
   await outboundMessagesWorker.close();
   await scheduledStatusPublishWorker.close();
   await messageRevocationWorker.close();
   await emailSendWorker.close();
   await funnelAdvanceWorker.close();
   await documentParseWorker.close();
+}
+
+async function shutdown(signal: string): Promise<void> {
+  console.log(`[WhatchatAI] Received ${signal}, closing outbound dispatch worker...`);
+  await closeWorkers();
   process.exit(0);
 }
 
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
+
+// See src/process/crashSafety.ts - the same class of crash the incoming-
+// messages worker is guarded against (an unlistened stream 'error' event
+// from a mid-transfer network drop) can happen here too, since this
+// process is the one that owns the live Baileys socket.
+installCrashSafetyHandlers('WhatchatAI-server', closeWorkers);

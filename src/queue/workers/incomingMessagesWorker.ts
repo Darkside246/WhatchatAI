@@ -49,6 +49,7 @@ import type { WhatsAppMessageRecord } from '../../repositories/whatsappMessageRe
 import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaRepository.js';
 import type { MediaDownloadErrorCategory } from '../../domain/whatsapp/types.js';
 import { verifyMasterKeyStability } from '../../security/encryption/keyStabilityCheck.js';
+import { installCrashSafetyHandlers } from '../../process/crashSafety.js';
 
 // Fail loud here, at boot, before either Worker below starts pulling jobs -
 // see keyStabilityCheck.ts. A top-level await, so nothing further in this
@@ -1019,14 +1020,25 @@ realtimeEventsWorker.on('error', (error) => {
   console.error('[RealtimeEventsWorker] Worker error:', error.message);
 });
 
+async function closeWorkers(): Promise<void> {
+  await Promise.all([incomingMessagesWorker.close(), realtimeEventsWorker.close()]);
+}
+
 async function shutdown(signal: string): Promise<void> {
   console.log(`[IncomingMessagesWorker] Received ${signal}, closing workers...`);
-  await Promise.all([incomingMessagesWorker.close(), realtimeEventsWorker.close()]);
+  await closeWorkers();
   process.exit(0);
 }
 
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
+
+// See src/process/crashSafety.ts - catches exactly the class of crash a
+// mid-transfer network drop (a laptop waking from standby, an ISP blip)
+// can trigger via Baileys' own unguarded media-download stream pipe, so
+// it degrades to a clean, logged, recoverable exit instead of a silent
+// process death with nothing left to restart it.
+installCrashSafetyHandlers('IncomingMessagesWorker', closeWorkers);
 
 console.log(`[IncomingMessagesWorker] Listening on queue "${INCOMING_MESSAGES_QUEUE}" (concurrency=${CONCURRENCY})`);
 console.log(`[RealtimeEventsWorker] Listening on queue "${REALTIME_EVENTS_QUEUE}" (concurrency=${CONCURRENCY})`);
