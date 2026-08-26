@@ -1,34 +1,24 @@
 import { randomUUID } from 'node:crypto';
 import type { Queryable } from '../../repositories/types.js';
-import {
-  PropertyOperationsRepository,
-  type PropertyRecord,
-  type UnitRecord,
-  type AssetRecord,
-  type VendorRecord,
-  type IncidentRecord,
-  type WorkOrderRecord,
-  type KnowledgeItemRecord,
-} from '../../repositories/propertyOperationsRepository.js';
+import { PropertyOperationsRepository, type PropertyRecord, type UnitRecord, type AssetRecord, type VendorRecord, type IncidentRecord, type WorkOrderRecord, type KnowledgeItemRecord } from '../../repositories/propertyOperationsRepository.js';
 import { classifyMaintenanceMessage } from './propertyMaintenancePolicy.js';
 
 export type MaintenanceIntake = {
   businessId: string;
   propertyId: string;
-  unitId?: string;
-  assetId?: string;
-  reservationId?: string;
-  reportedByContactId?: string;
+  unitId?: string | undefined;
+  assetId?: string | undefined;
+  reservationId?: string | undefined;
+  reportedByContactId?: string | undefined;
   channel: 'WHATSAPP' | 'VOICE' | 'SMS' | 'EMAIL' | 'WEB';
-  title?: string;
+  title?: string | undefined;
   description: string;
-  aiSummary?: string;
-  confidence?: number;
+  aiSummary?: string | undefined;
+  confidence?: number | undefined;
 };
 
 export class PropertyOperationsService {
   constructor(private readonly repository: PropertyOperationsRepository) {}
-
   listProperties(businessId: string): Promise<PropertyRecord[]> { return this.repository.listProperties(businessId); }
   getProperty(businessId: string, propertyId: string): Promise<PropertyRecord | null> { return this.repository.getProperty(businessId, propertyId); }
   createProperty(input: Parameters<PropertyOperationsRepository['createProperty']>[0]): Promise<PropertyRecord> { return this.repository.createProperty(input); }
@@ -47,25 +37,27 @@ export class PropertyOperationsService {
     if (!property) throw new Error('PROPERTY_NOT_FOUND');
     if (input.unitId && !await this.repository.getUnit(input.businessId, input.unitId)) throw new Error('UNIT_NOT_FOUND');
     const classification = classifyMaintenanceMessage(input.description);
-    const incident = await this.repository.createIncident({
-      id: randomUUID(), businessId: input.businessId, propertyId: input.propertyId, unitId: input.unitId, assetId: input.assetId,
-      reservationId: input.reservationId, reportedByContactId: input.reportedByContactId, sourceChannel: input.channel,
+    const incidentInput: Parameters<PropertyOperationsRepository['createIncident']>[0] = {
+      id: randomUUID(), businessId: input.businessId, propertyId: input.propertyId, sourceChannel: input.channel,
       title: input.title ?? `${classification.category} maintenance issue`, description: input.description, category: classification.category,
-      severity: classification.urgency, status: classification.humanEscalationRequired ? 'ESCALATED' : 'OPEN', confidence: input.confidence, aiSummary: input.aiSummary,
-    });
+      severity: classification.urgency, status: classification.humanEscalationRequired ? 'ESCALATED' : 'OPEN',
+    };
+    if (input.unitId !== undefined) incidentInput.unitId = input.unitId;
+    if (input.assetId !== undefined) incidentInput.assetId = input.assetId;
+    if (input.reservationId !== undefined) incidentInput.reservationId = input.reservationId;
+    if (input.reportedByContactId !== undefined) incidentInput.reportedByContactId = input.reportedByContactId;
+    if (input.confidence !== undefined) incidentInput.confidence = input.confidence;
+    if (input.aiSummary !== undefined) incidentInput.aiSummary = input.aiSummary;
+    const incident = await this.repository.createIncident(incidentInput);
 
     if (classification.recommendedNextStep !== 'CREATE_WORK_ORDER') return { incident, classification, workOrderDraft: null };
-
     const vendors = await this.repository.listVendors(input.businessId, classification.category.toLowerCase());
     const preferredVendor = vendors.find((vendor) => vendor.emergencyAvailable) ?? vendors[0];
-    const workOrderDraft = await this.repository.createWorkOrder({
-      id: randomUUID(), businessId: input.businessId, incidentId: incident.id, vendorId: preferredVendor?.id,
-      status: 'PENDING_APPROVAL', priority: classification.urgency, description: input.aiSummary ?? input.description,
-    });
+    const workOrderInput: Parameters<PropertyOperationsRepository['createWorkOrder']>[0] = { id: randomUUID(), businessId: input.businessId, incidentId: incident.id, status: 'PENDING_APPROVAL', priority: classification.urgency, description: input.aiSummary ?? input.description };
+    if (preferredVendor !== undefined) workOrderInput.vendorId = preferredVendor.id;
+    const workOrderDraft = await this.repository.createWorkOrder(workOrderInput);
     return { incident, classification, workOrderDraft };
   }
 }
 
-export function createPropertyOperationsService(db: Queryable): PropertyOperationsService {
-  return new PropertyOperationsService(new PropertyOperationsRepository(db));
-}
+export function createPropertyOperationsService(db: Queryable): PropertyOperationsService { return new PropertyOperationsService(new PropertyOperationsRepository(db)); }
