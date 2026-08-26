@@ -31,7 +31,9 @@ export class PropertyOperationsService {
 
   listProperties(businessId: string): Promise<PropertyRecord[]> { return this.repository.listProperties(businessId); }
   getProperty(businessId: string, propertyId: string): Promise<PropertyRecord | null> { return this.repository.getProperty(businessId, propertyId); }
+  createProperty(input: Parameters<PropertyOperationsRepository['createProperty']>[0]): Promise<PropertyRecord> { return this.repository.createProperty(input); }
   listUnits(businessId: string, propertyId: string): Promise<UnitRecord[]> { return this.repository.listUnits(businessId, propertyId); }
+  getUnit(businessId: string, unitId: string): Promise<UnitRecord | null> { return this.repository.getUnit(businessId, unitId); }
   createUnit(input: Parameters<PropertyOperationsRepository['createUnit']>[0]): Promise<UnitRecord> { return this.repository.createUnit(input); }
   listAssets(businessId: string, unitId: string): Promise<AssetRecord[]> { return this.repository.listAssets(businessId, unitId); }
   createAsset(input: Parameters<PropertyOperationsRepository['createAsset']>[0]): Promise<AssetRecord> { return this.repository.createAsset(input); }
@@ -43,39 +45,22 @@ export class PropertyOperationsService {
   async intakeMaintenance(input: MaintenanceIntake): Promise<{ incident: IncidentRecord; classification: ReturnType<typeof classifyMaintenanceMessage>; workOrderDraft: WorkOrderRecord | null }> {
     const property = await this.repository.getProperty(input.businessId, input.propertyId);
     if (!property) throw new Error('PROPERTY_NOT_FOUND');
+    if (input.unitId && !await this.repository.getUnit(input.businessId, input.unitId)) throw new Error('UNIT_NOT_FOUND');
     const classification = classifyMaintenanceMessage(input.description);
     const incident = await this.repository.createIncident({
-      id: randomUUID(),
-      businessId: input.businessId,
-      propertyId: input.propertyId,
-      unitId: input.unitId,
-      assetId: input.assetId,
-      reservationId: input.reservationId,
-      reportedByContactId: input.reportedByContactId,
-      sourceChannel: input.channel,
-      title: input.title ?? `${classification.category} maintenance issue`,
-      description: input.description,
-      category: classification.category,
-      severity: classification.urgency,
-      status: classification.humanEscalationRequired ? 'ESCALATED' : 'OPEN',
-      confidence: input.confidence,
-      aiSummary: input.aiSummary,
+      id: randomUUID(), businessId: input.businessId, propertyId: input.propertyId, unitId: input.unitId, assetId: input.assetId,
+      reservationId: input.reservationId, reportedByContactId: input.reportedByContactId, sourceChannel: input.channel,
+      title: input.title ?? `${classification.category} maintenance issue`, description: input.description, category: classification.category,
+      severity: classification.urgency, status: classification.humanEscalationRequired ? 'ESCALATED' : 'OPEN', confidence: input.confidence, aiSummary: input.aiSummary,
     });
 
-    if (classification.recommendedNextStep !== 'CREATE_WORK_ORDER') {
-      return { incident, classification, workOrderDraft: null };
-    }
+    if (classification.recommendedNextStep !== 'CREATE_WORK_ORDER') return { incident, classification, workOrderDraft: null };
 
     const vendors = await this.repository.listVendors(input.businessId, classification.category.toLowerCase());
     const preferredVendor = vendors.find((vendor) => vendor.emergencyAvailable) ?? vendors[0];
     const workOrderDraft = await this.repository.createWorkOrder({
-      id: randomUUID(),
-      businessId: input.businessId,
-      incidentId: incident.id,
-      vendorId: preferredVendor?.id,
-      status: 'PENDING_APPROVAL',
-      priority: classification.urgency,
-      description: input.aiSummary ?? input.description,
+      id: randomUUID(), businessId: input.businessId, incidentId: incident.id, vendorId: preferredVendor?.id,
+      status: 'PENDING_APPROVAL', priority: classification.urgency, description: input.aiSummary ?? input.description,
     });
     return { incident, classification, workOrderDraft };
   }
