@@ -63,26 +63,27 @@ abstract class OpenAICompatibleProvider implements RegisteredAiProvider {
   abstract readonly name: string;
   readonly model: string;
   readonly priority: number;
-  private readonly apiKey?: string;
+  private readonly apiKey: string | undefined;
   private readonly baseUrl: string;
   private readonly extraHeaders: Record<string, string>;
 
-  protected constructor(options: { name: string; model: string; priority: number; apiKey?: string; baseUrl: string; extraHeaders?: Record<string, string> }) {
+  protected constructor(options: { name: string; model: string; priority: number; apiKey: string | undefined; baseUrl: string; extraHeaders: Record<string, string> }) {
     this.model = options.model;
     this.priority = options.priority;
     this.apiKey = options.apiKey;
     const parsed = new URL(options.baseUrl);
     if (parsed.protocol !== 'https:') throw new Error(`${options.name} base URL must use HTTPS`);
     this.baseUrl = parsed.toString().replace(/\/$/, '');
-    this.extraHeaders = options.extraHeaders ?? {};
+    this.extraHeaders = options.extraHeaders;
   }
 
   async capabilities(): Promise<ProviderCapabilities> {
-    return { text: Boolean(this.apiKey), vision: false, audio: false, video: false, documents: false };
+    return { text: Boolean(this.apiKey && this.model), vision: false, audio: false, video: false, documents: false };
   }
 
   async generate(input: ProviderGenerateInput) {
     if (!this.apiKey) throw new Error(`${this.name.toUpperCase()} API key is not configured`);
+    if (!this.model) throw new Error(`${this.name.toUpperCase()} model is not configured`);
     if (input.media?.length) throw new Error(`${this.name} adapter currently accepts text only through the safe baseline path`);
 
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
@@ -116,11 +117,18 @@ abstract class OpenAICompatibleProvider implements RegisteredAiProvider {
   }
 }
 
+function optionalOpenRouterHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (process.env.OPENROUTER_HTTP_REFERER) headers['HTTP-Referer'] = process.env.OPENROUTER_HTTP_REFERER;
+  if (process.env.OPENROUTER_X_TITLE) headers['X-Title'] = process.env.OPENROUTER_X_TITLE;
+  return headers;
+}
+
 export class OpenAIProvider extends OpenAICompatibleProvider {
   readonly name = 'openai';
 
   constructor(model = process.env.OPENAI_GATEWAY_MODEL || 'gpt-5-mini', priority = 20) {
-    super({ name: 'openai', model, priority, apiKey: process.env.OPENAI_API_KEY, baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1' });
+    super({ name: 'openai', model, priority, apiKey: process.env.OPENAI_API_KEY, baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1', extraHeaders: {} });
   }
 }
 
@@ -131,10 +139,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider {
     super({
       name: 'openrouter', model, priority, apiKey: process.env.OPENROUTER_API_KEY,
       baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
-      extraHeaders: {
-        ...(process.env.OPENROUTER_HTTP_REFERER ? { 'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER } : {}),
-        ...(process.env.OPENROUTER_X_TITLE ? { 'X-Title': process.env.OPENROUTER_X_TITLE } : {}),
-      },
+      extraHeaders: optionalOpenRouterHeaders(),
     });
   }
 }
