@@ -1,0 +1,135 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { CommunicationEventSchema, type ActionRequest, type AgentTask, type CommunicationEvent, type AgentExecutionResult, type AuditEvent, type AgentCapability } from '../../domain/platform/contracts.js';
+import type { AgentRuntimeAdapter } from '../../domain/platform/contracts.js';
+
+export type HarnessDecision =
+  | { kind: 'NO_ACTION'; reason: string }
+  | { kind: 'HUMAN_APPROVAL'; action: ActionRequest; reason: string }
+  | { kind: 'READY'; action: ActionRequest };
+
+export interface HarnessResult {
+  communicationEvent: CommunicationEvent;
+  task: AgentTask;
+  execution: AgentExecutionResult;
+  decisions: HarnessDecision[];
+  audit: AuditEvent[];
+}
+
+export interface HarnessClock { now(): Date }
+
+const DEFAULT_CLOCK: HarnessClock = { now: () => new Date() };
+
+function sha256(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function riskRequiresApproval(risk: ActionRequest['riskLevel']): boolean {
+  return risk === 'HIGH' || risk === 'CRITICAL';
+}
+
+function evaluateAction(action: ActionRequest): HarnessDecision {
+  if (action.tenantId.length === 0) return { kind: 'NO_ACTION', reason: 'action has no tenant binding' };
+  if (riskRequiresApproval(action.riskLevel) || action.approval.required) {
+    return {
+      kind: 'HUMAN_APPROVAL',
+      action: { ...action, approval: { ...action.approval, required: true, status: 'PENDING' }, status: 'PENDING_APPROVAL' },
+      reason: action.riskLevel === 'CRITICAL' ? 'critical action requires explicit human approval' : 'action risk or capability policy requires human approval',
+    };
+  }
+  return { kind: 'READY', action: { ...action, status: 'READY' } };
+}
+
+export function buildSyntheticCommunicationEvent(input: {
+  tenantId: string;
+  conversationId: string;
+  address: string;
+  propertyId?: string;
+  text: string;
+  clock?: HarnessClock;
+}): CommunicationEvent {
+  const clock = input.clock ?? DEFAULT_CLOCK;
+  return CommunicationEventSchema.parse({
+    id: randomUUID(),
+    tenantId: input.tenantId,
+    channel: 'WHATSAPP',
+    conversationId: input.conversationId,
+    sender: { address: input.address, role: 'GUEST' },
+    message: { type: 'TEXT', text: input.text },
+    occurredAt: clock.now().toISOString(),
+    correlationId: randomUUID(),
+    idempotencyKey: `synthetic:${input.tenantId}:${input.conversationId}:${sha256(input.text)}`,
+  });
+}
+
+export async function runPlatformHarness(input: {
+  event: CommunicationEvent;
+  runtime: AgentRuntimeAdapter;
+  agentId: string;
+  capability: AgentCapability;
+  context: Record<string, unknown>;
+  clock?: HarnessClock;
+}): Promise<HarnessResult> {
+  const clock = input.clock ?? DEFAULT_CLOCK;
+  if (input.event.tenantId !== input.context.tenantId) {
+    throw new Error('tenant boundary violation: event and context tenant IDs differ');
+  }
+
+  const task: AgentTask = {
+    id: randomUUID(),
+    tenantId: input.event.tenantId,
+    agentId: input.agentId,
+    capabilityId: input.capability.id,
+    input: { communicationEvent: input.event },
+    contextEntityIds: Array.isArray(input.context.entityIds) ? input.context.entityIds.filter((v): v is string => typeof v === 'string') : [],
+    correlationId: input.event.correlationId,
+    createdAt: clock.now().toISOString(),
+  };
+
+  const audit: AuditEvent[] = [];
+  const appendAudit = (eventType: string, actor: AuditEvent['actor'], payload: Record<string, unknown>, actionRequestId?: string) => {
+    const previousHash = audit.at(-1)?.payloadHash;
+    audit.push({
+      id: randomUUID(),
+      tenantId: input.event.tenantId,
+      eventType,
+      actor,
+      correlationId: input.event.correlationId,
+      actionRequestId,
+      payloadHash: sha256(payload),
+      previousHash,
+      occurredAt: clock.now().toISOString(),
+      metadata: { harness: true },
+    });
+  };
+
+  appendAudit('COMMUNICATION_RECEIVED', { kind: 'EXTERNAL', id: input.event.sender.address }, { eventId: input.event.id, channel: input.event.channel });
+  appendAudit('AGENT_TASK_CREATED', { kind: 'SYSTEM', id: 'platform-harness' }, { taskId: task.id, agentId: task.agentId, capabilityId: task.capabilityId });
+
+  const execution = await input.runtime.execute(task, input.context);
+  appendAudit('AGENT_EXECUTION_COMPLETED', { kind: 'AGENT', id: input.agentId }, { executionId: execution.executionId, status: execution.status, output: execution.output });
+
+  for (const action of execution.actionRequests) {
+    if (action.tenantId !== input.event.tenantId) throw new Error('tenant boundary violation: agent returned cross-tenant ActionRequest');
+    if (!input.capability.allowedActions.includes(action.type)) {
+      appendAudit('ACTION_REJECTED_CAPABILITY', { kind: 'SYSTEM', id: 'policy-engine' }, { actionType: action.type }, action.id);
+      continue;
+    }
+    if (input.capability.forbiddenActions.includes(action.type)) {
+      appendAudit('ACTION_REJECTED_FORBIDDEN', { kind: 'SYSTEM', id: 'policy-engine' }, { actionType: action.type }, action.id);
+      continue;
+    }
+    const decision = evaluateAction(action);
+    if (decision.kind === 'NO_ACTION') {
+      appendAudit('ACTION_REJECTED_POLICY', { kind: 'SYSTEM', id: 'policy-engine' }, { reason: decision.reason }, action.id);
+      continue;
+    }
+    appendAudit(decision.kind === 'HUMAN_APPROVAL' ? 'APPROVAL_REQUESTED' : 'ACTION_READY', { kind: 'SYSTEM', id: 'policy-engine' }, { status: decision.action.status, riskLevel: decision.action.riskLevel }, action.id);
+  }
+
+  const decisions = execution.actionRequests
+    .filter((action) => action.tenantId === input.event.tenantId)
+    .filter((action) => input.capability.allowedActions.includes(action.type) && !input.capability.forbiddenActions.includes(action.type))
+    .map(evaluateAction);
+
+  return { communicationEvent: input.event, task, execution, decisions, audit };
+}
