@@ -22,7 +22,13 @@ router.post('/:actionId/approve', requirePermission('property.approve'), async (
   const body = z.object({ reason: z.string().trim().max(4000).optional() }).safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'INVALID_APPROVAL_PAYLOAD' });
   try {
-    const action = await approvals.approve({ businessId: auth.businessId, actionId, userId: auth.userId, reason: body.data.reason });
+    const input: { businessId: string; actionId: string; userId: string; reason?: string } = {
+      businessId: auth.businessId,
+      actionId,
+      userId: auth.userId,
+    };
+    if (body.data.reason !== undefined) input.reason = body.data.reason;
+    const action = await approvals.approve(input);
     return res.status(200).json({ action });
   } catch (error) {
     if (error instanceof Error && error.message === 'ACTION_NOT_FOUND') return res.status(404).json({ error: 'ACTION_NOT_FOUND' });
