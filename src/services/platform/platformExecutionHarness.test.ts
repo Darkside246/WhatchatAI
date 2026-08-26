@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ActionRequest, AgentCapability, AgentExecutionResult, AgentRuntimeAdapter } from '../../domain/platform/contracts.js';
-import { buildSyntheticCommunicationEvent, runPlatformHarness } from './platformExecutionHarness.js';
+import { buildSyntheticCommunicationEvent, runPlatformHarness, verifyAuditChain } from './platformExecutionHarness.js';
 
 const capability: AgentCapability = {
   id: 'property.maintenance.triage',
@@ -40,7 +40,7 @@ function action(overrides: Partial<ActionRequest> = {}): ActionRequest {
 }
 
 describe('platformExecutionHarness', () => {
-  it('builds a valid synthetic communication event', () => {
+  it('builds a valid synthetic communication event including property context', () => {
     const event = buildSyntheticCommunicationEvent({
       tenantId: 'tenant-1',
       conversationId: 'chat-1',
@@ -52,7 +52,7 @@ describe('platformExecutionHarness', () => {
 
     expect(event.channel).toBe('WHATSAPP');
     expect(event.sender.role).toBe('GUEST');
-    expect(event.propertyId).toBeUndefined();
+    expect(event.propertyId).toBe('property-1');
     expect(event.message.type).toBe('TEXT');
   });
 
@@ -77,6 +77,7 @@ describe('platformExecutionHarness', () => {
     expect(result.decisions[0]?.kind).toBe('HUMAN_APPROVAL');
     expect(result.decisions[0]?.action.status).toBe('PENDING_APPROVAL');
     expect(result.audit.map((entry) => entry.eventType)).toContain('APPROVAL_REQUESTED');
+    expect(verifyAuditChain(result.audit)).toBe(true);
   });
 
   it('rejects an agent action outside its capability manifest', async () => {
@@ -131,5 +132,18 @@ describe('platformExecutionHarness', () => {
       capability,
       context: { tenantId: 'tenant-2', entityIds: ['property-9'] },
     })).rejects.toThrow('event and context tenant IDs differ');
+  });
+
+  it('detects tampering in an audit event', async () => {
+    const result = await runPlatformHarness({
+      event: buildSyntheticCommunicationEvent({ tenantId: 'tenant-1', conversationId: 'chat-1', address: '+12465551234', text: 'Hello' }),
+      runtime: runtimeFor([]),
+      agentId: 'agent-maintenance',
+      capability,
+      context: { tenantId: 'tenant-1', entityIds: ['property-1'] },
+    });
+
+    const tampered = result.audit.map((entry, index) => index === 1 ? { ...entry, eventType: 'TAMPERED' } : entry);
+    expect(verifyAuditChain(tampered)).toBe(false);
   });
 });
