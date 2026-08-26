@@ -13,12 +13,6 @@ export interface ProviderGenerateInput {
 
 type ProviderCapabilities = Awaited<ReturnType<RegisteredAiProvider['capabilities']>>;
 
-function requireAbsoluteUrl(value: string): string {
-  const parsed = new URL(value);
-  if (parsed.protocol !== 'https:') throw new Error('AI provider URLs must use HTTPS');
-  return parsed.toString();
-}
-
 function buildPrompt(input: ProviderGenerateInput): string {
   const turns = input.messages.map((message) => `${message.role.toUpperCase()}:\n${message.content}`).join('\n\n');
   return `Operation: ${input.operation}\n\n${turns}`;
@@ -45,7 +39,8 @@ export class GeminiProvider implements RegisteredAiProvider {
 
     const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [{ text: buildPrompt(input) }];
     for (const media of input.media ?? []) {
-      if (!media.mimeType.startsWith('image/') || !media.base64Data) continue;
+      if (!media.mimeType.startsWith('image/')) throw new Error(`Gemini provider cannot currently process ${media.mimeType}`);
+      if (!media.base64Data) throw new Error('Gemini image input requires base64Data from WhatchatAI media storage');
       parts.push({ inlineData: { mimeType: media.mimeType, data: media.base64Data } });
     }
 
@@ -76,12 +71,14 @@ abstract class OpenAICompatibleProvider implements RegisteredAiProvider {
     this.model = options.model;
     this.priority = options.priority;
     this.apiKey = options.apiKey;
-    this.baseUrl = requireAbsoluteUrl(options.baseUrl).replace(/\/$/, '');
+    const parsed = new URL(options.baseUrl);
+    if (parsed.protocol !== 'https:') throw new Error(`${options.name} base URL must use HTTPS`);
+    this.baseUrl = parsed.toString().replace(/\/$/, '');
     this.extraHeaders = options.extraHeaders ?? {};
   }
 
   async capabilities(): Promise<ProviderCapabilities> {
-    return { text: Boolean(this.apiKey), vision: Boolean(this.apiKey), audio: false, video: false, documents: false };
+    return { text: Boolean(this.apiKey), vision: false, audio: false, video: false, documents: false };
   }
 
   async generate(input: ProviderGenerateInput) {
@@ -142,7 +139,6 @@ export class OpenRouterProvider extends OpenAICompatibleProvider {
   }
 }
 
-/** Register only providers whose credentials are actually configured. */
 export function registerDefaultAiProviders(gateway = aiGateway): void {
   const providers: RegisteredAiProvider[] = [];
   if (process.env.GEMINI_API_KEY) providers.push(new GeminiProvider());
