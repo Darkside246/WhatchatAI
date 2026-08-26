@@ -19,8 +19,27 @@ export interface HarnessClock { now(): Date }
 
 const DEFAULT_CLOCK: HarnessClock = { now: () => new Date() };
 
+function canonical(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}`;
+}
+
 function sha256(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  return createHash('sha256').update(canonical(value)).digest('hex');
+}
+
+function auditDigest(event: Omit<AuditEvent, 'payloadHash' | 'previousHash'>): string {
+  return sha256({
+    id: event.id,
+    tenantId: event.tenantId,
+    eventType: event.eventType,
+    actor: event.actor,
+    correlationId: event.correlationId,
+    actionRequestId: event.actionRequestId,
+    occurredAt: event.occurredAt,
+    metadata: event.metadata,
+  });
 }
 
 function riskRequiresApproval(risk: ActionRequest['riskLevel']): boolean {
@@ -54,10 +73,22 @@ export function buildSyntheticCommunicationEvent(input: {
     channel: 'WHATSAPP',
     conversationId: input.conversationId,
     sender: { address: input.address, role: 'GUEST' },
+    propertyId: input.propertyId,
     message: { type: 'TEXT', text: input.text },
     occurredAt: clock.now().toISOString(),
     correlationId: randomUUID(),
     idempotencyKey: `synthetic:${input.tenantId}:${input.conversationId}:${sha256(input.text)}`,
+  });
+}
+
+export function verifyAuditChain(events: AuditEvent[]): boolean {
+  if (events.length === 0) return true;
+  return events.every((event, index) => {
+    const expectedPrevious = index > 0 ? events[index - 1]!.payloadHash : undefined;
+    if (event.previousHash !== expectedPrevious) return false;
+    if (event.tenantId !== events[0]!.tenantId) return false;
+    const { payloadHash: _payloadHash, previousHash: _previousHash, ...unsigned } = event;
+    return event.payloadHash === auditDigest(unsigned);
   });
 }
 
@@ -86,20 +117,19 @@ export async function runPlatformHarness(input: {
   };
 
   const audit: AuditEvent[] = [];
-  const appendAudit = (eventType: string, actor: AuditEvent['actor'], payload: Record<string, unknown>, actionRequestId?: string) => {
+  const appendAudit = (eventType: string, actor: AuditEvent['actor'], _payload: Record<string, unknown>, actionRequestId?: string) => {
     const previousHash = audit.at(-1)?.payloadHash;
-    audit.push({
+    const unsigned = {
       id: randomUUID(),
       tenantId: input.event.tenantId,
       eventType,
       actor,
       correlationId: input.event.correlationId,
       actionRequestId,
-      payloadHash: sha256(payload),
-      previousHash,
       occurredAt: clock.now().toISOString(),
       metadata: { harness: true },
-    });
+    } satisfies Omit<AuditEvent, 'payloadHash' | 'previousHash'>;
+    audit.push({ ...unsigned, payloadHash: auditDigest(unsigned), previousHash });
   };
 
   appendAudit('COMMUNICATION_RECEIVED', { kind: 'EXTERNAL', id: input.event.sender.address }, { eventId: input.event.id, channel: input.event.channel });
@@ -119,11 +149,7 @@ export async function runPlatformHarness(input: {
       continue;
     }
     const decision = evaluateAction(action);
-    if (decision.kind === 'NO_ACTION') {
-      appendAudit('ACTION_REJECTED_POLICY', { kind: 'SYSTEM', id: 'policy-engine' }, { reason: decision.reason }, action.id);
-      continue;
-    }
-    appendAudit(decision.kind === 'HUMAN_APPROVAL' ? 'APPROVAL_REQUESTED' : 'ACTION_READY', { kind: 'SYSTEM', id: 'policy-engine' }, { status: decision.action.status, riskLevel: decision.action.riskLevel }, action.id);
+    appendAudit(decision.kind === 'HUMAN_APPROVAL' ? 'APPROVAL_REQUESTED' : 'ACTION_READY', { kind: 'SYSTEM', id: 'policy-engine' }, { status: decision.kind === 'NO_ACTION' ? undefined : decision.action.status, riskLevel: action.riskLevel, reason: decision.kind === 'NO_ACTION' ? decision.reason : undefined }, action.id);
   }
 
   const decisions = execution.actionRequests
@@ -131,5 +157,6 @@ export async function runPlatformHarness(input: {
     .filter((action) => input.capability.allowedActions.includes(action.type) && !input.capability.forbiddenActions.includes(action.type))
     .map(evaluateAction);
 
+  if (!verifyAuditChain(audit)) throw new Error('audit chain verification failed');
   return { communicationEvent: input.event, task, execution, decisions, audit };
 }
