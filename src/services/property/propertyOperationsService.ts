@@ -1,6 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type { Queryable } from '../../repositories/types.js';
-import { PropertyOperationsRepository, type PropertyRecord, type UnitRecord, type AssetRecord, type VendorRecord, type IncidentRecord, type WorkOrderRecord, type KnowledgeItemRecord } from '../../repositories/propertyOperationsRepository.js';
+import {
+  PropertyOperationsRepository,
+  type PropertyRecord,
+  type UnitRecord,
+  type AssetRecord,
+  type VendorRecord,
+  type IncidentRecord,
+  type WorkOrderRecord,
+  type KnowledgeItemRecord,
+} from '../../repositories/propertyOperationsRepository.js';
 import { classifyMaintenanceMessage } from './propertyMaintenancePolicy.js';
 
 export type MaintenanceIntake = {
@@ -23,8 +32,11 @@ export class PropertyOperationsService {
   listProperties(businessId: string): Promise<PropertyRecord[]> { return this.repository.listProperties(businessId); }
   getProperty(businessId: string, propertyId: string): Promise<PropertyRecord | null> { return this.repository.getProperty(businessId, propertyId); }
   listUnits(businessId: string, propertyId: string): Promise<UnitRecord[]> { return this.repository.listUnits(businessId, propertyId); }
+  createUnit(input: Parameters<PropertyOperationsRepository['createUnit']>[0]): Promise<UnitRecord> { return this.repository.createUnit(input); }
   listAssets(businessId: string, unitId: string): Promise<AssetRecord[]> { return this.repository.listAssets(businessId, unitId); }
+  createAsset(input: Parameters<PropertyOperationsRepository['createAsset']>[0]): Promise<AssetRecord> { return this.repository.createAsset(input); }
   listVendors(businessId: string, category?: string): Promise<VendorRecord[]> { return this.repository.listVendors(businessId, category); }
+  createVendor(input: Parameters<PropertyOperationsRepository['createVendor']>[0]): Promise<VendorRecord> { return this.repository.createVendor(input); }
   listIncidents(businessId: string, propertyId?: string): Promise<IncidentRecord[]> { return this.repository.listIncidents(businessId, propertyId); }
   listKnowledge(businessId: string, propertyId?: string, assetId?: string): Promise<KnowledgeItemRecord[]> { return this.repository.listKnowledge(businessId, propertyId, assetId); }
 
