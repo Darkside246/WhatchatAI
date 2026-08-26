@@ -39,15 +39,35 @@ export const AuditEventSchema = z.object({
 });
 export type AuditEvent = z.infer<typeof AuditEventSchema>;
 
+export interface AgentExecutionResult {
+  status: 'completed' | 'failed';
+  output: unknown;
+  actionRequests: ActionRequest[];
+  executionId: string;
+}
+
 export interface AgentRuntimeAdapter {
   readonly name: string;
-  submit(task: AgentTask): Promise<{ executionId: string; status: 'ACCEPTED' | 'REJECTED' }>;
+  execute(task: AgentTask, context: unknown): Promise<AgentExecutionResult>;
   cancel(executionId: string, tenantId: string): Promise<void>;
   health(): Promise<{ healthy: boolean; details?: string }>;
 }
 
-export interface AiProviderAdapter {
+export interface AIProviderMedia {
+  mimeType: string;
+  url?: string;
+  base64Data?: string;
+}
+
+export interface AIProviderAdapter {
   readonly name: string;
   capabilities(): Promise<{ text: boolean; vision: boolean; audio: boolean; video: boolean; documents: boolean }>;
-  generate(input: { tenantId: string; messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>; media?: Array<{ url: string; mimeType: string }>; responseFormat?: 'text' | 'json' }): Promise<{ text: string; provider: string; usage?: { inputTokens?: number; outputTokens?: number } }>;
+  generate(input: {
+    tenantId: string;
+    operation: string;
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+    media?: AIProviderMedia[];
+    responseFormat?: 'text' | 'json';
+    maxOutputTokens?: number;
+  }): Promise<{ text: string; provider: string; usage?: { inputTokens?: number; outputTokens?: number } }>;
 }
