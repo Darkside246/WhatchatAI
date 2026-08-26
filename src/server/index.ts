@@ -26,6 +26,7 @@ import {
 import { whatsappOutboundMessageService, isChatNotFoundError as isOutboundChatNotFoundError } from '../services/whatsappOutboundMessageService.js';
 import { openclawAdapterRouter } from './openclawAdapterRouter.js';
 import { openclawMcpRouter } from './openclawMcpRouter.js';
+import { mountPlatformRoutes } from './platformRoutes.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
 import { checkRedisHealth } from '../redis/client.js';
@@ -282,6 +283,10 @@ app.use('/api/workspace/campaigns', expensiveActionLimiter);
 // 20mb (not the old 2mb) to fit base64-encoded outbound media uploads -
 // this is one global parser, so every route's real ceiling moved with it.
 app.use(express.json({ limit: '20mb' }));
+
+// Platform routes are mounted explicitly here. Existing WhatsApp and OpenClaw routes remain separate.
+mountPlatformRoutes(app);
+
 
 // OpenClaw's own tool-call adapter - authenticates via a per-cell
 // callback token (Bearer), never the session-cookie `requireAuth` below.
