@@ -6,10 +6,9 @@ import { initializeAgentRuntimes } from '../agents/agentRuntimeService.js';
 let initialized = false;
 
 /**
- * Opt-in bootstrap for the new platform layer. It does not alter the existing
- * WhatsApp responder, router, or dispatcher unless the caller explicitly
- * invokes it. This lets the platform be exercised in isolation before the
- * live communication path is switched over.
+ * Initializes the new platform layer without changing the existing live
+ * WhatsApp responder. Commercial capabilities remain disabled until their
+ * explicit feature flags are enabled.
  */
 export function initializePlatformFoundation(): void {
   if (initialized) return;
@@ -17,11 +16,12 @@ export function initializePlatformFoundation(): void {
   initializeAiGateway();
   initializeAgentRuntimes();
 
-  if (!moduleRegistry.get(propertyOperationsModule.id)) {
-    moduleRegistry.register(propertyOperationsModule);
-  }
-  if (!skillRegistry.get(propertyMaintenanceTriageSkill.id)) {
-    skillRegistry.register(propertyMaintenanceTriageSkill);
+  if (!moduleRegistry.get(propertyOperationsModule.id)) moduleRegistry.register(propertyOperationsModule);
+  if (!skillRegistry.get(propertyMaintenanceTriageSkill.id)) skillRegistry.register(propertyMaintenanceTriageSkill);
+
+  if (process.env.PROPERTY_OPERATIONS_ENABLED === 'true') {
+    const existing = skillRegistry.get(propertyMaintenanceTriageSkill.id);
+    if (existing && !existing.enabled) skillRegistry.enable(propertyMaintenanceTriageSkill.id);
   }
 
   initialized = true;
