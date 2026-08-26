@@ -75,13 +75,16 @@ export const ActionRequestSchema = z.object({
 });
 export type ActionRequest = z.infer<typeof ActionRequestSchema>;
 
+export const AuditActorSchema = z.object({ kind: z.enum(['USER', 'AGENT', 'SYSTEM', 'VENDOR', 'EXTERNAL']), id: z.string() });
+
 export const AuditEventSchema = z.object({
   id: z.string(),
   tenantId: z.string(),
   eventType: z.string(),
-  actor: z.object({ kind: z.enum(['USER', 'AGENT', 'SYSTEM', 'VENDOR']), id: z.string() }),
+  actor: AuditActorSchema,
   correlationId: z.string(),
   actionRequestId: z.string().optional(),
+  payload: z.record(z.string(), z.unknown()),
   payloadHash: z.string(),
   previousHash: z.string().optional(),
   occurredAt: z.string().datetime(),
