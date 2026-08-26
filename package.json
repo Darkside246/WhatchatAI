@@ -19,7 +19,7 @@
     "start:worker": "node dist/queue/workers/incomingMessagesWorker.js",
     "typecheck": "tsc --noEmit && npm run typecheck --workspace=src/web",
     "db:migrate": "tsx src/db/migrate.ts",
-    "test": "DATABASE_URL=postgres://whatchatai:whatchatai_dev@localhost:5432/whatchatai_test vitest run"
+    "test": "vitest run"
   },
   "engines": {
     "node": ">=20"
@@ -39,7 +39,6 @@
     "ioredis": "^6.0.0",
     "mammoth": "^1.12.1",
     "nodemailer": "^9.0.5",
-    "pdf-parse": "^2.4.5",
     "pg": "^8.23.0",
     "pino": "latest",
     "qrcode": "latest",
