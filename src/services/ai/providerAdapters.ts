@@ -1,11 +1,12 @@
 import { getGeminiClient } from '../geminiClient.js';
-import type { RegisteredAiProvider } from './aiGateway.js';
+import type { RegisteredAiProvider, GatewayMedia } from './aiGateway.js';
+import { aiGateway } from './aiGateway.js';
 
 export interface ProviderGenerateInput {
   tenantId: string;
   operation: string;
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
-  media?: Array<{ url: string; mimeType: string }>;
+  media?: GatewayMedia[];
   responseFormat?: 'text' | 'json';
   maxOutputTokens?: number;
 }
@@ -20,10 +21,7 @@ function requireAbsoluteUrl(value: string): string {
 
 function buildPrompt(input: ProviderGenerateInput): string {
   const turns = input.messages.map((message) => `${message.role.toUpperCase()}:\n${message.content}`).join('\n\n');
-  const media = input.media?.length
-    ? `\n\nMEDIA REFERENCES (provider may fetch these only when supported):\n${input.media.map((item) => `${item.mimeType}: ${item.url}`).join('\n')}`
-    : '';
-  return `Operation: ${input.operation}\n\n${turns}${media}`;
+  return `Operation: ${input.operation}\n\n${turns}`;
 }
 
 export class GeminiProvider implements RegisteredAiProvider {
@@ -37,18 +35,18 @@ export class GeminiProvider implements RegisteredAiProvider {
   }
 
   async capabilities(): Promise<ProviderCapabilities> {
-    return { text: getGeminiClient() !== null, vision: getGeminiClient() !== null, audio: getGeminiClient() !== null, video: false, documents: false };
+    const available = getGeminiClient() !== null;
+    return { text: available, vision: available, audio: false, video: false, documents: false };
   }
 
   async generate(input: ProviderGenerateInput) {
     const client = getGeminiClient();
     if (!client) throw new Error('GEMINI_API_KEY is not configured');
 
-    const parts: Array<{ text: string } | { fileData: { mimeType: string; fileUri: string } }> = [{ text: buildPrompt(input) }];
+    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [{ text: buildPrompt(input) }];
     for (const media of input.media ?? []) {
-      if (media.mimeType.startsWith('image/')) {
-        parts.push({ fileData: { mimeType: media.mimeType, fileUri: requireAbsoluteUrl(media.url) } });
-      }
+      if (!media.mimeType.startsWith('image/') || !media.base64Data) continue;
+      parts.push({ inlineData: { mimeType: media.mimeType, data: media.base64Data } });
     }
 
     const response = await client.models.generateContent({
@@ -88,17 +86,16 @@ abstract class OpenAICompatibleProvider implements RegisteredAiProvider {
 
   async generate(input: ProviderGenerateInput) {
     if (!this.apiKey) throw new Error(`${this.name.toUpperCase()} API key is not configured`);
-    const url = `${this.baseUrl}/chat/completions`;
-    const messages = input.messages.map((message) => ({ role: message.role, content: message.content }));
+    if (input.media?.length) throw new Error(`${this.name} adapter currently accepts text only through the safe baseline path`);
 
-    const response = await fetch(url, {
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}`, ...this.extraHeaders },
       body: JSON.stringify({
         model: this.model,
-        messages,
+        messages: input.messages,
         max_tokens: input.maxOutputTokens ?? 1024,
-        response_format: input.responseFormat === 'json' ? { type: 'json_object' } : undefined,
+        ...(input.responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {}),
       }),
       signal: AbortSignal.timeout(90_000),
     });
@@ -108,7 +105,10 @@ abstract class OpenAICompatibleProvider implements RegisteredAiProvider {
       throw new Error(`${this.name} HTTP ${response.status}${body ? `: ${body.slice(0, 500)}` : ''}`);
     }
 
-    const payload = (await response.json()) as { choices?: Array<{ message?: { content?: string | null } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string | null } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+    };
     const text = payload.choices?.[0]?.message?.content?.trim() ?? '';
     if (!text) throw new Error(`${this.name} returned an empty response`);
     return {
@@ -132,10 +132,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider {
 
   constructor(model = process.env.OPENROUTER_GATEWAY_MODEL || process.env.OPENROUTER_MODEL || '', priority = 30) {
     super({
-      name: 'openrouter',
-      model,
-      priority,
-      apiKey: process.env.OPENROUTER_API_KEY,
+      name: 'openrouter', model, priority, apiKey: process.env.OPENROUTER_API_KEY,
       baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
       extraHeaders: {
         ...(process.env.OPENROUTER_HTTP_REFERER ? { 'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER } : {}),
@@ -145,19 +142,14 @@ export class OpenRouterProvider extends OpenAICompatibleProvider {
   }
 }
 
-export function registerDefaultAiProviders(): void {
-  const providers: RegisteredAiProvider[] = [new GeminiProvider(), new OpenAIProvider()];
+/** Register only providers whose credentials are actually configured. */
+export function registerDefaultAiProviders(gateway = aiGateway): void {
+  const providers: RegisteredAiProvider[] = [];
+  if (process.env.GEMINI_API_KEY) providers.push(new GeminiProvider());
+  if (process.env.OPENAI_API_KEY) providers.push(new OpenAIProvider());
   if (process.env.OPENROUTER_API_KEY && (process.env.OPENROUTER_GATEWAY_MODEL || process.env.OPENROUTER_MODEL)) providers.push(new OpenRouterProvider());
+
   for (const provider of providers) {
-    try {
-      // A provider with no configured key is still intentionally registered:
-      // capability discovery marks it unavailable and the gateway will skip it.
-      // This makes configuration observable without ever treating "missing key"
-      // as a successful provider.
-      // Duplicate registration is prevented by AiGateway itself.
-      provider;
-    } catch {
-      // Construction is deterministic; this catch is defensive for future providers.
-    }
+    if (!gateway.listProviders().some((entry) => entry.name === provider.name)) gateway.register(provider);
   }
 }
