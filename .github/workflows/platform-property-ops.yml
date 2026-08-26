@@ -15,18 +15,45 @@ on:
 jobs:
   quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: whatchatai
+          POSTGRES_PASSWORD: whatchatai
+          POSTGRES_DB: whatchatai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U whatchatai -d whatchatai_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+    env:
+      DATABASE_URL: postgresql://whatchatai:whatchatai@127.0.0.1:5432/whatchatai_test
+      REDIS_URL: redis://127.0.0.1:6379/1
+      NODE_ENV: test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - name: Install dependencies
         run: npm ci
       - name: Typecheck
         run: npm run typecheck
       - name: Test
-        run: npm test
+        run: npm test -- --run
