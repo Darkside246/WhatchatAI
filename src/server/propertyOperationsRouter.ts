@@ -2,11 +2,12 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { pool } from '../db/pool.js';
+import { PropertyOperationsRepository } from '../repositories/propertyOperationsRepository.js';
 import { PropertyOperationsService } from '../services/property/propertyOperationsService.js';
 import { requireAuth, requirePermission, type AuthContext } from './authMiddleware.js';
 
 const router = Router();
-const operations = new PropertyOperationsService(new (require('../repositories/propertyOperationsRepository.js').PropertyOperationsRepository)(pool));
+const operations = new PropertyOperationsService(new PropertyOperationsRepository(pool));
 
 router.use(requireAuth);
 
@@ -59,11 +60,7 @@ router.get('/properties/:propertyId/units', requirePermission('property.view'), 
   return res.status(200).json({ units: await operations.listUnits(auth.businessId, propertyId) });
 });
 
-const unitSchema = z.object({
-  name: z.string().trim().min(1).max(200),
-  status: z.enum(['ACTIVE', 'INACTIVE']).default('ACTIVE'),
-  metadata: z.record(z.string(), z.unknown()).default({}),
-});
+const unitSchema = z.object({ name: z.string().trim().min(1).max(200), status: z.enum(['ACTIVE', 'INACTIVE']).default('ACTIVE'), metadata: z.record(z.string(), z.unknown()).default({}) });
 router.post('/properties/:propertyId/units', requirePermission('property.manage'), async (req, res) => {
   const auth = res.locals.auth as AuthContext;
   const propertyId = String(req.params.propertyId ?? '');
@@ -79,12 +76,11 @@ router.get('/units/:unitId/assets', requirePermission('property.view'), async (r
   const auth = res.locals.auth as AuthContext;
   const unitId = String(req.params.unitId ?? '');
   if (!uuid.safeParse(unitId).success) return res.status(400).json({ error: 'INVALID_UNIT_ID' });
+  if (!await operations.getUnit(auth.businessId, unitId)) return res.status(404).json({ error: 'UNIT_NOT_FOUND' });
   return res.status(200).json({ assets: await operations.listAssets(auth.businessId, unitId) });
 });
 
-const assetSchema = z.object({
-  category: z.string().trim().min(1).max(80), name: z.string().trim().min(1).max(200), manufacturer: z.string().trim().max(200).nullish(), model: z.string().trim().max(200).nullish(), serialNumber: z.string().trim().max(200).nullish(), location: z.string().trim().max(300).nullish(), instructions: z.string().max(10000).nullish(), metadata: z.record(z.string(), z.unknown()).default({}),
-});
+const assetSchema = z.object({ category: z.string().trim().min(1).max(80), name: z.string().trim().min(1).max(200), manufacturer: z.string().trim().max(200).nullish(), model: z.string().trim().max(200).nullish(), serialNumber: z.string().trim().max(200).nullish(), location: z.string().trim().max(300).nullish(), instructions: z.string().max(10000).nullish(), metadata: z.record(z.string(), z.unknown()).default({}) });
 router.post('/units/:unitId/assets', requirePermission('property.manage'), async (req, res) => {
   const auth = res.locals.auth as AuthContext;
   const unitId = String(req.params.unitId ?? '');
@@ -102,9 +98,7 @@ router.get('/vendors', requirePermission('property.view'), async (req, res) => {
   return res.status(200).json({ vendors: await operations.listVendors(auth.businessId, category) });
 });
 
-const vendorSchema = z.object({
-  name: z.string().trim().min(1).max(200), serviceCategories: z.array(z.string().trim().min(1).max(80)).max(30).default([]), phone: z.string().trim().max(50).nullish(), whatsappAddress: z.string().trim().max(100).nullish(), email: z.string().email().nullish(), emergencyAvailable: z.boolean().default(false), metadata: z.record(z.string(), z.unknown()).default({}),
-});
+const vendorSchema = z.object({ name: z.string().trim().min(1).max(200), serviceCategories: z.array(z.string().trim().min(1).max(80)).max(30).default([]), phone: z.string().trim().max(50).nullish(), whatsappAddress: z.string().trim().max(100).nullish(), email: z.string().email().nullish(), emergencyAvailable: z.boolean().default(false), metadata: z.record(z.string(), z.unknown()).default({}) });
 router.post('/vendors', requirePermission('property.manage'), async (req, res) => {
   const auth = res.locals.auth as AuthContext;
   const parsed = vendorSchema.safeParse(req.body);
@@ -130,6 +124,7 @@ router.post('/incidents/intake', requirePermission('property.manage'), async (re
     return res.status(201).json(result);
   } catch (error) {
     if (error instanceof Error && error.message === 'PROPERTY_NOT_FOUND') return res.status(404).json({ error: 'PROPERTY_NOT_FOUND' });
+    if (error instanceof Error && error.message === 'UNIT_NOT_FOUND') return res.status(404).json({ error: 'UNIT_NOT_FOUND' });
     throw error;
   }
 });
