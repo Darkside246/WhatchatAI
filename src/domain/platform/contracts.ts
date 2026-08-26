@@ -22,7 +22,7 @@ export const CommunicationEventSchema = z.object({
   }),
   occurredAt: z.string().datetime(),
   correlationId: z.string(),
-  idempotencyKey: z.string(),
+  idempotencyKey: z.string().min(1).max(512),
 });
 export type CommunicationEvent = z.infer<typeof CommunicationEventSchema>;
 
@@ -45,7 +45,7 @@ export const AgentCapabilitySchema = z.object({
   allowedActions: z.array(z.string()),
   forbiddenActions: z.array(z.string()),
   requiresApprovalFor: z.array(z.string()),
-  maxRiskLevel: z.enum(['LOW', 'MEDIUM', 'HIGH']),
+  maxRiskLevel: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']),
 });
 export type AgentCapability = z.infer<typeof AgentCapabilitySchema>;
 
@@ -70,6 +70,7 @@ export const ActionRequestSchema = z.object({
   riskLevel: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']),
   approval: z.object({ required: z.boolean(), status: z.enum(['NOT_REQUIRED', 'PENDING', 'APPROVED', 'REJECTED']) }),
   status: z.enum(['PENDING_POLICY', 'PENDING_APPROVAL', 'READY', 'EXECUTING', 'SUCCEEDED', 'FAILED', 'CANCELLED']),
+  idempotencyKey: z.string().min(1).max(512),
   correlationId: z.string(),
   createdAt: z.string().datetime(),
 });
