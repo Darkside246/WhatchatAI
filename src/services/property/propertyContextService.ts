@@ -4,7 +4,7 @@ import { PropertyOperationsRepository } from '../../repositories/propertyOperati
 export class PropertyContextService {
   constructor(private readonly repository: PropertyOperationsRepository) {}
 
-  async build(input: { businessId: string; propertyId: string; unitId?: string; assetId?: string }): Promise<Record<string, unknown>> {
+  async build(input: { businessId: string; propertyId: string; unitId?: string | undefined; assetId?: string | undefined }): Promise<Record<string, unknown>> {
     const property = await this.repository.getProperty(input.businessId, input.propertyId);
     if (!property) throw new Error('PROPERTY_NOT_FOUND');
 
@@ -17,7 +17,7 @@ export class PropertyContextService {
     if (input.assetId && !asset) throw new Error('ASSET_NOT_FOUND');
 
     const knowledge = await this.repository.listKnowledge(input.businessId, input.propertyId, input.assetId);
-    const vendors = await this.repository.listVendors(input.businessId, asset?.category ?? undefined);
+    const vendors = await this.repository.listVendors(input.businessId, asset?.category);
 
     return {
       property: {
