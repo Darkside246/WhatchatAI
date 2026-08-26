@@ -1,11 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { CommunicationEventSchema, type ActionRequest, type AgentTask, type CommunicationEvent, type AgentExecutionResult, type AuditEvent, type AgentCapability } from '../../domain/platform/contracts.js';
 import type { AgentRuntimeAdapter } from '../../domain/platform/contracts.js';
+import { evaluateActionPolicy, type ActionPolicyDecision } from './actionPolicyService.js';
 
-export type HarnessDecision =
-  | { kind: 'NO_ACTION'; reason: string }
-  | { kind: 'HUMAN_APPROVAL'; action: ActionRequest; reason: string }
-  | { kind: 'READY'; action: ActionRequest };
+export type HarnessDecision = ActionPolicyDecision;
 
 export interface HarnessResult {
   communicationEvent: CommunicationEvent;
@@ -41,22 +39,6 @@ function auditDigest(event: Omit<AuditEvent, 'payloadHash' | 'previousHash'>): s
     occurredAt: event.occurredAt,
     metadata: event.metadata,
   });
-}
-
-function riskRequiresApproval(risk: ActionRequest['riskLevel']): boolean {
-  return risk === 'HIGH' || risk === 'CRITICAL';
-}
-
-function evaluateAction(action: ActionRequest): HarnessDecision {
-  if (action.tenantId.length === 0) return { kind: 'NO_ACTION', reason: 'action has no tenant binding' };
-  if (riskRequiresApproval(action.riskLevel) || action.approval.required) {
-    return {
-      kind: 'HUMAN_APPROVAL',
-      action: { ...action, approval: { ...action.approval, required: true, status: 'PENDING' }, status: 'PENDING_APPROVAL' },
-      reason: action.riskLevel === 'CRITICAL' ? 'critical action requires explicit human approval' : 'action risk or capability policy requires human approval',
-    };
-  }
-  return { kind: 'READY', action: { ...action, status: 'READY' } };
 }
 
 export function buildSyntheticCommunicationEvent(input: {
@@ -140,24 +122,19 @@ export async function runPlatformHarness(input: {
   const execution = await input.runtime.execute(task, input.context);
   appendAudit('AGENT_EXECUTION_COMPLETED', { kind: 'AGENT', id: input.agentId }, { executionId: execution.executionId, status: execution.status, output: execution.output });
 
+  const decisions: HarnessDecision[] = [];
   for (const action of execution.actionRequests) {
     if (action.tenantId !== input.event.tenantId) throw new Error('tenant boundary violation: agent returned cross-tenant ActionRequest');
-    if (!input.capability.allowedActions.includes(action.type)) {
-      appendAudit('ACTION_REJECTED_CAPABILITY', { kind: 'SYSTEM', id: 'policy-engine' }, { actionType: action.type }, action.id);
-      continue;
+    const decision = evaluateActionPolicy(action, input.capability);
+    decisions.push(decision);
+    if (decision.decision === 'DENY') {
+      appendAudit('ACTION_REJECTED_POLICY', { kind: 'SYSTEM', id: 'policy-engine' }, { reason: decision.reason, actionType: action.type }, action.id);
+    } else if (decision.decision === 'REQUIRE_APPROVAL') {
+      appendAudit('APPROVAL_REQUESTED', { kind: 'SYSTEM', id: 'policy-engine' }, { status: decision.action.status, riskLevel: action.riskLevel }, action.id);
+    } else {
+      appendAudit('ACTION_READY', { kind: 'SYSTEM', id: 'policy-engine' }, { status: decision.action.status, riskLevel: action.riskLevel }, action.id);
     }
-    if (input.capability.forbiddenActions.includes(action.type)) {
-      appendAudit('ACTION_REJECTED_FORBIDDEN', { kind: 'SYSTEM', id: 'policy-engine' }, { actionType: action.type }, action.id);
-      continue;
-    }
-    const decision = evaluateAction(action);
-    appendAudit(decision.kind === 'HUMAN_APPROVAL' ? 'APPROVAL_REQUESTED' : 'ACTION_READY', { kind: 'SYSTEM', id: 'policy-engine' }, { status: decision.kind === 'NO_ACTION' ? undefined : decision.action.status, riskLevel: action.riskLevel, reason: decision.kind === 'NO_ACTION' ? decision.reason : undefined }, action.id);
   }
-
-  const decisions = execution.actionRequests
-    .filter((action) => action.tenantId === input.event.tenantId)
-    .filter((action) => input.capability.allowedActions.includes(action.type) && !input.capability.forbiddenActions.includes(action.type))
-    .map(evaluateAction);
 
   if (!verifyAuditChain(audit)) throw new Error('audit chain verification failed');
   return { communicationEvent: input.event, task, execution, decisions, audit };
