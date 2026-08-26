@@ -9,7 +9,7 @@ export class ApprovalService {
   constructor(private readonly db: Queryable, private readonly actions = new PlatformActionRepository(db)) {}
 
   async persistAction(action: ActionRequest): Promise<PlatformActionRow> {
-    return this.actions.create({
+    const row = await this.actions.create({
       id: action.id,
       businessId: action.tenantId,
       type: action.type,
@@ -23,6 +23,16 @@ export class ApprovalService {
       idempotencyKey: action.idempotencyKey,
       correlationId: action.correlationId,
     });
+    if (row.approvalRequired && row.approvalStatus === 'PENDING' && row.status === 'PENDING_APPROVAL') {
+      await this.actions.createApproval({
+        id: randomUUID(),
+        actionRequestId: row.id,
+        businessId: row.businessId,
+        requestedForPermission: action.type,
+        requestedByAgentId: action.requestedBy.kind === 'AGENT' ? action.requestedBy.id : undefined,
+      });
+    }
+    return row;
   }
 
   async approve(input: { businessId: string; actionId: string; userId: string; reason?: string }): Promise<PlatformActionRow> {
@@ -39,11 +49,13 @@ export class ApprovalService {
 
   private async decide(input: { businessId: string; actionId: string; userId: string; reason?: string }, decision: ApprovalDecision): Promise<PlatformActionRow> {
     if (!input.userId) throw new Error('APPROVER_REQUIRED');
-    const existing = await this.actions.getByIdempotencyKey(input.businessId, `approval:${input.actionId}`);
-    if (existing) return existing;
-    const action = await this.findAction(input.businessId, input.actionId);
+    const action = await this.actions.getById(input.businessId, input.actionId);
     if (!action) throw new Error('ACTION_NOT_FOUND');
     if (action.approvalStatus !== 'PENDING' || action.status !== 'PENDING_APPROVAL') throw new Error('ACTION_NOT_PENDING_APPROVAL');
+
+    const approval = await this.actions.decideApproval(input.businessId, action.id, input.userId, decision, input.reason);
+    if (!approval) throw new Error('ACTION_NOT_PENDING_APPROVAL');
+
     const updated = await this.actions.updateState(input.businessId, action.id, {
       approvalStatus: decision,
       status: decision === 'APPROVED' ? 'READY' : 'CANCELLED',
@@ -51,15 +63,4 @@ export class ApprovalService {
     if (!updated) throw new Error('ACTION_NOT_FOUND');
     return updated;
   }
-
-  private async findAction(businessId: string, actionId: string): Promise<PlatformActionRow | null> {
-    const { rows } = await this.db.query<PlatformActionRow>(
-      `SELECT id,business_id AS "businessId",type,payload,requested_by_kind AS "requestedByKind",requested_by_id AS "requestedById",risk_level AS "riskLevel",approval_required AS "approvalRequired",approval_status AS "approvalStatus",status,idempotency_key AS "idempotencyKey",correlation_id AS "correlationId",created_at AS "createdAt",updated_at AS "updatedAt"
-       FROM platform_action_requests WHERE business_id = $1 AND id = $2`,
-      [businessId, actionId],
-    );
-    return rows[0] ?? null;
-  }
-
-  createApprovalId(): string { return randomUUID(); }
 }
