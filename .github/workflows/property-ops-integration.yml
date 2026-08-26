@@ -11,7 +11,36 @@ permissions:
 jobs:
   integrate-and-verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: whatchatai
+          POSTGRES_PASSWORD: whatchatai
+          POSTGRES_DB: whatchatai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U whatchatai -d whatchatai_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+
+    env:
+      DATABASE_URL: postgresql://whatchatai:whatchatai@127.0.0.1:5432/whatchatai_test
+      REDIS_URL: redis://127.0.0.1:6379/1
+      NODE_ENV: test
 
     steps:
       - name: Checkout branch
