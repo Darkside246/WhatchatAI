@@ -40,13 +40,13 @@ export class AgentRuntimeService {
 
 export const agentRuntimeService = new AgentRuntimeService();
 
-/**
- * Runtime registration is explicit and opt-in. This prevents a production
- * deployment from silently trying to execute a local `buzz-agent` binary
- * merely because the package exists on PATH.
- */
+let runtimesInitialised = false;
+
+/** Runtime registration is explicit and opt-in. No deployment silently starts a local Buzz process. */
 export function initializeAgentRuntimes(service = agentRuntimeService): void {
+  if (runtimesInitialised) return;
   if (process.env.WHATCHATAI_AGENT_RUNTIME === 'buzz-acp') {
     service.register(new BuzzAcpRuntimeAdapter());
   }
+  runtimesInitialised = true;
 }
