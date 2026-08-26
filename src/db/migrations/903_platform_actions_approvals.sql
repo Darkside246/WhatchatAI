@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS platform_action_approvals (
     ON DELETE CASCADE
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_platform_action_one_pending_approval
+  ON platform_action_approvals (business_id, action_request_id)
+  WHERE status = 'PENDING';
+
 CREATE INDEX IF NOT EXISTS idx_platform_approval_business_status
   ON platform_action_approvals (business_id, status, created_at DESC);
 
@@ -72,3 +76,19 @@ DROP TRIGGER IF EXISTS trg_platform_action_updated_at ON platform_action_request
 CREATE TRIGGER trg_platform_action_updated_at
   BEFORE UPDATE ON platform_action_requests
   FOR EACH ROW EXECUTE FUNCTION platform_touch_updated_at();
+
+CREATE OR REPLACE FUNCTION platform_prevent_audit_mutation() RETURNS TRIGGER AS $$
+BEGIN
+  RAISE EXCEPTION 'platform_audit_events are append-only';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_platform_audit_immutable_update ON platform_audit_events;
+CREATE TRIGGER trg_platform_audit_immutable_update
+  BEFORE UPDATE ON platform_audit_events
+  FOR EACH ROW EXECUTE FUNCTION platform_prevent_audit_mutation();
+
+DROP TRIGGER IF EXISTS trg_platform_audit_immutable_delete ON platform_audit_events;
+CREATE TRIGGER trg_platform_audit_immutable_delete
+  BEFORE DELETE ON platform_audit_events
+  FOR EACH ROW EXECUTE FUNCTION platform_prevent_audit_mutation();
