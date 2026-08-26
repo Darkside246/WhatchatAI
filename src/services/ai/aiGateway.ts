@@ -1,4 +1,4 @@
-import type { AiProviderAdapter } from '../../domain/platform/contracts.js';
+import type { AIProviderAdapter } from '../../domain/platform/contracts.js';
 
 export interface GatewayMedia {
   mimeType: string;
@@ -30,7 +30,7 @@ export interface GatewayResponse {
   attemptedProviders: string[];
 }
 
-export interface RegisteredAiProvider extends AiProviderAdapter {
+export interface RegisteredAiProvider extends AIProviderAdapter {
   model: string;
   priority: number;
 }
@@ -138,14 +138,16 @@ export class AiGateway {
           if (mediaError) throw new Error(mediaError);
         }
 
-        const response = await provider.generate({
+        const providerInput: Parameters<AIProviderAdapter['generate']>[0] = {
           tenantId: request.tenantId,
           operation: request.operation,
           messages: request.messages,
-          media: request.media,
-          responseFormat: request.responseFormat,
-          maxOutputTokens: request.maxOutputTokens,
-        });
+        };
+        if (request.media !== undefined) providerInput.media = request.media;
+        if (request.responseFormat !== undefined) providerInput.responseFormat = request.responseFormat;
+        if (request.maxOutputTokens !== undefined) providerInput.maxOutputTokens = request.maxOutputTokens;
+
+        const response = await provider.generate(providerInput);
 
         const text = response.text.trim();
         if (!text) throw new Error('provider returned an empty response');
