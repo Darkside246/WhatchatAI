@@ -12,12 +12,11 @@ export type PlatformActionRow = {
 export type PlatformApprovalRow = {
   id: string; actionRequestId: string; businessId: string;
   status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED' | 'CANCELLED';
-  requestedForPermission: string | null; requestedByAgentId: string | null;
-  decidedByUserId: string | null; reason: string | null; createdAt: Date; decidedAt: Date | null;
+  approverUserId: string | null; decisionReason: string | null; createdAt: Date; decidedAt: Date | null;
 };
 
 const ACTION_COLUMNS = `id,business_id AS "businessId",type,payload,requested_by_kind AS "requestedByKind",requested_by_id AS "requestedById",risk_level AS "riskLevel",approval_required AS "approvalRequired",approval_status AS "approvalStatus",status,idempotency_key AS "idempotencyKey",correlation_id AS "correlationId",created_at AS "createdAt",updated_at AS "updatedAt"`;
-const APPROVAL_COLUMNS = `id,action_request_id AS "actionRequestId",business_id AS "businessId",status,requested_for_permission AS "requestedForPermission",requested_by_agent_id AS "requestedByAgentId",decided_by_user_id AS "decidedByUserId",reason,created_at AS "createdAt",decided_at AS "decidedAt"`;
+const APPROVAL_COLUMNS = `id,action_request_id AS "actionRequestId",business_id AS "businessId",status,approver_user_id AS "approverUserId",decision_reason AS "decisionReason",created_at AS "createdAt",decided_at AS "decidedAt"`;
 
 export class PlatformActionRepository {
   constructor(private readonly db: Queryable) {}
@@ -49,8 +48,8 @@ export class PlatformActionRepository {
     return rows[0] ?? null;
   }
 
-  async createApproval(input: { id: string; actionRequestId: string; businessId: string; requestedForPermission?: string | undefined; requestedByAgentId?: string | undefined }): Promise<PlatformApprovalRow> {
-    const { rows } = await this.db.query<PlatformApprovalRow>(`INSERT INTO platform_action_approvals (id,action_request_id,business_id,status,requested_for_permission,requested_by_agent_id) VALUES ($1,$2,$3,'PENDING',$4,$5) ON CONFLICT DO NOTHING RETURNING ${APPROVAL_COLUMNS}`, [input.id,input.actionRequestId,input.businessId,input.requestedForPermission ?? null,input.requestedByAgentId ?? null]);
+  async createApproval(input: { id: string; actionRequestId: string; businessId: string }): Promise<PlatformApprovalRow> {
+    const { rows } = await this.db.query<PlatformApprovalRow>(`INSERT INTO platform_approvals (id,action_request_id,business_id,status) VALUES ($1,$2,$3,'PENDING') ON CONFLICT (business_id,action_request_id) DO NOTHING RETURNING ${APPROVAL_COLUMNS}`, [input.id,input.actionRequestId,input.businessId]);
     if (!rows[0]) {
       const existing = await this.getApprovalByAction(input.businessId, input.actionRequestId);
       if (!existing) throw new Error('platform approval insert returned no row');
@@ -60,12 +59,12 @@ export class PlatformActionRepository {
   }
 
   async getApprovalByAction(businessId: string, actionId: string): Promise<PlatformApprovalRow | null> {
-    const { rows } = await this.db.query<PlatformApprovalRow>(`SELECT ${APPROVAL_COLUMNS} FROM platform_action_approvals WHERE business_id = $1 AND action_request_id = $2 ORDER BY created_at DESC LIMIT 1`, [businessId, actionId]);
+    const { rows } = await this.db.query<PlatformApprovalRow>(`SELECT ${APPROVAL_COLUMNS} FROM platform_approvals WHERE business_id = $1 AND action_request_id = $2`, [businessId, actionId]);
     return rows[0] ?? null;
   }
 
   async decideApproval(businessId: string, actionId: string, userId: string, status: 'APPROVED' | 'REJECTED', reason?: string | undefined): Promise<PlatformApprovalRow | null> {
-    const { rows } = await this.db.query<PlatformApprovalRow>(`UPDATE platform_action_approvals SET status = $3, decided_by_user_id = $4, reason = $5, decided_at = NOW() WHERE business_id = $1 AND action_request_id = $2 AND status = 'PENDING' RETURNING ${APPROVAL_COLUMNS}`, [businessId, actionId, status, userId, reason ?? null]);
+    const { rows } = await this.db.query<PlatformApprovalRow>(`UPDATE platform_approvals SET status = $3, approver_user_id = $4, decision_reason = $5, decided_at = NOW() WHERE business_id = $1 AND action_request_id = $2 AND status = 'PENDING' RETURNING ${APPROVAL_COLUMNS}`, [businessId, actionId, status, userId, reason ?? null]);
     return rows[0] ?? null;
   }
 
