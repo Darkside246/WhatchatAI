@@ -1,8 +1,9 @@
 import type { AiProviderAdapter } from '../../domain/platform/contracts.js';
 
 export interface GatewayMedia {
-  url: string;
   mimeType: string;
+  url?: string;
+  base64Data?: string;
 }
 
 export interface GatewayMessage {
@@ -34,18 +35,35 @@ export interface RegisteredAiProvider extends AiProviderAdapter {
   priority: number;
 }
 
+function mediaRequires(
+  capabilities: Awaited<ReturnType<RegisteredAiProvider['capabilities']>>,
+  media: GatewayMedia[],
+): string | null {
+  if (media.some((item) => item.mimeType.startsWith('image/')) && !capabilities.vision) return 'provider does not advertise image analysis';
+  if (media.some((item) => item.mimeType.startsWith('audio/')) && !capabilities.audio) return 'provider does not advertise audio processing';
+  if (media.some((item) => item.mimeType.startsWith('video/')) && !capabilities.video) return 'provider does not advertise video processing';
+  if (media.some((item) => !item.base64Data && !item.url)) return 'media item has neither base64Data nor url';
+  return null;
+}
+
 export class AiGateway {
   private readonly providers = new Map<string, RegisteredAiProvider>();
 
   register(provider: RegisteredAiProvider): void {
-    if (this.providers.has(provider.name)) {
-      throw new Error(`AI provider "${provider.name}" is already registered`);
-    }
+    if (this.providers.has(provider.name)) throw new Error(`AI provider "${provider.name}" is already registered`);
     this.providers.set(provider.name, provider);
+  }
+
+  registerMany(providers: RegisteredAiProvider[]): void {
+    for (const provider of providers) this.register(provider);
   }
 
   unregister(providerName: string): boolean {
     return this.providers.delete(providerName);
+  }
+
+  clear(): void {
+    this.providers.clear();
   }
 
   listProviders(): Array<{ name: string; model: string; priority: number }> {
@@ -90,11 +108,9 @@ export class AiGateway {
       try {
         const capabilities = await provider.capabilities();
         if (!capabilities.text) throw new Error('provider does not advertise text generation');
-        if (request.media?.length && !capabilities.vision && request.media.some((item) => item.mimeType.startsWith('image/'))) {
-          throw new Error('provider does not advertise image analysis');
-        }
-        if (request.media?.length && !capabilities.audio && request.media.some((item) => item.mimeType.startsWith('audio/'))) {
-          throw new Error('provider does not advertise audio processing');
+        if (request.media?.length) {
+          const mediaError = mediaRequires(capabilities, request.media);
+          if (mediaError) throw new Error(mediaError);
         }
 
         const response = await provider.generate({
