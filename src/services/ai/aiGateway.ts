@@ -35,15 +35,41 @@ export interface RegisteredAiProvider extends AiProviderAdapter {
   priority: number;
 }
 
+const MAX_MESSAGES = 64;
+const MAX_MESSAGE_CHARS = 20_000;
+const MAX_MEDIA_ITEMS = 8;
+const MAX_MEDIA_BASE64_CHARS = 12_000_000;
+const MAX_OUTPUT_TOKENS = 16_384;
+
 function mediaRequires(
   capabilities: Awaited<ReturnType<RegisteredAiProvider['capabilities']>>,
   media: GatewayMedia[],
 ): string | null {
-  if (media.some((item) => item.mimeType.startsWith('image/')) && !capabilities.vision) return 'provider does not advertise image analysis';
-  if (media.some((item) => item.mimeType.startsWith('audio/')) && !capabilities.audio) return 'provider does not advertise audio processing';
-  if (media.some((item) => item.mimeType.startsWith('video/')) && !capabilities.video) return 'provider does not advertise video processing';
-  if (media.some((item) => !item.base64Data && !item.url)) return 'media item has neither base64Data nor url';
+  if (media.length > MAX_MEDIA_ITEMS) return `too many media items (maximum ${MAX_MEDIA_ITEMS})`;
+  for (const item of media) {
+    if (!item.mimeType) return 'media item is missing mimeType';
+    if (!item.base64Data && !item.url) return 'media item has neither base64Data nor url';
+    if (item.base64Data && item.base64Data.length > MAX_MEDIA_BASE64_CHARS) return 'media item exceeds the gateway inline-data limit';
+    if (item.mimeType.startsWith('image/') && !capabilities.vision) return 'provider does not advertise image analysis';
+    if (item.mimeType.startsWith('audio/') && !capabilities.audio) return 'provider does not advertise audio processing';
+    if (item.mimeType.startsWith('video/') && !capabilities.video) return 'provider does not advertise video processing';
+    if (!/^https:\/\//i.test(item.url ?? '') && !item.base64Data) return 'remote media URLs must use HTTPS';
+  }
   return null;
+}
+
+function validateRequest(request: GatewayRequest): void {
+  if (!request.tenantId.trim()) throw new Error('AI gateway requires tenantId');
+  if (!request.operation.trim()) throw new Error('AI gateway requires operation');
+  if (request.messages.length === 0) throw new Error('AI gateway requires at least one message');
+  if (request.messages.length > MAX_MESSAGES) throw new Error(`AI gateway accepts at most ${MAX_MESSAGES} messages`);
+  for (const [index, message] of request.messages.entries()) {
+    if (!message.content.trim()) throw new Error(`AI gateway message ${index} is empty`);
+    if (message.content.length > MAX_MESSAGE_CHARS) throw new Error(`AI gateway message ${index} exceeds ${MAX_MESSAGE_CHARS} characters`);
+  }
+  if (request.maxOutputTokens !== undefined && (!Number.isInteger(request.maxOutputTokens) || request.maxOutputTokens < 1 || request.maxOutputTokens > MAX_OUTPUT_TOKENS)) {
+    throw new Error(`maxOutputTokens must be an integer between 1 and ${MAX_OUTPUT_TOKENS}`);
+  }
 }
 
 export class AiGateway {
@@ -87,8 +113,7 @@ export class AiGateway {
   }
 
   async generate(request: GatewayRequest): Promise<GatewayResponse> {
-    if (!request.tenantId) throw new Error('AI gateway requires tenantId');
-    if (request.messages.length === 0) throw new Error('AI gateway requires at least one message');
+    validateRequest(request);
 
     const eligible = [...this.providers.values()]
       .filter((provider) => !request.providerAllowlist || request.providerAllowlist.includes(provider.name))
@@ -122,11 +147,20 @@ export class AiGateway {
           maxOutputTokens: request.maxOutputTokens,
         });
 
-        if (!response.text.trim()) throw new Error('provider returned an empty response');
+        const text = response.text.trim();
+        if (!text) throw new Error('provider returned an empty response');
+        if (request.responseFormat === 'json') {
+          try {
+            JSON.parse(text);
+          } catch {
+            throw new Error('provider returned invalid JSON for a JSON-formatted request');
+          }
+        }
+
         return {
           provider: response.provider,
           model: provider.model,
-          text: response.text,
+          text,
           usage: response.usage,
           attemptedProviders,
         };
