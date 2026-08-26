@@ -11,7 +11,7 @@ function fakeProvider(options: {
   result?: string;
   error?: string;
 }): RegisteredAiProvider {
-  return {
+  const provider: RegisteredAiProvider = {
     name: options.name,
     model: options.model ?? `${options.name}-test-model`,
     priority: options.priority,
@@ -23,6 +23,7 @@ function fakeProvider(options: {
       return { provider: options.name, text: options.result ?? 'ok' };
     },
   };
+  return provider;
 }
 
 const baseRequest = {
