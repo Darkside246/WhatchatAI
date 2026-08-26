@@ -44,12 +44,12 @@ export class PlatformActionRepository {
     return rows[0] ?? null;
   }
 
-  async updateState(businessId: string, actionId: string, input: { status?: PlatformActionRow['status']; approvalStatus?: PlatformActionRow['approvalStatus'] }): Promise<PlatformActionRow | null> {
+  async updateState(businessId: string, actionId: string, input: { status?: PlatformActionRow['status'] | undefined; approvalStatus?: PlatformActionRow['approvalStatus'] | undefined }): Promise<PlatformActionRow | null> {
     const { rows } = await this.db.query<PlatformActionRow>(`UPDATE platform_action_requests SET status = COALESCE($3,status), approval_status = COALESCE($4,approval_status) WHERE business_id = $1 AND id = $2 RETURNING ${ACTION_COLUMNS}`, [businessId, actionId, input.status ?? null, input.approvalStatus ?? null]);
     return rows[0] ?? null;
   }
 
-  async createApproval(input: { id: string; actionRequestId: string; businessId: string; requestedForPermission?: string; requestedByAgentId?: string }): Promise<PlatformApprovalRow> {
+  async createApproval(input: { id: string; actionRequestId: string; businessId: string; requestedForPermission?: string | undefined; requestedByAgentId?: string | undefined }): Promise<PlatformApprovalRow> {
     const { rows } = await this.db.query<PlatformApprovalRow>(`INSERT INTO platform_action_approvals (id,action_request_id,business_id,status,requested_for_permission,requested_by_agent_id) VALUES ($1,$2,$3,'PENDING',$4,$5) ON CONFLICT DO NOTHING RETURNING ${APPROVAL_COLUMNS}`, [input.id,input.actionRequestId,input.businessId,input.requestedForPermission ?? null,input.requestedByAgentId ?? null]);
     if (!rows[0]) {
       const existing = await this.getApprovalByAction(input.businessId, input.actionRequestId);
@@ -64,7 +64,7 @@ export class PlatformActionRepository {
     return rows[0] ?? null;
   }
 
-  async decideApproval(businessId: string, actionId: string, userId: string, status: 'APPROVED' | 'REJECTED', reason?: string): Promise<PlatformApprovalRow | null> {
+  async decideApproval(businessId: string, actionId: string, userId: string, status: 'APPROVED' | 'REJECTED', reason?: string | undefined): Promise<PlatformApprovalRow | null> {
     const { rows } = await this.db.query<PlatformApprovalRow>(`UPDATE platform_action_approvals SET status = $3, decided_by_user_id = $4, reason = $5, decided_at = NOW() WHERE business_id = $1 AND action_request_id = $2 AND status = 'PENDING' RETURNING ${APPROVAL_COLUMNS}`, [businessId, actionId, status, userId, reason ?? null]);
     return rows[0] ?? null;
   }
