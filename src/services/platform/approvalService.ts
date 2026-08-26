@@ -28,8 +28,6 @@ export class ApprovalService {
         id: randomUUID(),
         actionRequestId: row.id,
         businessId: row.businessId,
-        requestedForPermission: action.type,
-        requestedByAgentId: action.requestedBy.kind === 'AGENT' ? action.requestedBy.id : undefined,
       });
     }
     return row;
