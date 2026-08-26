@@ -7,7 +7,8 @@ import { PropertyOperationsService } from '../services/property/propertyOperatio
 import { requireAuth, requirePermission, type AuthContext } from './authMiddleware.js';
 
 const router = Router();
-const operations = new PropertyOperationsService(new PropertyOperationsRepository(pool));
+const repository = new PropertyOperationsRepository(pool);
+const operations = new PropertyOperationsService(repository);
 
 router.use(requireAuth);
 
@@ -16,13 +17,9 @@ const propertySchema = z.object({
   name: z.string().trim().min(1).max(200),
   propertyType: z.string().trim().min(1).max(50).default('VILLA'),
   status: z.enum(['ACTIVE', 'INACTIVE', 'ARCHIVED']).default('ACTIVE'),
-  addressLine1: z.string().trim().max(500).nullish(),
-  addressLine2: z.string().trim().max(500).nullish(),
-  city: z.string().trim().max(200).nullish(),
-  countryCode: z.string().trim().length(2).toUpperCase().nullish(),
-  timezone: z.string().trim().max(100).nullish(),
-  guestInstructions: z.string().max(10000).nullish(),
-  emergencyInstructions: z.string().max(10000).nullish(),
+  addressLine1: z.string().trim().max(500).nullish(), addressLine2: z.string().trim().max(500).nullish(),
+  city: z.string().trim().max(200).nullish(), countryCode: z.string().trim().length(2).toUpperCase().nullish(),
+  timezone: z.string().trim().max(100).nullish(), guestInstructions: z.string().max(10000).nullish(), emergencyInstructions: z.string().max(10000).nullish(),
 });
 
 router.get('/properties', requirePermission('property.view'), async (req, res) => {
@@ -43,11 +40,11 @@ router.post('/properties', requirePermission('property.manage'), async (req, res
   const auth = res.locals.auth as AuthContext;
   const parsed = propertySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_PROPERTY', details: parsed.error.flatten() });
-  const property = await new PropertyOperationsRepository(pool).createProperty({
-    id: randomUUID(), businessId: auth.businessId, name: parsed.data.name, propertyType: parsed.data.propertyType,
-    status: parsed.data.status, addressLine1: parsed.data.addressLine1 ?? null, addressLine2: parsed.data.addressLine2 ?? null,
-    city: parsed.data.city ?? null, countryCode: parsed.data.countryCode ?? null, timezone: parsed.data.timezone ?? null,
-    guestInstructions: parsed.data.guestInstructions ?? null, emergencyInstructions: parsed.data.emergencyInstructions ?? null,
+  const property = await repository.createProperty({
+    id: randomUUID(), businessId: auth.businessId, name: parsed.data.name, propertyType: parsed.data.propertyType, status: parsed.data.status,
+    addressLine1: parsed.data.addressLine1 ?? null, addressLine2: parsed.data.addressLine2 ?? null, city: parsed.data.city ?? null,
+    countryCode: parsed.data.countryCode ?? null, timezone: parsed.data.timezone ?? null, guestInstructions: parsed.data.guestInstructions ?? null,
+    emergencyInstructions: parsed.data.emergencyInstructions ?? null,
   });
   return res.status(201).json({ property });
 });
@@ -68,7 +65,7 @@ router.post('/properties/:propertyId/units', requirePermission('property.manage'
   if (!await operations.getProperty(auth.businessId, propertyId)) return res.status(404).json({ error: 'PROPERTY_NOT_FOUND' });
   const parsed = unitSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_UNIT', details: parsed.error.flatten() });
-  const unit = await operations['repository'].createUnit({ id: randomUUID(), businessId: auth.businessId, propertyId, ...parsed.data });
+  const unit = await repository.createUnit({ id: randomUUID(), businessId: auth.businessId, propertyId, ...parsed.data });
   return res.status(201).json({ unit });
 });
 
@@ -87,7 +84,7 @@ router.post('/units/:unitId/assets', requirePermission('property.manage'), async
   const parsed = assetSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_ASSET', details: parsed.error.flatten() });
   try {
-    const asset = await operations['repository'].createAsset({ id: randomUUID(), businessId: auth.businessId, unitId, ...parsed.data });
+    const asset = await repository.createAsset({ id: randomUUID(), businessId: auth.businessId, unitId, ...parsed.data });
     return res.status(201).json({ asset });
   } catch (error) {
     if (error instanceof Error && error.message.includes('foreign key')) return res.status(404).json({ error: 'UNIT_NOT_FOUND' });
@@ -106,7 +103,7 @@ router.post('/vendors', requirePermission('property.manage'), async (req, res) =
   const auth = res.locals.auth as AuthContext;
   const parsed = vendorSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_VENDOR', details: parsed.error.flatten() });
-  const vendor = await operations['repository'].createVendor({ id: randomUUID(), businessId: auth.businessId, ...parsed.data });
+  const vendor = await repository.createVendor({ id: randomUUID(), businessId: auth.businessId, ...parsed.data });
   return res.status(201).json({ vendor });
 });
 
