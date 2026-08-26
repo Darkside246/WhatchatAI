@@ -37,6 +37,7 @@ function auditDigest(event: Omit<AuditEvent, 'payloadHash' | 'previousHash'>): s
     actor: event.actor,
     correlationId: event.correlationId,
     actionRequestId: event.actionRequestId,
+    payload: event.payload,
     occurredAt: event.occurredAt,
     metadata: event.metadata,
   });
@@ -117,7 +118,7 @@ export async function runPlatformHarness(input: {
   };
 
   const audit: AuditEvent[] = [];
-  const appendAudit = (eventType: string, actor: AuditEvent['actor'], _payload: Record<string, unknown>, actionRequestId?: string) => {
+  const appendAudit = (eventType: string, actor: AuditEvent['actor'], payload: Record<string, unknown>, actionRequestId?: string) => {
     const previousHash = audit.at(-1)?.payloadHash;
     const unsigned = {
       id: randomUUID(),
@@ -126,6 +127,7 @@ export async function runPlatformHarness(input: {
       actor,
       correlationId: input.event.correlationId,
       actionRequestId,
+      payload,
       occurredAt: clock.now().toISOString(),
       metadata: { harness: true },
     } satisfies Omit<AuditEvent, 'payloadHash' | 'previousHash'>;
