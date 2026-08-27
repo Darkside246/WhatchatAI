@@ -2,7 +2,9 @@ import type { Request, Response, NextFunction } from 'express';
 import { parseCookies, serializeCookie } from './cookies.js';
 import { validateSession } from '../services/authService.js';
 import { hasPermission, type BusinessRole, type Permission } from '../domain/auth/permissions.js';
-import type { PublicUser } from '../repositories/userRepository.js';
+import type { PlatformRole, PublicUser } from '../repositories/userRepository.js';
+import { getProductAccountAccess } from '../services/productAccountService.js';
+import type { ProductKey } from '../domain/platform/productAccounts.js';
 
 export const SESSION_COOKIE_NAME = 'wc_session';
 
@@ -10,6 +12,7 @@ export interface AuthContext {
   userId: string;
   businessId: string;
   role: BusinessRole;
+  platformRole: PlatformRole;
   sessionId: string;
   user: PublicUser;
 }
@@ -34,11 +37,6 @@ export function readSessionToken(req: Request): string | null {
   return cookies[SESSION_COOKIE_NAME] ?? null;
 }
 
-/**
- * The real authentication boundary. Populates res.locals.auth on success;
- * every /api/workspace/*, /api/whatsapp/*, /api/security/*, and /api/media/*
- * route sits behind this now - see server/index.ts's app.use() wiring.
- */
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = readSessionToken(req);
   if (!token) {
@@ -57,6 +55,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     userId: result.user.id,
     businessId: result.membership.businessId,
     role: result.membership.role,
+    platformRole: result.user.platformRole,
     sessionId: result.session.id,
     user: result.user,
   };
@@ -76,5 +75,65 @@ export function requirePermission(permission: Permission) {
       return;
     }
     next();
+  };
+}
+
+export function requireDeveloper(req: Request, res: Response, next: NextFunction): void {
+  const auth = res.locals.auth as AuthContext | undefined;
+  if (!auth) {
+    res.status(401).json({ error: 'NOT_AUTHENTICATED' });
+    return;
+  }
+  if (auth.platformRole !== 'DEVELOPER') {
+    res.status(403).json({ error: 'DEVELOPER_ACCESS_REQUIRED' });
+    return;
+  }
+  next();
+}
+
+/**
+ * Product routes use this boundary in addition to normal authentication and
+ * business permissions. The account id is supplied by the route parameter,
+ * then ownership and product identity are checked against PostgreSQL. A
+ * developer still bypasses product ownership only on explicitly developer
+ * routes, never by altering a client request.
+ */
+export function requireProductAccess(productKey: ProductKey, entitlementKey?: string) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const auth = res.locals.auth as AuthContext | undefined;
+    if (!auth) {
+      res.status(401).json({ error: 'NOT_AUTHENTICATED' });
+      return;
+    }
+
+    const accountId = String(req.params.productAccountId ?? req.header('x-whatchatai-product-account-id') ?? '');
+    if (!accountId) {
+      res.status(403).json({ error: 'PRODUCT_ACCOUNT_REQUIRED', product: productKey });
+      return;
+    }
+
+    try {
+      const access = await getProductAccountAccess(auth.userId, accountId);
+      if (access.account.productKey !== productKey) {
+        res.status(403).json({ error: 'PRODUCT_ACCESS_DENIED' });
+        return;
+      }
+      if (!access.operationalAccess) {
+        res.status(402).json({ error: 'PRODUCT_ACCESS_RESTRICTED', product: productKey, accountStatus: access.account.status });
+        return;
+      }
+      if (entitlementKey && !access.entitlements.some((entitlement) => entitlement.key === entitlementKey && entitlement.enabled)) {
+        res.status(403).json({ error: 'ENTITLEMENT_REQUIRED', entitlement: entitlementKey });
+        return;
+      }
+      res.locals.productAccount = access;
+      next();
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Product account not found.') {
+        res.status(404).json({ error: 'PRODUCT_ACCOUNT_NOT_FOUND' });
+        return;
+      }
+      throw error;
+    }
   };
 }
