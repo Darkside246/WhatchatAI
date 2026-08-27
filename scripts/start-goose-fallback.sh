@@ -9,7 +9,6 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
-# Load local-only settings. .env is gitignored and must never be committed.
 set -a
 # shellcheck disable=SC1091
 source .env
@@ -22,6 +21,7 @@ fi
 
 HOST="${GOOSE_SERVICE_HOST:-127.0.0.1}"
 PORT="${GOOSE_SERVICE_PORT:-3284}"
+UPSTREAM_PORT="${GOOSE_UPSTREAM_PORT:-3285}"
 
 if [[ "$HOST" != "127.0.0.1" && "$HOST" != "localhost" ]]; then
   echo "Refusing to expose the customer-facing Goose fallback beyond localhost." >&2
@@ -29,7 +29,6 @@ if [[ "$HOST" != "127.0.0.1" && "$HOST" != "localhost" ]]; then
   exit 1
 fi
 
-# Keep the WhatchatAI endpoint aligned with the Goose process we start.
 GOOSE_SERVICE_URL="${GOOSE_SERVICE_URL:-http://127.0.0.1:$PORT}"
 if grep -q '^GOOSE_SERVICE_URL=' .env; then
   sed -i "s|^GOOSE_SERVICE_URL=.*|GOOSE_SERVICE_URL=$GOOSE_SERVICE_URL|" .env
@@ -44,25 +43,34 @@ if [[ -z "${GOOSE_SERVICE_API_KEY:-}" ]]; then
   else
     GOOSE_SERVICE_API_KEY="$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")"
   fi
-
   if grep -q '^GOOSE_SERVICE_API_KEY=' .env; then
     sed -i "s/^GOOSE_SERVICE_API_KEY=.*/GOOSE_SERVICE_API_KEY=$GOOSE_SERVICE_API_KEY/" .env
   else
     printf 'GOOSE_SERVICE_API_KEY=%s\n' "$GOOSE_SERVICE_API_KEY" >> .env
   fi
-  echo "Generated a local Goose server secret and stored it in .env."
+  echo "Generated a local Goose service key and stored it in .env."
 fi
 
-# Goose's HTTP server reads this exact variable for bearer authentication.
 export GOOSE_SERVER__SECRET_KEY="$GOOSE_SERVICE_API_KEY"
-
-# The customer-facing fallback must be text-only. Chat mode disables Goose
-# extensions/tools, preventing WhatsApp content from reaching shell/file/MCP
-# capabilities even if the normal interactive Goose profile enables them.
 export GOOSE_MODE=chat
 export SECURITY_PROMPT_ENABLED=true
 export GOOSE_MAX_TURNS=4
+export GOOSE_UPSTREAM_URL="http://127.0.0.1:$UPSTREAM_PORT"
+export GOOSE_PROXY_HOST="$HOST"
+export GOOSE_PROXY_PORT="$PORT"
 
-echo "Starting authenticated Goose fallback on http://$HOST:$PORT"
-echo "Mode: chat (no Goose tools/extensions available to customer messages)"
-exec goose serve --host "$HOST" --port "$PORT"
+cleanup() {
+  if [[ -n "${GOOSE_PID:-}" ]]; then kill "$GOOSE_PID" 2>/dev/null || true; fi
+}
+trap cleanup EXIT INT TERM
+
+echo "Starting Goose engine on http://127.0.0.1:$UPSTREAM_PORT"
+goose serve --host 127.0.0.1 --port "$UPSTREAM_PORT" &
+GOOSE_PID=$!
+
+sleep 1
+
+echo "Starting WhatchatAI Goose failover adapter on http://$HOST:$PORT"
+echo "Adapter contract: GET /health and POST /generate"
+echo "Goose mode: chat (no customer-facing tools/extensions)"
+exec npx tsx scripts/goose-fallback-proxy.ts
