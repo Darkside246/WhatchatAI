@@ -39,6 +39,7 @@ export async function startTrial(input: { email: string; productKey: ProductKey 
     if (!identityId) throw new Error('Trial identity creation returned no id');
 
     const timing = createTrialTiming();
+    if (!timing.startsAt || !timing.endsAt) throw new Error('Trial timing creation returned an incomplete time window');
     const trial = await client.query<{ id: string }>(
       `INSERT INTO product_trials (trial_identity_id, product_id, state, starts_at, ends_at)
        VALUES ($1, $2, 'ACTIVE', $3, $4) RETURNING id`,
