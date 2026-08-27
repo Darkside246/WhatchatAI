@@ -1,5 +1,6 @@
 import type { AgentExecutionResult, AgentRuntimeAdapter, AgentTask } from '../../domain/platform/contracts.js';
 import { BuzzAcpRuntimeAdapter } from './buzzAcpRuntimeAdapter.js';
+import { OpenClawRuntimeAdapter } from './openClawRuntimeAdapter.js';
 
 export class AgentRuntimeService {
   private readonly runtimes = new Map<string, AgentRuntimeAdapter>();
@@ -42,11 +43,17 @@ export const agentRuntimeService = new AgentRuntimeService();
 
 let runtimesInitialised = false;
 
-/** Runtime registration is explicit and opt-in. No deployment silently starts a local Buzz process. */
+/** Runtime registration is explicit and opt-in. No deployment silently starts an external agent runtime. */
 export function initializeAgentRuntimes(service = agentRuntimeService): void {
   if (runtimesInitialised) return;
+
   if (process.env.WHATCHATAI_AGENT_RUNTIME === 'buzz-acp') {
     service.register(new BuzzAcpRuntimeAdapter());
   }
+
+  if (process.env.WHATCHATAI_AGENT_RUNTIME === 'openclaw' && process.env.OPENCLAW_GATEWAY_URL && process.env.OPENCLAW_GATEWAY_TOKEN) {
+    service.register(new OpenClawRuntimeAdapter());
+  }
+
   runtimesInitialised = true;
 }
