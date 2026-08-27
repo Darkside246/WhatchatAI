@@ -29,8 +29,7 @@ export function requirePermission(permission: Permission) { return (req: Request
 export function requireDeveloper(req: Request, res: Response, next: NextFunction): void {
   const auth = res.locals.auth as AuthContext | undefined;
   if (!auth) return void res.status(401).json({ error: 'NOT_AUTHENTICATED' });
-  const configuredEmails = (process.env.WHATCHATAI_DEVELOPER_EMAILS ?? '').split(',').map((email) => email.trim().toLowerCase()).filter(Boolean);
-  if (auth.platformRole !== 'DEVELOPER' && !configuredEmails.includes(auth.user.email.trim().toLowerCase())) return void res.status(403).json({ error: 'DEVELOPER_ACCESS_REQUIRED' });
+  if (auth.platformRole !== 'DEVELOPER') return void res.status(403).json({ error: 'DEVELOPER_ACCESS_REQUIRED' });
   next();
 }
 
@@ -38,6 +37,16 @@ export function requireProductAccess(productKey: ProductKey, entitlementKey?: st
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const auth = res.locals.auth as AuthContext | undefined;
     if (!auth) return void res.status(401).json({ error: 'NOT_AUTHENTICATED' });
+
+    // Platform developers are not customer tenants. They may inspect and operate
+    // product surfaces without requiring a customer product account, while all
+    // CLIENT users continue through the strict account + entitlement checks below.
+    if (auth.platformRole === 'DEVELOPER') {
+      res.locals.productAccount = null;
+      res.locals.developerProductAccess = { productKey, entitlementKey: entitlementKey ?? null, bypass: true };
+      return void next();
+    }
+
     const explicitAccountId = String(req.params.productAccountId ?? req.header('x-whatchatai-product-account-id') ?? '');
     const repository = new ProductAccountRepository(pool);
     const account = explicitAccountId ? await repository.findById(explicitAccountId) : await repository.findByBusinessAndProduct(auth.businessId, productKey);
