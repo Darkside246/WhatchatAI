@@ -13,9 +13,7 @@ export type MaintenanceClassification = z.infer<typeof MaintenanceClassification
 /**
  * Deterministic safety signals are deliberately conservative. They are a
  * safety boundary, not a substitute for conversational understanding.
- *
- * The language is intentionally tolerant of natural/informal phrasing. We
- * should not require a tenant to describe a fault in technical language.
+ * The wording accepts natural and informal WhatsApp-style phrasing.
  */
 const emergencySignals: Array<{ label: string; pattern: RegExp }> = [
   { label: 'fire_or_smoke', pattern: /\b(fire|smoke|flame|burning\s+smell|smell\s+of\s+burning)\b/i },
@@ -23,8 +21,9 @@ const emergencySignals: Array<{ label: string; pattern: RegExp }> = [
   { label: 'electrical_danger', pattern: /\b(sparking|sparks|exposed\s+wire|live\s+wire|electric\s+shock|electrical\s+fire|wire\s+is\s+burning)\b/i },
   {
     label: 'uncontrolled_water',
-    pattern: /\b(flood(?:ing)?|water\s+(?:is\s+)?pouring|water\s+(?:is\s+)?coming\s+(?:in|through|down)|water\s+(?:is\s+)?running\s+(?:in|through|down)|water\s+(?:all\s+over|everywhere)|burst\s+pipe|pipe\s+(?:has\s+)?burst|pipe\s+done\s+burst|ceiling\s+(?:is\s+)?collapsing|water\s+coming\s+through\s+the\s+ceiling|water\s+coming\s+down\s+from\s+upstairs)\b/i,
+    pattern: /\b(flood(?:ing)?|water\s+(?:is\s+)?pouring|water\s+(?:is\s+)?coming\s+(?:in|through|down)|water\s+(?:is\s+)?running\s+(?:in|through|down)|water\s+(?:all\s+over|everywhere)|burst\s+pipe|pipe\s+(?:has\s+)?burst|pipe\s+done\s+burst|water\s+coming\s+through\s+the\s+ceiling|water\s+coming\s+down\s+from\s+upstairs)\b/i,
   },
+  { label: 'structural_collapse', pattern: /\b(ceiling|roof|wall|floor)\s+(?:is\s+)?collapsing|\b(structure|ceiling|roof|wall)\s+(?:has\s+)?collapsed\b/i },
   { label: 'security_threat', pattern: /\b(break\s*-?\s*in|intruder|armed|threatened|dangerous\s+person)\b/i },
   { label: 'sewage_or_wastewater', pattern: /\b(raw\s+sewage|sewage\s+(?:is\s+)?backing\s+up|sewage\s+overflow|wastewater\s+overflow)\b/i },
 ];
@@ -36,7 +35,7 @@ const categoryRules: Array<[MaintenanceClassification['category'], RegExp]> = [
   ['ELECTRICAL', /\b(ac\s+power|breaker|circuit|electrical|outlet|socket|fuse|electric)\b/i],
   ['HVAC', /\b(ac|air\s+condition(?:er|ing)?|air-conditioning|thermostat|hvac|heat\s+pump|cooling|heat)\b/i],
   ['APPLIANCE', /\b(fridge|refrigerator|oven|stove|washer|dryer|dishwasher|microwave|appliance)\b/i],
-  ['PLUMBING', /\b(toilet|sink|drain|faucet|tap|shower|plumbing|pipe|clog(?:ged)?|blocked)\b/i],
+  ['PLUMBING', /\b(toilet|loo|sink|drain|faucet|tap|shower|plumbing|pipe|clog(?:ged)?|blocked)\b/i],
   ['STRUCTURAL', /\b(ceiling|roof|wall|window|door\s+frame|foundation|structural)\b/i],
   ['SECURITY', /\b(lock|alarm|camera|key|intruder|security)\b/i],
   ['WATER', /\b(leak|leaking|flood|water|ceiling\s+stain|dripping)\b/i],
@@ -69,7 +68,9 @@ export function classifyMaintenanceMessage(text: string): MaintenanceClassificat
 
   const category = matchedSafetySignals.includes('uncontrolled_water')
     ? 'WATER'
-    : categoryRules.find(([, pattern]) => pattern.test(input))?.[0] ?? 'OTHER';
+    : matchedSafetySignals.includes('structural_collapse')
+      ? 'STRUCTURAL'
+      : categoryRules.find(([, pattern]) => pattern.test(input))?.[0] ?? 'OTHER';
 
   if (matchedSafetySignals.length > 0) {
     return {
