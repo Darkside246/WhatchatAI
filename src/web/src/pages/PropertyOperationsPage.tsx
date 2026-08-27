@@ -86,31 +86,29 @@ export function PropertyOperationsPage() {
             <h1 className="mt-1 text-2xl font-semibold text-fg">Property Operations</h1>
             <p className="mt-1 text-caption text-fg-muted">Triage urgent maintenance first, then manage the rest of your portfolio.</p>
           </div>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={() => void load()} className="inline-flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-caption text-fg hover:bg-surface-2">
-              <RefreshCw size={15} /> Refresh
-            </button>
-          </div>
+          <button type="button" onClick={() => void load()} className="inline-flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-caption text-fg hover:bg-surface-2">
+            <RefreshCw size={15} /> Refresh
+          </button>
         </header>
 
         {error && (
-          <div className="mb-5 flex items-center justify-between gap-4 rounded-xl border border-danger/30 bg-danger/5 p-4 text-caption text-danger">
+          <div className="mb-5 flex items-center justify-between gap-4 rounded-xl border border-error/30 bg-error/5 p-4 text-caption text-error">
             <span>{error}</span>
-            <button type="button" onClick={() => void load()} className="rounded-lg border border-danger/30 px-3 py-1.5 text-meta hover:bg-danger/10">Try again</button>
+            <button type="button" onClick={() => void load()} className="rounded-lg border border-error/30 px-3 py-1.5 text-meta hover:bg-error/10">Try again</button>
           </div>
         )}
 
         {criticalIncidents.length > 0 && (
-          <section className="mb-5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3">
+          <section className="mb-5 rounded-xl border border-error/30 bg-error/5 px-4 py-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-3">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-danger/10 text-danger"><ShieldAlert size={18} /></span>
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-error/10 text-error"><ShieldAlert size={18} /></span>
                 <div className="min-w-0">
-                  <p className="text-caption font-medium text-danger">{criticalIncidents.length} emergency {criticalIncidents.length === 1 ? 'incident requires' : 'incidents require'} attention</p>
+                  <p className="text-caption font-medium text-error">{criticalIncidents.length} emergency {criticalIncidents.length === 1 ? 'incident requires' : 'incidents require'} attention</p>
                   <p className="truncate text-meta text-fg-muted">{criticalIncidents.slice(0, 2).map((incident) => incident.title).join(' · ')}</p>
                 </div>
               </div>
-              <button type="button" onClick={() => { setSeverityFilter('EMERGENCY'); setSelectedIncidentId(criticalIncidents[0]?.id ?? null); }} className="inline-flex items-center gap-2 rounded-lg bg-danger px-3 py-2 text-caption font-medium text-white">
+              <button type="button" onClick={() => { setSeverityFilter('EMERGENCY'); setSelectedIncidentId(criticalIncidents[0]?.id ?? null); }} className="inline-flex items-center gap-2 rounded-lg bg-error px-3 py-2 text-caption font-medium text-white">
                 Review critical queue <ChevronRight size={15} />
               </button>
             </div>
@@ -121,24 +119,20 @@ export function PropertyOperationsPage() {
           <Metric icon={Building2} label="Properties" value={properties.length} />
           <Metric icon={Wrench} label="Open incidents" value={openCount} />
           <Metric icon={AlertTriangle} label="Priority" value={priorityCount} tone="warning" />
-          <Metric icon={ShieldAlert} label="Emergency" value={emergencyCount} tone="danger" />
+          <Metric icon={ShieldAlert} label="Emergency" value={emergencyCount} tone="error" />
         </section>
 
         <div className="grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)_360px]">
           <aside className="rounded-xl border border-border-subtle bg-surface-1 xl:sticky xl:top-0 xl:self-start">
-            <div className="border-b border-border-subtle px-4 py-3">
-              <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-fg-muted">Triage queue</p>
-            </div>
+            <div className="border-b border-border-subtle px-4 py-3"><p className="text-meta font-medium uppercase tracking-[0.14em] text-fg-muted">Triage queue</p></div>
             <div className="space-y-1 p-2">
               <QueueButton active={severityFilter === 'ALL'} icon={Wrench} label="All incidents" count={incidents.length} onClick={() => setSeverityFilter('ALL')} />
-              <QueueButton active={severityFilter === 'EMERGENCY'} icon={ShieldAlert} label="Emergency" count={emergencyCount} tone="danger" onClick={() => setSeverityFilter('EMERGENCY')} />
+              <QueueButton active={severityFilter === 'EMERGENCY'} icon={ShieldAlert} label="Emergency" count={emergencyCount} tone="error" onClick={() => setSeverityFilter('EMERGENCY')} />
               <QueueButton active={severityFilter === 'PRIORITY'} icon={AlertTriangle} label="Priority" count={priorityCount} tone="warning" onClick={() => setSeverityFilter('PRIORITY')} />
               <QueueButton active={severityFilter === 'ROUTINE'} icon={CheckCircle2} label="Routine" count={incidents.filter((incident) => incident.severity === 'ROUTINE').length} onClick={() => setSeverityFilter('ROUTINE')} />
             </div>
 
-            <div className="border-y border-border-subtle px-4 py-3">
-              <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-fg-muted">Properties</p>
-            </div>
+            <div className="border-y border-border-subtle px-4 py-3"><p className="text-meta font-medium uppercase tracking-[0.14em] text-fg-muted">Properties</p></div>
             <div className="max-h-[380px] overflow-auto p-2">
               <button type="button" onClick={() => setSelectedProperty(null)} className={`mb-1 flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left ${selectedProperty === null ? 'bg-accent-soft text-accent' : 'text-fg hover:bg-surface-2'}`}>
                 <span className="text-caption font-medium">All properties</span><span className="text-meta text-fg-muted">{properties.length}</span>
@@ -155,10 +149,7 @@ export function PropertyOperationsPage() {
 
           <section className="min-w-0 rounded-xl border border-border-subtle bg-surface-1">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border-subtle px-4 py-3">
-              <div>
-                <h2 className="text-sm font-medium text-fg">Maintenance incidents</h2>
-                <p className="mt-0.5 text-meta text-fg-muted">Urgent work is ranked first.</p>
-              </div>
+              <div><h2 className="text-body font-medium text-fg">Maintenance incidents</h2><p className="mt-0.5 text-meta text-fg-muted">Urgent work is ranked first.</p></div>
               <span className="rounded-full bg-surface-2 px-2 py-1 text-meta text-fg-muted">{filteredIncidents.length}</span>
             </div>
             <div className="flex flex-wrap gap-2 border-b border-border-subtle px-4 py-3">
@@ -172,7 +163,7 @@ export function PropertyOperationsPage() {
 
             <div className="overflow-x-auto">
               <div className="min-w-[760px]">
-                <div className="grid grid-cols-[minmax(190px,1.2fr)_120px_105px_105px_minmax(180px,1.4fr)_40px] gap-3 border-b border-border-subtle bg-surface-2/40 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-fg-muted">
+                <div className="grid grid-cols-[minmax(190px,1.2fr)_120px_105px_105px_minmax(180px,1.4fr)_40px] gap-3 border-b border-border-subtle bg-surface-2/40 px-4 py-2 text-meta font-medium uppercase tracking-wide text-fg-muted">
                   <span>Incident</span><span>Category</span><span>Urgency</span><span>Status</span><span>AI summary</span><span />
                 </div>
                 {loading && <p className="px-4 py-8 text-center text-caption text-fg-muted">Loading incidents…</p>}
@@ -193,7 +184,7 @@ export function PropertyOperationsPage() {
 
           <aside className="rounded-xl border border-border-subtle bg-surface-1 xl:sticky xl:top-0 xl:self-start">
             <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
-              <div><p className="text-[11px] font-medium uppercase tracking-[0.14em] text-fg-muted">Incident detail</p><h2 className="mt-1 text-caption font-medium text-fg">{selectedIncident ? selectedIncident.title : 'Select an incident'}</h2></div>
+              <div><p className="text-meta font-medium uppercase tracking-[0.14em] text-fg-muted">Incident detail</p><h2 className="mt-1 text-caption font-medium text-fg">{selectedIncident ? selectedIncident.title : 'Select an incident'}</h2></div>
               {selectedIncident && <SeverityBadge label={selectedIncident.severity} />}
             </div>
             {!selectedIncident && <div className="px-4 py-10 text-center text-caption text-fg-muted">Choose an incident to review its operational details.</div>}
@@ -206,11 +197,11 @@ export function PropertyOperationsPage() {
                   <Detail label="Urgency" value={selectedIncident.severity} />
                 </div>
                 <div>
-                  <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-fg-muted">AI summary</p>
+                  <p className="text-meta font-medium uppercase tracking-[0.14em] text-fg-muted">AI summary</p>
                   <p className="mt-2 rounded-lg bg-surface-2 p-3 text-caption leading-6 text-fg-secondary">{selectedIncident.aiSummary || 'No AI summary is available for this incident yet.'}</p>
                 </div>
                 <div className="border-t border-border-subtle pt-4">
-                  <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.14em] text-fg-muted">Operational actions</p>
+                  <p className="mb-2 text-meta font-medium uppercase tracking-[0.14em] text-fg-muted">Operational actions</p>
                   <p className="text-caption leading-6 text-fg-muted">Actions are intentionally limited to the workflows currently available through the property operations backend. Additional assignment and escalation controls will be connected when their API actions are implemented.</p>
                 </div>
               </div>
@@ -233,26 +224,26 @@ function formatDate(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-function Metric({ icon: Icon, label, value, tone }: { icon: typeof Building2; label: string; value: number; tone?: 'danger' | 'warning' }) {
-  const toneClass = tone === 'danger' ? 'text-danger' : tone === 'warning' ? 'text-warning' : 'text-fg';
+function Metric({ icon: Icon, label, value, tone }: { icon: typeof Building2; label: string; value: number; tone?: 'error' | 'warning' }) {
+  const toneClass = tone === 'error' ? 'text-error' : tone === 'warning' ? 'text-warning' : 'text-fg';
   return <div className="rounded-xl border border-border-subtle bg-surface-1 p-4"><div className="flex items-center gap-2 text-meta text-fg-muted"><Icon size={15} />{label}</div><div className={`mt-2 text-2xl font-semibold ${toneClass}`}>{value}</div></div>;
 }
 
-function QueueButton({ active, icon: Icon, label, count, tone, onClick }: { active: boolean; icon: typeof Wrench; label: string; count: number; tone?: 'danger' | 'warning'; onClick: () => void }) {
-  const toneClass = tone === 'danger' ? 'text-danger' : tone === 'warning' ? 'text-warning' : 'text-fg-secondary';
+function QueueButton({ active, icon: Icon, label, count, tone, onClick }: { active: boolean; icon: typeof Wrench; label: string; count: number; tone?: 'error' | 'warning'; onClick: () => void }) {
+  const toneClass = tone === 'error' ? 'text-error' : tone === 'warning' ? 'text-warning' : 'text-fg-secondary';
   return <button type="button" onClick={onClick} className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left ${active ? 'bg-accent-soft text-accent' : 'text-fg hover:bg-surface-2'}`}><span className="flex items-center gap-2 text-caption font-medium"><Icon size={15} className={active ? 'text-accent' : toneClass} />{label}</span><span className="text-meta text-fg-muted">{count}</span></button>;
 }
 
 function SeverityBadge({ label }: { label: string }) {
-  const className = label === 'EMERGENCY' ? 'bg-danger/10 text-danger' : label === 'PRIORITY' ? 'bg-warning/10 text-warning' : 'bg-surface-2 text-fg-muted';
-  return <span className={`inline-flex w-fit rounded-full px-2 py-1 text-[11px] font-medium ${className}`}>{label}</span>;
+  const className = label === 'EMERGENCY' ? 'bg-error/10 text-error' : label === 'PRIORITY' ? 'bg-warning/10 text-warning' : 'bg-surface-2 text-fg-muted';
+  return <span className={`inline-flex w-fit rounded-full px-2 py-1 text-meta font-medium ${className}`}>{label}</span>;
 }
 
 function StatusBadge({ label }: { label: string }) {
-  const className = ['RESOLVED', 'CLOSED'].includes(label) ? 'bg-success/10 text-success' : label === 'ESCALATED' ? 'bg-danger/10 text-danger' : 'bg-surface-2 text-fg-muted';
-  return <span className={`inline-flex w-fit rounded-full px-2 py-1 text-[11px] font-medium ${className}`}>{label}</span>;
+  const className = ['RESOLVED', 'CLOSED'].includes(label) ? 'bg-success/10 text-success' : label === 'ESCALATED' ? 'bg-error/10 text-error' : 'bg-surface-2 text-fg-muted';
+  return <span className={`inline-flex w-fit rounded-full px-2 py-1 text-meta font-medium ${className}`}>{label}</span>;
 }
 
 function Detail({ label, value }: { label: string; value: string }) {
-  return <div><p className="text-[11px] text-fg-muted">{label}</p><p className="mt-1 truncate text-caption text-fg">{value}</p></div>;
+  return <div><p className="text-meta text-fg-muted">{label}</p><p className="mt-1 truncate text-caption text-fg">{value}</p></div>;
 }
