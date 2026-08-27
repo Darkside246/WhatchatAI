@@ -17,14 +17,16 @@ const emergencySignals: Array<{ label: string; pattern: RegExp }> = [
   { label: 'security_threat', pattern: /\b(break in|break-in|intruder|armed|threatened|dangerous person)\b/i },
 ];
 
+// More specific categories must precede generic WATER signals. Otherwise a
+// phrase such as "sink is dripping" is incorrectly classified as WATER.
 const categoryRules: Array<[MaintenanceClassification['category'], RegExp]> = [
   ['ELECTRICAL', /\b(ac power|breaker|circuit|electrical|outlet|socket|fuse|electric)\b/i],
-  ['WATER', /\b(leak|leaking|flood|water|ceiling stain|dripping)\b/i],
   ['HVAC', /\b(ac|air condition|air-conditioning|thermostat|hvac|heat pump|cooling)\b/i],
   ['APPLIANCE', /\b(fridge|refrigerator|oven|stove|washer|dryer|dishwasher|microwave|appliance)\b/i],
   ['PLUMBING', /\b(toilet|sink|drain|faucet|tap|shower|plumbing)\b/i],
   ['STRUCTURAL', /\b(ceiling|roof|wall|window|door frame|foundation|structural)\b/i],
   ['SECURITY', /\b(lock|alarm|camera|key|intruder|security)\b/i],
+  ['WATER', /\b(leak|leaking|flood|water|ceiling stain|dripping)\b/i],
 ];
 
 export function classifyMaintenanceMessage(text: string): MaintenanceClassification {
@@ -32,19 +34,9 @@ export function classifyMaintenanceMessage(text: string): MaintenanceClassificat
   const matchedSafetySignals = emergencySignals.filter(({ pattern }) => pattern.test(input)).map(({ label }) => label);
   const category = categoryRules.find(([, pattern]) => pattern.test(input))?.[0] ?? 'OTHER';
 
-  if (matchedSafetySignals.some((signal) => ['fire_or_smoke', 'gas_or_fuel', 'electrical_danger', 'security_threat'].includes(signal))) {
+  if (matchedSafetySignals.length > 0) {
     return {
       category,
-      urgency: 'EMERGENCY',
-      humanEscalationRequired: true,
-      matchedSafetySignals,
-      recommendedNextStep: 'ESCALATE_HUMAN',
-    };
-  }
-
-  if (matchedSafetySignals.includes('uncontrolled_water')) {
-    return {
-      category: 'WATER',
       urgency: 'EMERGENCY',
       humanEscalationRequired: true,
       matchedSafetySignals,
