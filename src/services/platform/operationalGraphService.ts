@@ -8,7 +8,7 @@ export class OperationalGraphService {
     const parsed = OperationalEntitySchema.parse(entity);
     const existing = this.entities.get(parsed.id);
 
-    if (existing?.tenantId !== parsed.tenantId) {
+    if (existing && existing.tenantId !== parsed.tenantId) {
       throw new Error('operational graph tenant ownership cannot change');
     }
 
