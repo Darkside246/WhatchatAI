@@ -20,6 +20,24 @@ if ! command -v goose >/dev/null 2>&1; then
   exit 1
 fi
 
+HOST="${GOOSE_SERVICE_HOST:-127.0.0.1}"
+PORT="${GOOSE_SERVICE_PORT:-3284}"
+
+if [[ "$HOST" != "127.0.0.1" && "$HOST" != "localhost" ]]; then
+  echo "Refusing to expose the customer-facing Goose fallback beyond localhost." >&2
+  echo "Set GOOSE_SERVICE_HOST=127.0.0.1 (the default)." >&2
+  exit 1
+fi
+
+# Keep the WhatchatAI endpoint aligned with the Goose process we start.
+GOOSE_SERVICE_URL="${GOOSE_SERVICE_URL:-http://127.0.0.1:$PORT}"
+if grep -q '^GOOSE_SERVICE_URL=' .env; then
+  sed -i "s|^GOOSE_SERVICE_URL=.*|GOOSE_SERVICE_URL=$GOOSE_SERVICE_URL|" .env
+else
+  printf '\nGOOSE_SERVICE_URL=%s\n' "$GOOSE_SERVICE_URL" >> .env
+fi
+export GOOSE_SERVICE_URL
+
 if [[ -z "${GOOSE_SERVICE_API_KEY:-}" ]]; then
   if command -v openssl >/dev/null 2>&1; then
     GOOSE_SERVICE_API_KEY="$(openssl rand -hex 32)"
@@ -30,7 +48,7 @@ if [[ -z "${GOOSE_SERVICE_API_KEY:-}" ]]; then
   if grep -q '^GOOSE_SERVICE_API_KEY=' .env; then
     sed -i "s/^GOOSE_SERVICE_API_KEY=.*/GOOSE_SERVICE_API_KEY=$GOOSE_SERVICE_API_KEY/" .env
   else
-    printf '\nGOOSE_SERVICE_API_KEY=%s\n' "$GOOSE_SERVICE_API_KEY" >> .env
+    printf 'GOOSE_SERVICE_API_KEY=%s\n' "$GOOSE_SERVICE_API_KEY" >> .env
   fi
   echo "Generated a local Goose server secret and stored it in .env."
 fi
@@ -44,15 +62,6 @@ export GOOSE_SERVER__SECRET_KEY="$GOOSE_SERVICE_API_KEY"
 export GOOSE_MODE=chat
 export SECURITY_PROMPT_ENABLED=true
 export GOOSE_MAX_TURNS=4
-
-HOST="${GOOSE_SERVICE_HOST:-127.0.0.1}"
-PORT="${GOOSE_SERVICE_PORT:-3284}"
-
-if [[ "$HOST" != "127.0.0.1" && "$HOST" != "localhost" ]]; then
-  echo "Refusing to expose the customer-facing Goose fallback beyond localhost." >&2
-  echo "Set GOOSE_SERVICE_HOST=127.0.0.1 (the default)." >&2
-  exit 1
-fi
 
 echo "Starting authenticated Goose fallback on http://$HOST:$PORT"
 echo "Mode: chat (no Goose tools/extensions available to customer messages)"
