@@ -1,3 +1,4 @@
+import { useLocation } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth.js';
 import { useAppGate } from './hooks/useAppGate.js';
 import { OnboardingPage } from './pages/OnboardingPage.js';
@@ -6,17 +7,14 @@ import { WorkspaceShell } from './pages/WorkspaceShell.js';
 import { ScreenLock } from './components/ScreenLock.js';
 import { LoginPage } from './pages/LoginPage.js';
 import { RegisterPage } from './pages/RegisterPage.js';
+import { PublicLandingPage, TrialStartPage } from './pages/PublicLandingPage.js';
 
 function AuthenticatedApp() {
   const gate = useAppGate();
 
   let content;
   if (gate.phase === 'loading') {
-    content = (
-      <div className="flex h-full items-center justify-center bg-surface-0 text-body text-gray-400">
-        Connecting to WhatchatAI backend…
-      </div>
-    );
+    content = <div className="flex h-full items-center justify-center bg-surface-0 text-body text-gray-400">Connecting to WhatchatAI backend…</div>;
   } else if (gate.phase === 'onboarding') {
     content = <OnboardingPage connection={gate.connection} />;
   } else if (gate.phase === 'syncing') {
@@ -30,17 +28,17 @@ function AuthenticatedApp() {
 
 export default function App() {
   const auth = useAuth();
+  const location = useLocation();
 
   if (auth.status === 'loading') {
-    return (
-      <div className="flex h-full items-center justify-center bg-surface-0 text-body text-gray-400">
-        Loading WhatchatAI…
-      </div>
-    );
+    return <div className="flex h-full items-center justify-center bg-surface-0 text-body text-gray-400">Loading WhatchatAI…</div>;
   }
 
   if (auth.status === 'unauthenticated') {
-    return auth.registrationOpen ? <RegisterPage /> : <LoginPage />;
+    if (location.pathname === '/trial') return <TrialStartPage />;
+    if (location.pathname === '/login') return <LoginPage />;
+    if (location.pathname === '/register') return <RegisterPage />;
+    return <PublicLandingPage />;
   }
 
   return <AuthenticatedApp />;
