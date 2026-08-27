@@ -1,54 +1,35 @@
-import { NavLink } from 'react-router-dom';
-import {
-  MessageCircle,
-  BarChart3,
-  Bot,
-  Contact,
-  Zap,
-  Megaphone,
-  Mail,
-  CreditCard,
-  Settings,
-  Building2,
-  type LucideIcon,
-} from 'lucide-react';
+import { NavLink, useLocation } from 'react-router-dom';
+import { MessageCircle, BarChart3, Bot, Contact, Zap, Megaphone, Mail, CreditCard, Settings, Building2, CookingPot, ClipboardList, Store, Truck, UsersRound, ShieldCheck, type LucideIcon } from 'lucide-react';
 
-const NAV_ITEMS: { to: string; label: string; icon: LucideIcon; implemented: boolean }[] = [
-  { to: '/chats', label: 'Inbox', icon: MessageCircle, implemented: true },
-  { to: '/dashboard', label: 'Dashboard', icon: BarChart3, implemented: true },
-  { to: '/agents', label: 'AI Agents', icon: Bot, implemented: true },
-  { to: '/crm', label: 'CRM & Leads', icon: Contact, implemented: true },
-  { to: '/property-operations', label: 'Property Operations', icon: Building2, implemented: true },
-  { to: '/automations', label: 'Automations', icon: Zap, implemented: false },
-  { to: '/marketing', label: 'Marketing', icon: Megaphone, implemented: false },
-  { to: '/email', label: 'Email', icon: Mail, implemented: true },
-  { to: '/billing', label: 'Billing', icon: CreditCard, implemented: true },
-  { to: '/settings', label: 'Settings', icon: Settings, implemented: true },
-];
+export type ProductNav = 'platform' | 'property' | 'food';
+type NavItem = { to: string; label: string; icon: LucideIcon };
+
+const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
+  platform: [
+    { to: '/chats', label: 'Inbox', icon: MessageCircle }, { to: '/dashboard', label: 'Dashboard', icon: BarChart3 }, { to: '/agents', label: 'AI Agents', icon: Bot }, { to: '/crm', label: 'CRM & Leads', icon: Contact }, { to: '/property-operations', label: 'Property Operations', icon: Building2 }, { to: '/automations', label: 'Automations', icon: Zap }, { to: '/marketing', label: 'Marketing', icon: Megaphone }, { to: '/email', label: 'Email', icon: Mail }, { to: '/billing', label: 'Billing', icon: CreditCard }, { to: '/settings', label: 'Settings', icon: Settings },
+  ],
+  property: [
+    { to: '/property', label: 'Overview', icon: BarChart3 }, { to: '/chats', label: 'Conversations', icon: MessageCircle }, { to: '/property-operations', label: 'Maintenance', icon: Building2 }, { to: '/property-operations', label: 'Work Orders', icon: ClipboardList }, { to: '/crm', label: 'Tenants & Contacts', icon: UsersRound }, { to: '/agents', label: 'Property Agent', icon: Bot }, { to: '/settings', label: 'Settings', icon: Settings },
+  ],
+  food: [
+    { to: '/food', label: 'Overview', icon: BarChart3 }, { to: '/food/operations', label: 'Orders & Kitchen', icon: CookingPot }, { to: '/chats', label: 'Conversations', icon: MessageCircle }, { to: '/food/operations', label: 'Menu', icon: Store }, { to: '/food/operations', label: 'Pickup & Delivery', icon: Truck }, { to: '/crm', label: 'Customers', icon: UsersRound }, { to: '/agents', label: 'Food Agent', icon: Bot }, { to: '/settings', label: 'Settings', icon: Settings },
+  ],
+};
+
+function currentProduct(pathname: string): ProductNav {
+  if (pathname.startsWith('/food')) return 'food';
+  if (pathname.startsWith('/property')) return 'property';
+  return 'platform';
+}
 
 export function SaasNavRail() {
-  return (
-    <nav className="hidden w-16 shrink-0 flex-col items-center gap-1 border-r border-border-subtle bg-surface-1 py-4 md:flex">
-      <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg bg-accent-soft text-body font-bold text-accent">W</div>
-      {NAV_ITEMS.map((item) => (
-        <NavLink key={item.to} to={item.to} className={({ isActive }) => `flex h-11 w-11 items-center justify-center rounded-lg transition-colors ${isActive ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-surface-2 hover:text-fg-secondary'}`} title={item.implemented ? item.label : `${item.label} (coming soon)`}>
-          <item.icon size={20} strokeWidth={1.75} aria-hidden />
-        </NavLink>
-      ))}
-    </nav>
-  );
+  const location = useLocation(); const items = NAV_ITEMS[currentProduct(location.pathname)];
+  return <nav className="hidden w-16 shrink-0 flex-col items-center gap-1 border-r border-border-subtle bg-surface-1 py-4 md:flex"><NavLink to="/" className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg bg-accent-soft text-body font-bold text-accent" title="WhatsChat">W</NavLink>{items.map((item) => <NavLink key={`${item.label}-${item.to}`} to={item.to} className={({ isActive }) => `flex h-11 w-11 items-center justify-center rounded-lg transition-colors ${isActive ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-surface-2 hover:text-fg-secondary'}`} title={item.label}><item.icon size={20} strokeWidth={1.75} aria-hidden /></NavLink>)}</nav>;
 }
 
 export function SaasNavBottomBar() {
-  return (
-    <nav className="flex shrink-0 items-center justify-around border-t border-border-subtle bg-surface-1 py-2 md:hidden">
-      {NAV_ITEMS.slice(0, 5).map((item) => (
-        <NavLink key={item.to} to={item.to} className={({ isActive }) => `flex h-10 w-10 items-center justify-center rounded-lg ${isActive ? 'bg-accent-soft text-accent' : 'text-fg-muted'}`} title={item.label}>
-          <item.icon size={20} strokeWidth={1.75} aria-hidden />
-        </NavLink>
-      ))}
-    </nav>
-  );
+  const location = useLocation(); const items = NAV_ITEMS[currentProduct(location.pathname)].slice(0, 5);
+  return <nav className="flex shrink-0 items-center justify-around border-t border-border-subtle bg-surface-1 py-2 md:hidden">{items.map((item) => <NavLink key={`${item.label}-${item.to}`} to={item.to} className={({ isActive }) => `flex h-10 w-10 items-center justify-center rounded-lg ${isActive ? 'bg-accent-soft text-accent' : 'text-fg-muted'}`} title={item.label}><item.icon size={20} strokeWidth={1.75} aria-hidden /></NavLink>)}</nav>;
 }
 
-export { NAV_ITEMS };
+export { NAV_ITEMS, currentProduct };
