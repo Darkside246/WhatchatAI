@@ -85,7 +85,9 @@ export function runFoodOrderingTurn(input: {
     const next = { ...state, fulfilmentMethod: fulfilment, status: state.lines.length ? 'NEEDS_CUSTOMER_DETAILS' as const : 'BROWSING' as const, pendingQuestion: undefined };
     if (!state.lines.length) return { state: next, reply: `Got you - ${fulfilment === 'PICKUP' ? 'pickup' : 'delivery'}. What would you like to order?` };
     if (fulfilment === 'DELIVERY') return { state: next, reply: 'Got you. What address should we deliver to?' };
-    return { state: next, reply: 'Got you. What name should we put the order under?' };
+
+    const ready = { ...next, status: 'READY_TO_CONFIRM' as const, pendingQuestion: undefined };
+    return { state: ready, reply: `${formatCart(ready, input.context.deliveryFee ?? 0)}\n\nDoes that look right?` };
   }
 
   if (/\b(menu|what do you have|what's available|whats available|food|meals)\b/i.test(text)) {
