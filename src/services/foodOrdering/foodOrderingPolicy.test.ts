@@ -25,8 +25,8 @@ describe('food ordering policy', () => {
     const state = createInitialFoodOrder('tenant-1', 'conversation-1');
     const next = addMenuItem(state, menu, '2 chicken roti and a mac pie');
     expect(next.lines).toHaveLength(2);
-    expect(next.lines[0].quantity).toBe(2);
-    expect(next.lines[1].name).toBe('Macaroni Pie');
+    expect(next.lines[0]!.quantity).toBe(2);
+    expect(next.lines[1]!.name).toBe('Macaroni Pie');
     expect(calculateOrderTotal(next)).toBe(30);
   });
 
