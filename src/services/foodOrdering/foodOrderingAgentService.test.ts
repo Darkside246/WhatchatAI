@@ -20,7 +20,7 @@ describe('food ordering agent', () => {
   it('handles a natural multi-item order and asks only for the next needed detail', () => {
     const first = runFoodOrderingTurn({ event: event('2 chicken roti and a mac pie'), context: { menu } });
     expect(first.state.lines).toHaveLength(2);
-    expect(first.reply).toContain('pickup or have it delivered');
+    expect(first.reply).toMatch(/pick it up or have it delivered/i);
 
     const second = runFoodOrderingTurn({ event: event('pickup'), state: first.state, context: { menu } });
     expect(second.reply).toContain('Does that look right?');
