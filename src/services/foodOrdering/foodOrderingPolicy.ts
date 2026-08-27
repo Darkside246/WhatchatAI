@@ -97,7 +97,8 @@ export function parseQuantity(text: string): number {
   const numeric = input.match(/\b(\d+)\b/);
   if (numeric) return Math.max(1, Number(numeric[1]));
   const word = input.match(/\b(a|an|one|two|three|four|five|six|seven|eight|nine|ten)\b/i);
-  return word ? quantityWords[word[1].toLowerCase()] : 1;
+  const quantityWord = word?.[1]?.toLowerCase();
+  return quantityWord ? (quantityWords[quantityWord] ?? 1) : 1;
 }
 
 export function calculateOrderTotal(state: FoodOrderState, deliveryFee = 0): number {
@@ -121,7 +122,9 @@ export function addMenuItem(state: FoodOrderState, menu: FoodMenuItem[], text: s
 }
 
 export function createInitialFoodOrder(tenantId: string, conversationId: string, customerPhone?: string): FoodOrderState {
-  return { tenantId, conversationId, customerPhone, lines: [], status: 'BROWSING' };
+  return customerPhone === undefined
+    ? { tenantId, conversationId, lines: [], status: 'BROWSING' }
+    : { tenantId, conversationId, customerPhone, lines: [], status: 'BROWSING' };
 }
 
 export function formatCart(state: FoodOrderState, deliveryFee = 0): string {
