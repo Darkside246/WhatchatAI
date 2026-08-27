@@ -67,10 +67,16 @@ export function runFoodOrderingTurn(input: {
   }
 
   if (detectCancellation(text)) {
+    if (!state.lines.length) {
+      return {
+        state: { ...state, status: 'CANCELLED', pendingQuestion: undefined },
+        reply: 'No problem. What can I help you with?',
+      };
+    }
     return {
       state: { ...state, status: 'CANCELLED', pendingQuestion: undefined },
-      reply: state.lines.length ? 'No problem, I’ve cancelled this order. If you need anything else, just message me.' : 'No problem. What can I help you with?',
-      action: state.lines.length ? 'CANCEL_ORDER' : undefined,
+      reply: 'No problem, I’ve cancelled this order. If you need anything else, just message me.',
+      action: 'CANCEL_ORDER',
     };
   }
 
