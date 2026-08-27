@@ -6,7 +6,7 @@ interface AccountRow {
   business_id: string;
   product_id: string;
   product_key: ProductKey;
-  owner_user_id: string;
+  owner_user_id: string | null;
   display_name: string;
   status: ProductAccountStatus;
   created_at: Date;
@@ -42,10 +42,8 @@ export class ProductAccountRepository {
     const { rows } = await this.db.query<AccountRow>(
       `SELECT pa.id, pa.business_id, pa.product_id, pc.product_key, pa.owner_user_id,
               pa.display_name, pa.status, pa.created_at, pa.updated_at
-         FROM product_accounts pa
-         JOIN product_catalog pc ON pc.id = pa.product_id
-        WHERE pa.id = $1`,
-      [id],
+         FROM product_accounts pa JOIN product_catalog pc ON pc.id = pa.product_id
+        WHERE pa.id = $1`, [id],
     );
     return rows[0] ? toAccount(rows[0]) : null;
   }
@@ -54,10 +52,8 @@ export class ProductAccountRepository {
     const { rows } = await this.db.query<AccountRow>(
       `SELECT pa.id, pa.business_id, pa.product_id, pc.product_key, pa.owner_user_id,
               pa.display_name, pa.status, pa.created_at, pa.updated_at
-         FROM product_accounts pa
-         JOIN product_catalog pc ON pc.id = pa.product_id
-        WHERE pa.owner_user_id = $1 AND pc.product_key = $2`,
-      [ownerUserId, productKey],
+         FROM product_accounts pa JOIN product_catalog pc ON pc.id = pa.product_id
+        WHERE pa.owner_user_id = $1 AND pc.product_key = $2`, [ownerUserId, productKey],
     );
     return rows[0] ? toAccount(rows[0]) : null;
   }
@@ -66,11 +62,18 @@ export class ProductAccountRepository {
     const { rows } = await this.db.query<AccountRow>(
       `SELECT pa.id, pa.business_id, pa.product_id, pc.product_key, pa.owner_user_id,
               pa.display_name, pa.status, pa.created_at, pa.updated_at
-         FROM product_accounts pa
-         JOIN product_catalog pc ON pc.id = pa.product_id
-        WHERE pa.owner_user_id = $1
+         FROM product_accounts pa JOIN product_catalog pc ON pc.id = pa.product_id
+        WHERE pa.owner_user_id = $1 ORDER BY pa.created_at ASC`, [ownerUserId],
+    );
+    return rows.map(toAccount);
+  }
+
+  async listAll() {
+    const { rows } = await this.db.query<AccountRow>(
+      `SELECT pa.id, pa.business_id, pa.product_id, pc.product_key, pa.owner_user_id,
+              pa.display_name, pa.status, pa.created_at, pa.updated_at
+         FROM product_accounts pa JOIN product_catalog pc ON pc.id = pa.product_id
         ORDER BY pa.created_at ASC`,
-      [ownerUserId],
     );
     return rows.map(toAccount);
   }
@@ -85,21 +88,16 @@ export class ProductAccountRepository {
   async listEntitlements(productAccountId: string): Promise<ProductEntitlement[]> {
     const { rows } = await this.db.query<EntitlementRow>(
       `SELECT entitlement_key, is_enabled, limit_value, source, expires_at
-         FROM product_entitlements
-        WHERE product_account_id = $1
-        ORDER BY entitlement_key`,
-      [productAccountId],
+         FROM product_entitlements WHERE product_account_id = $1 ORDER BY entitlement_key`, [productAccountId],
     );
-    return rows.map((row) => ({
-      key: row.entitlement_key,
-      enabled: row.is_enabled,
-      limit: row.limit_value,
-      source: row.source,
-      expiresAt: row.expires_at?.toISOString() ?? null,
-    }));
+    return rows.map((row) => ({ key: row.entitlement_key, enabled: row.is_enabled, limit: row.limit_value, source: row.source, expiresAt: row.expires_at?.toISOString() ?? null }));
   }
 
   async setStatus(id: string, status: ProductAccountStatus): Promise<void> {
     await this.db.query(`UPDATE product_accounts SET status = $2, updated_at = now() WHERE id = $1`, [id, status]);
+  }
+
+  async recordProvisioningEvent(id: string, eventType: 'CREATED' | 'PROVISIONED' | 'RESTRICTED' | 'REACTIVATED' | 'SUSPENDED' | 'CLOSED'): Promise<void> {
+    await this.db.query(`INSERT INTO product_account_provisioning_events (product_account_id, event_type) VALUES ($1, $2)`, [id, eventType]);
   }
 }
