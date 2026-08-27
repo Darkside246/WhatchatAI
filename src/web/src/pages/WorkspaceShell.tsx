@@ -15,11 +15,9 @@ const MarketingRoute = lazy(() => import('./MarketingRoute.js').then((m) => ({ d
 const EmailRoute = lazy(() => import('./EmailRoute.js').then((m) => ({ default: m.EmailRoute })));
 const FunnelsRoute = lazy(() => import('./FunnelsRoute.js').then((m) => ({ default: m.FunnelsRoute })));
 const PropertyOperationsPage = lazy(() => import('./PropertyOperationsPage.js').then((m) => ({ default: m.PropertyOperationsPage })));
+const ProductDashboardPage = lazy(() => import('./ProductDashboardPage.js').then((m) => ({ default: m.ProductDashboardPage })));
 
-function RouteFallback() {
-  return <div className="flex h-full flex-1 items-center justify-center text-caption text-fg-muted">Loading…</div>;
-}
-
+function RouteFallback() { return <div className="flex h-full flex-1 items-center justify-center text-caption text-fg-muted">Loading…</div>; }
 interface Props { connection: WhatsAppConnectionSnapshot | null; sync: SyncStatusResponse | null; }
 
 export function WorkspaceShell({ connection, sync }: Props) {
@@ -32,13 +30,13 @@ export function WorkspaceShell({ connection, sync }: Props) {
         <SaasNavRail />
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="flex shrink-0 items-center justify-between border-b border-border-subtle bg-surface-1 px-4 py-2">
-            <button type="button" onClick={() => setSearchOpen(true)} aria-label="Open global search" className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-caption text-fg-muted hover:bg-surface-3">
-              <Search size={13} aria-hidden /><span className="hidden sm:inline">Search…</span><kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-meta sm:inline">⌘K</kbd>
-            </button>
+            <button type="button" onClick={() => setSearchOpen(true)} aria-label="Open global search" className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-caption text-fg-muted hover:bg-surface-3"><Search size={13} aria-hidden /><span className="hidden sm:inline">Search…</span><kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-meta sm:inline">⌘K</kbd></button>
             <div className="flex items-center gap-3"><p className="hidden text-caption text-fg-muted md:block">Connected as {connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'}</p><NotificationCenter /><span className="rounded-full bg-success/15 px-2 py-0.5 text-meta text-success">Live</span></div>
           </header>
           <div className="flex min-h-0 flex-1"><Suspense fallback={<RouteFallback />}><Routes>
             <Route path="/" element={<Navigate to="/chats" replace />} />
+            <Route path="/property" element={<ProductDashboardPage product="property" />} />
+            <Route path="/food" element={<ProductDashboardPage product="food" />} />
             <Route path="/chats" element={<ChatsRoute />} />
             <Route path="/chats/:chatId" element={<ChatsRoute />} />
             <Route path="/agents" element={<AgentsPage />} />
