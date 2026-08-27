@@ -10,11 +10,15 @@ describe('AuditLedgerService', () => {
     expect(auditLedgerService.verify('tenant-1')).toBe(true);
   });
 
-  it('detects tampering with an earlier event', () => {
+  it('detects tampering with an earlier event payload', () => {
     auditLedgerService.append({ id: '1', tenantId: 'tenant-1', eventType: 'ONE', actor: { kind: 'SYSTEM', id: 'test' }, correlationId: 'corr', payload: { value: 1 }, occurredAt: '2026-01-01T00:00:00.000Z' });
     auditLedgerService.append({ id: '2', tenantId: 'tenant-1', eventType: 'TWO', actor: { kind: 'SYSTEM', id: 'test' }, correlationId: 'corr', payload: { value: 2 }, occurredAt: '2026-01-01T00:00:01.000Z' });
+
+    // list() returns a new array, so replacing an element does not mutate the
+    // ledger. Mutate the stored event payload to exercise integrity verification.
     const chain = auditLedgerService.list('tenant-1');
-    chain[0] = { ...chain[0]!, payload: { value: 999 } };
+    (chain[0]!.payload as { value: number }).value = 999;
+
     expect(auditLedgerService.verify('tenant-1')).toBe(false);
   });
 
