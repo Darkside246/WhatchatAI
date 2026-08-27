@@ -3,13 +3,14 @@ import { z } from 'zod';
 import { pool } from '../db/pool.js';
 import { PropertyConversationBindingRepository } from '../repositories/propertyConversationBindingRepository.js';
 import { PropertyOperationsRepository } from '../repositories/propertyOperationsRepository.js';
-import { requireAuth, requirePermission, type AuthContext } from './authMiddleware.js';
+import { requireAuth, requirePermission, requireProductAccess, type AuthContext } from './authMiddleware.js';
 
 const router = Router();
 const bindings = new PropertyConversationBindingRepository(pool);
 const properties = new PropertyOperationsRepository(pool);
 const uuid = z.string().uuid();
 router.use(requireAuth);
+router.use(requireProductAccess('property'));
 
 router.get('/:chatId', requirePermission('property.view'), async (req, res) => {
   const auth = res.locals.auth as AuthContext;
