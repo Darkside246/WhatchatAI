@@ -5,30 +5,19 @@ import type { Checkout, PaymentProvider, PaymentVerificationInput } from '../../
 
 const accounts = new ProductAccountRepository(pool);
 const BIMPAY_PREFIX = 'SAAS';
-
 function normaliseCurrency(value: string): string { return value.trim().toUpperCase(); }
-
 export function generateCheckoutReference(prefix = BIMPAY_PREFIX): string { return `${prefix}-${randomBytes(3).toString('hex').toUpperCase()}`; }
-
 export function buildBiMPaySignature(input: Omit<PaymentVerificationInput, 'receivedAt'>, secret: string): string {
   const canonical = [input.provider, input.checkoutReference.trim().toUpperCase(), input.amountMinor, normaliseCurrency(input.currency), input.providerEventId].join(':');
   return createHmac('sha256', secret).update(canonical).digest('hex');
 }
-
 export class BillingAccountNotFoundError extends Error {}
 export class PaymentVerificationError extends Error {}
 export class PaymentAmountMismatchError extends PaymentVerificationError {}
 export class PaymentReferenceNotFoundError extends PaymentVerificationError {}
 export class PaymentProviderEventAlreadyProcessedError extends PaymentVerificationError {}
 
-export async function createCheckout(input: {
-  userId: string;
-  productAccountId: string;
-  provider?: PaymentProvider;
-  amountMinor: number;
-  currency?: string;
-  billingInterval?: 'month' | 'year' | 'one_time';
-}): Promise<Checkout> {
+export async function createCheckout(input: { userId: string; productAccountId: string; provider?: PaymentProvider; amountMinor: number; currency?: string; billingInterval?: 'month' | 'year' | 'one_time'; }): Promise<Checkout> {
   const account = await accounts.findById(input.productAccountId);
   if (!account) throw new BillingAccountNotFoundError('Product account not found.');
   const membership = await pool.query('SELECT 1 FROM business_memberships WHERE business_id = $1 AND user_id = $2 AND status = $3', [account.businessId, input.userId, 'active']);
@@ -40,12 +29,7 @@ export async function createCheckout(input: {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const subscription = await client.query<{ id: string }>(
-      `INSERT INTO product_account_subscriptions (product_account_id, product_id, status, currency, amount_minor, billing_interval)
-       VALUES ($1, $2, 'PENDING_PAYMENT', $3, $4, $5)
-       ON CONFLICT (product_account_id) WHERE status IN ('PENDING_PAYMENT', 'ACTIVE', 'PAST_DUE')
-       DO UPDATE SET amount_minor = EXCLUDED.amount_minor, currency = EXCLUDED.currency, billing_interval = EXCLUDED.billing_interval, status = 'PENDING_PAYMENT', updated_at = now()
-       RETURNING id`, [input.productAccountId, account.productId, currency, input.amountMinor, billingInterval]);
+    const subscription = await client.query<{ id: string }>(`INSERT INTO product_account_subscriptions (product_account_id, product_id, status, currency, amount_minor, billing_interval) VALUES ($1, $2, 'PENDING_PAYMENT', $3, $4, $5) ON CONFLICT (product_account_id) WHERE status IN ('PENDING_PAYMENT', 'ACTIVE', 'PAST_DUE') DO UPDATE SET amount_minor = EXCLUDED.amount_minor, currency = EXCLUDED.currency, billing_interval = EXCLUDED.billing_interval, status = 'PENDING_PAYMENT', updated_at = now() RETURNING id`, [input.productAccountId, account.productId, currency, input.amountMinor, billingInterval]);
     const subscriptionId = subscription.rows[0]?.id;
     if (!subscriptionId) throw new Error('Subscription creation failed.');
     const reference = generateCheckoutReference();
@@ -64,7 +48,7 @@ export async function verifyBiMPayTransfer(input: PaymentVerificationInput): Pro
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const result = await client.query<{ id: string; product_account_id: string; subscription_id: string | null; amount_minor: string; currency: string; status: string; provider: string }>(`SELECT id, product_account_id, subscription_id, amount_minor, currency, status, provider FROM payment_attempts WHERE checkout_reference = $1 FOR UPDATE`, [reference]);
+    const result = await client.query<{ id: string; product_account_id: string; subscription_id: string | null; amount_minor: string; currency: string; status: string; provider: string; provider_event_id: string | null }>(`SELECT id, product_account_id, subscription_id, amount_minor, currency, status, provider, provider_event_id FROM payment_attempts WHERE checkout_reference = $1 FOR UPDATE`, [reference]);
     const attempt = result.rows[0];
     if (!attempt) throw new PaymentReferenceNotFoundError('Checkout reference was not found.');
     if (attempt.provider !== input.provider) throw new PaymentVerificationError('Payment provider does not match the checkout.');
@@ -81,6 +65,7 @@ export async function verifyBiMPayTransfer(input: PaymentVerificationInput): Pro
     if (attempt.subscription_id) await client.query(`UPDATE product_account_subscriptions SET status = 'ACTIVE', current_period_start = now(), current_period_end = CASE WHEN billing_interval = 'year' THEN now() + interval '1 year' WHEN billing_interval = 'one_time' THEN NULL ELSE now() + interval '1 month' END, activated_at = now(), updated_at = now() WHERE id = $1`, [attempt.subscription_id]);
     await client.query(`UPDATE payment_attempts SET status = 'VERIFIED', external_reference = $2, provider_event_id = $3, received_at = COALESCE($4, now()), verified_at = now(), updated_at = now() WHERE id = $1`, [attempt.id, input.checkoutReference.trim(), input.providerEventId, input.receivedAt ?? null]);
     await client.query(`UPDATE product_accounts SET status = 'ACTIVE', updated_at = now() WHERE id = $1`, [attempt.product_account_id]);
+    await client.query(`UPDATE product_entitlements SET source = 'PLAN', expires_at = NULL, is_enabled = true WHERE product_account_id = $1 AND source = 'TRIAL'`, [attempt.product_account_id]);
     await client.query(`INSERT INTO product_account_provisioning_events (product_account_id, event_type) VALUES ($1, 'REACTIVATED')`, [attempt.product_account_id]);
     await client.query(`INSERT INTO payment_audit_events (product_account_id, payment_attempt_id, event_type, actor_type, payload) VALUES ($1, $2, 'PAYMENT_VERIFIED_ACCOUNT_ACTIVATED', 'PROVIDER_BRIDGE', $3)`, [attempt.product_account_id, attempt.id, JSON.stringify({ provider: input.provider, providerEventId: input.providerEventId })]);
     await client.query('COMMIT');
