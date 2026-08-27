@@ -28,10 +28,6 @@ export class WhatsChatPlatformService {
     const access = account.status === 'ACTIVE' || account.status === 'TRIAL_ACTIVE' || account.status === 'TRIAL_EXPIRING';
     return { account, access, route: access ? product.dashboardPath : '/billing', navigation: access ? [...product.navigation] : ['Billing', 'Settings'] };
   }
-  restrictExpiredTrials(now = new Date()): ProductAccount[] {
-    this.accounts.refreshLifecycle(now);
-    return [...new Set(PRODUCT_CATALOGUE.flatMap(() => [] as string[]))].map(() => undefined).filter(Boolean) as ProductAccount[];
-  }
   getAccountStatus(accountId: string): TrialStatus | undefined { return this.accounts.getAccount(accountId)?.status; }
   listPaymentProviders(): PaymentProviderDefinition[] { return [{ id: 'bimpay', label: 'BimPay', enabled: false, status: 'planned' }, { id: 'barbados-bank', label: 'Barbados bank payment', enabled: false, status: 'planned' }]; }
   developerControlPlane() { return { areas: ['Clients', 'Accounts', 'Products', 'Trials', 'WhatsApp Connections', 'AI Agents', 'AI Providers', 'Model Routing', 'OpenClaw', 'Usage', 'Billing', 'System Health', 'Audit', 'Platform Settings', 'Product Provisioning'], productCount: PRODUCT_CATALOGUE.length }; }
