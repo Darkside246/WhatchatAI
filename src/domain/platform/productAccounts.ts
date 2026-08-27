@@ -3,13 +3,7 @@ import { z } from 'zod';
 export const ProductKeySchema = z.enum(['property', 'food', 'commerce', 'scheduling', 'support']);
 export type ProductKey = z.infer<typeof ProductKeySchema>;
 
-export const ProductAccountStatusSchema = z.enum([
-  'PROVISIONING',
-  'ACTIVE',
-  'RESTRICTED',
-  'SUSPENDED',
-  'CLOSED',
-]);
+export const ProductAccountStatusSchema = z.enum(['PROVISIONING', 'ACTIVE', 'RESTRICTED', 'SUSPENDED', 'CLOSED']);
 export type ProductAccountStatus = z.infer<typeof ProductAccountStatusSchema>;
 
 export const ProductAccountSchema = z.object({
@@ -17,7 +11,7 @@ export const ProductAccountSchema = z.object({
   businessId: z.string().uuid(),
   productId: z.string().uuid(),
   productKey: ProductKeySchema,
-  ownerUserId: z.string().uuid(),
+  ownerUserId: z.string().uuid().nullable(),
   displayName: z.string().min(1).max(200),
   status: ProductAccountStatusSchema,
   createdAt: z.string(),
