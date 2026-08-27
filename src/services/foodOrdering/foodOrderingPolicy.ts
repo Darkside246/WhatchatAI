@@ -10,7 +10,6 @@ export const FoodOrderStatusSchema = z.enum([
   'CANCELLED',
   'HUMAN_REVIEW',
 ]);
-
 export type FoodOrderStatus = z.infer<typeof FoodOrderStatusSchema>;
 
 export const FulfilmentMethodSchema = z.enum(['PICKUP', 'DELIVERY']);
@@ -23,10 +22,7 @@ export const FoodMenuItemSchema = z.object({
   price: z.number().nonnegative(),
   available: z.boolean().default(true),
   aliases: z.array(z.string()).default([]),
-  options: z.record(z.string(), z.array(z.object({
-    name: z.string().min(1),
-    priceDelta: z.number(),
-  }))).default({}),
+  options: z.record(z.string(), z.array(z.object({ name: z.string().min(1), priceDelta: z.number() }))).default({}),
 });
 export type FoodMenuItem = z.infer<typeof FoodMenuItemSchema>;
 
@@ -61,13 +57,13 @@ export type FoodOrderingResult = {
 };
 
 const normalise = (text: string) => text.toLowerCase().replace(/[^a-z0-9$.'\s-]/g, ' ').replace(/\s+/g, ' ').trim();
-
-const wordBoundary = (text: string, phrase: string) => new RegExp(`\\b${phrase.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\b`, 'i').test(text);
+const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const wordBoundary = (text: string, phrase: string) => new RegExp(`\\b${escapeRegex(phrase)}\\b`, 'i').test(text);
 
 export function detectFulfilment(text: string): FulfilmentMethod | undefined {
   const input = normalise(text);
   if (/\b(deliver|delivery|bring it|bring that|drop it|drop off|send it)\b/i.test(input)) return 'DELIVERY';
-  if (/\b(pick ?up|collect|collection|come for it)\b/i.test(input)) return 'PICKUP';
+  if (/\b(pick ?up|collect|collection|come for it|coming for it)\b/i.test(input)) return 'PICKUP';
   return undefined;
 }
 
@@ -91,16 +87,24 @@ function findMenuItem(text: string, menu: FoodMenuItem[]): FoodMenuItem | undefi
   }));
 }
 
+const quantityWords: Record<string, number> = {
+  a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5,
+  six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+};
+
 export function parseQuantity(text: string): number {
-  const match = normalise(text).match(/\b(\d+)\b/);
-  return match ? Math.max(1, Number(match[1])) : 1;
+  const input = normalise(text);
+  const numeric = input.match(/\b(\d+)\b/);
+  if (numeric) return Math.max(1, Number(numeric[1]));
+  const word = input.match(/\b(a|an|one|two|three|four|five|six|seven|eight|nine|ten)\b/i);
+  return word ? quantityWords[word[1].toLowerCase()] : 1;
 }
 
 export function calculateOrderTotal(state: FoodOrderState, deliveryFee = 0): number {
   return Number((state.lines.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0) + (state.fulfilmentMethod === 'DELIVERY' ? deliveryFee : 0)).toFixed(2));
 }
 
-export function addMenuItem(state: FoodOrderState, menu: FoodMenuItem[], text: string): FoodOrderState {
+function addSingleMenuItem(state: FoodOrderState, menu: FoodMenuItem[], text: string): FoodOrderState {
   const item = findMenuItem(text, menu);
   if (!item || !item.available) return state;
   const quantity = parseQuantity(text);
@@ -109,6 +113,11 @@ export function addMenuItem(state: FoodOrderState, menu: FoodMenuItem[], text: s
     ? state.lines.map((line) => line === existing ? { ...line, quantity: line.quantity + quantity } : line)
     : [...state.lines, { itemId: item.id, name: item.name, quantity, unitPrice: item.price, selectedOptions: {} }];
   return { ...state, lines, status: 'COLLECTING_ORDER', pendingQuestion: undefined };
+}
+
+export function addMenuItem(state: FoodOrderState, menu: FoodMenuItem[], text: string): FoodOrderState {
+  const segments = normalise(text).split(/\s+(?:and|&|plus)\s+|[,;]\s*/).map((segment) => segment.trim()).filter(Boolean);
+  return segments.reduce((current, segment) => addSingleMenuItem(current, menu, segment), state);
 }
 
 export function createInitialFoodOrder(tenantId: string, conversationId: string, customerPhone?: string): FoodOrderState {
