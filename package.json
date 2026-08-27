@@ -13,6 +13,7 @@
     "dev:server": "tsx src/server/index.ts",
     "dev:worker": "tsx src/queue/workers/incomingMessagesWorker.ts",
     "dev:web": "npm run dev --workspace=src/web",
+    "goose:fallback": "bash scripts/start-goose-fallback.sh",
     "build": "tsc && npm run build --workspace=src/web",
     "start": "concurrently -n backend,worker -c blue,magenta \"npm:start:server\" \"npm:start:worker\"",
     "start:server": "node dist/server/index.js",
@@ -49,7 +50,7 @@
   "devDependencies": {
     "@types/express": "latest",
     "@types/node": "latest",
-    "@types/nodemailer": "^8.0.1",
+    "@types/nodemailer": "^8.0.0",
     "@types/pg": "^8.21.0",
     "@types/qrcode": "latest",
     "@types/ws": "^8.18.1",
