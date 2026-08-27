@@ -26,9 +26,13 @@ router.post('/payment-proof', requireAuth, async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_PAYMENT_PROOF', details: parsed.error.flatten() });
   const auth = res.locals.auth as AuthContext;
   try {
-    const proofInput = parsed.data.note === undefined
-      ? { userId: auth.userId, productAccountId: parsed.data.productAccountId, paymentAttemptId: parsed.data.paymentAttemptId, proofUrl: parsed.data.proofUrl }
-      : { userId: auth.userId, ...parsed.data };
+    const proofInput: Parameters<typeof submitPaymentProof>[0] = {
+      userId: auth.userId,
+      productAccountId: parsed.data.productAccountId,
+      paymentAttemptId: parsed.data.paymentAttemptId,
+      proofUrl: parsed.data.proofUrl,
+    };
+    if (parsed.data.note !== undefined) proofInput.note = parsed.data.note;
     return res.status(201).json({ proof: await submitPaymentProof(proofInput) });
   } catch (error) { return res.status(404).json({ error: 'BILLING_ACCOUNT_NOT_FOUND', message: error instanceof Error ? error.message : String(error) }); }
 });
@@ -44,9 +48,14 @@ router.post('/providers/bimpay/bridge', async (req, res) => {
   const parsed = bridgeSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_BIMPAY_EVENT', details: parsed.error.flatten() });
   const receivedSignature = req.header('x-bimpay-signature') ?? '';
-  const signatureInput = parsed.data.receivedAt === undefined
-    ? { provider: 'BIMPAY' as const, checkoutReference: parsed.data.checkoutReference, amountMinor: parsed.data.amountMinor, currency: parsed.data.currency, providerEventId: parsed.data.providerEventId }
-    : { provider: 'BIMPAY' as const, ...parsed.data };
+  const signatureInput: Parameters<typeof verifyBiMPayTransfer>[0] = {
+    provider: 'BIMPAY',
+    checkoutReference: parsed.data.checkoutReference,
+    amountMinor: parsed.data.amountMinor,
+    currency: parsed.data.currency,
+    providerEventId: parsed.data.providerEventId,
+  };
+  if (parsed.data.receivedAt !== undefined) signatureInput.receivedAt = parsed.data.receivedAt;
   const expectedSignature = buildBiMPaySignature(signatureInput, secret);
   const expected = Buffer.from(expectedSignature, 'utf8');
   const received = Buffer.from(receivedSignature, 'utf8');
