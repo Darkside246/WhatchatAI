@@ -21,7 +21,7 @@ const emergencySignals: Array<{ label: string; pattern: RegExp }> = [
   { label: 'electrical_danger', pattern: /\b(sparking|sparks|exposed\s+wire|live\s+wire|electric\s+shock|electrical\s+fire|wire\s+is\s+burning)\b/i },
   {
     label: 'uncontrolled_water',
-    pattern: /\b(flood(?:ing)?|water\s+(?:is\s+)?pouring|water\s+(?:is\s+)?coming\s+(?:in|through|down)|water\s+(?:is\s+)?running\s+(?:in|through|down)|water\s+(?:all\s+over|everywhere)|burst\s+pipe|pipe\s+(?:has\s+)?burst|pipe\s+done\s+burst|water\s+coming\s+through\s+the\s+ceiling|water\s+coming\s+down\s+from\s+upstairs)\b/i,
+    pattern: /\b(flood(?:ing)?|water\s+(?:is\s+)?pouring|water\s+(?:is\s+)?coming\s+(?:in|through|down)|water\s+(?:is\s+)?running\s+(?:in|through|down)|water\s+(?:all\s+over|everywhere)|burst\s+pipe|pipe\s+(?:has\s+)?burst|pipe\s+done\s+burst|ceiling\s+(?:is\s+)?leaking\s+(?:bad|badly|heavily|a\s+lot)|water\s+coming\s+through\s+the\s+ceiling|water\s+coming\s+down\s+from\s+upstairs)\b/i,
   },
   { label: 'structural_collapse', pattern: /\b(ceiling|roof|wall|floor)\s+(?:is\s+)?collapsing|\b(structure|ceiling|roof|wall)\s+(?:has\s+)?collapsed\b/i },
   { label: 'security_threat', pattern: /\b(break\s*-?\s*in|intruder|armed|threatened|dangerous\s+person)\b/i },
