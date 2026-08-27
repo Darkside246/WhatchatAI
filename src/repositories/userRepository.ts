@@ -1,6 +1,8 @@
 import type { Queryable } from './types.js';
 import type { PasswordParams } from '../services/passwordHashService.js';
 
+export type PlatformRole = 'CLIENT' | 'DEVELOPER';
+
 export interface UserRecord {
   id: string;
   email: string;
@@ -16,6 +18,7 @@ export interface UserRecord {
   locale: string;
   timezone: string;
   status: 'active' | 'suspended' | 'deactivated';
+  platformRole: PlatformRole;
   lastLoginAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -38,6 +41,7 @@ interface UserRow {
   locale: string;
   timezone: string;
   status: UserRecord['status'];
+  platform_role: PlatformRole;
   last_login_at: string | null;
   created_at: string;
   updated_at: string;
@@ -59,6 +63,7 @@ function toRecord(row: UserRow): UserRecord {
     locale: row.locale,
     timezone: row.timezone,
     status: row.status,
+    platformRole: row.platform_role,
     lastLoginAt: row.last_login_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -76,6 +81,7 @@ export interface CreateUserInput {
   passwordHash: string;
   passwordSalt: string;
   passwordParams: PasswordParams;
+  platformRole?: PlatformRole;
 }
 
 export class UserRepository {
@@ -83,10 +89,10 @@ export class UserRepository {
 
   async create(input: CreateUserInput): Promise<UserRecord> {
     const { rows } = await this.db.query<UserRow>(
-      `INSERT INTO users (email, display_name, password_hash, password_salt, password_params)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO users (email, display_name, password_hash, password_salt, password_params, platform_role)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [input.email, input.displayName, input.passwordHash, input.passwordSalt, JSON.stringify(input.passwordParams)],
+      [input.email, input.displayName, input.passwordHash, input.passwordSalt, JSON.stringify(input.passwordParams), input.platformRole ?? 'CLIENT'],
     );
     const row = rows[0];
     if (!row) throw new Error('users insert returned no row');
