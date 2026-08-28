@@ -339,7 +339,7 @@ function parseProfileContent(content: string): { slogan: string; motto: string; 
   for (const day of DAYS) {
     const match = content.match(new RegExp(`  ${day}: (.+)`, 'i'));
     if (match) {
-      const val = match[1].trim();
+      const val = (match[1] ?? '').trim();
       if (val.toLowerCase() === 'closed') {
         hours[day] = { open: false, from: '09:00', to: '17:00' };
       } else {

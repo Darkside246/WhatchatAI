@@ -122,11 +122,11 @@ function FieldSelect({ label, value, onChange, options }: { label: string; value
   );
 }
 
-function FieldTextarea({ label, value, onChange, placeholder, rows, maxLength }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; rows?: number; maxLength?: number }) {
+function FieldTextarea({ label, value, onChange, placeholder, rows, maxLength, required }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; rows?: number; maxLength?: number; required?: boolean }) {
   return (
     <label className="block">
       <span className="mb-1 block text-meta font-medium text-fg-secondary">{label}</span>
-      <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={rows ?? 3} maxLength={maxLength}
+      <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={rows ?? 3} maxLength={maxLength} required={required}
         className="field w-full resize-y border border-border-subtle bg-surface-0 text-fg" />
     </label>
   );

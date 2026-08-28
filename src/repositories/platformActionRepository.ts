@@ -46,6 +46,27 @@ export class PlatformActionRepository {
     return rows[0] ?? null;
   }
 
+  /**
+   * The most recent still-open action of a given type for a given
+   * conversation, if one exists - "open" meaning not yet resolved one way
+   * or another (still PENDING_POLICY/PENDING_APPROVAL, or approved and
+   * READY/EXECUTING but not yet SUCCEEDED/FAILED/CANCELLED). Used to stop a
+   * repeated triage on the same unresolved issue (e.g. a tenant asking "is
+   * anyone coming?" three times) from creating three separate duplicate
+   * ActionRequests and approval prompts - each triage call should check
+   * this first and reuse what's already open instead of creating another.
+   */
+  async findOpenByConversation(businessId: string, conversationId: string, type: string): Promise<PlatformActionRow | null> {
+    const { rows } = await this.db.query<PlatformActionRow>(
+      `SELECT ${ACTION_COLUMNS} FROM platform_action_requests
+        WHERE business_id = $1 AND type = $2 AND payload->>'conversationId' = $3
+          AND status NOT IN ('SUCCEEDED','FAILED','CANCELLED')
+        ORDER BY created_at DESC LIMIT 1`,
+      [businessId, type, conversationId],
+    );
+    return rows[0] ?? null;
+  }
+
   async updateState(businessId: string, actionId: string, input: { status?: PlatformActionRow['status'] | undefined; approvalStatus?: PlatformActionRow['approvalStatus'] | undefined }): Promise<PlatformActionRow | null> {
     const { rows } = await this.db.query<PlatformActionRow>(`UPDATE platform_action_requests SET status = COALESCE($3,status), approval_status = COALESCE($4,approval_status) WHERE business_id = $1 AND id = $2 RETURNING ${ACTION_COLUMNS}`, [businessId, actionId, input.status ?? null, input.approvalStatus ?? null]);
     return rows[0] ?? null;

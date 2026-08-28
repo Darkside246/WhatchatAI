@@ -52,11 +52,26 @@ import type { MediaDownloadErrorCategory } from '../../domain/whatsapp/types.js'
 import { verifyMasterKeyStability } from '../../security/encryption/keyStabilityCheck.js';
 import { installCrashSafetyHandlers } from '../../process/crashSafety.js';
 import { OperatorCommandService } from '../../services/operator/operatorCommandService.js';
+import { initializePlatformFoundation } from '../../services/platform/platformBootstrap.js';
+import { runPropertyMaintenanceHandoff } from '../../services/property/propertyMaintenanceOrchestrator.js';
+// Runs here, not in server/index.ts: that process owns the live Baileys
+// socket AND sends every outbound message, so it is exactly the event loop
+// that must never stall. documentParseWorker has no live-socket dependency
+// (pure DB/media/CPU work parsing uploaded PDFs/DOCX), so it belongs
+// wherever that isn't - this process, which already has no HTTP-facing or
+// socket-owning responsibilities of its own.
+import { documentParseWorker } from './documentParseWorker.js';
 
 // Fail loud here, at boot, before either Worker below starts pulling jobs -
 // see keyStabilityCheck.ts. A top-level await, so nothing further in this
 // module (including the Worker constructions) runs until it resolves.
 await verifyMasterKeyStability();
+
+// Registers the AiGateway provider chain and the property maintenance
+// triage skill - this worker process is where runAiHandoff actually calls
+// them, so without this every property triage call fails with "skill
+// property.maintenance.triage is disabled" / "no eligible AI provider".
+initializePlatformFoundation();
 
 /**
  * Drains the incoming_messages queue and performs the real Postgres
@@ -155,6 +170,7 @@ async function runAiHandoff(params: {
   mediaId: string | null;
 }): Promise<void> {
   const { businessId, whatsappAccountId, chatId, contactId, messageId, queryText, mediaId } = params;
+  let senderJid: string | undefined;
 
   if (contactId) {
     // ── Operator Mode check ─────────────────────────────────────────────────
@@ -165,7 +181,7 @@ async function runAiHandoff(params: {
       `SELECT whatsapp_jid FROM whatsapp_contacts WHERE id = $1 AND business_id = $2`,
       [contactId, businessId],
     );
-    const senderJid = jidRows[0]?.whatsapp_jid;
+    senderJid = jidRows[0]?.whatsapp_jid;
 
     // Check WA setup wizard FIRST: this works even before operator mode is configured,
     // so the sender JID doesn't need to be the registered operator yet.
@@ -210,6 +226,40 @@ async function runAiHandoff(params: {
       console.log(`[IncomingMessagesWorker] Chat ${chatId}: AI excluded for contact ${contactId}, skipping AI reply`);
       return;
     }
+  }
+
+  // ── Property maintenance triage (P3) ────────────────────────────────────
+  // A chat an operator has bound to a property (propertyConversationBindingRouter)
+  // runs the full WhatsApp -> triage -> ActionRequest -> approval -> work
+  // order -> audit loop before the generic AI reply, not instead of it: a
+  // chat with no binding, or with the skill disabled, falls straight through
+  // to orchestrateAiReply below unchanged. See propertyMaintenanceOrchestrator.ts.
+  try {
+    const maintenance = await runPropertyMaintenanceHandoff({
+      businessId,
+      chatId,
+      conversationAddress: senderJid ?? contactId ?? 'unknown',
+      queryText,
+    });
+    if (maintenance.kind === 'handled') {
+      const fallbackText = 'Thanks for letting us know — I’ve flagged this for our team and they’ll follow up shortly.';
+      try {
+        await whatsappOutboundMessageService.send({
+          businessId,
+          whatsappAccountId,
+          chatId,
+          idempotencyKey: `property-maintenance-reply:${messageId}`,
+          messageType: 'text',
+          text: maintenance.replyText ?? fallbackText,
+          requestedBy: 'ai',
+        });
+      } catch (err) {
+        console.error('[IncomingMessagesWorker] Property maintenance reply failed to send:', err instanceof Error ? err.message : err);
+      }
+      return;
+    }
+  } catch (err) {
+    console.error('[IncomingMessagesWorker] Property maintenance handoff failed, falling back to generic AI reply:', err instanceof Error ? err.message : err);
   }
 
   const outcome = await orchestrateAiReply({ businessId, chatId, contactId, queryText, mediaId });
@@ -1081,7 +1131,7 @@ realtimeEventsWorker.on('error', (error) => {
 });
 
 async function closeWorkers(): Promise<void> {
-  await Promise.all([incomingMessagesWorker.close(), realtimeEventsWorker.close()]);
+  await Promise.all([incomingMessagesWorker.close(), realtimeEventsWorker.close(), documentParseWorker.close()]);
 }
 
 async function shutdown(signal: string): Promise<void> {

@@ -209,7 +209,7 @@ export class CrmContactRepository {
   async setPrivacyFlags(
     businessId: string,
     id: string,
-    flags: { isHidden?: boolean; syncExcluded?: boolean; aiExcluded?: boolean },
+    flags: { isHidden?: boolean | undefined; syncExcluded?: boolean | undefined; aiExcluded?: boolean | undefined },
   ): Promise<CrmContactRecord | null> {
     const sets: string[] = [];
     const values: unknown[] = [id, businessId];

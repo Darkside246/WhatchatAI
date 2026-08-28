@@ -14,14 +14,19 @@ const mockUpdateCredential = vi.fn();
 const mockRecord = vi.fn();
 
 vi.mock('../repositories/securityLockCredentialRepository.js', () => ({
-  SecurityLockCredentialRepository: vi.fn().mockImplementation(() => ({
-    findByBusiness: mockFindByBusiness,
-    updateCredential: mockUpdateCredential,
-  })),
+  // A real class constructor, not an arrow function - securityLockService.ts
+  // calls `new SecurityLockCredentialRepository()`, and Vitest 4 now
+  // requires the mocked implementation to actually be constructible
+  // (matching real JS: `new (() => x)` throws natively too).
+  SecurityLockCredentialRepository: vi.fn().mockImplementation(function SecurityLockCredentialRepository() {
+    return { findByBusiness: mockFindByBusiness, updateCredential: mockUpdateCredential };
+  }),
 }));
 
 vi.mock('../repositories/securityAuditLogRepository.js', () => ({
-  SecurityAuditLogRepository: vi.fn().mockImplementation(() => ({ record: mockRecord })),
+  SecurityAuditLogRepository: vi.fn().mockImplementation(function SecurityAuditLogRepository() {
+    return { record: mockRecord };
+  }),
 }));
 
 vi.mock('../db/pool.js', () => ({ pool: {} }));

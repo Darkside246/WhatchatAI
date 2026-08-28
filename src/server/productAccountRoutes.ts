@@ -57,7 +57,8 @@ router.get('/developer/verticals', requireAuth, requireDeveloper, async (_req, r
 
 /** Assign (or re-assign) a vertical to a specific business account. */
 router.post('/developer/accounts/:businessId/assign-vertical', requireAuth, requireDeveloper, async (req, res) => {
-  const businessId = req.params['businessId'];
+  const businessId = String(req.params['businessId'] ?? '');
+  if (!z.string().uuid().safeParse(businessId).success) return res.status(400).json({ error: 'INVALID_BUSINESS_ID' });
   const parsed = z.object({ productKey: ProductKeySchema }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_PRODUCT_KEY', details: parsed.error.flatten() });
   await assignVertical(businessId, parsed.data.productKey);

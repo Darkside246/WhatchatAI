@@ -74,7 +74,7 @@ describe('normaliseBatch', () => {
     ]);
     expect(confident.map((r) => r.canonical)).toEqual(['tablespoon', 'cup']);
     expect(needsConfirmation).toHaveLength(1);
-    expect(needsConfirmation[0].original).toBe('some stuff');
+    expect(needsConfirmation[0]?.original).toBe('some stuff');
   });
 
   it('returns empty arrays for an empty input', () => {

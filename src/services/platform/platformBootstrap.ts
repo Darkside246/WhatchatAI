@@ -19,7 +19,11 @@ export function initializePlatformFoundation(): void {
   if (!moduleRegistry.get(propertyOperationsModule.id)) moduleRegistry.register(propertyOperationsModule);
   if (!skillRegistry.get(propertyMaintenanceTriageSkill.id)) skillRegistry.register(propertyMaintenanceTriageSkill);
 
-  if (process.env.PROPERTY_OPERATIONS_ENABLED === 'true') {
+  // Property maintenance triage is a real, sellable product capability, not
+  // an experimental feature - on by default. PROPERTY_OPERATIONS_ENABLED=false
+  // remains available as an explicit kill switch (e.g. a Gemini/AiGateway
+  // incident affecting triage quality) without touching this file.
+  if (process.env.PROPERTY_OPERATIONS_ENABLED !== 'false') {
     const existing = skillRegistry.get(propertyMaintenanceTriageSkill.id);
     if (existing && !existing.enabled) skillRegistry.enable(propertyMaintenanceTriageSkill.id);
   }

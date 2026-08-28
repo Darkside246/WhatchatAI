@@ -140,12 +140,15 @@ services:
   app-worker:
     <<: *app-common
     container_name: whatchatai-app-worker
-    # This is the ONLY process that instantiates incomingMessagesWorker and
-    # realtimeEventsWorker (which handles media-download jobs) - verified
-    # against the actual BullMQ Worker() call sites, not assumed. It does
-    # NOT open the Baileys connection and does NOT need the WhatsApp
-    # session volume; it DOES need media-storage (shared, read-write) since
-    # it is the process that downloads and encrypts inbound media.
+    # This is the ONLY process that instantiates incomingMessagesWorker,
+    # realtimeEventsWorker (media-download jobs), and documentParseWorker
+    # (PDF/DOCX parsing, deliberately moved out of app-server so a heavy
+    # parse can never stall the Baileys socket or outbound sends that live
+    # there) - verified against the actual BullMQ Worker() call sites, not
+    # assumed. It does NOT open the Baileys connection and does NOT need
+    # the WhatsApp session volume; it DOES need media-storage (shared,
+    # read-write) since it downloads/encrypts inbound media AND reads
+    # uploaded documents for parsing.
     command: ["node", "dist/queue/workers/incomingMessagesWorker.js"]
     volumes:
       - media-storage:/app/data/media-storage

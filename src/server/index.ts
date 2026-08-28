@@ -28,6 +28,7 @@ import { whatsappOutboundMessageService, isChatNotFoundError as isOutboundChatNo
 import { openclawAdapterRouter } from './openclawAdapterRouter.js';
 import { openclawMcpRouter } from './openclawMcpRouter.js';
 import { mountPlatformRoutes } from './platformRoutes.js';
+import { initializePlatformFoundation } from '../services/platform/platformBootstrap.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import { CrmContactRepository } from '../repositories/crmContactRepository.js';
 import { UserPreferenceRepository } from '../repositories/userPreferenceRepository.js';
@@ -163,9 +164,10 @@ import { messageRevocationWorker } from '../queue/workers/messageRevocationWorke
 import { emailSendWorker } from '../queue/workers/emailSendWorker.js';
 // Same reasoning - a WAIT-node resume may itself send a real WhatsApp message.
 import { funnelAdvanceWorker } from '../queue/workers/funnelAdvanceWorker.js';
-// No live-socket dependency - pure CPU/DB work, co-located here for the
-// same operational simplicity as emailSendWorker above.
-import { documentParseWorker } from '../queue/workers/documentParseWorker.js';
+// documentParseWorker deliberately does NOT live here - see incomingMessagesWorker.ts
+// for why. It has no live-socket dependency, and this process's event loop
+// is exactly the one that must never stall (it owns the Baileys connection
+// AND outboundDispatch's sends).
 import {
   createFunnel,
   listFunnels,
@@ -293,6 +295,13 @@ app.use('/api/workspace/campaigns', expensiveActionLimiter);
 // 20mb (not the old 2mb) to fit base64-encoded outbound media uploads -
 // this is one global parser, so every route's real ceiling moved with it.
 app.use(express.json({ limit: '20mb' }));
+
+// Registers the AiGateway provider chain, agent runtimes, and the property
+// maintenance triage skill before any request can reach them - previously
+// this only ran inside tests, so every real request to the AiGateway path
+// (property triage, reply suggestions, marketing AI) had no providers
+// registered and failed silently in production.
+initializePlatformFoundation();
 
 // Platform routes are mounted explicitly here. Existing WhatsApp and OpenClaw routes remain separate.
 mountPlatformRoutes(app);
@@ -1077,7 +1086,7 @@ app.delete(
   requirePermission('marketing.create'),
   async (req, res) => {
     const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
-    const { campaignId } = req.params;
+    const campaignId = String(req.params.campaignId ?? '');
     try {
       await deleteCampaign(businessId, campaignId);
       return res.status(204).send();
@@ -2800,7 +2809,6 @@ async function closeWorkers(): Promise<void> {
   await messageRevocationWorker.close();
   await emailSendWorker.close();
   await funnelAdvanceWorker.close();
-  await documentParseWorker.close();
 }
 
 async function shutdown(signal: string): Promise<void> {

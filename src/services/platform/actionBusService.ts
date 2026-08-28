@@ -12,12 +12,12 @@ export interface ActionExecutionContext {
 
 export interface ActionExecutor {
   readonly actionType: string;
-  execute(action: ActionRequest, context: ActionExecutionContext): Promise<{ status: 'SUCCEEDED' | 'FAILED'; result?: unknown; error?: string }>;
+  execute(action: ActionRequest, context: ActionExecutionContext): Promise<{ status: 'SUCCEEDED' | 'FAILED'; result?: unknown; error?: string | undefined }>;
 }
 
 export class ActionBusService {
   private readonly executors = new Map<string, ActionExecutor>();
-  private readonly completed = new Map<string, { status: 'SUCCEEDED' | 'FAILED'; result?: unknown; error?: string }>();
+  private readonly completed = new Map<string, { status: 'SUCCEEDED' | 'FAILED'; result?: unknown; error?: string | undefined }>();
   private repository: PlatformActionRepository | null = null;
 
   setRepository(repo: PlatformActionRepository): void { this.repository = repo; }
@@ -37,7 +37,7 @@ export class ActionBusService {
     action: ActionRequest,
     capability: AgentCapability,
     context: ActionExecutionContext,
-  ): Promise<{ status: 'SUCCEEDED' | 'FAILED' | 'DENIED' | 'AWAITING_APPROVAL'; result?: unknown; error?: string }> {
+  ): Promise<{ status: 'SUCCEEDED' | 'FAILED' | 'DENIED' | 'AWAITING_APPROVAL'; result?: unknown; error?: string | undefined }> {
     if (context.tenantId !== action.tenantId) return { status: 'DENIED', error: 'tenant context does not match action tenant' };
     if (context.actorId.length === 0) return { status: 'DENIED', error: 'execution actor is required' };
 
@@ -90,7 +90,7 @@ export class ActionBusService {
       payload: { actionType: action.type }, occurredAt: new Date().toISOString(),
     });
 
-    let result: { status: 'SUCCEEDED' | 'FAILED'; result?: unknown; error?: string };
+    let result: { status: 'SUCCEEDED' | 'FAILED'; result?: unknown; error?: string | undefined };
     try {
       result = await executor.execute(decision.action, context);
     } catch (error) {

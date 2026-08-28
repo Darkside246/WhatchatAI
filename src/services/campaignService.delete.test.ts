@@ -1,19 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { deleteCampaign, CampaignNotFoundError, InvalidCampaignStatusError } from './campaignService.js';
 
-const mockFindByIdForBusiness = vi.fn();
-const mockHardDelete = vi.fn();
-const mockRecord = vi.fn();
+// campaignService.ts constructs `new CampaignRepository(pool)` at its own
+// module top level, and that import is hoisted ahead of everything in THIS
+// file by ES module semantics - including a plain `const mockX = vi.fn()`
+// declared above the vi.mock() calls textually. vi.hoisted() is what
+// actually runs before any import, so it's the only way these mocks exist
+// in time for campaignService.ts's own module-level construction to see them.
+const { mockFindByIdForBusiness, mockHardDelete, mockRecord } = vi.hoisted(() => ({
+  mockFindByIdForBusiness: vi.fn(),
+  mockHardDelete: vi.fn(),
+  mockRecord: vi.fn(),
+}));
 
 vi.mock('../repositories/campaignRepository.js', () => ({
-  CampaignRepository: vi.fn().mockImplementation(() => ({
-    findByIdForBusiness: mockFindByIdForBusiness,
-    hardDelete: mockHardDelete,
-  })),
+  // A real class constructor, not an arrow function - `new CampaignRepository()`
+  // requires something JS itself considers constructible. Vitest 4 stopped
+  // papering over the mismatch: `new (() => x)` throws in real JS too.
+  CampaignRepository: vi.fn().mockImplementation(function CampaignRepository() {
+    return { findByIdForBusiness: mockFindByIdForBusiness, hardDelete: mockHardDelete };
+  }),
 }));
 
 vi.mock('../repositories/securityAuditLogRepository.js', () => ({
-  SecurityAuditLogRepository: vi.fn().mockImplementation(() => ({ record: mockRecord })),
+  SecurityAuditLogRepository: vi.fn().mockImplementation(function SecurityAuditLogRepository() {
+    return { record: mockRecord };
+  }),
 }));
 
 vi.mock('../db/pool.js', () => ({ pool: {} }));

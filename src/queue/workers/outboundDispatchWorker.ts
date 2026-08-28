@@ -166,9 +166,22 @@ async function processOutboundMessage(job: Job<OutboundMessageJobData>): Promise
 
 const OUTBOUND_CONCURRENCY = Number(process.env.OUTBOUND_MESSAGES_WORKER_CONCURRENCY ?? 2);
 
+// A stalled Baileys socket (rate limit, phone offline, QR expiry) lets
+// outbound jobs pile up in the queue for as long as the outage lasts. Without
+// this, the moment the socket reconnects every queued job fires at once -
+// exactly the kind of burst WhatsApp's own abuse detection reads as spam and
+// can respond to by banning the number. `limiter` caps how many jobs this
+// worker pulls per window regardless of backlog size, so a reconnect drains
+// the backlog at a steady rate instead of dumping it in one burst. Global
+// across all businesses sharing this process, not per-JID - a coarser but
+// far simpler bound that still eliminates the burst-on-reconnect failure mode.
+const OUTBOUND_RATE_LIMIT_MAX = Number(process.env.OUTBOUND_MESSAGES_RATE_LIMIT_MAX ?? 10);
+const OUTBOUND_RATE_LIMIT_DURATION_MS = Number(process.env.OUTBOUND_MESSAGES_RATE_LIMIT_DURATION_MS ?? 1000);
+
 export const outboundMessagesWorker = new Worker<OutboundMessageJobData>(OUTBOUND_MESSAGES_QUEUE, processOutboundMessage, {
   connection: queueConnection,
   concurrency: OUTBOUND_CONCURRENCY,
+  limiter: { max: OUTBOUND_RATE_LIMIT_MAX, duration: OUTBOUND_RATE_LIMIT_DURATION_MS },
 });
 
 // BullMQ fires 'failed' after every attempt, not only the last one - a job
@@ -192,5 +205,5 @@ outboundMessagesWorker.on('error', (error) => {
 });
 
 console.log(
-  `[OutboundDispatchWorker] Listening on queue "${OUTBOUND_MESSAGES_QUEUE}" (concurrency=${OUTBOUND_CONCURRENCY})`,
+  `[OutboundDispatchWorker] Listening on queue "${OUTBOUND_MESSAGES_QUEUE}" (concurrency=${OUTBOUND_CONCURRENCY}, rate limit=${OUTBOUND_RATE_LIMIT_MAX}/${OUTBOUND_RATE_LIMIT_DURATION_MS}ms)`,
 );

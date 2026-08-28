@@ -72,14 +72,14 @@ function parseQuantity(raw: string): number | null {
 
   const parts = s.split(/\s+/);
   if (parts.length === 2) {
-    const whole = Number(parts[0]);
-    const frac = parseFraction(parts[1]);
+    const whole = Number(parts[0] ?? '');
+    const frac = parseFraction(parts[1] ?? '');
     if (!isNaN(whole) && frac !== null) return whole + frac;
   }
   if (parts.length === 1) {
-    const direct = Number(parts[0]);
+    const direct = Number(parts[0] ?? '');
     if (!isNaN(direct)) return direct;
-    const frac = parseFraction(parts[0]);
+    const frac = parseFraction(parts[0] ?? '');
     if (frac !== null) return frac;
   }
   return null;
@@ -98,21 +98,35 @@ export function normaliseUnit(raw: string, aliases: Record<string, string> = {})
   const lookupAlias = (token: string): string | undefined =>
     aliases[token.toLowerCase()] ?? ALIAS_MAP.get(token.toLowerCase());
 
-  // Match: optional quantity + optional unit + rest
-  const pattern = /^([\d\s\/½⅓⅔¼¾]+)\s*([a-zA-Z.]+(?:\s+[a-zA-Z]+)?)\b/;
-  const m = s.match(pattern);
-
-  if (m) {
-    const quantityStr = m[1].trim();
-    const unitStr = m[2].trim();
+  // Quantity is matched separately from the unit word(s) that follow it -
+  // matching both in one greedy regex (the previous approach) captured the
+  // unit AND whatever ordinary word came after it as a single blob, so
+  // "2kg chicken" resolved to unit "kg chicken" instead of "kg", silently
+  // missing the alias table and falling to medium confidence for input that
+  // should have been a confident match.
+  const quantityMatch = s.match(/^([\d\s\/½⅓⅔¼¾]+)/);
+  if (quantityMatch) {
+    const quantityStr = (quantityMatch[1] ?? '').trim();
     const quantity = parseQuantity(quantityStr);
-    const canonical = lookupAlias(unitStr);
+    const rest = s.slice(quantityMatch[0].length).trim();
+    const words = rest.split(/\s+/).filter(Boolean);
+    const firstWord = words[0];
 
-    if (quantity !== null && canonical) {
-      return { canonical, quantity, confidence: 'high', original: s };
-    }
-    if (quantity !== null && !canonical) {
-      return { canonical: unitStr.toLowerCase(), quantity, confidence: 'medium', original: s };
+    if (quantity !== null && firstWord) {
+      // A two-word alias ("fl oz") is tried first, but only used if it
+      // actually resolves - otherwise a single-word unit followed by an
+      // unrelated ingredient name must resolve to just that first word,
+      // never the unit-plus-next-word blob.
+      const twoWords = words.length >= 2 ? `${firstWord} ${words[1]}` : null;
+      const twoWordCanonical = twoWords ? lookupAlias(twoWords) : undefined;
+      if (twoWordCanonical) {
+        return { canonical: twoWordCanonical, quantity, confidence: 'high', original: s };
+      }
+      const canonical = lookupAlias(firstWord);
+      if (canonical) {
+        return { canonical, quantity, confidence: 'high', original: s };
+      }
+      return { canonical: firstWord.toLowerCase(), quantity, confidence: 'medium', original: s };
     }
   }
 

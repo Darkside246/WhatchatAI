@@ -27,6 +27,8 @@ import { ensureDefaultBusinessProvisioned } from './businessBootstrapService.js'
 import { syncAccountProfilePicture } from './profilePictureSyncService.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
 import { WhatsAppConnectionEventRepository } from '../repositories/whatsappConnectionEventRepository.js';
+import { tryAcquireGroupSyncCooldown } from './whatsappGroupSyncCooldown.js';
+import { reconnectDelayMs } from './whatsappReconnectBackoff.js';
 
 export type WhatsAppConnectionStatus =
   | 'DISCONNECTED'
@@ -603,11 +605,34 @@ export class WhatsAppConnectionService {
    * backfill - an account with real WhatsApp groups could otherwise
    * persist zero of them if that event never fires for pre-existing
    * groups. This explicit fetch is the only way to guarantee the full
-   * participating-group list actually lands. Safe on every reconnect:
-   * ingestGroups() upserts, so repeats just refresh metadata.
+   * participating-group list actually lands. Idempotent (ingestGroups()
+   * upserts), but NOT rate-limit-safe: `groupFetchAllParticipating()` hits
+   * WhatsApp's own servers, and every reconnect - including the frequent,
+   * legitimate kind caused by a network blip or a phone going idle - used
+   * to re-trigger it unconditionally. A run of quick reconnects (or many
+   * businesses reconnecting around the same server restart) turned into a
+   * burst of these calls and tripped WhatsApp's 429 rate-overlimit,
+   * observed in production. The cooldown below is a real fix for that,
+   * not a hypothetical: only one fetch per account is allowed per window,
+   * enforced in Redis (not process memory) so it holds even if this
+   * process restarts mid-cooldown.
    */
   private async syncParticipatingGroups(businessId: string, accountId: string): Promise<void> {
     if (!this.socket) return;
+
+    // NX: only the first caller within the window wins the fetch; every
+    // other reconnect in that window is a no-op skip, not a queued retry -
+    // the next real reconnect after the cooldown expires will fetch fresh
+    // data anyway, so there is nothing worth retrying in between.
+    const acquired = await tryAcquireGroupSyncCooldown(accountId).catch((error: unknown) => {
+      console.error('[WhatsApp] Group sync cooldown check failed, skipping fetch to be safe:', error);
+      return false;
+    });
+    if (!acquired) {
+      console.log(`[WhatsApp] Skipping group fetch for account ${accountId} - within cooldown window`);
+      return;
+    }
+
     try {
       const groups = await this.socket.groupFetchAllParticipating();
       const processed = await whatsappSyncService.ingestGroups(businessId, accountId, Object.values(groups));
@@ -669,10 +694,7 @@ export class WhatsAppConnectionService {
   private scheduleReconnect(): void {
     this.clearReconnectTimer();
     this.reconnectAttempt += 1;
-    const delay = Math.min(
-      1_000 * 2 ** Math.min(this.reconnectAttempt - 1, 5),
-      30_000,
-    );
+    const delay = reconnectDelayMs(this.reconnectAttempt);
 
     this.snapshot = {
       ...this.snapshot,

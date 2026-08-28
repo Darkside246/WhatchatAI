@@ -291,7 +291,7 @@ export function PublicLandingPage() {
 
                 <button
                   type="button"
-                  disabled={!canSubmit || phase === 'submitting'}
+                  disabled={!canSubmit}
                   onClick={() => void handleStart()}
                   className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl bg-accent py-3 text-body font-semibold text-white transition-opacity hover:bg-accent-dim disabled:cursor-not-allowed disabled:opacity-40"
                 >

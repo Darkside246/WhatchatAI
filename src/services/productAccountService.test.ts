@@ -3,7 +3,10 @@ import { ProductAccountSchema, ProductKeySchema, ProductAccountStatusSchema } fr
 
 describe('product account foundation', () => {
   it('supports the product catalogue domains', () => {
-    expect(ProductKeySchema.options).toEqual(['property', 'food', 'commerce', 'scheduling', 'support']);
+    expect(ProductKeySchema.options).toEqual([
+      'property', 'food', 'commerce', 'scheduling', 'support',
+      'retail', 'beauty', 'auto', 'health', 'legal', 'hospitality', 'construction', 'logistics',
+    ]);
   });
 
   it('keeps account status explicit and server-owned', () => {

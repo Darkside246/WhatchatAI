@@ -68,21 +68,34 @@ export class SubscriptionRepository {
    * business a real trialing subscription to a real plan so entitlements can
    * be enforced. Not fabricated usage - it's the same "no signup flow yet"
    * limitation as BusinessRepository.ensureDefault().
+   *
+   * The check-then-insert this replaced raced under real concurrency: two
+   * callers could both see "no live subscription yet" via findLiveByBusiness
+   * before either INSERT committed, and the second then hit
+   * subscriptions_one_live_per_business_idx as a thrown constraint
+   * violation instead of a handled "someone else already provisioned this"
+   * outcome. ON CONFLICT against that same partial unique index makes the
+   * whole check-and-create atomic - whichever caller loses the race gets
+   * DO NOTHING instead of an error, then reads back the row the winner
+   * created.
    */
   async ensureDefault(businessId: string, planId: string, trialDays = 14): Promise<SubscriptionRecord> {
-    const existing = await this.findLiveByBusiness(businessId);
-    if (existing) return existing;
-
     const { rows } = await this.db.query<SubscriptionRow>(
       `INSERT INTO subscriptions
          (business_id, plan_id, status, current_period_start, current_period_end, trial_ends_at)
        VALUES ($1, $2, 'TRIALING', now(), now() + ($3 || ' days')::interval, now() + ($3 || ' days')::interval)
+       ON CONFLICT (business_id) WHERE status = ANY(ARRAY['ACTIVE','TRIALING','PAST_DUE','PAUSED'])
+       DO NOTHING
        RETURNING *`,
       [businessId, planId, trialDays],
     );
     const row = rows[0];
-    if (!row) throw new Error('subscriptions insert returned no row');
-    return toRecord(row);
+    if (row) return toRecord(row);
+
+    // Lost the race - another concurrent call's INSERT already won.
+    const existing = await this.findLiveByBusiness(businessId);
+    if (!existing) throw new Error('subscriptions insert conflicted but no live subscription was found');
+    return existing;
   }
 
   async updateStatus(id: string, status: SubscriptionStatus): Promise<void> {

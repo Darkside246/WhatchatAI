@@ -59,23 +59,26 @@ function toRecord(row: UserPreferenceRow): UserPreferenceRecord {
   };
 }
 
-export type UserPreferenceUpdate = Partial<
-  Pick<
-    UserPreferenceRecord,
-    | 'theme'
-    | 'language'
-    | 'timezone'
-    | 'notificationSound'
-    | 'desktopNotifications'
-    | 'pushNotifications'
-    | 'handoffSound'
-    | 'reducedMotion'
-    | 'density'
-    | 'chatFontSize'
-    | 'defaultWhatsappAccountId'
-    | 'country'
-  > & { navigationOrder?: string[] | null }
->;
+type UserPreferenceUpdatableFields = Pick<
+  UserPreferenceRecord,
+  | 'theme'
+  | 'language'
+  | 'timezone'
+  | 'notificationSound'
+  | 'desktopNotifications'
+  | 'pushNotifications'
+  | 'handoffSound'
+  | 'reducedMotion'
+  | 'density'
+  | 'chatFontSize'
+  | 'defaultWhatsappAccountId'
+  | 'country'
+> & { navigationOrder: string[] | null };
+
+// Explicit `| undefined` per field (rather than a bare Partial<...>) so
+// zod's .optional() output - which really can carry an explicit `undefined`
+// value, not just an absent key - is assignable under exactOptionalPropertyTypes.
+export type UserPreferenceUpdate = { [K in keyof UserPreferenceUpdatableFields]?: UserPreferenceUpdatableFields[K] | undefined };
 
 export class UserPreferenceRepository {
   constructor(private readonly db: Queryable) {}
