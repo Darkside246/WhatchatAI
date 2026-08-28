@@ -1191,4 +1191,15 @@ export const api = {
     }),
   deleteKnowledgeBaseDocument: (documentId: string) =>
     request<{ status: string }>(`/workspace/knowledge-base/${documentId}`, { method: 'DELETE' }),
+
+  getControlPlaneStats: () =>
+    request<{
+      stats: {
+        totalBusinesses: number;
+        activeWaConnections: number;
+        totalAiAgents: number;
+        activeTrials: number;
+        recentSecurityEvents: number;
+      };
+    }>('/platform/developer/control-plane-stats'),
 };

@@ -47,4 +47,31 @@ router.post('/product-accounts', requireAuth, async (req, res) => {
 router.get('/developer/product-accounts', requireAuth, requireDeveloper, async (_req, res) => res.status(200).json({ accounts: await listAllProductAccounts() }));
 router.get('/developer/trials', requireAuth, requireDeveloper, async (_req, res) => res.status(200).json({ trials: await trials.listAll() }));
 
+router.get('/developer/control-plane-stats', requireAuth, requireDeveloper, async (_req, res) => {
+  const { rows } = await pool.query<{
+    total_businesses: string;
+    active_wa_connections: string;
+    total_ai_agents: string;
+    active_trials: string;
+    recent_security_events: string;
+  }>(`
+    SELECT
+      (SELECT COUNT(*) FROM businesses WHERE deleted_at IS NULL) AS total_businesses,
+      (SELECT COUNT(*) FROM whatsapp_accounts WHERE status = 'CONNECTED') AS active_wa_connections,
+      (SELECT COUNT(*) FROM ai_agents) AS total_ai_agents,
+      (SELECT COUNT(*) FROM trials WHERE expires_at > NOW() AND activated_at IS NOT NULL) AS active_trials,
+      (SELECT COUNT(*) FROM security_audit_logs WHERE created_at > NOW() - INTERVAL '24 hours') AS recent_security_events
+  `);
+  const row = rows[0];
+  return res.status(200).json({
+    stats: {
+      totalBusinesses: Number(row?.total_businesses ?? 0),
+      activeWaConnections: Number(row?.active_wa_connections ?? 0),
+      totalAiAgents: Number(row?.total_ai_agents ?? 0),
+      activeTrials: Number(row?.active_trials ?? 0),
+      recentSecurityEvents: Number(row?.recent_security_events ?? 0),
+    },
+  });
+});
+
 export { router as productAccountRouter };

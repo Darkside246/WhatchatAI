@@ -1,6 +1,7 @@
-import type { ComponentType } from 'react';
+import { useEffect, useState, type ComponentType } from 'react';
 import type { LucideProps } from 'lucide-react';
 import { Activity, Bot, CreditCard, Database, Gauge, KeyRound, Radio, ShieldCheck, Users } from 'lucide-react';
+import { api } from '../lib/api.js';
 
 type ControlSurface = {
   title: string;
@@ -20,7 +21,32 @@ const surfaces: ControlSurface[] = [
   { title: 'Security & audit', description: 'Permissions, audit trails and operational policy boundaries', Icon: ShieldCheck, to: '/settings' },
 ];
 
+interface PlatformStats {
+  totalBusinesses: number;
+  activeWaConnections: number;
+  totalAiAgents: number;
+  activeTrials: number;
+  recentSecurityEvents: number;
+}
+
+function StatPill({ label, value }: { label: string; value: number | null }) {
+  return (
+    <div className="rounded-xl bg-surface-2 p-4">
+      <span className="block text-2xl font-semibold tabular-nums text-fg">{value === null ? '—' : value}</span>
+      <span className="mt-1 block text-caption text-fg-secondary">{label}</span>
+    </div>
+  );
+}
+
 export function DeveloperControlPlanePage() {
+  const [stats, setStats] = useState<PlatformStats | null>(null);
+
+  useEffect(() => {
+    api.getControlPlaneStats()
+      .then((res) => setStats(res.stats))
+      .catch(() => undefined);
+  }, []);
+
   return (
     <div className="min-h-0 flex-1 overflow-auto bg-surface-0 p-5 sm:p-8">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -37,6 +63,14 @@ export function DeveloperControlPlanePage() {
               </p>
             </div>
           </div>
+        </section>
+
+        <section className="grid gap-3 sm:grid-cols-5">
+          <StatPill label="Total clients" value={stats?.totalBusinesses ?? null} />
+          <StatPill label="Active connections" value={stats?.activeWaConnections ?? null} />
+          <StatPill label="AI agents" value={stats?.totalAiAgents ?? null} />
+          <StatPill label="Active trials" value={stats?.activeTrials ?? null} />
+          <StatPill label="Security events (24h)" value={stats?.recentSecurityEvents ?? null} />
         </section>
 
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
