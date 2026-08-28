@@ -885,15 +885,15 @@ export function ChatThread({ onOpenDetail }: Props) {
           <div key={message.id}>
             {(index === 0 || dayKey(messages[index - 1]!.timestamp) !== dayKey(message.timestamp)) && (
               <div className="flex justify-center py-2">
-                <span className="rounded-lg bg-surface-2 px-3 py-1 text-meta font-medium uppercase tracking-wide text-fg-muted shadow-sm">
+                <span className="rounded-full border border-border-subtle/50 bg-surface-1/90 px-3 py-1 text-meta font-medium text-fg-muted shadow-sm">
                   {formatDaySeparator(message.timestamp)}
                 </span>
               </div>
             )}
-            <div className={`group relative flex ${message.fromMe ? 'justify-end' : 'justify-start'}`}>
+            <div className={`group relative flex ${message.fromMe ? 'justify-end' : 'justify-start'} ${message.reactions.length > 0 ? 'mb-4' : ''}`}>
             <div
               className={`relative max-w-[75%] rounded-2xl px-3 py-2 text-body shadow-sm ${
-                message.fromMe ? 'rounded-tr-sm bg-message-out text-message-out-fg' : 'rounded-tl-sm bg-message-in text-fg'
+                message.fromMe ? 'rounded-tr-none bg-message-out text-message-out-fg' : 'rounded-tl-none bg-message-in text-fg shadow-[0_1px_3px_rgba(0,0,0,0.08)]'
               }`}
             >
               <button
@@ -957,19 +957,6 @@ export function ChatThread({ onOpenDetail }: Props) {
               ) : (
                 <p className="whitespace-pre-wrap break-words">{messageBody(message)}</p>
               )}
-              {message.reactions.length > 0 && (
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {groupReactions(message.reactions).map(({ emoji, count }) => (
-                    <span
-                      key={emoji}
-                      className="rounded-full bg-black/20 px-1.5 py-0.5 text-meta leading-none"
-                    >
-                      {emoji}
-                      {count > 1 ? ` ${count}` : ''}
-                    </span>
-                  ))}
-                </div>
-              )}
               {message.revokeStatus !== 'none' && (
                 <p className="mt-1 flex items-center gap-1 text-meta italic opacity-80">
                   <Trash2 size={10} aria-hidden />
@@ -986,6 +973,20 @@ export function ChatThread({ onOpenDetail }: Props) {
                 <span>{formatTime(message.timestamp)}</span>
                 {message.fromMe && <DeliveryTicks status={message.status} />}
               </div>
+              {message.reactions.length > 0 && (
+                <div
+                  className={`absolute -bottom-3.5 z-10 flex items-center gap-1 rounded-full border border-border-subtle bg-surface-1 px-2 py-0.5 shadow-sm ${
+                    message.fromMe ? 'right-2' : 'left-2'
+                  }`}
+                >
+                  {groupReactions(message.reactions).map(({ emoji, count }) => (
+                    <span key={emoji} className="text-meta leading-none">
+                      {emoji}
+                      {count > 1 ? ` ${count}` : ''}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
             </div>
           </div>
@@ -993,11 +994,11 @@ export function ChatThread({ onOpenDetail }: Props) {
       </div>
 
       {replySuggestions.length > 0 && (
-        <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-t border-border-subtle bg-surface-2/60 px-4 py-2">
-          <span className="flex shrink-0 items-center gap-1.5 text-meta font-semibold text-accent">
-            <Sparkles size={13} aria-hidden />
-            <span className="hidden sm:inline">AI drafts</span>
-          </span>
+        <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-t border-border-subtle bg-surface-1 px-3 py-2">
+          <div className="flex shrink-0 items-center gap-1.5 rounded-full bg-accent/10 px-2.5 py-1 text-meta font-semibold text-accent">
+            <Sparkles size={12} strokeWidth={2} aria-hidden />
+            <span>Suggestions</span>
+          </div>
           {replySuggestions.map((suggestion) => (
             <button
               key={suggestion}
@@ -1006,7 +1007,7 @@ export function ChatThread({ onOpenDetail }: Props) {
                 setDraft(suggestion);
                 setReplySuggestions([]);
               }}
-              className="shrink-0 whitespace-nowrap rounded-full border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg-secondary shadow-sm transition-colors hover:border-accent hover:text-accent"
+              className="shrink-0 whitespace-nowrap rounded-full border border-border-subtle bg-surface-2 px-3 py-1.5 text-caption text-fg-secondary shadow-sm transition-colors hover:border-accent hover:bg-accent/5 hover:text-accent"
             >
               {suggestion}
             </button>

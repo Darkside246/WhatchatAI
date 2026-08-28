@@ -11,19 +11,116 @@ import {
 import { AiEngineStrip } from '../components/AiEngineStrip.js';
 import { TimeSyncStrip } from '../components/TimeSyncStrip.js';
 
+// Semantic chart colors — separate from the design-system accent so each
+// carries standalone operational meaning independent of theme choice.
+const C_AI_ACTIVE = '#22c55e';
+const C_HUMAN_TAKEOVER = '#f59e0b';
+const C_AI_PAUSED = '#38bdf8';
+const C_ACCENT = '#6366f1';
+const C_ERROR = '#ef4444';
+const C_MUTED = '#9ca3af';
+
+const CALL_COLOR: Record<string, string> = {
+  ended: C_AI_ACTIVE,
+  accepted: C_AI_ACTIVE,
+  missed: C_ERROR,
+  timeout: C_ERROR,
+  rejected: C_HUMAN_TAKEOVER,
+  offer: C_AI_PAUSED,
+  ringing: C_AI_PAUSED,
+  unknown: C_MUTED,
+};
+
+function DonutRing({
+  segments,
+  size = 96,
+  stroke = 14,
+}: {
+  segments: { value: number; color: string; label: string }[];
+  size?: number;
+  stroke?: number;
+}) {
+  const r = (size - stroke) / 2;
+  const circ = 2 * Math.PI * r;
+  const total = segments.reduce((s, seg) => s + seg.value, 0);
+  const cx = size / 2;
+  const cy = size / 2;
+  let off = 0;
+  const arcs = segments.map((seg) => {
+    const dash = total > 0 ? (seg.value / total) * circ : 0;
+    const arc = { ...seg, dash, gap: circ - dash, dashOffset: -off };
+    off += dash;
+    return arc;
+  });
+
+  return (
+    <div className="flex items-center gap-5">
+      <div className="relative shrink-0" style={{ width: size, height: size }}>
+        <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }} aria-hidden>
+          <circle cx={cx} cy={cy} r={r} fill="none" stroke="currentColor" strokeWidth={stroke} className="text-surface-3" />
+          {arcs.map((arc, i) =>
+            arc.value > 0 ? (
+              <circle
+                key={i}
+                cx={cx}
+                cy={cy}
+                r={r}
+                fill="none"
+                stroke={arc.color}
+                strokeWidth={stroke}
+                strokeDasharray={`${arc.dash} ${arc.gap}`}
+                strokeDashoffset={arc.dashOffset}
+              />
+            ) : null,
+          )}
+        </svg>
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-title font-bold tabular-nums text-fg">{total}</span>
+          <span className="text-meta text-fg-muted">chats</span>
+        </div>
+      </div>
+      <div className="flex flex-col gap-2">
+        {segments.map((seg) => (
+          <div key={seg.label} className="flex items-center gap-2">
+            <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: seg.color }} aria-hidden />
+            <span className="text-caption text-fg-secondary">{seg.label}</span>
+            <span className="ml-2 text-caption font-semibold tabular-nums text-fg">{seg.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function HorizBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
+  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+  return (
+    <div className="flex items-center gap-2.5">
+      <span className="w-32 shrink-0 truncate text-caption text-fg-secondary">{label}</span>
+      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3">
+        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: color }} />
+      </div>
+      <span className="w-5 shrink-0 text-right text-caption tabular-nums text-fg-muted">{value}</span>
+    </div>
+  );
+}
+
 function StatCard({
   icon: Icon,
   label,
   value,
   sublabel,
+  accent,
 }: {
   icon: typeof MessageCircle;
   label: string;
   value: string | number;
   sublabel?: string;
+  accent: string;
 }) {
   return (
-    <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+    <div className="relative overflow-hidden rounded-xl border border-border-subtle bg-surface-2 p-4">
+      <div className="absolute inset-y-0 left-0 w-1 rounded-l-xl" style={{ backgroundColor: accent }} aria-hidden />
       <div className="flex items-center gap-2 text-fg-muted">
         <Icon size={16} strokeWidth={1.75} aria-hidden />
         <span className="text-caption">{label}</span>
@@ -45,14 +142,17 @@ function SplitBar({ label, a, aLabel, b, bLabel }: { label: string; a: number; a
       ) : (
         <>
           <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-surface-3">
-            <div className="h-full bg-accent" style={{ width: `${aPercent}%` }} />
-            <div className="h-full bg-fg-muted/40" style={{ width: `${100 - aPercent}%` }} />
+            <div className="h-full transition-all duration-500" style={{ width: `${aPercent}%`, backgroundColor: C_ACCENT }} />
+            <div className="h-full" style={{ width: `${100 - aPercent}%`, backgroundColor: `${C_MUTED}66` }} />
           </div>
           <div className="mt-2 flex items-center justify-between text-caption">
-            <span className="text-fg-secondary">
+            <span className="flex items-center gap-1.5 text-fg-secondary">
+              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: C_ACCENT }} aria-hidden />
               {aLabel}: {a}
+              {' '}<span className="text-fg-muted">({aPercent}%)</span>
             </span>
-            <span className="text-fg-muted">
+            <span className="flex items-center gap-1.5 text-fg-muted">
+              <span className="h-1.5 w-1.5 rounded-full bg-fg-muted/40" aria-hidden />
               {bLabel}: {b}
             </span>
           </div>
@@ -92,11 +192,9 @@ const SEVERITY_DOT: Record<NotificationDto['severity'], string> = {
 
 /**
  * Everything here is real and computed from the same tables the rest of the
- * workspace reads - a chat only appears in "needs a reply" because its
- * ai_mode is genuinely HUMAN_TAKEOVER right now (set by the routing/reply
- * pipeline itself, per the fixes that make no_agent/blocked/failed outcomes
- * visible instead of silent), and the activity feed is the real notification
- * log, not a fabricated event stream.
+ * workspace reads — chats only appear in "needs a reply" because their
+ * ai_mode is genuinely HUMAN_TAKEOVER right now, and the activity feed is
+ * the real notification log, not a fabricated event stream.
  */
 export function DashboardRoute() {
   const navigate = useNavigate();
@@ -137,6 +235,10 @@ export function DashboardRoute() {
   const totalReplies = dashboard.outboundReplies.ai + dashboard.outboundReplies.human;
   const aiSharePercent = totalReplies > 0 ? Math.round((dashboard.outboundReplies.ai / totalReplies) * 100) : null;
 
+  const aiActiveCount = chats.filter((c) => c.aiMode === 'AI_ACTIVE').length;
+  const humanTakeoverCount = chats.filter((c) => c.aiMode === 'HUMAN_TAKEOVER').length;
+  const aiPausedCount = chats.filter((c) => c.aiMode === 'AI_PAUSED').length;
+
   const needsHuman = chats
     .filter((chat) => chat.aiMode === 'HUMAN_TAKEOVER')
     .sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));
@@ -145,11 +247,25 @@ export function DashboardRoute() {
   const unreadImportant = notifications.filter((n) => !n.readAt && (n.severity === 'critical' || n.severity === 'warning'));
   const hasAttention = aiDown || needsHuman.length > 0 || unreadImportant.length > 0;
 
+  const chatDonutSegments = [
+    { value: aiActiveCount, color: C_AI_ACTIVE, label: 'AI Active' },
+    { value: humanTakeoverCount, color: C_HUMAN_TAKEOVER, label: 'Needs human' },
+    { value: aiPausedCount, color: C_AI_PAUSED, label: 'AI Paused' },
+  ];
+
+  const stagePipeline = [
+    { label: 'All conversations', value: dashboard.chats.total, color: C_MUTED },
+    { label: `Active (${dashboard.periodDays}d)`, value: dashboard.chats.activeSince, color: C_ACCENT },
+    { label: 'AI handling', value: aiActiveCount, color: C_AI_ACTIVE },
+    { label: 'Waiting on human', value: humanTakeoverCount, color: C_HUMAN_TAKEOVER },
+  ];
+  const pipelineMax = dashboard.chats.total || 1;
+
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <h1 className="text-title font-semibold text-fg">Dashboard</h1>
       <p className="mt-1 text-body text-fg-muted">
-        Real activity from the last {dashboard.periodDays} days - computed from your actual synced data, not estimated.
+        Real activity from the last {dashboard.periodDays} days — computed from your actual synced data, not estimated.
       </p>
 
       {/* ATTENTION - the one thing to check before anything else, or an honest all-clear. */}
@@ -162,7 +278,7 @@ export function DashboardRoute() {
                 <div className="min-w-0 flex-1">
                   <p className="text-body font-medium text-fg">No AI engine can reply right now</p>
                   <p className="text-caption text-fg-muted">
-                    Neither Gemini nor Goose is available - every conversation is relying on a human.
+                    Neither Gemini nor Goose is available — every conversation is relying on a human.
                   </p>
                 </div>
                 <button
@@ -181,7 +297,7 @@ export function DashboardRoute() {
                   <p className="text-body font-medium text-fg">
                     {needsHuman.length} conversation{needsHuman.length === 1 ? '' : 's'} waiting on a human
                   </p>
-                  <p className="text-caption text-fg-muted">The AI could not handle these - see the list below.</p>
+                  <p className="text-caption text-fg-muted">The AI could not handle these — see the list below.</p>
                 </div>
               </div>
             )}
@@ -209,24 +325,36 @@ export function DashboardRoute() {
           label="Messages"
           value={totalMessages}
           sublabel={`${dashboard.messages.inbound} in · ${dashboard.messages.outbound} out`}
+          accent={C_ACCENT}
         />
         <StatCard
           icon={Users}
           label="Active chats"
           value={dashboard.chats.activeSince}
           sublabel={`${dashboard.chats.total} total`}
+          accent={C_AI_PAUSED}
         />
-        <StatCard icon={Phone} label="Calls" value={totalCalls} />
+        <StatCard icon={Phone} label="Calls" value={totalCalls} accent={C_MUTED} />
         <StatCard
           icon={Bot}
           label="AI replies sent"
           value={dashboard.outboundReplies.ai}
           sublabel={aiSharePercent !== null ? `${aiSharePercent}% of all replies` : undefined}
+          accent={C_AI_ACTIVE}
         />
       </div>
 
-      {/* CONVERSATION / AI PERFORMANCE */}
+      {/* CHARTS ROW */}
       <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+          <p className="mb-4 text-caption text-fg-muted">Conversation health</p>
+          {chats.length === 0 ? (
+            <p className="text-body text-fg-muted">No chats yet.</p>
+          ) : (
+            <DonutRing segments={chatDonutSegments} />
+          )}
+        </div>
+
         <SplitBar
           label="Who's replying"
           a={dashboard.outboundReplies.ai}
@@ -234,18 +362,33 @@ export function DashboardRoute() {
           b={dashboard.outboundReplies.human}
           bLabel="Human"
         />
+      </div>
+
+      {/* PIPELINE + CALLS ROW */}
+      <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+          <p className="mb-4 text-caption text-fg-muted">Chat pipeline</p>
+          <div className="space-y-2.5">
+            {stagePipeline.map((stage) => (
+              <HorizBar key={stage.label} label={stage.label} value={stage.value} max={pipelineMax} color={stage.color} />
+            ))}
+          </div>
+        </div>
 
         <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
-          <p className="text-caption text-fg-muted">Calls by outcome</p>
+          <p className="mb-4 text-caption text-fg-muted">Calls by outcome</p>
           {totalCalls === 0 ? (
-            <p className="mt-2 text-body text-fg-muted">No real calls in this period.</p>
+            <p className="text-body text-fg-muted">No calls in this period.</p>
           ) : (
-            <div className="mt-3 space-y-1.5">
+            <div className="space-y-2.5">
               {Object.entries(dashboard.calls).map(([status, count]) => (
-                <div key={status} className="flex items-center justify-between text-caption">
-                  <span className="text-fg-secondary">{CALL_STATUS_LABEL[status] ?? status}</span>
-                  <span className="text-fg-muted">{count}</span>
-                </div>
+                <HorizBar
+                  key={status}
+                  label={CALL_STATUS_LABEL[status] ?? status}
+                  value={count}
+                  max={totalCalls}
+                  color={CALL_COLOR[status] ?? C_MUTED}
+                />
               ))}
             </div>
           )}
