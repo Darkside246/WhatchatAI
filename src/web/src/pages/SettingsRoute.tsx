@@ -1,5 +1,5 @@
-import { type ReactNode, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Camera, ChevronDown, ChevronRight, Clock, KeyRound, Lock, LogOut, Monitor, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
+import { type ComponentType, type ReactNode, useEffect, useRef, useState, type FormEvent } from 'react';
+import { Bot, Building2, Camera, ChevronDown, ChevronRight, Clock, KeyRound, Lock, LogOut, Monitor, Palette, PanelLeft, PanelLeftClose, ShieldCheck, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
 import {
   api,
   mediaUrl,
@@ -1413,70 +1413,131 @@ const COUNTRIES: [string, string][] = [
 ];
 
 
-function SettingsSection({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div>
-      <div className="mb-3 flex items-center gap-3">
-        <p className="shrink-0 text-meta font-semibold uppercase tracking-widest text-fg-muted">{label}</p>
-        <div className="h-px flex-1 bg-border-subtle" />
-      </div>
-      {children}
-    </div>
-  );
-}
+type SettingsView = 'business' | 'ai' | 'appearance' | 'team' | 'account';
+
+const SETTINGS_NAV: { id: SettingsView; label: string; sub: string; Icon: ComponentType<{ size?: number; className?: string; 'aria-hidden'?: boolean }> }[] = [
+  { id: 'business',   label: 'Business',           sub: 'Profile · Time & location',       Icon: Building2   },
+  { id: 'ai',         label: 'AI & Knowledge',      sub: 'Knowledge base · Integrations',   Icon: Bot         },
+  { id: 'appearance', label: 'Appearance',           sub: 'Theme',                           Icon: Palette     },
+  { id: 'team',       label: 'Team',                sub: 'Members · Teams · Availability',  Icon: Users       },
+  { id: 'account',    label: 'Account & Security',  sub: 'Sessions · PIN · Sign out',       Icon: ShieldCheck },
+];
 
 export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSnapshot | null }) {
+  const [view, setView] = useState<SettingsView>('business');
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+
   return (
-    <div className="flex-1 overflow-y-auto p-6">
-      <h1 className="text-title font-semibold text-fg">Settings</h1>
-      <p className="mt-1 text-body text-fg-muted">Configure your workspace, business profile, and account.</p>
+    <div className="flex flex-1 overflow-hidden">
 
-      <div className="mt-6 max-w-5xl space-y-8">
+      {/* ── Left nav sidebar ── */}
+      <aside
+        className={`flex shrink-0 flex-col border-r border-border-subtle bg-surface-1 transition-all duration-200 ${sidebarOpen ? 'w-52' : 'w-14'}`}
+      >
+        {/* Sidebar header / toggle */}
+        <div className="flex h-12 shrink-0 items-center border-b border-border-subtle px-3">
+          <button
+            type="button"
+            onClick={() => setSidebarOpen((v) => !v)}
+            title={sidebarOpen ? 'Collapse' : 'Expand'}
+            className="rounded-md p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
+          >
+            {sidebarOpen ? <PanelLeftClose size={15} aria-hidden /> : <PanelLeft size={15} aria-hidden />}
+          </button>
+          {sidebarOpen && <p className="ml-2 text-caption font-semibold text-fg">Settings</p>}
+        </div>
 
-        {/* ── Appearance ── */}
-        <SettingsSection label="Appearance">
-          <ThemeCard />
-        </SettingsSection>
+        {/* Nav items */}
+        <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
+          {SETTINGS_NAV.map(({ id, label, sub, Icon }) => {
+            const active = view === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setView(id)}
+                title={sidebarOpen ? undefined : label}
+                className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors ${
+                  active
+                    ? 'bg-accent/10 text-accent'
+                    : 'text-fg-secondary hover:bg-surface-2 hover:text-fg'
+                }`}
+              >
+                <Icon size={15} className="shrink-0" aria-hidden />
+                {sidebarOpen && (
+                  <div className="min-w-0">
+                    <p className={`text-caption font-medium ${active ? 'text-accent' : ''}`}>{label}</p>
+                    <p className="truncate text-meta text-fg-muted">{sub}</p>
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+      </aside>
 
-        {/* ── Business ── */}
-        <SettingsSection label="Business">
-          <div className="space-y-3">
-            <ProfileCard connection={connection} />
-            <TimeLocationCard />
+      {/* ── Content panel ── */}
+      <div className="flex-1 overflow-y-auto p-6">
+        {view === 'business' && (
+          <div className="space-y-4">
+            <SectionTitle title="Business" desc="Your workspace identity, WhatsApp connection, and location settings." />
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+              <ProfileCard connection={connection} />
+              <TimeLocationCard />
+            </div>
           </div>
-        </SettingsSection>
+        )}
 
-        {/* ── AI & Knowledge ── */}
-        <SettingsSection label="AI & Knowledge">
-          <div className="space-y-3">
+        {view === 'ai' && (
+          <div className="space-y-4">
+            <SectionTitle title="AI & Knowledge" desc="What your AI agents know and which external AI providers power them." />
             <KnowledgeBaseCard />
             <IntegrationSettingsPanel />
           </div>
-        </SettingsSection>
+        )}
 
-        {/* ── Team ── */}
-        <SettingsSection label="Team">
-          <div className="space-y-3">
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        {view === 'appearance' && (
+          <div className="space-y-4">
+            <SectionTitle title="Appearance" desc="Theme is saved in this browser — applies instantly everywhere in the app." />
+            <div className="max-w-lg">
+              <ThemeCard />
+            </div>
+          </div>
+        )}
+
+        {view === 'team' && (
+          <div className="space-y-4">
+            <SectionTitle title="Team" desc="Manage teammates, groups, and your personal availability." />
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
               <TeamMembersCard />
               <TeamsCard />
             </div>
-            <AvailabilityCard />
+            <div className="max-w-lg">
+              <AvailabilityCard />
+            </div>
           </div>
-        </SettingsSection>
+        )}
 
-        {/* ── Account & Security ── */}
-        <SettingsSection label="Account & Security">
-          <div className="space-y-3">
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        {view === 'account' && (
+          <div className="space-y-4">
+            <SectionTitle title="Account & Security" desc="Your signed-in session, screen lock PIN, and active devices." />
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
               <AccountCard />
               <SecurityCard />
             </div>
             <SessionsCard />
           </div>
-        </SettingsSection>
-
+        )}
       </div>
+    </div>
+  );
+}
+
+function SectionTitle({ title, desc }: { title: string; desc: string }) {
+  return (
+    <div className="mb-2">
+      <h2 className="text-title font-semibold text-fg">{title}</h2>
+      <p className="mt-0.5 text-caption text-fg-muted">{desc}</p>
     </div>
   );
 }
