@@ -1,6 +1,3 @@
--- Legal document registry: versioned T&C and Privacy Policy stored in the DB
--- so operators can update content without a code deployment.
-
 CREATE TABLE legal_documents (
   id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   document_type TEXT        NOT NULL CHECK (document_type IN ('TERMS', 'PRIVACY')),
@@ -13,7 +10,6 @@ CREATE TABLE legal_documents (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Only one active document per type at any time.
 CREATE UNIQUE INDEX idx_legal_documents_active_type
   ON legal_documents (document_type)
   WHERE is_active = true;
@@ -21,13 +17,12 @@ CREATE UNIQUE INDEX idx_legal_documents_active_type
 CREATE INDEX idx_legal_documents_type_effective
   ON legal_documents (document_type, effective_at DESC);
 
--- Seed: insert initial Terms of Service.
 INSERT INTO legal_documents (document_type, version, title, content_html, effective_at)
 VALUES (
   'TERMS',
   '1.0',
   'Terms of Service',
-  '<h2>1. Acceptance of Terms</h2>
+  $$<h2>1. Acceptance of Terms</h2>
 <p>By accessing or using WhatsChat ("the Service"), you agree to be bound by these Terms of Service ("Terms"). If you do not agree to these Terms, you may not use the Service.</p>
 
 <h2>2. Description of Service</h2>
@@ -43,13 +38,13 @@ VALUES (
 <p>You agree not to use the Service to: (a) violate any applicable law or regulation; (b) send spam or unsolicited communications; (c) transmit harmful, fraudulent, or deceptive content; (d) infringe intellectual property rights; (e) interfere with the Service's operation or security.</p>
 
 <h2>6. WhatsApp Compliance</h2>
-<p>You acknowledge that the Service integrates with WhatsApp and that your use must comply with WhatsApp''s Terms of Service and Business Policy. You are solely responsible for ensuring your communications comply with WhatsApp''s policies.</p>
+<p>You acknowledge that the Service integrates with WhatsApp and that your use must comply with WhatsApp's Terms of Service and Business Policy. You are solely responsible for ensuring your communications comply with WhatsApp's policies.</p>
 
 <h2>7. Data and Privacy</h2>
 <p>Your use of the Service is also governed by our Privacy Policy, which is incorporated into these Terms by reference. By using the Service, you consent to the collection, use, and sharing of your information as described in the Privacy Policy.</p>
 
 <h2>8. Payment and Billing</h2>
-<p>Subscription fees are billed in advance. All payments are non-refundable except as required by law. We reserve the right to modify pricing with 30 days'' notice.</p>
+<p>Subscription fees are billed in advance. All payments are non-refundable except as required by law. We reserve the right to modify pricing with 30 days' notice.</p>
 
 <h2>9. Intellectual Property</h2>
 <p>The Service and its content are owned by WhatsChat Technologies Ltd and are protected by intellectual property laws. You are granted a limited, non-exclusive, non-transferable licence to use the Service for its intended purpose.</p>
@@ -67,17 +62,16 @@ VALUES (
 <p>We may update these Terms from time to time. We will notify you of material changes by email or in-app notice. Continued use of the Service after changes constitutes acceptance.</p>
 
 <h2>14. Contact</h2>
-<p>For questions about these Terms, contact us at <a href="mailto:legal@whatchat.ai">legal@whatchat.ai</a>.</p>',
+<p>For questions about these Terms, contact us at <a href="mailto:legal@whatchat.ai">legal@whatchat.ai</a>.</p>$$,
   now()
 );
 
--- Seed: insert initial Privacy Policy.
 INSERT INTO legal_documents (document_type, version, title, content_html, effective_at)
 VALUES (
   'PRIVACY',
   '1.0',
   'Privacy Policy',
-  '<h2>1. Introduction</h2>
+  $$<h2>1. Introduction</h2>
 <p>WhatsChat Technologies Ltd ("we", "us", "our") is committed to protecting your personal data. This Privacy Policy explains how we collect, use, disclose, and protect your information when you use WhatsChat ("the Service").</p>
 <p>This policy complies with the General Data Protection Regulation (GDPR), the Caribbean Community (CARICOM) data protection frameworks, and other applicable privacy laws.</p>
 
@@ -120,6 +114,6 @@ VALUES (
 
 <h2>13. Contact</h2>
 <p>Data Controller: WhatsChat Technologies Ltd<br>
-Email: <a href="mailto:privacy@whatchat.ai">privacy@whatchat.ai</a></p>',
+Email: <a href="mailto:privacy@whatchat.ai">privacy@whatchat.ai</a></p>$$,
   now()
 );
