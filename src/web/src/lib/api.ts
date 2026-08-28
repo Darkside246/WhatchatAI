@@ -1070,6 +1070,7 @@ export const api = {
   approveCampaign: (campaignId: string) => request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/approve`, { method: 'POST' }),
   sendCampaign: (campaignId: string) => request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/send`, { method: 'POST' }),
   cancelCampaign: (campaignId: string) => request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/cancel`, { method: 'POST' }),
+  deleteCampaign: (campaignId: string) => request<void>(`/workspace/campaigns/${campaignId}`, { method: 'DELETE' }),
 
   /**
    * Real WhatsApp delete-for-everyone. A 202 means the instruction was

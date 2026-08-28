@@ -271,6 +271,19 @@ export async function cancelCampaign(businessId: string, campaignId: string): Pr
   return updated;
 }
 
+export async function deleteCampaign(businessId: string, campaignId: string): Promise<void> {
+  const campaign = await requireOwnCampaign(businessId, campaignId);
+  requireStatus(campaign, ['CANCELLED', 'COMPLETED', 'FAILED']);
+  const deleted = await campaignRepository.hardDelete(businessId, campaignId);
+  if (!deleted) throw new CampaignNotFoundError('Campaign not found.');
+  await securityAuditLogRepository.record({
+    businessId,
+    whatsappAccountId: campaign.whatsappAccountId,
+    eventType: 'campaign_deleted',
+    rawMetadata: { campaignId },
+  });
+}
+
 export function isCampaignNotFoundError(error: unknown): error is CampaignNotFoundError {
   return error instanceof CampaignNotFoundError;
 }

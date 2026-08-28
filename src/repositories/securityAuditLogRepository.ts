@@ -15,6 +15,7 @@ export type SecurityEventType =
   | 'campaign_approved'
   | 'campaign_sent'
   | 'campaign_cancelled'
+  | 'campaign_deleted'
   | 'funnel_created'
   | 'funnel_activated'
   | 'funnel_deactivated'

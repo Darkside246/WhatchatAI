@@ -302,6 +302,19 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
     }
   }
 
+  async function handleDelete(campaignId: string) {
+    if (!window.confirm('Permanently delete this campaign? This cannot be undone.')) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.deleteCampaign(campaignId);
+      onBack();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Delete failed.');
+      setBusy(false);
+    }
+  }
+
   if (!detail) return <p className="text-caption text-fg-muted">Loading…</p>;
   const { campaign, recipients, counts } = detail;
 
@@ -386,6 +399,17 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
           >
             <X size={13} aria-hidden />
             Cancel
+          </button>
+        )}
+        {(campaign.status === 'CANCELLED' || campaign.status === 'COMPLETED' || campaign.status === 'FAILED') && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => handleDelete(campaign.id)}
+            className="flex items-center gap-1.5 rounded-lg border border-error/40 px-3 py-1.5 text-caption font-medium text-error hover:bg-error/10 disabled:opacity-50"
+          >
+            <Trash2 size={13} aria-hidden />
+            Delete
           </button>
         )}
       </div>

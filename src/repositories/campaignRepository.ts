@@ -321,6 +321,14 @@ export class CampaignRepository {
     return rows.map((row) => ({ messageId: row.id, whatsappAccountId: row.whatsapp_account_id }));
   }
 
+  async hardDelete(businessId: string, campaignId: string): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      `DELETE FROM campaigns WHERE id = $1 AND business_id = $2`,
+      [campaignId, businessId],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
   /** Real, live counts by status - computed the same way listRecipients derives status, never a separately maintained counter. */
   async getStatusCounts(campaignId: string): Promise<{ total: number; queued: number; sent: number; delivered: number; read: number; failed: number }> {
     const { rows } = await this.db.query<{

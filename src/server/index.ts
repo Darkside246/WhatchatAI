@@ -113,6 +113,7 @@ import {
   approveCampaign,
   sendCampaign,
   cancelCampaign,
+  deleteCampaign,
   listEligibleCampaignRecipients,
   isCampaignNotFoundError,
   isInvalidCampaignStatusError,
@@ -1046,6 +1047,24 @@ app.post(
   requireWorkspaceContext,
   requirePermission('marketing.create'),
   campaignActionHandler((businessId, campaignId) => cancelCampaign(businessId, campaignId)),
+);
+
+app.delete(
+  '/api/workspace/campaigns/:campaignId',
+  requireWorkspaceContext,
+  requirePermission('marketing.create'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const { campaignId } = req.params;
+    try {
+      await deleteCampaign(businessId, campaignId);
+      return res.status(204).send();
+    } catch (error) {
+      if (isCampaignNotFoundError(error)) return res.status(404).json({ error: 'CAMPAIGN_NOT_FOUND' });
+      if (isInvalidCampaignStatusError(error)) return res.status(409).json({ error: 'INVALID_CAMPAIGN_STATUS', message: (error as Error).message });
+      throw error;
+    }
+  },
 );
 
 app.get('/api/workspace/scheduled-statuses', requireWorkspaceContext, async (_req, res) => {
