@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   MessageCircle, Users, Phone, Bot, AlertTriangle, ArrowRight, Clock,
@@ -49,6 +49,18 @@ function fmt(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
+// ── Tooltip wrapper ───────────────────────────────────────────────────────
+function Tip({ children, tip }: { children: ReactNode; tip: string }) {
+  return (
+    <span className="group relative inline-flex">
+      {children}
+      <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 -translate-x-1/2 whitespace-nowrap rounded-lg border border-border-subtle bg-surface-1 px-2.5 py-1.5 text-meta text-fg shadow-lg opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+        {tip}
+      </span>
+    </span>
+  );
+}
+
 // ── Metric chip (compact, scan-first) ───────────────────────────────────
 function Chip({
   icon: Icon,
@@ -57,6 +69,8 @@ function Chip({
   sub,
   accent,
   urgent,
+  onClick,
+  tooltip,
 }: {
   icon: typeof MessageCircle;
   label: string;
@@ -64,12 +78,14 @@ function Chip({
   sub?: string;
   accent: string;
   urgent?: boolean;
+  onClick?: () => void;
+  tooltip?: string;
 }) {
-  return (
+  const body = (
     <div
-      className={`flex items-center gap-3 rounded-xl border bg-surface-2 px-4 py-3.5 ${
+      className={`flex items-center gap-3 rounded-xl border bg-surface-2 px-4 py-3.5 w-full ${
         urgent ? 'border-warning/40 bg-warning/5' : 'border-border-subtle'
-      }`}
+      } ${onClick ? 'hover:bg-surface-3 transition-colors' : ''}`}
     >
       <div
         className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
@@ -82,16 +98,26 @@ function Chip({
         <p className="mt-0.5 text-title font-bold tabular-nums text-fg leading-none">{value}</p>
         {sub && <p className="mt-0.5 text-meta text-fg-muted">{sub}</p>}
       </div>
+      {onClick && <ArrowRight size={13} className="shrink-0 text-fg-muted/40" aria-hidden />}
     </div>
   );
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className="w-full text-left" title={tooltip}>
+        {body}
+      </button>
+    );
+  }
+  return tooltip ? <Tip tip={tooltip}><div className="w-full">{body}</div></Tip> : body;
 }
 
 // ── DonutRing (pure SVG) ─────────────────────────────────────────────────
 function DonutRing({
-  segments, size = 88, stroke = 12,
+  segments, size = 88, stroke = 12, onItemClick,
 }: {
-  segments: { value: number; color: string; label: string }[];
+  segments: { value: number; color: string; label: string; tooltip?: string }[];
   size?: number; stroke?: number;
+  onItemClick?: (seg: { value: number; color: string; label: string }) => void;
 }) {
   const r    = (size - stroke) / 2;
   const circ = 2 * Math.PI * r;
@@ -124,24 +150,43 @@ function DonutRing({
         </div>
       </div>
       <div className="flex flex-col gap-2">
-        {segments.map((seg) => (
-          <div key={seg.label} className="flex items-center gap-2">
-            <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: seg.color }} aria-hidden />
-            <span className="text-caption text-fg-secondary">{seg.label}</span>
-            <span className="ml-auto pl-3 text-caption font-semibold tabular-nums text-fg">{seg.value}</span>
-          </div>
-        ))}
+        {segments.map((seg) => {
+          const row = (
+            <div
+              key={seg.label}
+              className={`flex items-center gap-2 rounded-md px-1 py-0.5 ${onItemClick ? 'cursor-pointer hover:bg-surface-3 transition-colors' : ''}`}
+              onClick={onItemClick ? () => onItemClick(seg) : undefined}
+              role={onItemClick ? 'button' : undefined}
+              tabIndex={onItemClick ? 0 : undefined}
+              onKeyDown={onItemClick ? (e) => { if (e.key === 'Enter') onItemClick(seg); } : undefined}
+            >
+              <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: seg.color }} aria-hidden />
+              <span className="text-caption text-fg-secondary">{seg.label}</span>
+              <span className="ml-auto pl-3 text-caption font-semibold tabular-nums text-fg">{seg.value}</span>
+            </div>
+          );
+          return seg.tooltip ? <Tip key={seg.label} tip={seg.tooltip}>{row}</Tip> : row;
+        })}
       </div>
     </div>
   );
 }
 
 // ── Horizontal bar ───────────────────────────────────────────────────────
-function HBar({ label, value, max, pct, color }: { label: string; value: number; max: number; pct?: number; color: string }) {
+function HBar({ label, value, max, pct, color, onClick, tooltip }: {
+  label: string; value: number; max: number; pct?: number; color: string;
+  onClick?: () => void; tooltip?: string;
+}) {
   const width = max > 0 ? Math.min(100, (value / max) * 100) : 0;
   const shown = pct !== undefined ? pct : Math.round(width);
-  return (
-    <div className="flex items-center gap-2.5">
+  const inner = (
+    <div
+      className={`flex items-center gap-2.5 rounded-md px-1 py-0.5 ${onClick ? 'cursor-pointer hover:bg-surface-3 transition-colors' : ''}`}
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === 'Enter') onClick(); } : undefined}
+    >
       <span className="w-32 shrink-0 truncate text-caption text-fg-secondary">{label}</span>
       <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3">
         <div className="h-full rounded-full transition-all duration-500" style={{ width: `${width}%`, backgroundColor: color }} />
@@ -150,6 +195,7 @@ function HBar({ label, value, max, pct, color }: { label: string; value: number;
       <span className="w-8 shrink-0 text-right text-meta text-fg-muted">{shown}%</span>
     </div>
   );
+  return tooltip ? <Tip tip={tooltip}><div className="w-full">{inner}</div></Tip> : inner;
 }
 
 // ── AI Mode badge ────────────────────────────────────────────────────────
@@ -216,17 +262,17 @@ export function DashboardRoute() {
 
   // Donut segments
   const donutSegs = [
-    { value: aiActive,      color: C_AI_ACTIVE, label: 'AI autopilot' },
-    { value: humanTakeover, color: C_HUMAN,     label: 'Needs human'  },
-    { value: aiPaused,      color: C_AI_PAUSED, label: 'AI paused'    },
+    { value: aiActive,      color: C_AI_ACTIVE, label: 'AI autopilot', tooltip: `${aiActive} contact${aiActive !== 1 ? 's' : ''} with AI handling replies — click to view` },
+    { value: humanTakeover, color: C_HUMAN,     label: 'Needs human',  tooltip: `${humanTakeover} contact${humanTakeover !== 1 ? 's' : ''} waiting on a human reply` },
+    { value: aiPaused,      color: C_AI_PAUSED, label: 'AI paused',    tooltip: `${aiPaused} contact${aiPaused !== 1 ? 's' : ''} with AI temporarily paused` },
   ];
 
   // Pipeline labels — human-readable, not technical
-  const pipeline = [
-    { label: 'Total contacts',      value: overview.chats.total,      color: C_MUTED   },
-    { label: 'Active this period',  value: overview.chats.activeSince, color: C_ACCENT  },
-    { label: 'AI autopilot',        value: aiActive,                  color: C_AI_ACTIVE},
-    { label: 'Needs attention',     value: humanTakeover,             color: C_HUMAN   },
+  const pipeline: { label: string; value: number; color: string; tooltip: string; nav: string }[] = [
+    { label: 'Total contacts',     value: overview.chats.total,       color: C_MUTED,    tooltip: `All ${overview.chats.total} contacts managed by this workspace`, nav: '/chats' },
+    { label: 'Active this period', value: overview.chats.activeSince, color: C_ACCENT,   tooltip: `${overview.chats.activeSince} contacts messaged in the last ${overview.periodDays} days`, nav: '/chats' },
+    { label: 'AI autopilot',       value: aiActive,                   color: C_AI_ACTIVE,tooltip: `${aiActive} contacts where AI handles replies automatically`, nav: '/chats' },
+    { label: 'Needs attention',    value: humanTakeover,              color: C_HUMAN,    tooltip: humanTakeover > 0 ? `${humanTakeover} contacts waiting on a human reply — act now` : 'No contacts need human attention', nav: '/chats' },
   ];
   const pipelineMax = overview.chats.total || 1;
 
@@ -285,25 +331,35 @@ export function DashboardRoute() {
 
         {/* ── 6 compact metric chips ──────────────────────────────── */}
         <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-          <Chip icon={MessageCircle} label="Messages"        accent={C_ACCENT}
+          <Chip icon={MessageCircle} label="Messages" accent={C_ACCENT}
             value={fmt(totalMsgs)}
-            sub={`${fmt(overview.messages.inbound)} received · ${fmt(overview.messages.outbound)} sent`} />
-          <Chip icon={Users}  label="Active contacts"  accent={C_AI_PAUSED}
+            sub={`${fmt(overview.messages.inbound)} received · ${fmt(overview.messages.outbound)} sent`}
+            tooltip={`${totalMsgs} total messages — ${overview.messages.inbound} inbound, ${overview.messages.outbound} outbound`} />
+          <Chip icon={Users} label="Active contacts" accent={C_AI_PAUSED}
             value={overview.chats.activeSince}
-            sub={`of ${overview.chats.total} total managed`} />
-          <Chip icon={Zap}    label="AI autopilot"     accent={C_AI_ACTIVE}
+            sub={`of ${overview.chats.total} total managed`}
+            tooltip={`${overview.chats.activeSince} contacts active in the last ${overview.periodDays} days`}
+            onClick={() => navigate('/chats')} />
+          <Chip icon={Zap} label="AI autopilot" accent={C_AI_ACTIVE}
             value={`${chatCoverage}%`}
-            sub={`${aiActive} of ${chats.length} contacts`} />
-          <Chip icon={Bot}    label="AI replies"        accent={C_ACCENT}
+            sub={`${aiActive} of ${chats.length} contacts`}
+            tooltip={`${aiActive} of ${chats.length} contacts are on AI autopilot`}
+            onClick={() => navigate('/chats')} />
+          <Chip icon={Bot} label="AI replies" accent={C_ACCENT}
             value={fmt(overview.outboundReplies.ai)}
-            sub={totalReplies > 0 ? `${aiReplyPct}% of all outbound` : 'No replies yet'} />
-          <Chip icon={Phone}  label="Calls"             accent={C_MUTED}
+            sub={totalReplies > 0 ? `${aiReplyPct}% of all outbound` : 'No replies yet'}
+            tooltip={`AI sent ${overview.outboundReplies.ai} of ${totalReplies} replies (${aiReplyPct}%)`}
+            onClick={() => navigate('/chats')} />
+          <Chip icon={Phone} label="Calls" accent={C_MUTED}
             value={totalCalls}
-            sub={totalCalls > 0 ? `${(overview.calls['ended'] ?? 0) + (overview.calls['accepted'] ?? 0)} answered` : 'None this period'} />
-          <Chip icon={Bell}   label="Alerts"            accent={needsHuman.length > 0 || criticalAlerts.length > 0 ? C_HUMAN : C_AI_ACTIVE}
+            sub={totalCalls > 0 ? `${(overview.calls['ended'] ?? 0) + (overview.calls['accepted'] ?? 0)} answered` : 'None this period'}
+            tooltip={totalCalls > 0 ? `${totalCalls} calls — ${(overview.calls['ended'] ?? 0) + (overview.calls['accepted'] ?? 0)} answered, ${(overview.calls['missed'] ?? 0)} missed` : 'No calls this period'} />
+          <Chip icon={Bell} label="Alerts" accent={needsHuman.length > 0 || criticalAlerts.length > 0 ? C_HUMAN : C_AI_ACTIVE}
             urgent={needsHuman.length > 0 || criticalAlerts.length > 0}
             value={criticalAlerts.length > 0 ? `${criticalAlerts.length} critical` : unread.length > 0 ? `${unread.length} unread` : 'Clear'}
-            sub={criticalAlerts.length === 0 && warningAlerts.length > 0 ? `${warningAlerts.length} warning${warningAlerts.length !== 1 ? 's' : ''}` : 'No issues'} />
+            sub={criticalAlerts.length === 0 && warningAlerts.length > 0 ? `${warningAlerts.length} warning${warningAlerts.length !== 1 ? 's' : ''}` : 'No issues'}
+            tooltip={unread.length > 0 ? `${unread.length} unread notification${unread.length !== 1 ? 's' : ''} — ${criticalAlerts.length} critical, ${warningAlerts.length} warnings` : 'All notifications read'}
+            onClick={unread.length > 0 || criticalAlerts.length > 0 ? () => navigate('/settings') : undefined} />
         </div>
 
         {/* ── Charts row ─────────────────────────────────────────── */}
@@ -315,7 +371,7 @@ export function DashboardRoute() {
             <p className="mb-3 text-meta text-fg-muted">How AI is currently configured across all your contacts</p>
             {chats.length === 0
               ? <p className="text-body text-fg-muted">No chats yet.</p>
-              : <DonutRing segments={donutSegs} />
+              : <DonutRing segments={donutSegs} onItemClick={() => navigate('/chats')} />
             }
           </div>
 
@@ -342,11 +398,16 @@ export function DashboardRoute() {
                   </span>
                 </div>
                 <div className="mt-4 rounded-lg bg-surface-3 px-3 py-2.5">
-                  <p className="text-caption text-fg-secondary">
-                    {aiReplyPct === 100
-                      ? '✓ AI is handling every reply. No human intervention needed.'
-                      : `${overview.outboundReplies.human} message${overview.outboundReplies.human !== 1 ? 's' : ''} needed a human — review those chats.`}
-                  </p>
+                  {aiReplyPct === 100 ? (
+                    <p className="text-caption text-fg-secondary">✓ AI is handling every reply. No human intervention needed.</p>
+                  ) : (
+                    <p className="text-caption text-fg-secondary">
+                      {overview.outboundReplies.human} message{overview.outboundReplies.human !== 1 ? 's' : ''} needed a human —{' '}
+                      <button type="button" onClick={() => navigate('/chats')} className="font-medium text-accent underline-offset-2 hover:underline">
+                        review those chats
+                      </button>.
+                    </p>
+                  )}
                 </div>
               </>
             )}
@@ -356,29 +417,41 @@ export function DashboardRoute() {
           <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
             <p className="mb-1 text-caption font-semibold text-fg-muted uppercase tracking-wide">System Pulse</p>
             <p className="mb-3 text-meta text-fg-muted">Notifications by severity across this workspace</p>
-            <div className="space-y-2.5">
+            <div className="space-y-1">
               {(
                 [
-                  { label: 'Critical', count: criticalAlerts.length, color: C_ERROR },
-                  { label: 'Warnings', count: warningAlerts.length, color: C_HUMAN },
-                  { label: 'Info',     count: notifications.filter((n) => n.severity === 'info').length, color: C_AI_PAUSED },
-                  { label: 'Unread',  count: unread.length, color: C_ACCENT },
-                ] as { label: string; count: number; color: string }[]
-              ).map(({ label, count, color }) => (
-                <div key={label} className="flex items-center gap-3">
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} aria-hidden />
-                  <span className="flex-1 text-caption text-fg-secondary">{label}</span>
-                  <span className={`text-caption font-semibold tabular-nums ${count > 0 && label !== 'Info' && label !== 'Unread' ? 'text-error' : 'text-fg'}`}>
-                    {count}
-                  </span>
-                </div>
-              ))}
+                  { label: 'Critical', count: criticalAlerts.length,   color: C_ERROR,    tip: criticalAlerts.length > 0 ? `${criticalAlerts.length} critical alert${criticalAlerts.length !== 1 ? 's' : ''} — click to view` : 'No critical alerts' },
+                  { label: 'Warnings', count: warningAlerts.length,    color: C_HUMAN,    tip: warningAlerts.length > 0 ? `${warningAlerts.length} warning${warningAlerts.length !== 1 ? 's' : ''} — click to view` : 'No warnings' },
+                  { label: 'Info',     count: notifications.filter((n) => n.severity === 'info').length, color: C_AI_PAUSED, tip: 'Informational notifications' },
+                  { label: 'Unread',   count: unread.length,           color: C_ACCENT,   tip: unread.length > 0 ? `${unread.length} unread notification${unread.length !== 1 ? 's' : ''} — click to view` : 'All caught up' },
+                ] as { label: string; count: number; color: string; tip: string }[]
+              ).map(({ label, count, color, tip }) => {
+                const isActionable = count > 0 && (label === 'Critical' || label === 'Warnings' || label === 'Unread');
+                return (
+                  <Tip key={label} tip={tip}>
+                    <button
+                      type="button"
+                      className={`flex w-full items-center gap-3 rounded-md px-1.5 py-1.5 text-left transition-colors ${isActionable ? 'hover:bg-surface-3 cursor-pointer' : 'cursor-default'}`}
+                      onClick={isActionable ? () => navigate('/settings') : undefined}
+                    >
+                      <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} aria-hidden />
+                      <span className="flex-1 text-caption text-fg-secondary">{label}</span>
+                      <span className={`text-caption font-semibold tabular-nums ${count > 0 && (label === 'Critical' || label === 'Warnings') ? 'text-error' : 'text-fg'}`}>
+                        {count}
+                      </span>
+                      {isActionable && <ArrowRight size={11} className="text-fg-muted/50" aria-hidden />}
+                    </button>
+                  </Tip>
+                );
+              })}
             </div>
             {unreadImportant.length > 0 && (
-              <div className="mt-4 rounded-lg border border-warning/30 bg-warning/8 px-3 py-2">
-                <p className="text-caption font-medium text-warning">
-                  {unreadImportant.length} unread important alert{unreadImportant.length !== 1 ? 's' : ''} — check notifications.
-                </p>
+              <div className="mt-3 rounded-lg border border-warning/30 bg-warning/8 px-3 py-2">
+                <button type="button" onClick={() => navigate('/settings')} className="w-full text-left">
+                  <p className="text-caption font-medium text-warning">
+                    {unreadImportant.length} unread important alert{unreadImportant.length !== 1 ? 's' : ''} — tap to view notifications.
+                  </p>
+                </button>
               </div>
             )}
           </div>
@@ -393,11 +466,13 @@ export function DashboardRoute() {
             <p className="mb-4 text-meta text-fg-muted">
               Where your {overview.chats.total} contacts are in the conversation funnel
             </p>
-            <div className="space-y-2.5">
+            <div className="space-y-1">
               {pipeline.map((row) => (
                 <HBar key={row.label} label={row.label} value={row.value}
                   max={pipelineMax} color={row.color}
-                  pct={pipelineMax > 0 ? Math.round((row.value / pipelineMax) * 100) : 0} />
+                  pct={pipelineMax > 0 ? Math.round((row.value / pipelineMax) * 100) : 0}
+                  onClick={() => navigate(row.nav)}
+                  tooltip={row.tooltip} />
               ))}
             </div>
             <p className="mt-3 text-meta text-fg-muted">
@@ -419,7 +494,7 @@ export function DashboardRoute() {
                 <p className="text-caption">No call activity in the last {overview.periodDays} days</p>
               </div>
             ) : (
-              <div className="space-y-2.5">
+              <div className="space-y-1">
                 {Object.entries(overview.calls).map(([status, count]) => (
                   <HBar
                     key={status}
@@ -428,6 +503,7 @@ export function DashboardRoute() {
                     max={totalCalls}
                     color={CALL_COLOR[status] ?? C_MUTED}
                     pct={Math.round((count / totalCalls) * 100)}
+                    tooltip={`${count} call${count !== 1 ? 's' : ''} ${(CALL_LABEL[status] ?? status).toLowerCase()} — ${Math.round((count / totalCalls) * 100)}% of total`}
                   />
                 ))}
               </div>
@@ -485,9 +561,11 @@ export function DashboardRoute() {
             )}
             {needsHuman.length > 0 && (
               <div className="border-t border-border-subtle px-4 py-2.5">
-                <p className="text-caption font-semibold text-warning">
-                  ⚠ {needsHuman.length} contact{needsHuman.length !== 1 ? 's' : ''} waiting on a human reply
-                </p>
+                <button type="button" onClick={() => navigate('/chats')} className="w-full text-left">
+                  <p className="text-caption font-semibold text-warning hover:underline underline-offset-2">
+                    ⚠ {needsHuman.length} contact{needsHuman.length !== 1 ? 's' : ''} waiting on a human reply →
+                  </p>
+                </button>
               </div>
             )}
           </div>
