@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { ActionRequest, AgentCapability } from '../../domain/platform/contracts.js';
 import { evaluateActionPolicy, type ActionPolicyDecision } from './actionPolicyService.js';
 import { auditLedgerService } from './auditLedgerService.js';
+import type { PlatformActionRepository } from '../../repositories/platformActionRepository.js';
 
 export interface ActionExecutionContext {
   tenantId: string;
@@ -17,6 +18,9 @@ export interface ActionExecutor {
 export class ActionBusService {
   private readonly executors = new Map<string, ActionExecutor>();
   private readonly completed = new Map<string, { status: 'SUCCEEDED' | 'FAILED'; result?: unknown; error?: string }>();
+  private repository: PlatformActionRepository | null = null;
+
+  setRepository(repo: PlatformActionRepository): void { this.repository = repo; }
 
   register(executor: ActionExecutor): void {
     if (this.executors.has(executor.actionType)) throw new Error(`action executor ${executor.actionType} is already registered`);
@@ -40,6 +44,20 @@ export class ActionBusService {
     const key = `${action.tenantId}:${action.idempotencyKey}`;
     const prior = this.completed.get(key);
     if (prior) return prior;
+
+    // On a cache miss, check the DB so previously completed actions survive restarts.
+    if (this.repository) {
+      try {
+        const row = await this.repository.getByIdempotencyKey(action.tenantId, action.idempotencyKey);
+        if (row && (row.status === 'SUCCEEDED' || row.status === 'FAILED')) {
+          const persisted = { status: row.status, result: row.executionResult ?? undefined, error: row.executionError ?? undefined };
+          this.completed.set(key, persisted);
+          return persisted;
+        }
+      } catch (err) {
+        console.error('[ActionBus] DB idempotency check failed:', err);
+      }
+    }
 
     const decision = evaluateActionPolicy(action, capability);
     auditLedgerService.append({
@@ -86,6 +104,13 @@ export class ActionBusService {
     });
 
     this.completed.set(key, result);
+    if (this.repository) {
+      try {
+        await this.repository.updateExecution(action.tenantId, action.idempotencyKey, result.status, result.result, result.error);
+      } catch (err) {
+        console.error('[ActionBus] DB result persist failed:', err);
+      }
+    }
     return result;
   }
 }

@@ -6,7 +6,10 @@ export type PlatformActionRow = {
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'; approvalRequired: boolean;
   approvalStatus: 'NOT_REQUIRED' | 'PENDING' | 'APPROVED' | 'REJECTED';
   status: 'PENDING_POLICY' | 'PENDING_APPROVAL' | 'READY' | 'EXECUTING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
-  idempotencyKey: string; correlationId: string; createdAt: Date; updatedAt: Date;
+  idempotencyKey: string; correlationId: string;
+  executionResult: Record<string, unknown> | null;
+  executionError: string | null;
+  createdAt: Date; updatedAt: Date;
 };
 
 export type PlatformApprovalRow = {
@@ -15,7 +18,7 @@ export type PlatformApprovalRow = {
   approverUserId: string | null; decisionReason: string | null; createdAt: Date; decidedAt: Date | null;
 };
 
-const ACTION_COLUMNS = `id,business_id AS "businessId",type,payload,requested_by_kind AS "requestedByKind",requested_by_id AS "requestedById",risk_level AS "riskLevel",approval_required AS "approvalRequired",approval_status AS "approvalStatus",status,idempotency_key AS "idempotencyKey",correlation_id AS "correlationId",created_at AS "createdAt",updated_at AS "updatedAt"`;
+const ACTION_COLUMNS = `id,business_id AS "businessId",type,payload,requested_by_kind AS "requestedByKind",requested_by_id AS "requestedById",risk_level AS "riskLevel",approval_required AS "approvalRequired",approval_status AS "approvalStatus",status,idempotency_key AS "idempotencyKey",correlation_id AS "correlationId",execution_result AS "executionResult",execution_error AS "executionError",created_at AS "createdAt",updated_at AS "updatedAt"`;
 const APPROVAL_COLUMNS = `id,action_request_id AS "actionRequestId",business_id AS "businessId",status,approver_user_id AS "approverUserId",decision_reason AS "decisionReason",created_at AS "createdAt",decided_at AS "decidedAt"`;
 
 export class PlatformActionRepository {
@@ -71,5 +74,12 @@ export class PlatformActionRepository {
   async listPendingApprovals(businessId: string): Promise<PlatformActionRow[]> {
     const { rows } = await this.db.query<PlatformActionRow>(`SELECT ${ACTION_COLUMNS} FROM platform_action_requests WHERE business_id = $1 AND approval_status = 'PENDING' AND status = 'PENDING_APPROVAL' ORDER BY created_at ASC`, [businessId]);
     return rows;
+  }
+
+  async updateExecution(businessId: string, idempotencyKey: string, status: 'SUCCEEDED' | 'FAILED', result: unknown, error: string | undefined): Promise<void> {
+    await this.db.query(
+      `UPDATE platform_action_requests SET status = $3, execution_result = $4::jsonb, execution_error = $5 WHERE business_id = $1 AND idempotency_key = $2`,
+      [businessId, idempotencyKey, status, result !== undefined ? JSON.stringify(result) : null, error ?? null],
+    );
   }
 }

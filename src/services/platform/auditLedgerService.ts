@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { AuditEventSchema, type AuditEvent } from '../../domain/platform/contracts.js';
+import type { PlatformAuditLedgerRepository } from '../../repositories/platformAuditLedgerRepository.js';
 
 function canonical(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -13,6 +14,9 @@ function digest(event: Omit<AuditEvent, 'payloadHash'>): string {
 
 export class AuditLedgerService {
   private readonly chains = new Map<string, AuditEvent[]>();
+  private repository: PlatformAuditLedgerRepository | null = null;
+
+  setRepository(repo: PlatformAuditLedgerRepository): void { this.repository = repo; }
 
   append(input: Omit<AuditEvent, 'payloadHash' | 'previousHash'>): AuditEvent {
     const parsed = AuditEventSchema.pick({ id: true, tenantId: true, eventType: true, actor: true, correlationId: true, actionRequestId: true, payload: true, occurredAt: true, metadata: true }).parse(input);
@@ -22,6 +26,11 @@ export class AuditLedgerService {
     const event = AuditEventSchema.parse({ ...unsigned, payloadHash: digest(unsigned) });
     chain.push(event);
     this.chains.set(parsed.tenantId, chain);
+    if (this.repository) {
+      void this.repository.append(parsed.tenantId, event).catch((err: unknown) => {
+        console.error('[AuditLedger] DB write failed:', err);
+      });
+    }
     return event;
   }
 
