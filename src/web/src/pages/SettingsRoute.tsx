@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Camera, Clock, KeyRound, Lock, LogOut, Monitor, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
+import { Camera, ChevronDown, ChevronRight, Clock, KeyRound, Lock, LogOut, Monitor, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
 import {
   api,
   mediaUrl,
@@ -68,18 +68,12 @@ function BusinessProfileCard() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [timezone, setTimezone] = useState('');
-  const [editingTimezone, setEditingTimezone] = useState(false);
-  const [savingTimezone, setSavingTimezone] = useState(false);
-  const [timezoneError, setTimezoneError] = useState<string | null>(null);
-
   useEffect(() => {
     api
       .getBusiness()
       .then((res) => {
         setBusiness(res.business);
         setName(res.business.name);
-        setTimezone(res.business.timezone);
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load business profile.'));
   }, []);
@@ -96,21 +90,6 @@ function BusinessProfileCard() {
       setError(err instanceof ApiError ? err.message : 'Failed to save.');
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function handleSaveTimezone() {
-    if (!timezone.trim()) return;
-    setSavingTimezone(true);
-    setTimezoneError(null);
-    try {
-      const res = await api.updateBusinessTimezone(timezone.trim());
-      setBusiness(res.business);
-      setEditingTimezone(false);
-    } catch (err) {
-      setTimezoneError(err instanceof ApiError ? err.message : 'Failed to save.');
-    } finally {
-      setSavingTimezone(false);
     }
   }
 
@@ -157,61 +136,6 @@ function BusinessProfileCard() {
           </button>
         </div>
       )}
-
-      <div className="mt-4 border-t border-border-subtle pt-4">
-        <p className="text-caption font-medium text-fg-secondary">Timezone</p>
-        <p className="mt-0.5 text-meta text-fg-muted">
-          Used by your AI agents to know the real current time - so they never claim to be open outside your real hours,
-          or vice versa.
-        </p>
-        {timezoneError && <p className="mt-1 text-caption text-error">{timezoneError}</p>}
-        {business && !editingTimezone && (
-          <div className="mt-2 flex items-center justify-between">
-            <p className="text-body text-fg">{business.timezone}</p>
-            <button
-              type="button"
-              onClick={() => setEditingTimezone(true)}
-              className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3"
-            >
-              Change
-            </button>
-          </div>
-        )}
-        {business && editingTimezone && (
-          <div className="mt-2 flex items-center gap-2">
-            <input
-              value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
-              placeholder="e.g. America/New_York, Europe/London, Asia/Karachi"
-              list="iana-timezone-options"
-              className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-body text-fg outline-none focus:border-accent"
-            />
-            <datalist id="iana-timezone-options">
-              {IANA_TIMEZONES.map((zone) => (
-                <option key={zone} value={zone} />
-              ))}
-            </datalist>
-            <button
-              type="button"
-              onClick={() => void handleSaveTimezone()}
-              disabled={savingTimezone || !timezone.trim()}
-              className="rounded-lg bg-accent px-3 py-2 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
-            >
-              {savingTimezone ? 'Saving…' : 'Save'}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEditingTimezone(false);
-                setTimezone(business.timezone);
-              }}
-              className="rounded-lg px-3 py-2 text-caption text-fg-muted hover:text-fg"
-            >
-              Cancel
-            </button>
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -230,118 +154,225 @@ const SYNC_STATUS_COLOR: Record<TimeStatusResponse['timeContext']['syncStatus'],
   MANUAL_OVERRIDE: 'bg-info/15 text-info',
 };
 
-/** Real internet-synchronized business time and manual override control - polled, never a locally-computed guess. */
-function TimeSyncCard() {
-  const [status, setStatus] = useState<TimeStatusResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [overrideInput, setOverrideInput] = useState('');
-  const [busy, setBusy] = useState(false);
+const COUNTRY_TIMEZONE: Record<string, string> = {
+  BB: 'America/Barbados', TT: 'America/Port_of_Spain', JM: 'America/Jamaica',
+  GY: 'America/Guyana', BS: 'America/Nassau', AG: 'America/Antigua',
+  LC: 'America/St_Lucia', VC: 'America/St_Vincent', GD: 'America/Grenada',
+  KN: 'America/St_Kitts', TC: 'America/Grand_Turk', KY: 'America/Cayman',
+  VG: 'America/Tortola', AW: 'America/Aruba', US: 'America/New_York',
+  GB: 'Europe/London', CA: 'America/Toronto', AU: 'Australia/Sydney',
+  NZ: 'Pacific/Auckland', IN: 'Asia/Kolkata', NG: 'Africa/Lagos',
+  GH: 'Africa/Accra', ZA: 'Africa/Johannesburg', KE: 'Africa/Nairobi',
+};
 
-  async function load() {
+/** Merged tile: personal country locale + business timezone + live synced time + manual override. */
+function TimeLocationCard() {
+  const [timeStatus, setTimeStatus] = useState<TimeStatusResponse | null>(null);
+  const [country, setCountry] = useState('');
+  const [timezone, setTimezone] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [overrideInput, setOverrideInput] = useState('');
+  const [overrideBusy, setOverrideBusy] = useState(false);
+  const [overrideError, setOverrideError] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  async function loadTime() {
     try {
       const result = await api.getTimeStatus();
-      setStatus(result);
+      setTimeStatus(result);
     } catch {
-      setError('Could not load time status.');
+      /* silent — stale display is better than a spinner */
     }
   }
 
   useEffect(() => {
-    void load();
-    const interval = setInterval(() => void load(), 30_000);
+    void Promise.all([
+      api.getBusiness().then((res) => setTimezone(res.business.timezone)).catch(() => undefined),
+      api.getPreferences().then((res) => setCountry(res.preferences.country ?? '')).catch(() => undefined),
+    ]);
+    void loadTime();
+    const interval = setInterval(() => void loadTime(), 30_000);
     return () => clearInterval(interval);
   }, []);
 
+  function handleCountryChange(code: string) {
+    setCountry(code);
+    if (code && COUNTRY_TIMEZONE[code]) setTimezone(COUNTRY_TIMEZONE[code]);
+  }
+
+  async function handleSave(e: FormEvent) {
+    e.preventDefault();
+    if (!timezone.trim()) return;
+    setSaving(true);
+    setSaved(false);
+    setSaveError(null);
+    try {
+      await Promise.all([
+        api.updatePreferences({ country: country || null }),
+        api.updateBusinessTimezone(timezone.trim()),
+      ]);
+      setSaved(true);
+      await loadTime();
+    } catch (err) {
+      setSaveError(err instanceof ApiError ? err.message : 'Failed to save.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleEnableOverride() {
     if (!overrideInput) return;
-    setBusy(true);
-    setError(null);
+    setOverrideBusy(true);
+    setOverrideError(null);
     try {
       await api.enableManualTimeOverride(overrideInput);
-      await load();
+      await loadTime();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to enable manual override.');
+      setOverrideError(err instanceof ApiError ? err.message : 'Failed to enable manual override.');
     } finally {
-      setBusy(false);
+      setOverrideBusy(false);
     }
   }
 
   async function handleDisableOverride() {
-    setBusy(true);
-    setError(null);
+    setOverrideBusy(true);
+    setOverrideError(null);
     try {
       await api.disableManualTimeOverride();
-      await load();
+      await loadTime();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to disable manual override.');
+      setOverrideError(err instanceof ApiError ? err.message : 'Failed to disable manual override.');
     } finally {
-      setBusy(false);
+      setOverrideBusy(false);
     }
   }
 
-  if (!status) return null;
-  const { timeContext } = status;
-  const isManual = timeContext.syncStatus === 'MANUAL_OVERRIDE';
+  const tc = timeStatus?.timeContext;
+  const isManual = tc?.syncStatus === 'MANUAL_OVERRIDE';
 
   return (
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      {/* Header row */}
       <div className="flex items-center justify-between">
         <h2 className="flex items-center gap-1.5 text-body font-semibold text-fg">
           <Clock size={15} aria-hidden />
-          Time &amp; synchronization
+          Time &amp; Location
         </h2>
-        <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${SYNC_STATUS_COLOR[timeContext.syncStatus]}`}>
-          {SYNC_STATUS_LABEL[timeContext.syncStatus]}
-        </span>
+        {tc && (
+          <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${SYNC_STATUS_COLOR[tc.syncStatus]}`}>
+            {SYNC_STATUS_LABEL[tc.syncStatus]}
+          </span>
+        )}
       </div>
 
-      {isManual && (
-        <p className="mt-2 rounded-lg bg-info/10 px-3 py-2 text-caption font-semibold text-info">MANUAL TIME OVERRIDE ACTIVE</p>
-      )}
-
-      <div className="mt-3 flex items-baseline gap-2">
-        <p className="text-title font-semibold text-fg">
-          {timeContext.dayOfWeek}, {timeContext.localDate} {timeContext.localDateTime.slice(11, 16)}
-        </p>
-        <p className="text-caption text-fg-muted">
-          ({timeContext.timezone}, UTC{timeContext.utcOffset})
-        </p>
-      </div>
-
-      {error && <p className="mt-2 text-caption text-error">{error}</p>}
-
-      <div className="mt-4 border-t border-border-subtle pt-4">
-        <p className="text-caption font-medium text-fg-secondary">Manual time override (advanced)</p>
-        <p className="mt-0.5 text-meta text-fg-muted">
-          For testing only - sets what your AI agents see as "now" without changing anyone's real clock or timezone
-          rules. Never settable from a WhatsApp conversation.
-        </p>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <input
-            type="datetime-local"
-            value={overrideInput}
-            onChange={(e) => setOverrideInput(e.target.value)}
-            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-caption text-fg outline-none focus:border-accent"
-          />
-          <button
-            type="button"
-            onClick={() => void handleEnableOverride()}
-            disabled={busy || !overrideInput}
-            className="rounded-lg bg-accent px-3 py-2 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
-          >
-            {busy ? 'Saving…' : 'Set override'}
-          </button>
+      {/* Live time */}
+      {tc && (
+        <div className="mt-2 flex flex-wrap items-baseline gap-2">
+          <p className="text-title font-semibold text-fg tabular-nums">
+            {tc.dayOfWeek}, {tc.localDate} {tc.localDateTime.slice(11, 16)}
+          </p>
+          <p className="text-caption text-fg-muted">({tc.timezone}, UTC{tc.utcOffset})</p>
           {isManual && (
-            <button
-              type="button"
-              onClick={() => void handleDisableOverride()}
-              disabled={busy}
-              className="rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
-            >
-              Clear override
-            </button>
+            <span className="rounded-full bg-info/15 px-2 py-0.5 text-meta font-semibold text-info">Override active</span>
           )}
         </div>
+      )}
+
+      {/* Country + Timezone pickers */}
+      <form onSubmit={handleSave} className="mt-4 space-y-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="space-y-1">
+            <label className="text-caption font-medium text-fg-secondary" htmlFor="tl-country">Country</label>
+            <select
+              id="tl-country"
+              value={country}
+              onChange={(e) => handleCountryChange(e.target.value)}
+              className="block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-caption text-fg outline-none focus:border-accent"
+            >
+              <option value="">— Not set —</option>
+              {COUNTRIES.map(([code, name]) => (
+                <option key={code} value={code}>{name} ({code})</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-caption font-medium text-fg-secondary" htmlFor="tl-timezone">Timezone</label>
+            <input
+              id="tl-timezone"
+              value={timezone}
+              onChange={(e) => setTimezone(e.target.value)}
+              placeholder="e.g. America/Barbados"
+              list="tl-iana-zones"
+              className="block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-caption text-fg outline-none focus:border-accent"
+            />
+            <datalist id="tl-iana-zones">
+              {IANA_TIMEZONES.map((zone) => <option key={zone} value={zone} />)}
+            </datalist>
+          </div>
+        </div>
+        <p className="text-meta text-fg-muted">
+          Your country sets your locale preferences. The timezone tells your AI agents what "now" means — so they never
+          claim to be open outside your real business hours.
+        </p>
+        {saveError && <p className="text-caption text-error">{saveError}</p>}
+        {saved && <p className="text-caption text-success">Saved.</p>}
+        <button
+          type="submit"
+          disabled={saving || !timezone.trim()}
+          className="rounded-lg bg-accent px-4 py-2 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </form>
+
+      {/* Advanced collapsible */}
+      <div className="mt-4 border-t border-border-subtle pt-4">
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((v) => !v)}
+          className="flex items-center gap-1.5 text-caption font-medium text-fg-secondary hover:text-fg"
+        >
+          {showAdvanced ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+          Advanced: Manual time override (testing only)
+        </button>
+
+        {showAdvanced && (
+          <div className="mt-3 space-y-2">
+            <p className="text-meta text-fg-muted">
+              For testing only — sets what your AI agents see as "now" without changing anyone's real clock or timezone
+              rules. Never settable from a WhatsApp conversation.
+            </p>
+            {overrideError && <p className="text-caption text-error">{overrideError}</p>}
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="datetime-local"
+                value={overrideInput}
+                onChange={(e) => setOverrideInput(e.target.value)}
+                className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-caption text-fg outline-none focus:border-accent"
+              />
+              <button
+                type="button"
+                onClick={() => void handleEnableOverride()}
+                disabled={overrideBusy || !overrideInput}
+                className="rounded-lg bg-accent px-3 py-2 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+              >
+                {overrideBusy ? 'Saving…' : 'Set override'}
+              </button>
+              {isManual && (
+                <button
+                  type="button"
+                  onClick={() => void handleDisableOverride()}
+                  disabled={overrideBusy}
+                  className="rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
+                >
+                  Clear override
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1295,58 +1326,6 @@ const COUNTRIES: [string, string][] = [
   ['IN', 'India'], ['NG', 'Nigeria'], ['GH', 'Ghana'], ['ZA', 'South Africa'], ['KE', 'Kenya'],
 ];
 
-function PersonalPreferencesCard() {
-  const [country, setCountry] = useState<string>('');
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    api.getPreferences().then((r) => setCountry(r.preferences.country ?? '')).catch(() => undefined);
-  }, []);
-
-  async function handleSave(e: FormEvent) {
-    e.preventDefault();
-    setSaving(true);
-    setSaved(false);
-    try {
-      await api.updatePreferences({ country: country || null });
-      setSaved(true);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
-      <h2 className="text-body font-semibold text-fg">Personal preferences</h2>
-      <p className="mt-1 text-caption text-fg-muted">Your personal locale settings, saved to your account.</p>
-      <form onSubmit={handleSave} className="mt-4 space-y-3">
-        <div className="space-y-1">
-          <label className="text-caption font-medium text-fg-secondary" htmlFor="country-select">Country</label>
-          <select
-            id="country-select"
-            value={country}
-            onChange={(e) => setCountry(e.target.value)}
-            className="block w-full rounded-lg border border-border-subtle bg-surface-3 px-3 py-1.5 text-caption text-fg focus:outline-none focus:ring-1 focus:ring-accent"
-          >
-            <option value="">— Not set —</option>
-            {COUNTRIES.map(([code, name]) => (
-              <option key={code} value={code}>{name} ({code})</option>
-            ))}
-          </select>
-        </div>
-        {saved && <p className="text-caption text-green-600">Saved.</p>}
-        <button
-          type="submit"
-          disabled={saving}
-          className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent/90 disabled:opacity-50"
-        >
-          {saving ? 'Saving…' : 'Save preferences'}
-        </button>
-      </form>
-    </div>
-  );
-}
 
 export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSnapshot | null }) {
   return (
@@ -1356,9 +1335,8 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
 
       <div className="mt-6 max-w-2xl space-y-4">
         <ThemeCard />
-        <PersonalPreferencesCard />
+        <TimeLocationCard />
         <BusinessProfileCard />
-        <TimeSyncCard />
         <WhatsAppAccountCard connection={connection} />
         <KnowledgeBaseCard />
         <IntegrationSettingsPanel />
