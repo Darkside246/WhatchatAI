@@ -15,6 +15,34 @@ const products = [
     description: 'Take orders, manage menus and coordinate pickup and delivery from WhatsApp.',
     features: ['AI ordering', 'Menu management', 'Pickup and delivery', 'Customer conversations'],
   },
+  {
+    id: 'retail',
+    name: 'WhatsChat Retail',
+    eyebrow: 'RETAIL OPERATIONS',
+    description: 'Run your shop or boutique from WhatsApp — orders, stock and customer conversations in one place.',
+    features: ['Order capture', 'Product catalogue', 'Invoice generation', 'Broadcast promotions'],
+  },
+  {
+    id: 'beauty',
+    name: 'WhatsChat Beauty',
+    eyebrow: 'BEAUTY & WELLNESS',
+    description: 'Bookings, reminders and client management for salons, spas and beauty studios.',
+    features: ['AI booking agent', 'Appointment calendar', 'Client profiles', 'Automated reminders'],
+  },
+  {
+    id: 'auto',
+    name: 'WhatsChat Auto',
+    eyebrow: 'AUTOMOTIVE OPERATIONS',
+    description: 'Job tracking, quoting and customer communication for garages, dealers and rental operators.',
+    features: ['Service job tracking', 'Estimates & quotes', 'Vehicle history', 'Service reminders'],
+  },
+  {
+    id: 'health',
+    name: 'WhatsChat Health',
+    eyebrow: 'HEALTH & CARE',
+    description: 'Appointment scheduling and patient communication for clinics, pharmacies and care providers.',
+    features: ['Appointment booking', 'Patient records', 'Consultation invoices', 'Health reminders'],
+  },
 ] as const;
 
 export function PublicLandingPage() {
@@ -36,10 +64,10 @@ export function PublicLandingPage() {
           <button type="button" onClick={() => navigate('/login')} className="rounded-lg border border-border-subtle px-4 py-2 text-body font-medium hover:bg-surface-2">Sign in</button>
         </header>
 
-        <div className="grid flex-1 items-center gap-12 py-16 lg:grid-cols-[1.1fr_0.9fr]">
-          <div>
+        <div className="py-16">
+          <div className="max-w-3xl">
             <p className="mb-5 text-caption font-semibold uppercase tracking-[0.22em] text-accent">Run your business from WhatsApp</p>
-            <h1 className="max-w-3xl text-5xl font-semibold leading-tight tracking-tight text-fg lg:text-6xl">One WhatsApp connection. A complete operations system behind it.</h1>
+            <h1 className="text-5xl font-semibold leading-tight tracking-tight text-fg lg:text-6xl">One WhatsApp connection. A complete operations system behind it.</h1>
             <p className="mt-6 max-w-2xl text-lg leading-8 text-fg-secondary">Choose the WhatsChat product built for your business. Start with a full 48-hour trial, connect WhatsApp and operate from a focused dashboard.</p>
             <div className="mt-8 flex flex-wrap gap-3 text-caption text-fg-muted">
               <span className="rounded-full border border-border-subtle px-3 py-1.5">No payment at signup</span>
@@ -48,22 +76,26 @@ export function PublicLandingPage() {
             </div>
           </div>
 
-          <div className="grid gap-4">
+          <div className="mt-12 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {products.map((product) => (
-              <article key={product.id} className="rounded-2xl border border-border-subtle bg-surface-1 p-6 shadow-sm">
+              <article key={product.id} className="flex flex-col rounded-2xl border border-border-subtle bg-surface-1 p-6 shadow-sm">
                 <p className="text-meta font-semibold tracking-widest text-accent">{product.eyebrow}</p>
-                <h2 className="mt-2 text-2xl font-semibold">{product.name}</h2>
-                <p className="mt-3 text-body leading-7 text-fg-secondary">{product.description}</p>
+                <h2 className="mt-2 text-xl font-semibold">{product.name}</h2>
+                <p className="mt-3 flex-1 text-body leading-7 text-fg-secondary">{product.description}</p>
                 <ul className="mt-5 grid gap-2 text-caption text-fg-secondary sm:grid-cols-2">
                   {product.features.map((feature) => <li key={feature} className="rounded-lg bg-surface-2 px-3 py-2">{feature}</li>)}
                 </ul>
-                <button type="button" onClick={() => startTrial(product.id)} className="mt-6 w-full rounded-lg bg-accent px-4 py-3 text-body font-semibold text-white hover:bg-accent-dim">Start 48-hour free trial</button>
+                <button type="button" onClick={() => startTrial(product.id)} className="mt-6 w-full rounded-lg bg-accent px-4 py-3 text-body font-semibold text-white hover:bg-accent-dim">
+                  Start 48-hour free trial
+                </button>
               </article>
             ))}
           </div>
         </div>
 
-        <footer className="border-t border-border-subtle pt-5 text-caption text-fg-muted">Clients see only the product they choose. Platform administration, AI providers and infrastructure remain behind the experience.</footer>
+        <footer className="border-t border-border-subtle pt-5 text-caption text-fg-muted">
+          Clients see only the product they choose. Platform administration, AI providers and infrastructure remain behind the experience.
+        </footer>
       </section>
     </main>
   );
@@ -72,7 +104,16 @@ export function PublicLandingPage() {
 export function TrialStartPage() {
   const navigate = useNavigate();
   const selected = new URLSearchParams(window.location.search).get('product') ?? window.localStorage.getItem('whatchat:selected-product');
-  const product = selected === 'food' ? 'WhatsChat Food' : 'WhatsChat Property';
+
+  const PRODUCT_NAMES: Record<string, string> = {
+    property: 'WhatsChat Property',
+    food: 'WhatsChat Food',
+    retail: 'WhatsChat Retail',
+    beauty: 'WhatsChat Beauty',
+    auto: 'WhatsChat Auto',
+    health: 'WhatsChat Health',
+  };
+  const product = (selected && PRODUCT_NAMES[selected]) ?? 'WhatsChat Property';
 
   return (
     <main className="flex min-h-full items-center justify-center bg-surface-0 px-6 py-10 text-fg">

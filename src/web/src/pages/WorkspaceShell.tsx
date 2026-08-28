@@ -17,6 +17,7 @@ const FunnelsRoute = lazy(() => import('./FunnelsRoute.js').then((m) => ({ defau
 const PropertyOperationsPage = lazy(() => import('./PropertyOperationsPage.js').then((m) => ({ default: m.PropertyOperationsPage })));
 const ProductDashboardPage = lazy(() => import('./ProductDashboardPage.js').then((m) => ({ default: m.ProductDashboardPage })));
 const FoodOperationsPage = lazy(() => import('./FoodOperationsPage.js').then((m) => ({ default: m.FoodOperationsPage })));
+const PlaceholderPage = lazy(() => import('./PlaceholderPage.js').then((m) => ({ default: m.PlaceholderPage })));
 const DeveloperControlPlanePage = lazy(() => import('./DeveloperControlPlanePage.js').then((m) => ({ default: m.DeveloperControlPlanePage })));
 const InvoicesPage = lazy(() => import('./InvoicesPage.js').then((m) => ({ default: m.InvoicesPage })));
 
@@ -36,6 +37,14 @@ export function WorkspaceShell({ connection, sync }: Props) {
         <Route path="/property/operations" element={<PropertyOperationsPage />} />
         <Route path="/food" element={<ProductDashboardPage product="food" />} />
         <Route path="/food/operations" element={<FoodOperationsPage />} />
+        <Route path="/retail" element={<ProductDashboardPage product="retail" />} />
+        <Route path="/retail/operations" element={<PlaceholderPage title="Retail Operations" description="Orders, stock management and product catalogue — coming soon." />} />
+        <Route path="/beauty" element={<ProductDashboardPage product="beauty" />} />
+        <Route path="/beauty/operations" element={<PlaceholderPage title="Beauty & Bookings" description="Appointment calendar, services and client management — coming soon." />} />
+        <Route path="/auto" element={<ProductDashboardPage product="auto" />} />
+        <Route path="/auto/operations" element={<PlaceholderPage title="Auto Operations" description="Service jobs, vehicle tracking and estimates — coming soon." />} />
+        <Route path="/health" element={<ProductDashboardPage product="health" />} />
+        <Route path="/health/operations" element={<PlaceholderPage title="Health & Appointments" description="Patient scheduling, records and reminders — coming soon." />} />
         <Route path="/developer" element={<DeveloperControlPlanePage />} />
         <Route path="/chats" element={<ChatsRoute />} /><Route path="/chats/:chatId" element={<ChatsRoute />} /><Route path="/agents" element={<AgentsPage />} /><Route path="/dashboard" element={<DashboardRoute />} /><Route path="/crm" element={<CrmRoute />} /><Route path="/property-operations" element={<PropertyOperationsPage />} /><Route path="/invoices" element={<InvoicesPage />} /><Route path="/automations" element={<FunnelsRoute />} /><Route path="/marketing" element={<MarketingRoute />} /><Route path="/email" element={<EmailRoute />} /><Route path="/billing" element={<BillingRoute />} /><Route path="/settings" element={<SettingsRoute connection={connection} />} /><Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes></Suspense></div>
