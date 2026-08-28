@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MessageCircle, Users, Phone, Bot, AlertTriangle, ArrowRight, Clock, Bell, ShieldCheck } from 'lucide-react';
+import {
+  MessageCircle, Users, Phone, Bot, AlertTriangle, ArrowRight, Clock,
+  Bell, ShieldCheck, Zap, Activity, TrendingUp, CheckCircle,
+} from 'lucide-react';
 import {
   api,
   type WorkspaceDashboardOverview,
@@ -11,63 +14,104 @@ import {
 import { AiEngineStrip } from '../components/AiEngineStrip.js';
 import { TimeSyncStrip } from '../components/TimeSyncStrip.js';
 
-// Semantic chart colors — separate from the design-system accent so each
-// carries standalone operational meaning independent of theme choice.
-const C_AI_ACTIVE = '#22c55e';
-const C_HUMAN_TAKEOVER = '#f59e0b';
-const C_AI_PAUSED = '#38bdf8';
-const C_ACCENT = '#6366f1';
-const C_ERROR = '#ef4444';
-const C_MUTED = '#9ca3af';
+// Semantic chart colors — operationally meaningful, separate from accent hue.
+const C_AI_ACTIVE    = '#22c55e';
+const C_HUMAN        = '#f59e0b';
+const C_AI_PAUSED    = '#38bdf8';
+const C_ACCENT       = '#6366f1';
+const C_ERROR        = '#ef4444';
+const C_MUTED        = '#9ca3af';
 
 const CALL_COLOR: Record<string, string> = {
-  ended: C_AI_ACTIVE,
-  accepted: C_AI_ACTIVE,
-  missed: C_ERROR,
-  timeout: C_ERROR,
-  rejected: C_HUMAN_TAKEOVER,
-  offer: C_AI_PAUSED,
-  ringing: C_AI_PAUSED,
-  unknown: C_MUTED,
+  ended: C_AI_ACTIVE, accepted: C_AI_ACTIVE,
+  missed: C_ERROR,    timeout:  C_ERROR,
+  rejected: C_HUMAN,  offer: C_AI_PAUSED, ringing: C_AI_PAUSED, unknown: C_MUTED,
 };
 
+const CALL_LABEL: Record<string, string> = {
+  ended: 'Answered', accepted: 'Answered', missed: 'Missed',
+  timeout: 'Timed out', rejected: 'Rejected', offer: 'Ringing',
+  ringing: 'Ringing', unknown: 'Unknown',
+};
+
+// ── Small reusable helpers ────────────────────────────────────────────────
+function relativeTime(iso: string | null): string {
+  if (!iso) return '';
+  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
+  if (m < 1)  return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+
+function fmt(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+// ── Metric chip (compact, scan-first) ───────────────────────────────────
+function Chip({
+  icon: Icon,
+  label,
+  value,
+  sub,
+  accent,
+  urgent,
+}: {
+  icon: typeof MessageCircle;
+  label: string;
+  value: string | number;
+  sub?: string;
+  accent: string;
+  urgent?: boolean;
+}) {
+  return (
+    <div
+      className={`flex items-center gap-3 rounded-xl border bg-surface-2 px-4 py-3.5 ${
+        urgent ? 'border-warning/40 bg-warning/5' : 'border-border-subtle'
+      }`}
+    >
+      <div
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
+        style={{ backgroundColor: `${accent}1a` }}
+      >
+        <Icon size={16} strokeWidth={1.75} style={{ color: accent }} aria-hidden />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-meta text-fg-muted">{label}</p>
+        <p className="mt-0.5 text-title font-bold tabular-nums text-fg leading-none">{value}</p>
+        {sub && <p className="mt-0.5 text-meta text-fg-muted">{sub}</p>}
+      </div>
+    </div>
+  );
+}
+
+// ── DonutRing (pure SVG) ─────────────────────────────────────────────────
 function DonutRing({
-  segments,
-  size = 96,
-  stroke = 14,
+  segments, size = 88, stroke = 12,
 }: {
   segments: { value: number; color: string; label: string }[];
-  size?: number;
-  stroke?: number;
+  size?: number; stroke?: number;
 }) {
-  const r = (size - stroke) / 2;
+  const r    = (size - stroke) / 2;
   const circ = 2 * Math.PI * r;
   const total = segments.reduce((s, seg) => s + seg.value, 0);
-  const cx = size / 2;
-  const cy = size / 2;
   let off = 0;
   const arcs = segments.map((seg) => {
     const dash = total > 0 ? (seg.value / total) * circ : 0;
-    const arc = { ...seg, dash, gap: circ - dash, dashOffset: -off };
+    const arc  = { ...seg, dash, gap: circ - dash, dashOffset: -off };
     off += dash;
     return arc;
   });
-
   return (
-    <div className="flex items-center gap-5">
+    <div className="flex items-center gap-4">
       <div className="relative shrink-0" style={{ width: size, height: size }}>
         <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }} aria-hidden>
-          <circle cx={cx} cy={cy} r={r} fill="none" stroke="currentColor" strokeWidth={stroke} className="text-surface-3" />
+          <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="currentColor" strokeWidth={stroke} className="text-surface-3" />
           {arcs.map((arc, i) =>
             arc.value > 0 ? (
-              <circle
-                key={i}
-                cx={cx}
-                cy={cy}
-                r={r}
-                fill="none"
-                stroke={arc.color}
-                strokeWidth={stroke}
+              <circle key={i} cx={size/2} cy={size/2} r={r} fill="none"
+                stroke={arc.color} strokeWidth={stroke}
                 strokeDasharray={`${arc.dash} ${arc.gap}`}
                 strokeDashoffset={arc.dashOffset}
               />
@@ -75,7 +119,7 @@ function DonutRing({
           )}
         </svg>
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-title font-bold tabular-nums text-fg">{total}</span>
+          <span className="text-body-lg font-bold tabular-nums text-fg leading-none">{total}</span>
           <span className="text-meta text-fg-muted">chats</span>
         </div>
       </div>
@@ -84,7 +128,7 @@ function DonutRing({
           <div key={seg.label} className="flex items-center gap-2">
             <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: seg.color }} aria-hidden />
             <span className="text-caption text-fg-secondary">{seg.label}</span>
-            <span className="ml-2 text-caption font-semibold tabular-nums text-fg">{seg.value}</span>
+            <span className="ml-auto pl-3 text-caption font-semibold tabular-nums text-fg">{seg.value}</span>
           </div>
         ))}
       </div>
@@ -92,117 +136,37 @@ function DonutRing({
   );
 }
 
-function HorizBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
-  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+// ── Horizontal bar ───────────────────────────────────────────────────────
+function HBar({ label, value, max, pct, color }: { label: string; value: number; max: number; pct?: number; color: string }) {
+  const width = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+  const shown = pct !== undefined ? pct : Math.round(width);
   return (
     <div className="flex items-center gap-2.5">
       <span className="w-32 shrink-0 truncate text-caption text-fg-secondary">{label}</span>
       <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3">
-        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: color }} />
+        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${width}%`, backgroundColor: color }} />
       </div>
-      <span className="w-5 shrink-0 text-right text-caption tabular-nums text-fg-muted">{value}</span>
+      <span className="w-7 shrink-0 text-right text-caption tabular-nums text-fg-muted">{value}</span>
+      <span className="w-8 shrink-0 text-right text-meta text-fg-muted">{shown}%</span>
     </div>
   );
 }
 
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-  sublabel,
-  accent,
-}: {
-  icon: typeof MessageCircle;
-  label: string;
-  value: string | number;
-  sublabel?: string;
-  accent: string;
-}) {
-  return (
-    <div className="relative overflow-hidden rounded-xl border border-border-subtle bg-surface-2 p-4">
-      <div className="absolute inset-y-0 left-0 w-1 rounded-l-xl" style={{ backgroundColor: accent }} aria-hidden />
-      <div className="flex items-center gap-2 text-fg-muted">
-        <Icon size={16} strokeWidth={1.75} aria-hidden />
-        <span className="text-caption">{label}</span>
-      </div>
-      <p className="mt-2 text-display font-semibold text-fg">{value}</p>
-      {sublabel && <p className="mt-0.5 text-caption text-fg-muted">{sublabel}</p>}
-    </div>
-  );
-}
-
-function SplitBar({ label, a, aLabel, b, bLabel }: { label: string; a: number; aLabel: string; b: number; bLabel: string }) {
-  const total = a + b;
-  const aPercent = total > 0 ? Math.round((a / total) * 100) : 0;
-  return (
-    <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
-      <p className="text-caption text-fg-muted">{label}</p>
-      {total === 0 ? (
-        <p className="mt-2 text-body text-fg-muted">No real replies sent yet in this period.</p>
-      ) : (
-        <>
-          <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-surface-3">
-            <div className="h-full transition-all duration-500" style={{ width: `${aPercent}%`, backgroundColor: C_ACCENT }} />
-            <div className="h-full" style={{ width: `${100 - aPercent}%`, backgroundColor: `${C_MUTED}66` }} />
-          </div>
-          <div className="mt-2 flex items-center justify-between text-caption">
-            <span className="flex items-center gap-1.5 text-fg-secondary">
-              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: C_ACCENT }} aria-hidden />
-              {aLabel}: {a}
-              {' '}<span className="text-fg-muted">({aPercent}%)</span>
-            </span>
-            <span className="flex items-center gap-1.5 text-fg-muted">
-              <span className="h-1.5 w-1.5 rounded-full bg-fg-muted/40" aria-hidden />
-              {bLabel}: {b}
-            </span>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-const CALL_STATUS_LABEL: Record<string, string> = {
-  ended: 'Answered',
-  accepted: 'Answered',
-  missed: 'Missed',
-  timeout: 'Missed (timeout)',
-  rejected: 'Rejected',
-  offer: 'Ringing',
-  ringing: 'Ringing',
-  unknown: 'Unknown',
+// ── AI Mode badge ────────────────────────────────────────────────────────
+const AI_MODE_STYLE: Record<WorkspaceChatSummary['aiMode'], { label: string; color: string }> = {
+  AI_ACTIVE:      { label: 'AI',    color: C_AI_ACTIVE },
+  HUMAN_TAKEOVER: { label: 'Human', color: C_HUMAN },
+  AI_PAUSED:      { label: 'Paused',color: C_AI_PAUSED },
 };
 
-function relativeTime(iso: string | null): string {
-  if (!iso) return '';
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const minutes = Math.round(diffMs / 60_000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
-}
-
-const SEVERITY_DOT: Record<NotificationDto['severity'], string> = {
-  critical: 'bg-error',
-  warning: 'bg-warning',
-  info: 'bg-accent',
-};
-
-/**
- * Everything here is real and computed from the same tables the rest of the
- * workspace reads — chats only appear in "needs a reply" because their
- * ai_mode is genuinely HUMAN_TAKEOVER right now, and the activity feed is
- * the real notification log, not a fabricated event stream.
- */
+// ── Main component ───────────────────────────────────────────────────────
 export function DashboardRoute() {
   const navigate = useNavigate();
-  const [dashboard, setDashboard] = useState<WorkspaceDashboardOverview | null>(null);
-  const [chats, setChats] = useState<WorkspaceChatSummary[] | null>(null);
-  const [notifications, setNotifications] = useState<NotificationDto[] | null>(null);
-  const [engines, setEngines] = useState<AiEnginesDto | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [overview,       setOverview]       = useState<WorkspaceDashboardOverview | null>(null);
+  const [chats,          setChats]          = useState<WorkspaceChatSummary[] | null>(null);
+  const [notifications,  setNotifications]  = useState<NotificationDto[] | null>(null);
+  const [engines,        setEngines]        = useState<AiEnginesDto | null>(null);
+  const [error,          setError]          = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -211,253 +175,371 @@ export function DashboardRoute() {
       api.listNotifications(),
       api.getAiEngines().catch(() => null),
     ])
-      .then(([dashboardRes, chatsRes, notificationsRes, enginesRes]) => {
-        setDashboard(dashboardRes);
-        setChats(chatsRes.chats);
-        setNotifications(notificationsRes.notifications);
-        setEngines(enginesRes);
+      .then(([d, c, n, e]) => {
+        setOverview(d); setChats(c.chats);
+        setNotifications(n.notifications); setEngines(e);
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load dashboard.'));
   }, []);
 
-  if (error) {
-    return (
-      <div className="flex-1 p-6">
-        <p className="text-caption text-error">{error}</p>
-      </div>
-    );
-  }
+  if (error) return <div className="flex-1 p-6"><p className="text-caption text-error">{error}</p></div>;
+  if (!overview || !chats || !notifications) return null;
 
-  if (!dashboard || !chats || !notifications) return null;
+  // ── Derived metrics ──────────────────────────────────────────────────
+  const totalMsgs    = overview.messages.inbound + overview.messages.outbound;
+  const totalReplies = overview.outboundReplies.ai + overview.outboundReplies.human;
+  const totalCalls   = Object.values(overview.calls).reduce((s, n) => s + n, 0);
 
-  const totalCalls = Object.values(dashboard.calls).reduce((sum, count) => sum + count, 0);
-  const totalMessages = dashboard.messages.inbound + dashboard.messages.outbound;
-  const totalReplies = dashboard.outboundReplies.ai + dashboard.outboundReplies.human;
-  const aiSharePercent = totalReplies > 0 ? Math.round((dashboard.outboundReplies.ai / totalReplies) * 100) : null;
+  const aiActive        = chats.filter((c) => c.aiMode === 'AI_ACTIVE').length;
+  const humanTakeover   = chats.filter((c) => c.aiMode === 'HUMAN_TAKEOVER').length;
+  const aiPaused        = chats.filter((c) => c.aiMode === 'AI_PAUSED').length;
 
-  const aiActiveCount = chats.filter((c) => c.aiMode === 'AI_ACTIVE').length;
-  const humanTakeoverCount = chats.filter((c) => c.aiMode === 'HUMAN_TAKEOVER').length;
-  const aiPausedCount = chats.filter((c) => c.aiMode === 'AI_PAUSED').length;
+  const chatCoverage   = chats.length > 0 ? Math.round((aiActive / chats.length) * 100) : 0;
+  const aiReplyPct     = totalReplies > 0 ? Math.round((overview.outboundReplies.ai / totalReplies) * 100) : 0;
 
   const needsHuman = chats
-    .filter((chat) => chat.aiMode === 'HUMAN_TAKEOVER')
+    .filter((c) => c.aiMode === 'HUMAN_TAKEOVER')
     .sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));
 
-  const aiDown = engines !== null && !engines.canGenerate;
+  const recentContacts = [...chats]
+    .filter((c) => c.lastMessageAt)
+    .sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''))
+    .slice(0, 6);
+
+  const criticalAlerts  = notifications.filter((n) => n.severity === 'critical');
+  const warningAlerts   = notifications.filter((n) => n.severity === 'warning');
+  const unread          = notifications.filter((n) => !n.readAt);
+
+  const aiDown          = engines !== null && !engines.canGenerate;
+  const hasAttention    = aiDown || needsHuman.length > 0 || criticalAlerts.length > 0;
   const unreadImportant = notifications.filter((n) => !n.readAt && (n.severity === 'critical' || n.severity === 'warning'));
-  const hasAttention = aiDown || needsHuman.length > 0 || unreadImportant.length > 0;
 
-  const chatDonutSegments = [
-    { value: aiActiveCount, color: C_AI_ACTIVE, label: 'AI Active' },
-    { value: humanTakeoverCount, color: C_HUMAN_TAKEOVER, label: 'Needs human' },
-    { value: aiPausedCount, color: C_AI_PAUSED, label: 'AI Paused' },
+  // Donut segments
+  const donutSegs = [
+    { value: aiActive,      color: C_AI_ACTIVE, label: 'AI autopilot' },
+    { value: humanTakeover, color: C_HUMAN,     label: 'Needs human'  },
+    { value: aiPaused,      color: C_AI_PAUSED, label: 'AI paused'    },
   ];
 
-  const stagePipeline = [
-    { label: 'All conversations', value: dashboard.chats.total, color: C_MUTED },
-    { label: `Active (${dashboard.periodDays}d)`, value: dashboard.chats.activeSince, color: C_ACCENT },
-    { label: 'AI handling', value: aiActiveCount, color: C_AI_ACTIVE },
-    { label: 'Waiting on human', value: humanTakeoverCount, color: C_HUMAN_TAKEOVER },
+  // Pipeline labels — human-readable, not technical
+  const pipeline = [
+    { label: 'Total contacts',      value: overview.chats.total,      color: C_MUTED   },
+    { label: 'Active this period',  value: overview.chats.activeSince, color: C_ACCENT  },
+    { label: 'AI autopilot',        value: aiActive,                  color: C_AI_ACTIVE},
+    { label: 'Needs attention',     value: humanTakeover,             color: C_HUMAN   },
   ];
-  const pipelineMax = dashboard.chats.total || 1;
+  const pipelineMax = overview.chats.total || 1;
 
   return (
-    <div className="flex-1 overflow-y-auto p-6">
-      <h1 className="text-title font-semibold text-fg">Dashboard</h1>
-      <p className="mt-1 text-body text-fg-muted">
-        Real activity from the last {dashboard.periodDays} days — computed from your actual synced data, not estimated.
-      </p>
+    <div className="flex-1 overflow-y-auto bg-surface-0">
+      <div className="mx-auto max-w-screen-xl px-6 py-5">
 
-      {/* ATTENTION - the one thing to check before anything else, or an honest all-clear. */}
-      <section className="mt-5">
-        {hasAttention ? (
-          <div className="space-y-2">
+        {/* ── Header ─────────────────────────────────────────────── */}
+        <div className="flex items-baseline justify-between">
+          <div>
+            <h1 className="text-title font-bold text-fg">Dashboard</h1>
+            <p className="mt-0.5 text-caption text-fg-muted">
+              Last {overview.periodDays} days · live data
+            </p>
+          </div>
+          {hasAttention ? (
+            <span className="flex items-center gap-1.5 rounded-full bg-warning/10 px-3 py-1 text-caption font-semibold text-warning">
+              <AlertTriangle size={12} aria-hidden />
+              Attention needed
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 rounded-full bg-success/10 px-3 py-1 text-caption font-semibold text-success">
+              <CheckCircle size={12} aria-hidden />
+              All systems healthy
+            </span>
+          )}
+        </div>
+
+        {/* ── Alert banners ───────────────────────────────────────── */}
+        {hasAttention && (
+          <div className="mt-4 space-y-2">
             {aiDown && (
-              <div className="flex items-center gap-3 rounded-xl border border-error/40 bg-error/10 px-4 py-3">
-                <AlertTriangle size={18} className="shrink-0 text-error" aria-hidden />
+              <div className="flex items-center gap-3 rounded-xl border border-error/30 bg-error/8 px-4 py-3">
+                <AlertTriangle size={16} className="shrink-0 text-error" aria-hidden />
                 <div className="min-w-0 flex-1">
-                  <p className="text-body font-medium text-fg">No AI engine can reply right now</p>
-                  <p className="text-caption text-fg-muted">
-                    Neither Gemini nor Goose is available — every conversation is relying on a human.
-                  </p>
+                  <p className="text-body font-semibold text-fg">AI engine is unreachable</p>
+                  <p className="text-caption text-fg-muted">Neither Gemini nor Goose can reply. All conversations fall to human agents.</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => navigate('/agents')}
-                  className="flex shrink-0 items-center gap-1 rounded-lg bg-error px-3 py-1.5 text-caption font-medium text-white hover:opacity-90"
-                >
-                  Fix now <ArrowRight size={12} aria-hidden />
+                <button type="button" onClick={() => navigate('/agents')}
+                  className="flex shrink-0 items-center gap-1 rounded-lg bg-error px-3 py-1.5 text-caption font-semibold text-white hover:opacity-90">
+                  Fix now <ArrowRight size={11} aria-hidden />
                 </button>
               </div>
             )}
             {needsHuman.length > 0 && (
-              <div className="flex items-center gap-3 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3">
-                <Users size={18} className="shrink-0 text-warning" aria-hidden />
-                <div className="min-w-0 flex-1">
-                  <p className="text-body font-medium text-fg">
-                    {needsHuman.length} conversation{needsHuman.length === 1 ? '' : 's'} waiting on a human
-                  </p>
-                  <p className="text-caption text-fg-muted">The AI could not handle these — see the list below.</p>
-                </div>
-              </div>
-            )}
-            {unreadImportant.length > 0 && (
-              <div className="flex items-center gap-3 rounded-xl border border-border-subtle bg-surface-2 px-4 py-3">
-                <Bell size={18} className="shrink-0 text-fg-muted" aria-hidden />
+              <div className="flex items-center gap-3 rounded-xl border border-warning/30 bg-warning/8 px-4 py-3">
+                <Users size={16} className="shrink-0 text-warning" aria-hidden />
                 <p className="text-body text-fg">
-                  {unreadImportant.length} unread notification{unreadImportant.length === 1 ? '' : 's'} need a look.
+                  <span className="font-semibold">{needsHuman.length} conversation{needsHuman.length !== 1 ? 's' : ''}</span>
+                  {' '}the AI couldn't handle — they need a human reply now.
                 </p>
               </div>
             )}
           </div>
-        ) : (
-          <div className="flex items-center gap-2.5 rounded-xl border border-success/30 bg-success/10 px-4 py-3">
-            <ShieldCheck size={18} className="shrink-0 text-success" aria-hidden />
-            <p className="text-body text-fg">Nothing needs your attention. AI is answering, no chat is stuck.</p>
-          </div>
         )}
-      </section>
 
-      {/* KPIs */}
-      <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard
-          icon={MessageCircle}
-          label="Messages"
-          value={totalMessages}
-          sublabel={`${dashboard.messages.inbound} in · ${dashboard.messages.outbound} out`}
-          accent={C_ACCENT}
-        />
-        <StatCard
-          icon={Users}
-          label="Active chats"
-          value={dashboard.chats.activeSince}
-          sublabel={`${dashboard.chats.total} total`}
-          accent={C_AI_PAUSED}
-        />
-        <StatCard icon={Phone} label="Calls" value={totalCalls} accent={C_MUTED} />
-        <StatCard
-          icon={Bot}
-          label="AI replies sent"
-          value={dashboard.outboundReplies.ai}
-          sublabel={aiSharePercent !== null ? `${aiSharePercent}% of all replies` : undefined}
-          accent={C_AI_ACTIVE}
-        />
-      </div>
-
-      {/* CHARTS ROW */}
-      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
-          <p className="mb-4 text-caption text-fg-muted">Conversation health</p>
-          {chats.length === 0 ? (
-            <p className="text-body text-fg-muted">No chats yet.</p>
-          ) : (
-            <DonutRing segments={chatDonutSegments} />
-          )}
+        {/* ── 6 compact metric chips ──────────────────────────────── */}
+        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+          <Chip icon={MessageCircle} label="Messages"        accent={C_ACCENT}
+            value={fmt(totalMsgs)}
+            sub={`${fmt(overview.messages.inbound)} received · ${fmt(overview.messages.outbound)} sent`} />
+          <Chip icon={Users}  label="Active contacts"  accent={C_AI_PAUSED}
+            value={overview.chats.activeSince}
+            sub={`of ${overview.chats.total} total managed`} />
+          <Chip icon={Zap}    label="AI autopilot"     accent={C_AI_ACTIVE}
+            value={`${chatCoverage}%`}
+            sub={`${aiActive} of ${chats.length} contacts`} />
+          <Chip icon={Bot}    label="AI replies"        accent={C_ACCENT}
+            value={fmt(overview.outboundReplies.ai)}
+            sub={totalReplies > 0 ? `${aiReplyPct}% of all outbound` : 'No replies yet'} />
+          <Chip icon={Phone}  label="Calls"             accent={C_MUTED}
+            value={totalCalls}
+            sub={totalCalls > 0 ? `${(overview.calls['ended'] ?? 0) + (overview.calls['accepted'] ?? 0)} answered` : 'None this period'} />
+          <Chip icon={Bell}   label="Alerts"            accent={needsHuman.length > 0 || criticalAlerts.length > 0 ? C_HUMAN : C_AI_ACTIVE}
+            urgent={needsHuman.length > 0 || criticalAlerts.length > 0}
+            value={criticalAlerts.length > 0 ? `${criticalAlerts.length} critical` : unread.length > 0 ? `${unread.length} unread` : 'Clear'}
+            sub={criticalAlerts.length === 0 && warningAlerts.length > 0 ? `${warningAlerts.length} warning${warningAlerts.length !== 1 ? 's' : ''}` : 'No issues'} />
         </div>
 
-        <SplitBar
-          label="Who's replying"
-          a={dashboard.outboundReplies.ai}
-          aLabel="AI"
-          b={dashboard.outboundReplies.human}
-          bLabel="Human"
-        />
-      </div>
+        {/* ── Charts row ─────────────────────────────────────────── */}
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
 
-      {/* PIPELINE + CALLS ROW */}
-      <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
-          <p className="mb-4 text-caption text-fg-muted">Chat pipeline</p>
-          <div className="space-y-2.5">
-            {stagePipeline.map((stage) => (
-              <HorizBar key={stage.label} label={stage.label} value={stage.value} max={pipelineMax} color={stage.color} />
-            ))}
+          {/* Conversation modes donut */}
+          <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+            <p className="mb-3 text-caption font-semibold text-fg-muted uppercase tracking-wide">Chat Modes</p>
+            <p className="mb-3 text-meta text-fg-muted">How AI is currently configured across all your contacts</p>
+            {chats.length === 0
+              ? <p className="text-body text-fg-muted">No chats yet.</p>
+              : <DonutRing segments={donutSegs} />
+            }
           </div>
-        </div>
 
-        <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
-          <p className="mb-4 text-caption text-fg-muted">Calls by outcome</p>
-          {totalCalls === 0 ? (
-            <p className="text-body text-fg-muted">No calls in this period.</p>
-          ) : (
+          {/* Reply automation */}
+          <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+            <p className="mb-1 text-caption font-semibold text-fg-muted uppercase tracking-wide">Reply Automation</p>
+            <p className="mb-3 text-meta text-fg-muted">Share of outbound messages sent by AI vs a human agent</p>
+            {totalReplies === 0 ? (
+              <p className="mt-2 text-body text-fg-muted">No outbound replies this period.</p>
+            ) : (
+              <>
+                <div className="mt-4 flex h-2 overflow-hidden rounded-full bg-surface-3">
+                  <div className="h-full transition-all duration-500" style={{ width: `${aiReplyPct}%`, backgroundColor: C_ACCENT }} />
+                  <div className="h-full" style={{ width: `${100 - aiReplyPct}%`, backgroundColor: `${C_MUTED}66` }} />
+                </div>
+                <div className="mt-2.5 flex items-center justify-between text-caption">
+                  <span className="flex items-center gap-2 text-fg-secondary">
+                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: C_ACCENT }} aria-hidden />
+                    AI — {overview.outboundReplies.ai} replies <span className="text-fg-muted">({aiReplyPct}%)</span>
+                  </span>
+                  <span className="flex items-center gap-2 text-fg-muted">
+                    <span className="h-2 w-2 rounded-full bg-fg-muted/40" aria-hidden />
+                    Human — {overview.outboundReplies.human}
+                  </span>
+                </div>
+                <div className="mt-4 rounded-lg bg-surface-3 px-3 py-2.5">
+                  <p className="text-caption text-fg-secondary">
+                    {aiReplyPct === 100
+                      ? '✓ AI is handling every reply. No human intervention needed.'
+                      : `${overview.outboundReplies.human} message${overview.outboundReplies.human !== 1 ? 's' : ''} needed a human — review those chats.`}
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Notification pulse */}
+          <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+            <p className="mb-1 text-caption font-semibold text-fg-muted uppercase tracking-wide">System Pulse</p>
+            <p className="mb-3 text-meta text-fg-muted">Notifications by severity across this workspace</p>
             <div className="space-y-2.5">
-              {Object.entries(dashboard.calls).map(([status, count]) => (
-                <HorizBar
-                  key={status}
-                  label={CALL_STATUS_LABEL[status] ?? status}
-                  value={count}
-                  max={totalCalls}
-                  color={CALL_COLOR[status] ?? C_MUTED}
-                />
+              {(
+                [
+                  { label: 'Critical', count: criticalAlerts.length, color: C_ERROR },
+                  { label: 'Warnings', count: warningAlerts.length, color: C_HUMAN },
+                  { label: 'Info',     count: notifications.filter((n) => n.severity === 'info').length, color: C_AI_PAUSED },
+                  { label: 'Unread',  count: unread.length, color: C_ACCENT },
+                ] as { label: string; count: number; color: string }[]
+              ).map(({ label, count, color }) => (
+                <div key={label} className="flex items-center gap-3">
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} aria-hidden />
+                  <span className="flex-1 text-caption text-fg-secondary">{label}</span>
+                  <span className={`text-caption font-semibold tabular-nums ${count > 0 && label !== 'Info' && label !== 'Unread' ? 'text-error' : 'text-fg'}`}>
+                    {count}
+                  </span>
+                </div>
               ))}
             </div>
-          )}
-        </div>
-      </div>
-
-      {/* NEEDS ATTENTION - the actual, actionable list, not just a count. */}
-      {needsHuman.length > 0 && (
-        <section className="mt-6">
-          <h2 className="text-body font-semibold text-fg">Needs a human reply</h2>
-          <div className="mt-2 divide-y divide-border-subtle rounded-xl border border-border-subtle bg-surface-2">
-            {needsHuman.slice(0, 6).map((chat) => (
-              <button
-                key={chat.id}
-                type="button"
-                onClick={() => navigate(`/chats/${chat.id}`)}
-                className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-3"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-body font-medium text-fg">{chat.displayName}</p>
-                  {chat.lastMessagePreview && (
-                    <p className="mt-0.5 truncate text-caption text-fg-muted">{chat.lastMessagePreview}</p>
-                  )}
-                </div>
-                {chat.lastMessageAt && (
-                  <span className="flex shrink-0 items-center gap-1 text-meta text-fg-muted">
-                    <Clock size={11} aria-hidden />
-                    {relativeTime(chat.lastMessageAt)}
-                  </span>
-                )}
-                <ArrowRight size={14} className="shrink-0 text-fg-muted" aria-hidden />
-              </button>
-            ))}
-          </div>
-          {needsHuman.length > 6 && (
-            <p className="mt-1.5 text-caption text-fg-muted">+{needsHuman.length - 6} more in your inbox.</p>
-          )}
-        </section>
-      )}
-
-      {/* ACTIVITY - the real notification log, most recent first. */}
-      <section className="mt-6">
-        <h2 className="text-body font-semibold text-fg">Recent activity</h2>
-        {notifications.length === 0 ? (
-          <p className="mt-2 text-caption text-fg-muted">Nothing has happened yet.</p>
-        ) : (
-          <div className="mt-2 divide-y divide-border-subtle rounded-xl border border-border-subtle bg-surface-2">
-            {notifications.slice(0, 8).map((notification) => (
-              <div key={notification.id} className="flex items-start gap-2.5 px-4 py-2.5">
-                <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${SEVERITY_DOT[notification.severity]}`} aria-hidden />
-                <div className="min-w-0 flex-1">
-                  <p className="text-caption font-medium text-fg">{notification.title}</p>
-                  {notification.body && <p className="mt-0.5 truncate text-meta text-fg-muted">{notification.body}</p>}
-                </div>
-                <span className="shrink-0 text-meta text-fg-muted">{relativeTime(notification.createdAt)}</span>
+            {unreadImportant.length > 0 && (
+              <div className="mt-4 rounded-lg border border-warning/30 bg-warning/8 px-3 py-2">
+                <p className="text-caption font-medium text-warning">
+                  {unreadImportant.length} unread important alert{unreadImportant.length !== 1 ? 's' : ''} — check notifications.
+                </p>
               </div>
-            ))}
+            )}
           </div>
-        )}
-      </section>
-
-      {/* SYSTEM HEALTH - the same real, non-vacuous engine status shown elsewhere in the product. */}
-      <section className="mt-6">
-        <h2 className="text-body font-semibold text-fg">System health</h2>
-        <div className="mt-2 flex flex-col gap-2">
-          <AiEngineStrip />
-          <TimeSyncStrip />
         </div>
-      </section>
+
+        {/* ── Breakdown row ──────────────────────────────────────── */}
+        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+
+          {/* Contact overview (was "Chat pipeline") */}
+          <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+            <p className="mb-1 text-caption font-semibold text-fg-muted uppercase tracking-wide">Contact Overview</p>
+            <p className="mb-4 text-meta text-fg-muted">
+              Where your {overview.chats.total} contacts are in the conversation funnel
+            </p>
+            <div className="space-y-2.5">
+              {pipeline.map((row) => (
+                <HBar key={row.label} label={row.label} value={row.value}
+                  max={pipelineMax} color={row.color}
+                  pct={pipelineMax > 0 ? Math.round((row.value / pipelineMax) * 100) : 0} />
+              ))}
+            </div>
+            <p className="mt-3 text-meta text-fg-muted">
+              Note: "AI autopilot" reflects the current mode setting, not whether a conversation was active this period.
+            </p>
+          </div>
+
+          {/* Call summary (was "Calls by outcome") */}
+          <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+            <p className="mb-1 text-caption font-semibold text-fg-muted uppercase tracking-wide">Call Summary</p>
+            <p className="mb-4 text-meta text-fg-muted">
+              {totalCalls === 0
+                ? 'No calls were logged this period.'
+                : `${totalCalls} call${totalCalls !== 1 ? 's' : ''} logged — breakdown by result`}
+            </p>
+            {totalCalls === 0 ? (
+              <div className="flex flex-col items-center justify-center py-6 text-fg-muted">
+                <Phone size={28} strokeWidth={1.25} className="mb-2 opacity-40" aria-hidden />
+                <p className="text-caption">No call activity in the last {overview.periodDays} days</p>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {Object.entries(overview.calls).map(([status, count]) => (
+                  <HBar
+                    key={status}
+                    label={CALL_LABEL[status] ?? status}
+                    value={count}
+                    max={totalCalls}
+                    color={CALL_COLOR[status] ?? C_MUTED}
+                    pct={Math.round((count / totalCalls) * 100)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── Contacts + Activity row ─────────────────────────────── */}
+        <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+
+          {/* Recent contacts — most active, with mode badge */}
+          <div className="rounded-xl border border-border-subtle bg-surface-2">
+            <div className="border-b border-border-subtle px-4 py-3">
+              <p className="text-caption font-semibold text-fg-muted uppercase tracking-wide">Recent Contacts</p>
+              <p className="mt-0.5 text-meta text-fg-muted">Most recently active conversations</p>
+            </div>
+            {recentContacts.length === 0 ? (
+              <div className="px-4 py-6 text-center text-caption text-fg-muted">No conversations yet.</div>
+            ) : (
+              <div className="divide-y divide-border-subtle">
+                {recentContacts.map((chat) => {
+                  const mode = AI_MODE_STYLE[chat.aiMode];
+                  return (
+                    <button
+                      key={chat.id}
+                      type="button"
+                      onClick={() => navigate(`/chats/${chat.id}`)}
+                      className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-surface-3 transition-colors"
+                    >
+                      {/* Initials avatar */}
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent/10 text-caption font-semibold text-accent">
+                        {(chat.displayName?.[0] ?? '?').toUpperCase()}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <p className="truncate text-caption font-semibold text-fg">{chat.displayName}</p>
+                          <span
+                            className="shrink-0 rounded-full px-1.5 py-0.5 text-meta font-semibold"
+                            style={{ backgroundColor: `${mode.color}18`, color: mode.color }}
+                          >
+                            {mode.label}
+                          </span>
+                        </div>
+                        {chat.lastMessagePreview && (
+                          <p className="mt-0.5 truncate text-meta text-fg-muted">{chat.lastMessagePreview}</p>
+                        )}
+                      </div>
+                      {chat.lastMessageAt && (
+                        <span className="shrink-0 text-meta text-fg-muted">{relativeTime(chat.lastMessageAt)}</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {needsHuman.length > 0 && (
+              <div className="border-t border-border-subtle px-4 py-2.5">
+                <p className="text-caption font-semibold text-warning">
+                  ⚠ {needsHuman.length} contact{needsHuman.length !== 1 ? 's' : ''} waiting on a human reply
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Activity feed */}
+          <div className="rounded-xl border border-border-subtle bg-surface-2">
+            <div className="border-b border-border-subtle px-4 py-3">
+              <p className="text-caption font-semibold text-fg-muted uppercase tracking-wide">Activity Feed</p>
+              <p className="mt-0.5 text-meta text-fg-muted">System events and AI actions, newest first</p>
+            </div>
+            {notifications.length === 0 ? (
+              <div className="px-4 py-6 text-center text-caption text-fg-muted">Nothing logged yet.</div>
+            ) : (
+              <div className="divide-y divide-border-subtle">
+                {notifications.slice(0, 7).map((n) => (
+                  <div key={n.id} className="flex items-start gap-2.5 px-4 py-2.5">
+                    <span
+                      className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
+                        n.severity === 'critical' ? 'bg-error' :
+                        n.severity === 'warning'  ? 'bg-warning' : 'bg-accent'
+                      }`}
+                      aria-hidden
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-caption font-medium text-fg">{n.title}</p>
+                      {n.body && <p className="mt-0.5 truncate text-meta text-fg-muted">{n.body}</p>}
+                    </div>
+                    <span className="shrink-0 text-meta text-fg-muted">{relativeTime(n.createdAt)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── System health (compact strip) ───────────────────────── */}
+        <div className="mt-3 rounded-xl border border-border-subtle bg-surface-2 p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <Activity size={13} className="text-fg-muted" aria-hidden />
+            <p className="text-caption font-semibold text-fg-muted uppercase tracking-wide">System Health</p>
+          </div>
+          <div className="flex flex-col gap-2">
+            <AiEngineStrip />
+            <TimeSyncStrip />
+          </div>
+        </div>
+
+        <p className="mt-4 text-meta text-fg-muted">
+          Data refreshes on page load. Computed from synced WhatsApp activity — not estimates.
+        </p>
+
+      </div>
     </div>
   );
 }
