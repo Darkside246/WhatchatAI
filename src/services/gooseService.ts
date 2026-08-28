@@ -16,7 +16,8 @@ function getServiceUrl(endpoint?: GooseGenerateInput['endpoint']): string | unde
 }
 
 function getServiceApiKey(endpoint?: GooseGenerateInput['endpoint']): string | undefined {
-  const key = endpoint?.apiKey ?? process.env.GOOSE_SERVICE_API_KEY;
+  // Use ?? only when no endpoint is provided; an explicit null means "no key"
+  const key = endpoint?.apiKey !== undefined ? endpoint.apiKey : process.env.GOOSE_SERVICE_API_KEY;
   return key && key.trim() ? key.trim() : undefined;
 }
 
