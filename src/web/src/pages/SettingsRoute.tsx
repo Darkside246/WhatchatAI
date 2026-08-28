@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { type ReactNode, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Camera, ChevronDown, ChevronRight, Clock, KeyRound, Lock, LogOut, Monitor, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
 import {
   api,
@@ -1413,24 +1413,69 @@ const COUNTRIES: [string, string][] = [
 ];
 
 
+function SettingsSection({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <div className="mb-3 flex items-center gap-3">
+        <p className="shrink-0 text-meta font-semibold uppercase tracking-widest text-fg-muted">{label}</p>
+        <div className="h-px flex-1 bg-border-subtle" />
+      </div>
+      {children}
+    </div>
+  );
+}
+
 export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSnapshot | null }) {
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <h1 className="text-title font-semibold text-fg">Settings</h1>
-      <p className="mt-1 text-body text-fg-muted">Only settings with a real backend - or a real, persisted client-side effect - appear here.</p>
+      <p className="mt-1 text-body text-fg-muted">Configure your workspace, business profile, and account.</p>
 
-      <div className="mt-6 max-w-2xl space-y-3">
-        <ThemeCard />
-        <TimeLocationCard />
-        <ProfileCard connection={connection} />
-        <KnowledgeBaseCard />
-        <IntegrationSettingsPanel />
-        <AccountCard />
-        <TeamMembersCard />
-        <TeamsCard />
-        <AvailabilityCard />
-        <SessionsCard />
-        <SecurityCard />
+      <div className="mt-6 max-w-5xl space-y-8">
+
+        {/* ── Appearance ── */}
+        <SettingsSection label="Appearance">
+          <ThemeCard />
+        </SettingsSection>
+
+        {/* ── Business ── */}
+        <SettingsSection label="Business">
+          <div className="space-y-3">
+            <ProfileCard connection={connection} />
+            <TimeLocationCard />
+          </div>
+        </SettingsSection>
+
+        {/* ── AI & Knowledge ── */}
+        <SettingsSection label="AI & Knowledge">
+          <div className="space-y-3">
+            <KnowledgeBaseCard />
+            <IntegrationSettingsPanel />
+          </div>
+        </SettingsSection>
+
+        {/* ── Team ── */}
+        <SettingsSection label="Team">
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <TeamMembersCard />
+              <TeamsCard />
+            </div>
+            <AvailabilityCard />
+          </div>
+        </SettingsSection>
+
+        {/* ── Account & Security ── */}
+        <SettingsSection label="Account & Security">
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <AccountCard />
+              <SecurityCard />
+            </div>
+            <SessionsCard />
+          </div>
+        </SettingsSection>
+
       </div>
     </div>
   );
