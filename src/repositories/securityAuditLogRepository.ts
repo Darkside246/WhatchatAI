@@ -10,6 +10,7 @@ export type SecurityEventType =
   | 'lock_unlock_failure'
   | 'lock_throttled'
   | 'lock_revoked'
+  | 'lock_pin_changed'
   | 'campaign_created'
   | 'campaign_approved'
   | 'campaign_sent'

@@ -28,6 +28,8 @@ import { openclawAdapterRouter } from './openclawAdapterRouter.js';
 import { openclawMcpRouter } from './openclawMcpRouter.js';
 import { mountPlatformRoutes } from './platformRoutes.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
+import { CrmContactRepository } from '../repositories/crmContactRepository.js';
+import { UserPreferenceRepository } from '../repositories/userPreferenceRepository.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
 import { checkRedisHealth } from '../redis/client.js';
 import { ensureDefaultBusinessProvisioned } from '../services/businessBootstrapService.js';
@@ -42,9 +44,11 @@ import {
   getUnlockChallenge,
   setupLock,
   attemptUnlock,
+  changePIN,
   InvalidArgon2ParamsError,
   LockAlreadyConfiguredError,
   LockNotConfiguredError,
+  LockWrongCurrentPinError,
 } from '../services/securityLockService.js';
 import { listHumanTakeoverAlerts } from '../services/securityAlertService.js';
 import { timeService } from '../services/time/timeService.js';
@@ -440,6 +444,31 @@ app.post('/api/auth/sessions/revoke-others', requireAuth, async (_req, res) => {
   const auth = res.locals.auth as AuthContext;
   const revokedCount = await revokeOtherSessions(auth.userId, auth.sessionId);
   return res.status(200).json({ revokedCount });
+});
+
+app.get('/api/auth/preferences', requireAuth, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const repo = new UserPreferenceRepository(pool);
+  const preferences = await repo.ensureDefault(auth.userId);
+  return res.status(200).json({ preferences });
+});
+
+const updatePreferencesSchema = z.object({
+  country: z.string().length(2).toUpperCase().nullable().optional(),
+  navigationOrder: z.array(z.string()).nullable().optional(),
+  timezone: z.string().min(1).optional(),
+  language: z.string().min(2).optional(),
+});
+
+app.patch('/api/auth/preferences', requireAuth, async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = updatePreferencesSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_PREFERENCES', details: parsed.error.flatten() });
+  }
+  const repo = new UserPreferenceRepository(pool);
+  const preferences = await repo.update(auth.userId, parsed.data);
+  return res.status(200).json({ preferences });
 });
 
 const createMemberSchema = z.object({
@@ -2212,6 +2241,23 @@ app.patch('/api/workspace/crm-contacts/:id', requireWorkspaceContext, requirePer
   }
 });
 
+app.patch('/api/workspace/crm-contacts/:id/privacy', requireWorkspaceContext, requirePermission('crm.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const privacySchema = z.object({
+    isHidden: z.boolean().optional(),
+    syncExcluded: z.boolean().optional(),
+    aiExcluded: z.boolean().optional(),
+  });
+  const parsed = privacySchema.safeParse(req.body);
+  if (!parsed.success || (parsed.data.isHidden === undefined && parsed.data.syncExcluded === undefined && parsed.data.aiExcluded === undefined)) {
+    return res.status(400).json({ error: 'INVALID_PRIVACY_FLAGS' });
+  }
+  const repo = new CrmContactRepository(pool);
+  const updated = await repo.setPrivacyFlags(businessId, String(req.params.id ?? ''), parsed.data);
+  if (!updated) return res.status(404).json({ error: 'CRM_CONTACT_NOT_FOUND' });
+  return res.status(200).json({ crmContact: updated });
+});
+
 app.get('/api/workspace/leads', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const leads = await workspaceService.listLeads(businessId);
@@ -2579,6 +2625,36 @@ app.post('/api/security/lock/unlock', requireAuth, async (req, res) => {
   } catch (error) {
     if (error instanceof LockNotConfiguredError) {
       return res.status(404).json({ error: 'LOCK_NOT_CONFIGURED', message: error.message });
+    }
+    throw error;
+  }
+});
+
+app.post('/api/security/lock/change-pin', requireAuth, async (req, res) => {
+  const changePinSchema = z.object({
+    currentPinHash: z.string().regex(/^[0-9a-f]+$/i).min(32),
+    newSalt: z.string().min(16),
+    newPinHash: z.string().regex(/^[0-9a-f]+$/i).min(32),
+    newArgon2Params: argon2ParamsSchema,
+  });
+  const parsed = changePinSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_CHANGE_PIN_PAYLOAD' });
+  }
+
+  const { businessId } = res.locals.auth as AuthContext;
+  try {
+    await changePIN(businessId, parsed.data);
+    return res.status(200).json({ changed: true });
+  } catch (error) {
+    if (error instanceof LockNotConfiguredError) {
+      return res.status(404).json({ error: 'LOCK_NOT_CONFIGURED', message: error.message });
+    }
+    if (error instanceof LockWrongCurrentPinError) {
+      return res.status(401).json({ error: 'WRONG_CURRENT_PIN', message: error.message });
+    }
+    if (error instanceof InvalidArgon2ParamsError) {
+      return res.status(400).json({ error: 'INVALID_ARGON2_PARAMS', message: error.message });
     }
     throw error;
   }

@@ -17,6 +17,9 @@ export interface CrmContactRecord {
   followUpDate: string | null;
   customFields: Record<string, unknown>;
   optedOutOfCampaigns: boolean;
+  isHidden: boolean;
+  syncExcluded: boolean;
+  aiExcluded: boolean;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -38,6 +41,9 @@ interface CrmContactRow {
   follow_up_date: string | null;
   custom_fields: Record<string, unknown>;
   opted_out_of_campaigns: boolean;
+  is_hidden: boolean;
+  sync_excluded: boolean;
+  ai_excluded: boolean;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -60,6 +66,9 @@ function toRecord(row: CrmContactRow): CrmContactRecord {
     followUpDate: row.follow_up_date,
     customFields: row.custom_fields,
     optedOutOfCampaigns: row.opted_out_of_campaigns,
+    isHidden: row.is_hidden,
+    syncExcluded: row.sync_excluded,
+    aiExcluded: row.ai_excluded,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
@@ -166,7 +175,7 @@ export class CrmContactRepository {
               wc.short_name AS contact_short_name
        FROM crm_contacts c
        LEFT JOIN whatsapp_contacts wc ON wc.id = c.whatsapp_contact_id
-       WHERE c.business_id = $1 AND c.deleted_at IS NULL
+       WHERE c.business_id = $1 AND c.deleted_at IS NULL AND c.is_hidden = false
        ORDER BY c.updated_at DESC
        LIMIT $2`,
       [businessId, limit],
@@ -193,6 +202,25 @@ export class CrmContactRepository {
         input.email ?? null,
         input.email !== undefined,
       ],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  async setPrivacyFlags(
+    businessId: string,
+    id: string,
+    flags: { isHidden?: boolean; syncExcluded?: boolean; aiExcluded?: boolean },
+  ): Promise<CrmContactRecord | null> {
+    const sets: string[] = [];
+    const values: unknown[] = [id, businessId];
+    if (flags.isHidden !== undefined) { values.push(flags.isHidden); sets.push(`is_hidden = $${values.length}`); }
+    if (flags.syncExcluded !== undefined) { values.push(flags.syncExcluded); sets.push(`sync_excluded = $${values.length}`); }
+    if (flags.aiExcluded !== undefined) { values.push(flags.aiExcluded); sets.push(`ai_excluded = $${values.length}`); }
+    if (sets.length === 0) return this.findByIdForBusiness(businessId, id);
+    sets.push('updated_at = now()');
+    const { rows } = await this.db.query<CrmContactRow>(
+      `UPDATE crm_contacts SET ${sets.join(', ')} WHERE id = $1 AND business_id = $2 AND deleted_at IS NULL RETURNING *`,
+      values,
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }

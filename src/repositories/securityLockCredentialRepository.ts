@@ -66,4 +66,18 @@ export class SecurityLockCredentialRepository {
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }
+
+  async updateCredential(
+    businessId: string,
+    pinSalt: string,
+    pinHash: string,
+    argon2Params: Argon2Params,
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE security_lock_credentials
+       SET pin_salt = $2, pin_hash = $3, argon2_params = $4, updated_at = NOW()
+       WHERE business_id = $1`,
+      [businessId, pinSalt, pinHash, JSON.stringify(argon2Params)],
+    );
+  }
 }

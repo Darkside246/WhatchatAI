@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Camera, Clock, Lock, LogOut, Monitor, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
+import { Camera, Clock, KeyRound, Lock, LogOut, Monitor, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
 import {
   api,
   mediaUrl,
@@ -22,6 +22,7 @@ import { MediaLightbox } from '../components/MediaLightbox.js';
 import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
 import { triggerLockNow } from '../lib/lockEvents.js';
+import { DEFAULT_ARGON2_PARAMS, generateSalt, hashPin } from '../lib/pinCrypto.js';
 import { useAuth } from '../hooks/useAuth.js';
 
 const MAX_PROFILE_PICTURE_BYTES = 5 * 1024 * 1024;
@@ -511,6 +512,13 @@ function WhatsAppAccountCard({ connection }: { connection: WhatsAppConnectionSna
 
 function SecurityCard() {
   const [configured, setConfigured] = useState<boolean | null>(null);
+  const [showChange, setShowChange] = useState(false);
+  const [currentPin, setCurrentPin] = useState('');
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [changeBusy, setChangeBusy] = useState(false);
+  const [changeError, setChangeError] = useState<string | null>(null);
+  const [changeOk, setChangeOk] = useState(false);
 
   useEffect(() => {
     api
@@ -518,6 +526,44 @@ function SecurityCard() {
       .then((status) => setConfigured(status.configured))
       .catch(() => setConfigured(null));
   }, []);
+
+  async function handleChangePin(e: FormEvent) {
+    e.preventDefault();
+    if (newPin !== confirmPin) {
+      setChangeError('New PINs do not match.');
+      return;
+    }
+    setChangeBusy(true);
+    setChangeError(null);
+    try {
+      const challenge = await api.getUnlockChallenge();
+      const currentPinHash = await hashPin(currentPin, challenge.salt, challenge.argon2Params);
+      const newSalt = generateSalt();
+      const newPinHash = await hashPin(newPin, newSalt);
+      await api.changeLockPin({ currentPinHash, newSalt, newPinHash, newArgon2Params: DEFAULT_ARGON2_PARAMS });
+      setChangeOk(true);
+      setShowChange(false);
+      setCurrentPin('');
+      setNewPin('');
+      setConfirmPin('');
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'WRONG_CURRENT_PIN') {
+        setChangeError('Current PIN is incorrect.');
+      } else {
+        setChangeError('Failed to change PIN. Please try again.');
+      }
+    } finally {
+      setChangeBusy(false);
+    }
+  }
+
+  function cancelChange() {
+    setShowChange(false);
+    setCurrentPin('');
+    setNewPin('');
+    setConfirmPin('');
+    setChangeError(null);
+  }
 
   return (
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
@@ -527,14 +573,93 @@ function SecurityCard() {
           ? 'A PIN is set - the app locks automatically after 5 minutes idle, or press Alt+L any time. Live messaging, AI replies, and the CRM keep running while locked.'
           : 'No PIN set up yet. Press "Lock now" (or Alt+L) to set one.'}
       </p>
-      <button
-        type="button"
-        onClick={() => triggerLockNow()}
-        className="mt-3 flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3"
-      >
-        <Lock size={13} aria-hidden />
-        {configured ? 'Lock now' : 'Set up a PIN'}
-      </button>
+      {changeOk && <p className="mt-2 text-caption text-green-600">PIN changed successfully.</p>}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => triggerLockNow()}
+          className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3"
+        >
+          <Lock size={13} aria-hidden />
+          {configured ? 'Lock now' : 'Set up a PIN'}
+        </button>
+        {configured && !showChange && (
+          <button
+            type="button"
+            onClick={() => { setShowChange(true); setChangeOk(false); }}
+            className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3"
+          >
+            <KeyRound size={13} aria-hidden />
+            Change PIN
+          </button>
+        )}
+      </div>
+      {showChange && (
+        <form onSubmit={handleChangePin} className="mt-4 space-y-3">
+          <div className="space-y-1">
+            <label className="text-caption font-medium text-fg-secondary" htmlFor="current-pin">Current PIN</label>
+            <input
+              id="current-pin"
+              type="password"
+              inputMode="numeric"
+              minLength={6}
+              maxLength={8}
+              required
+              value={currentPin}
+              onChange={(e) => setCurrentPin(e.target.value)}
+              placeholder="6–8 digits"
+              className="block w-full rounded-lg border border-border-subtle bg-surface-3 px-3 py-1.5 text-caption text-fg placeholder-fg-muted focus:outline-none focus:ring-1 focus:ring-accent"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-caption font-medium text-fg-secondary" htmlFor="new-pin">New PIN</label>
+            <input
+              id="new-pin"
+              type="password"
+              inputMode="numeric"
+              minLength={6}
+              maxLength={8}
+              required
+              value={newPin}
+              onChange={(e) => setNewPin(e.target.value)}
+              placeholder="6–8 digits"
+              className="block w-full rounded-lg border border-border-subtle bg-surface-3 px-3 py-1.5 text-caption text-fg placeholder-fg-muted focus:outline-none focus:ring-1 focus:ring-accent"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-caption font-medium text-fg-secondary" htmlFor="confirm-pin">Confirm new PIN</label>
+            <input
+              id="confirm-pin"
+              type="password"
+              inputMode="numeric"
+              minLength={6}
+              maxLength={8}
+              required
+              value={confirmPin}
+              onChange={(e) => setConfirmPin(e.target.value)}
+              placeholder="Repeat new PIN"
+              className="block w-full rounded-lg border border-border-subtle bg-surface-3 px-3 py-1.5 text-caption text-fg placeholder-fg-muted focus:outline-none focus:ring-1 focus:ring-accent"
+            />
+          </div>
+          {changeError && <p className="text-caption text-red-500">{changeError}</p>}
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={changeBusy}
+              className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent/90 disabled:opacity-50"
+            >
+              {changeBusy ? 'Changing…' : 'Change PIN'}
+            </button>
+            <button
+              type="button"
+              onClick={cancelChange}
+              className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }
@@ -1162,6 +1287,67 @@ function AvailabilityCard() {
   );
 }
 
+const COUNTRIES: [string, string][] = [
+  ['BB', 'Barbados'], ['TT', 'Trinidad & Tobago'], ['JM', 'Jamaica'], ['GY', 'Guyana'], ['BS', 'Bahamas'],
+  ['AG', 'Antigua & Barbuda'], ['LC', 'Saint Lucia'], ['VC', 'Saint Vincent'], ['GD', 'Grenada'], ['KN', 'Saint Kitts & Nevis'],
+  ['TC', 'Turks & Caicos'], ['KY', 'Cayman Islands'], ['VG', 'British Virgin Islands'], ['AW', 'Aruba'],
+  ['US', 'United States'], ['GB', 'United Kingdom'], ['CA', 'Canada'], ['AU', 'Australia'], ['NZ', 'New Zealand'],
+  ['IN', 'India'], ['NG', 'Nigeria'], ['GH', 'Ghana'], ['ZA', 'South Africa'], ['KE', 'Kenya'],
+];
+
+function PersonalPreferencesCard() {
+  const [country, setCountry] = useState<string>('');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    api.getPreferences().then((r) => setCountry(r.preferences.country ?? '')).catch(() => undefined);
+  }, []);
+
+  async function handleSave(e: FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setSaved(false);
+    try {
+      await api.updatePreferences({ country: country || null });
+      setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      <h2 className="text-body font-semibold text-fg">Personal preferences</h2>
+      <p className="mt-1 text-caption text-fg-muted">Your personal locale settings, saved to your account.</p>
+      <form onSubmit={handleSave} className="mt-4 space-y-3">
+        <div className="space-y-1">
+          <label className="text-caption font-medium text-fg-secondary" htmlFor="country-select">Country</label>
+          <select
+            id="country-select"
+            value={country}
+            onChange={(e) => setCountry(e.target.value)}
+            className="block w-full rounded-lg border border-border-subtle bg-surface-3 px-3 py-1.5 text-caption text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+          >
+            <option value="">— Not set —</option>
+            {COUNTRIES.map(([code, name]) => (
+              <option key={code} value={code}>{name} ({code})</option>
+            ))}
+          </select>
+        </div>
+        {saved && <p className="text-caption text-green-600">Saved.</p>}
+        <button
+          type="submit"
+          disabled={saving}
+          className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent/90 disabled:opacity-50"
+        >
+          {saving ? 'Saving…' : 'Save preferences'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSnapshot | null }) {
   return (
     <div className="flex-1 overflow-y-auto p-6">
@@ -1170,6 +1356,7 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
 
       <div className="mt-6 max-w-2xl space-y-4">
         <ThemeCard />
+        <PersonalPreferencesCard />
         <BusinessProfileCard />
         <TimeSyncCard />
         <WhatsAppAccountCard connection={connection} />

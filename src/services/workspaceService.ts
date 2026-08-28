@@ -187,6 +187,9 @@ export interface WorkspaceCrmContactSummary {
   tags: string[];
   notes: string | null;
   updatedAt: string;
+  isHidden: boolean;
+  syncExcluded: boolean;
+  aiExcluded: boolean;
 }
 
 export interface WorkspaceLeadSummary {
@@ -1031,6 +1034,9 @@ export class WorkspaceService {
       tags: row.tags,
       notes: row.notes,
       updatedAt: row.updatedAt,
+      isHidden: row.isHidden,
+      syncExcluded: row.syncExcluded,
+      aiExcluded: row.aiExcluded,
     };
   }
 

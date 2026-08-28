@@ -14,6 +14,7 @@ const MIN_HASH_LENGTH_BYTES = 16;
 export class InvalidArgon2ParamsError extends Error {}
 export class LockAlreadyConfiguredError extends Error {}
 export class LockNotConfiguredError extends Error {}
+export class LockWrongCurrentPinError extends Error {}
 
 export interface LockStatus {
   configured: boolean;
@@ -76,6 +77,13 @@ export async function getUnlockChallenge(businessId: string): Promise<UnlockChal
   return { salt: credential.pinSalt, argon2Params: credential.argon2Params };
 }
 
+export interface ChangePinInput {
+  currentPinHash: string;
+  newSalt: string;
+  newPinHash: string;
+  newArgon2Params: Argon2Params;
+}
+
 /** The server only ever receives an already-Argon2id-hashed PIN, never the raw digits. */
 export async function setupLock(businessId: string, input: SetupLockInput): Promise<void> {
   validateArgon2Params(input.argon2Params);
@@ -87,6 +95,24 @@ export async function setupLock(businessId: string, input: SetupLockInput): Prom
   if (!created) throw new LockAlreadyConfiguredError('A PIN is already configured for this business.');
 
   await auditLog.record({ businessId, eventType: 'lock_setup', severity: 'info', rawMetadata: {} });
+}
+
+export async function changePIN(businessId: string, input: ChangePinInput): Promise<void> {
+  validateArgon2Params(input.newArgon2Params);
+
+  const repo = new SecurityLockCredentialRepository(pool);
+  const auditLog = new SecurityAuditLogRepository(pool);
+
+  const credential = await repo.findByBusiness(businessId);
+  if (!credential) throw new LockNotConfiguredError('No PIN has been configured for this business yet.');
+
+  if (!hashesMatch(credential.pinHash, input.currentPinHash)) {
+    await auditLog.record({ businessId, eventType: 'lock_unlock_failure', severity: 'warning', reason: 'PIN change rejected: wrong current PIN' });
+    throw new LockWrongCurrentPinError('Current PIN is incorrect.');
+  }
+
+  await repo.updateCredential(businessId, input.newSalt, input.newPinHash, input.newArgon2Params);
+  await auditLog.record({ businessId, eventType: 'lock_pin_changed', severity: 'info' });
 }
 
 /**

@@ -135,6 +135,9 @@ export interface WorkspaceCrmContactSummary {
   tags: string[];
   notes: string | null;
   updatedAt: string;
+  isHidden: boolean;
+  syncExcluded: boolean;
+  aiExcluded: boolean;
 }
 
 export interface UpdateCrmContactBody {
@@ -772,6 +775,17 @@ export interface WorkspaceStatus {
   expiresAt: string | null;
 }
 
+export interface UserPreferencesDto {
+  userId: string;
+  country: string | null;
+  navigationOrder: string[] | null;
+  timezone: string;
+  language: string;
+  theme: string;
+  density: 'comfortable' | 'compact';
+  chatFontSize: 'small' | 'medium' | 'large';
+}
+
 export interface Argon2ParamsDto {
   memoryCostKib: number;
   timeCost: number;
@@ -953,6 +967,11 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),
+  setCrmContactPrivacyFlags: (id: string, flags: { isHidden?: boolean; syncExcluded?: boolean; aiExcluded?: boolean }) =>
+    request<{ crmContact: Record<string, unknown> }>(`/workspace/crm-contacts/${id}/privacy`, {
+      method: 'PATCH',
+      body: JSON.stringify(flags),
+    }),
   listLeads: () => request<{ leads: WorkspaceLeadSummary[] }>('/workspace/leads'),
   createLead: (body: CreateLeadBody) =>
     request<{ lead: WorkspaceLeadSummary }>('/workspace/leads', { method: 'POST', body: JSON.stringify(body) }),
@@ -969,6 +988,8 @@ export const api = {
   getUnlockChallenge: () => request<UnlockChallengeResponse>('/security/lock/challenge'),
   setupLock: (body: { salt: string; pinHash: string; argon2Params: Argon2ParamsDto }) =>
     request<LockStatusResponse>('/security/lock/setup', { method: 'POST', body: JSON.stringify(body) }),
+  changeLockPin: (body: { currentPinHash: string; newSalt: string; newPinHash: string; newArgon2Params: Argon2ParamsDto }) =>
+    request<{ changed: boolean }>('/security/lock/change-pin', { method: 'POST', body: JSON.stringify(body) }),
   // A wrong PIN (401) or a revoked lock (423) are expected outcomes carrying
   // a real body, not transport errors - handled here instead of via the
   // generic request() helper, which would otherwise discard that body.
@@ -987,6 +1008,9 @@ export const api = {
   },
   listHumanTakeoverAlerts: () => request<{ alerts: HumanTakeoverAlertDto[] }>('/security/alerts/human-takeover'),
 
+  getPreferences: () => request<{ preferences: UserPreferencesDto }>('/auth/preferences'),
+  updatePreferences: (body: { country?: string | null; navigationOrder?: string[] | null; timezone?: string; language?: string }) =>
+    request<{ preferences: UserPreferencesDto }>('/auth/preferences', { method: 'PATCH', body: JSON.stringify(body) }),
   getBootstrapStatus: () => request<BootstrapStatusResponse>('/auth/bootstrap-status'),
   registerAccount: (body: { email: string; password: string; displayName: string }) =>
     request<AuthMeResponse>('/auth/register', { method: 'POST', body: JSON.stringify(body) }),

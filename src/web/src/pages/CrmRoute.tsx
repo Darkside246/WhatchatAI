@@ -48,6 +48,9 @@ function ContactDetailCard({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [creatingLead, setCreatingLead] = useState(false);
+  const [isHidden, setIsHidden] = useState(contact.isHidden);
+  const [syncExcluded, setSyncExcluded] = useState(contact.syncExcluded);
+  const [aiExcluded, setAiExcluded] = useState(contact.aiExcluded);
   const [leadCreated, setLeadCreated] = useState(false);
 
   useEffect(() => {
@@ -57,6 +60,9 @@ function ContactDetailCard({
     setEmail(contact.email ?? '');
     setTagsInput(contact.tags.join(', '));
     setLeadCreated(false);
+    setIsHidden(contact.isHidden);
+    setSyncExcluded(contact.syncExcluded);
+    setAiExcluded(contact.aiExcluded);
   }, [contact.id]);
 
   async function handleCreateLead() {
@@ -69,6 +75,16 @@ function ContactDetailCard({
       setError(err instanceof ApiError ? err.message : 'Failed to create lead.');
     } finally {
       setCreatingLead(false);
+    }
+  }
+
+  async function handlePrivacyToggle(flag: 'isHidden' | 'syncExcluded' | 'aiExcluded', value: boolean) {
+    const setters = { isHidden: setIsHidden, syncExcluded: setSyncExcluded, aiExcluded: setAiExcluded };
+    setters[flag](value);
+    try {
+      await api.setCrmContactPrivacyFlags(contact.id, { [flag]: value });
+    } catch {
+      setters[flag](!value);
     }
   }
 
@@ -199,6 +215,25 @@ function ContactDetailCard({
         >
           {saving ? 'Saving…' : 'Save'}
         </button>
+
+        <div className="mt-4 space-y-2 border-t border-border-subtle pt-4">
+          <p className="text-caption font-medium text-fg-secondary">Privacy flags</p>
+          {([
+            ['isHidden', isHidden, 'Hide from CRM list'],
+            ['syncExcluded', syncExcluded, 'Exclude from sync'],
+            ['aiExcluded', aiExcluded, 'Exclude from AI replies'],
+          ] as const).map(([flag, checked, label]) => (
+            <label key={flag} className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={(e) => void handlePrivacyToggle(flag, e.target.checked)}
+                className="rounded"
+              />
+              <span className="text-caption text-fg-secondary">{label}</span>
+            </label>
+          ))}
+        </div>
       </div>
     </div>
   );

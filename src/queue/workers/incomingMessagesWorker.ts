@@ -25,6 +25,7 @@ import { orchestrateAiReply } from '../../services/ai/aiOrchestrator.js';
 import { timeService } from '../../services/time/timeService.js';
 import { whatsappOutboundMessageService } from '../../services/whatsappOutboundMessageService.js';
 import { WhatsAppChatRepository } from '../../repositories/whatsappChatRepository.js';
+import { CrmContactRepository } from '../../repositories/crmContactRepository.js';
 import { notifyBusiness } from '../../services/notificationService.js';
 import { publishRealtimeEvent } from '../../realtime/pubsub.js';
 import { pool } from '../../db/pool.js';
@@ -153,6 +154,14 @@ async function runAiHandoff(params: {
   mediaId: string | null;
 }): Promise<void> {
   const { businessId, whatsappAccountId, chatId, contactId, messageId, queryText, mediaId } = params;
+
+  if (contactId) {
+    const crmContact = await crmContactRepository.findByWhatsAppContact(businessId, contactId);
+    if (crmContact?.aiExcluded) {
+      console.log(`[IncomingMessagesWorker] Chat ${chatId}: AI excluded for contact ${contactId}, skipping AI reply`);
+      return;
+    }
+  }
 
   const outcome = await orchestrateAiReply({ businessId, chatId, contactId, queryText, mediaId });
 
@@ -312,6 +321,7 @@ const presenceRepository = new WhatsAppPresenceRepository(pool);
 const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
 const emailMessageRepository = new EmailMessageRepository(pool);
 const chatRepository = new WhatsAppChatRepository(pool);
+const crmContactRepository = new CrmContactRepository(pool);
 
 // Configurable, not hardcoded: operators can raise/lower this per deployment.
 const MAX_MEDIA_DOWNLOAD_BYTES = Number(process.env.MEDIA_MAX_DOWNLOAD_BYTES ?? 100 * 1024 * 1024);

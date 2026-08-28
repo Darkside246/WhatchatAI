@@ -13,6 +13,8 @@ export interface UserPreferenceRecord {
   density: 'comfortable' | 'compact';
   chatFontSize: 'small' | 'medium' | 'large';
   defaultWhatsappAccountId: string | null;
+  navigationOrder: string[] | null;
+  country: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -30,6 +32,8 @@ interface UserPreferenceRow {
   density: UserPreferenceRecord['density'];
   chat_font_size: UserPreferenceRecord['chatFontSize'];
   default_whatsapp_account_id: string | null;
+  navigation_order: string[] | null;
+  country: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -48,6 +52,8 @@ function toRecord(row: UserPreferenceRow): UserPreferenceRecord {
     density: row.density,
     chatFontSize: row.chat_font_size,
     defaultWhatsappAccountId: row.default_whatsapp_account_id,
+    navigationOrder: row.navigation_order,
+    country: row.country,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -67,7 +73,8 @@ export type UserPreferenceUpdate = Partial<
     | 'density'
     | 'chatFontSize'
     | 'defaultWhatsappAccountId'
-  >
+    | 'country'
+  > & { navigationOrder?: string[] | null }
 >;
 
 export class UserPreferenceRepository {
@@ -104,6 +111,8 @@ export class UserPreferenceRepository {
       density: update.density,
       chat_font_size: update.chatFontSize,
       default_whatsapp_account_id: update.defaultWhatsappAccountId,
+      navigation_order: update.navigationOrder !== undefined ? JSON.stringify(update.navigationOrder) : undefined,
+      country: update.country,
     };
     const entries = Object.entries(columns).filter(([, value]) => value !== undefined);
     if (entries.length === 0) {
