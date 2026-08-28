@@ -206,4 +206,18 @@ export class ScheduledStatusRepository {
       [id, reason.slice(0, 500)],
     );
   }
+
+  // Hard-delete a terminal-state scheduled status (CANCELLED, FAILED, or PUBLISHED with no pending revoke).
+  async deleteTerminal(businessId: string, id: string): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      `DELETE FROM scheduled_statuses
+       WHERE id = $1 AND business_id = $2
+         AND (
+           status IN ('CANCELLED', 'FAILED')
+           OR (status = 'PUBLISHED' AND revoke_status IN ('none', 'revoke_sent', 'failed'))
+         )`,
+      [id, businessId],
+    );
+    return (rowCount ?? 0) > 0;
+  }
 }

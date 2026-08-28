@@ -1,5 +1,5 @@
 import { type ComponentType, type ReactNode, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Bot, Building2, Camera, ChevronDown, ChevronRight, Clock, KeyRound, Lock, LogOut, Monitor, Palette, PanelLeft, PanelLeftClose, ShieldCheck, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
+import { Bot, Building2, Camera, ChevronDown, ChevronRight, Clipboard, Clock, KeyRound, Lock, LogOut, Monitor, Palette, PanelLeft, PanelLeftClose, RefreshCw, ShieldCheck, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
 import {
   api,
   mediaUrl,
@@ -1544,9 +1544,15 @@ function OperatorModeCard() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
+  // WhatsApp setup token state
+  const [waToken, setWaToken] = useState<string | null>(null);
+  const [waTokenExists, setWaTokenExists] = useState<boolean | null>(null);
+  const [tokenBusy, setTokenBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     api.getOperatorSettings().then(setSettings).catch(() => setSettings({ configured: false }));
+    api.hasOperatorSetupToken().then((r) => setWaTokenExists(r.exists)).catch(() => setWaTokenExists(false));
   }, []);
 
   async function handleSave(e: FormEvent) {
@@ -1580,6 +1586,36 @@ function OperatorModeCard() {
   async function handleKillSession() {
     await api.killOperatorSession().catch(() => undefined);
   }
+
+  async function handleGenerateToken() {
+    setTokenBusy(true);
+    try {
+      const { token } = await api.generateOperatorSetupToken();
+      setWaToken(token);
+      setWaTokenExists(true);
+    } finally {
+      setTokenBusy(false);
+    }
+  }
+
+  async function handleRevokeToken() {
+    setTokenBusy(true);
+    try {
+      await api.revokeOperatorSetupToken();
+      setWaToken(null);
+      setWaTokenExists(false);
+    } finally {
+      setTokenBusy(false);
+    }
+  }
+
+  async function handleCopy(text: string) {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  const waSetupInstruction = waToken ? `setup operator ${waToken}` : null;
 
   return (
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
@@ -1670,6 +1706,88 @@ function OperatorModeCard() {
           </div>
         </form>
       )}
+
+      {/* ── WhatsApp Setup Code ────────────────────────────────────────────── */}
+      <div className="mt-5 border-t border-border-subtle pt-4">
+        <p className="text-caption font-medium text-fg">Set up via WhatsApp</p>
+        <p className="mt-1 text-caption text-fg-muted">
+          Generate a one-time code, then send it to your business number to configure operator mode directly from WhatsApp — no web form needed.
+        </p>
+
+        {waToken ? (
+          <div className="mt-3 space-y-2">
+            <p className="text-meta text-fg-muted">Send this message to your business WhatsApp number:</p>
+            <div className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-1 px-3 py-2">
+              <code className="flex-1 select-all font-mono text-caption text-fg">{waSetupInstruction}</code>
+              <button
+                type="button"
+                onClick={() => void handleCopy(waSetupInstruction!)}
+                className="shrink-0 text-fg-muted hover:text-fg transition-colors"
+                title="Copy"
+              >
+                <Clipboard size={14} aria-hidden />
+              </button>
+            </div>
+            {copied && <p className="text-meta text-success">Copied!</p>}
+            <p className="text-meta text-fg-muted">
+              This code is only shown once. After sending, WhatsApp will walk you through setting your PIN. The code is burned after use.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => void handleGenerateToken()}
+                disabled={tokenBusy}
+                className="flex items-center gap-1.5 text-caption text-fg-muted underline-offset-2 hover:underline disabled:opacity-50"
+              >
+                <RefreshCw size={12} aria-hidden />
+                Regenerate
+              </button>
+              <span className="text-fg-muted">·</span>
+              <button
+                type="button"
+                onClick={() => void handleRevokeToken()}
+                disabled={tokenBusy}
+                className="text-caption text-fg-muted underline-offset-2 hover:underline hover:text-error disabled:opacity-50"
+              >
+                Revoke
+              </button>
+            </div>
+          </div>
+        ) : waTokenExists ? (
+          <div className="mt-3 space-y-2">
+            <p className="text-meta text-fg-muted">A setup code is active but the value is not shown again for security. Regenerate to get a new one.</p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => void handleGenerateToken()}
+                disabled={tokenBusy}
+                className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-caption text-fg-secondary hover:text-fg transition-colors disabled:opacity-50"
+              >
+                <RefreshCw size={12} aria-hidden />
+                Regenerate code
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleRevokeToken()}
+                disabled={tokenBusy}
+                className="text-caption text-fg-muted underline-offset-2 hover:underline hover:text-error disabled:opacity-50"
+              >
+                Revoke
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => void handleGenerateToken()}
+            disabled={tokenBusy}
+            className="mt-3 flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-caption text-fg-secondary hover:text-fg transition-colors disabled:opacity-50"
+          >
+            <KeyRound size={12} aria-hidden />
+            {tokenBusy ? 'Generating…' : 'Generate setup code'}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent, type MouseEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Megaphone, Send, Check, X, Users, CalendarClock, Image as ImageIcon, Sparkles, Trash2 } from 'lucide-react';
 import {
@@ -447,6 +447,8 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
 
 function CampaignsTab({ initialCampaignId }: { initialCampaignId: string | null }) {
   const [campaigns, setCampaigns] = useState<CampaignDto[] | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
   const [view, setView] = useState<{ mode: 'list' } | { mode: 'new' } | { mode: 'detail'; campaignId: string }>(
     initialCampaignId ? { mode: 'detail', campaignId: initialCampaignId } : { mode: 'list' },
   );
@@ -463,6 +465,21 @@ function CampaignsTab({ initialCampaignId }: { initialCampaignId: string | null 
   useEffect(() => {
     if (view.mode === 'list') void load();
   }, [view.mode]);
+
+  async function handleDeleteFromList(event: MouseEvent, campaignId: string, name: string) {
+    event.stopPropagation();
+    if (!window.confirm(`Permanently delete "${name}"? This cannot be undone.`)) return;
+    setBusyId(campaignId);
+    setListError(null);
+    try {
+      await api.deleteCampaign(campaignId);
+      await load();
+    } catch (err) {
+      setListError(err instanceof ApiError ? err.message : 'Delete failed.');
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   if (view.mode === 'new') {
     return (
@@ -498,6 +515,8 @@ function CampaignsTab({ initialCampaignId }: { initialCampaignId: string | null 
           </button>
         </div>
 
+        {listError && <p className="mt-3 text-caption text-error">{listError}</p>}
+
         <div className="mt-4 space-y-2">
           {campaigns === null && <p className="text-caption text-fg-muted">Loading…</p>}
           {campaigns?.length === 0 && (
@@ -507,22 +526,41 @@ function CampaignsTab({ initialCampaignId }: { initialCampaignId: string | null 
               <p className="text-caption text-fg-muted">Create one to message contacts you already have an open conversation with.</p>
             </div>
           )}
-          {campaigns?.map((campaign) => (
-            <button
-              key={campaign.id}
-              type="button"
-              onClick={() => setView({ mode: 'detail', campaignId: campaign.id })}
-              className="flex w-full items-center justify-between rounded-xl border border-border-subtle bg-surface-2 p-4 text-left hover:bg-surface-3"
-            >
-              <div>
-                <p className="text-body font-medium text-fg">{campaign.name}</p>
-                <p className="mt-0.5 text-caption text-fg-muted">
-                  {campaign.counts.total} recipients · {formatDate(campaign.createdAt)}
-                </p>
+          {campaigns?.map((campaign) => {
+            const isTerminal = campaign.status === 'CANCELLED' || campaign.status === 'COMPLETED' || campaign.status === 'FAILED';
+            return (
+              <div
+                key={campaign.id}
+                className="flex w-full items-center justify-between rounded-xl border border-border-subtle bg-surface-2 p-4 hover:bg-surface-3 cursor-pointer"
+                onClick={() => setView({ mode: 'detail', campaignId: campaign.id })}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => e.key === 'Enter' && setView({ mode: 'detail', campaignId: campaign.id })}
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-body font-medium text-fg">{campaign.name}</p>
+                  <p className="mt-0.5 text-caption text-fg-muted">
+                    {campaign.counts.total} recipients · {formatDate(campaign.createdAt)}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${STATUS_COLOR[campaign.status]}`}>{STATUS_LABEL[campaign.status]}</span>
+                  {isTerminal && (
+                    <button
+                      type="button"
+                      disabled={busyId === campaign.id}
+                      onClick={(e) => void handleDeleteFromList(e, campaign.id, campaign.name)}
+                      aria-label={`Delete campaign ${campaign.name}`}
+                      title="Delete"
+                      className="text-fg-muted hover:text-error disabled:opacity-50"
+                    >
+                      <Trash2 size={14} aria-hidden />
+                    </button>
+                  )}
+                </div>
               </div>
-              <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${STATUS_COLOR[campaign.status]}`}>{STATUS_LABEL[campaign.status]}</span>
-            </button>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
@@ -685,6 +723,7 @@ function StatusSchedulerTab() {
   const [statuses, setStatuses] = useState<ScheduledStatusDto[] | null>(null);
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -699,13 +738,28 @@ function StatusSchedulerTab() {
     if (!creating) void load();
   }, [creating]);
 
-  const [statusError, setStatusError] = useState<string | null>(null);
-
   async function handleCancel(id: string) {
     setBusyId(id);
+    setStatusError(null);
     try {
       await api.cancelScheduledStatus(id);
       await load();
+    } catch (err) {
+      setStatusError(err instanceof ApiError ? err.message : 'Could not cancel that Status.');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleDeleteRecord(id: string) {
+    if (!window.confirm('Permanently remove this status from your list?')) return;
+    setBusyId(id);
+    setStatusError(null);
+    try {
+      await api.deleteScheduledStatus(id);
+      await load();
+    } catch (err) {
+      setStatusError(err instanceof ApiError ? err.message : 'Could not delete that Status.');
     } finally {
       setBusyId(null);
     }
@@ -782,9 +836,10 @@ function StatusSchedulerTab() {
                   <button
                     type="button"
                     disabled={busyId === status.id}
-                    onClick={() => handleCancel(status.id)}
+                    onClick={() => void handleCancel(status.id)}
                     aria-label="Cancel scheduled status"
-                    className="text-fg-muted hover:text-error"
+                    title="Cancel"
+                    className="text-fg-muted hover:text-error disabled:opacity-50"
                   >
                     <X size={14} aria-hidden />
                   </button>
@@ -795,7 +850,19 @@ function StatusSchedulerTab() {
                     disabled={busyId === status.id}
                     onClick={() => void handleDeleteFromWhatsApp(status.id)}
                     aria-label="Delete this Status from WhatsApp"
-                    title="Delete this Status from WhatsApp"
+                    title="Delete from WhatsApp"
+                    className="text-fg-muted hover:text-error disabled:opacity-50"
+                  >
+                    <Trash2 size={14} aria-hidden />
+                  </button>
+                )}
+                {(status.status === 'CANCELLED' || status.status === 'FAILED') && (
+                  <button
+                    type="button"
+                    disabled={busyId === status.id}
+                    onClick={() => void handleDeleteRecord(status.id)}
+                    aria-label="Delete this record"
+                    title="Remove from list"
                     className="text-fg-muted hover:text-error disabled:opacity-50"
                   >
                     <Trash2 size={14} aria-hidden />

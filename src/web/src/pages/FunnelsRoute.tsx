@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent, type MouseEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ArrowLeft, GitBranch, Plus, Trash2, Play, Pause, ArrowUp, ArrowDown, UserPlus2 } from 'lucide-react';
 import {
@@ -433,6 +433,8 @@ export function FunnelsRoute() {
   );
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -455,6 +457,21 @@ export function FunnelsRoute() {
     setView({ mode: 'detail', funnelId: result.funnel.id });
   }
 
+  async function handleDelete(event: MouseEvent, funnelId: string, funnelName: string) {
+    event.stopPropagation();
+    if (!window.confirm(`Delete funnel "${funnelName}"? This cannot be undone.`)) return;
+    setBusyId(funnelId);
+    setListError(null);
+    try {
+      await api.deleteFunnel(funnelId);
+      await load();
+    } catch (err) {
+      setListError(err instanceof ApiError ? err.message : 'Could not delete that funnel.');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   if (view.mode === 'detail') {
     return (
       <div className="flex-1 overflow-y-auto p-6">
@@ -466,10 +483,24 @@ export function FunnelsRoute() {
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <div className="mx-auto max-w-2xl">
-        <h1 className="text-title font-semibold text-fg">Funnels</h1>
-        <p className="mt-1 text-body text-fg-muted">Real, ordered WhatsApp follow-up sequences - every step actually executes.</p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-title font-semibold text-fg">Funnels</h1>
+            <p className="mt-1 text-body text-fg-muted">Real, ordered WhatsApp follow-up sequences — every step actually executes.</p>
+          </div>
+          {!creating && (
+            <button
+              type="button"
+              onClick={() => setCreating(true)}
+              className="flex shrink-0 items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-body font-medium text-white hover:bg-accent-dim"
+            >
+              <GitBranch size={14} aria-hidden />
+              New funnel
+            </button>
+          )}
+        </div>
 
-        {creating ? (
+        {creating && (
           <form onSubmit={handleCreate} className="mt-4 flex items-center gap-2">
             <input
               type="text"
@@ -487,37 +518,52 @@ export function FunnelsRoute() {
               Cancel
             </button>
           </form>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setCreating(true)}
-            className="mt-4 flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-body font-medium text-white hover:bg-accent-dim"
-          >
-            <GitBranch size={14} aria-hidden />
-            New funnel
-          </button>
         )}
+
+        {listError && <p className="mt-3 text-caption text-error">{listError}</p>}
 
         <div className="mt-4 space-y-2">
           {funnels === null && <p className="text-caption text-fg-muted">Loading…</p>}
-          {funnels?.length === 0 && !creating && <p className="text-caption text-fg-muted">No funnels yet.</p>}
+          {funnels?.length === 0 && !creating && (
+            <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-border-subtle p-12 text-center">
+              <GitBranch size={24} className="text-fg-muted" aria-hidden />
+              <p className="text-body text-fg-secondary">No funnels yet.</p>
+              <p className="text-caption text-fg-muted">Create a funnel to automate follow-up sequences for your contacts.</p>
+            </div>
+          )}
           {funnels?.map((funnel) => (
-            <button
+            <div
               key={funnel.id}
-              type="button"
+              className="flex w-full items-center justify-between rounded-xl border border-border-subtle bg-surface-2 p-4 hover:bg-surface-3 cursor-pointer"
               onClick={() => setView({ mode: 'detail', funnelId: funnel.id })}
-              className="flex w-full items-center justify-between rounded-xl border border-border-subtle bg-surface-2 p-4 text-left hover:bg-surface-3"
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => e.key === 'Enter' && setView({ mode: 'detail', funnelId: funnel.id })}
             >
-              <div>
-                <p className="text-body font-medium text-fg">{funnel.name}</p>
+              <div className="min-w-0">
+                <p className="truncate text-body font-medium text-fg">{funnel.name}</p>
                 <p className="mt-0.5 text-caption text-fg-muted">
-                  {funnel.stepCount} steps · {funnel.counts.active} active · {funnel.counts.completed} completed
+                  {funnel.stepCount} step{funnel.stepCount !== 1 ? 's' : ''} · {funnel.counts.active} active · {funnel.counts.completed} completed
                 </p>
               </div>
-              <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${funnel.isActive ? 'bg-success/15 text-success' : 'bg-fg-muted/15 text-fg-muted'}`}>
-                {funnel.isActive ? 'Active' : 'Inactive'}
-              </span>
-            </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${funnel.isActive ? 'bg-success/15 text-success' : 'bg-fg-muted/15 text-fg-muted'}`}>
+                  {funnel.isActive ? 'Active' : 'Inactive'}
+                </span>
+                {!funnel.isActive && (
+                  <button
+                    type="button"
+                    disabled={busyId === funnel.id}
+                    onClick={(e) => void handleDelete(e, funnel.id, funnel.name)}
+                    aria-label={`Delete funnel ${funnel.name}`}
+                    title="Delete funnel"
+                    className="text-fg-muted hover:text-error disabled:opacity-50"
+                  >
+                    <Trash2 size={14} aria-hidden />
+                  </button>
+                )}
+              </div>
+            </div>
           ))}
         </div>
       </div>

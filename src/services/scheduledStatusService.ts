@@ -100,6 +100,11 @@ export async function cancelScheduledStatus(businessId: string, id: string): Pro
   return updated;
 }
 
+export async function deleteScheduledStatus(businessId: string, id: string): Promise<void> {
+  const deleted = await scheduledStatusRepository.deleteTerminal(businessId, id);
+  if (!deleted) throw new InvalidScheduledStatusError('This status cannot be deleted — it may still be in progress or not found.');
+}
+
 export function isScheduledStatusNotFoundError(error: unknown): error is ScheduledStatusNotFoundError {
   return error instanceof ScheduledStatusNotFoundError;
 }

@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, type SyncStatusResponse, type WhatsAppConnectionSnapshot } from '../lib/api.js';
 
-export type AppPhase = 'loading' | 'onboarding' | 'syncing' | 'workspace';
+export type AppPhase = 'loading' | 'onboarding' | 'syncing' | 'operator-setup' | 'workspace';
 
 export interface AppGateState {
   phase: AppPhase;
   connection: WhatsAppConnectionSnapshot | null;
   sync: SyncStatusResponse | null;
   continueAnyway: () => void;
+  skipOperatorSetup: () => void;
 }
 
 const STATUS_POLL_MS = 2500;
@@ -18,6 +19,8 @@ export function useAppGate(): AppGateState {
   const [connection, setConnection] = useState<WhatsAppConnectionSnapshot | null>(null);
   const [sync, setSync] = useState<SyncStatusResponse | null>(null);
   const [forceContinue, setForceContinue] = useState(false);
+  const [operatorConfigured, setOperatorConfigured] = useState<boolean | null>(null);
+  const [skipOperator, setSkipOperator] = useState(false);
   // Baileys drops and auto-reconnects an already-paired session constantly
   // (a near-guaranteed restartRequired right after first pairing, plus
   // transient blips during/after a large history sync). None of that means
@@ -87,6 +90,16 @@ export function useAppGate(): AppGateState {
     };
   }, [connection?.connected, pairedOnce]);
 
+  // Check operator mode configuration once after sync completes.
+  useEffect(() => {
+    if (!forceContinue && !sync) return;
+    const syncDone = forceContinue || (sync?.syncStatus === 'completed');
+    if (!syncDone || operatorConfigured !== null) return;
+    api.getOperatorSettings()
+      .then((s) => { if (mounted.current) setOperatorConfigured(s.configured); })
+      .catch(() => { if (mounted.current) setOperatorConfigured(true); }); // on error: skip the step
+  }, [forceContinue, sync, operatorConfigured]);
+
   let phase: AppPhase = 'loading';
   if (connection) {
     const needsOnboarding =
@@ -99,10 +112,21 @@ export function useAppGate(): AppGateState {
       (!sync || sync.syncStatus === 'not_started' || sync.syncStatus === 'in_progress' || sync.syncStatus === 'failed')
     ) {
       phase = 'syncing';
+    } else if (!skipOperator && operatorConfigured === false) {
+      phase = 'operator-setup';
     } else {
       phase = 'workspace';
     }
   }
 
-  return { phase, connection, sync, continueAnyway: () => setForceContinue(true) };
+  return {
+    phase,
+    connection,
+    sync,
+    continueAnyway: () => setForceContinue(true),
+    skipOperatorSetup: () => {
+      setSkipOperator(true);
+      setOperatorConfigured(true);
+    },
+  };
 }

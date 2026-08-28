@@ -1,4 +1,4 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { OperatorModeRepository } from '../../repositories/operatorModeRepository.js';
 import type { Queryable } from '../../repositories/types.js';
 
@@ -15,6 +15,15 @@ const MAX_PIN_ATTEMPTS = 3;
 
 export function generatePinSalt(): string {
   return randomBytes(32).toString('hex');
+}
+
+// Generates a random 8-character uppercase alphanumeric setup token for the WA wizard.
+// This is the plain-text value shown once in the web UI; only its scrypt hash is stored.
+export function generateSetupToken(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // omit 0/O/1/I for readability
+  return Array.from(randomBytes(8))
+    .map((b) => chars[b % chars.length]!)
+    .join('');
 }
 
 export function hashPin(pin: string, salt: string, n = SCRYPT_N, r = SCRYPT_R, p = SCRYPT_P): string {
@@ -37,6 +46,7 @@ export type OperatorCommandType =
   | 'HELP'
   | 'LOGOUT'
   | 'STATS'
+  | 'DAILY_REPORT'
   | 'PROPERTY_NOTE'
   | 'INVOICE_STATUS'
   | 'INCIDENT_LOG';
@@ -45,6 +55,7 @@ type ParsedCommand =
   | { type: 'HELP' }
   | { type: 'LOGOUT' }
   | { type: 'STATS'; scope: 'today' | 'week' | 'month' }
+  | { type: 'DAILY_REPORT' }
   | { type: 'PROPERTY_NOTE'; propertyRef: string; note: string }
   | { type: 'INVOICE_STATUS'; invoiceNumber: string; newStatus: 'PAID' | 'CANCELLED' }
   | { type: 'INCIDENT_LOG'; title: string; description: string; severity: 'low' | 'medium' | 'high' }
@@ -60,6 +71,8 @@ function parse(text: string): ParsedCommand {
 
   if (/^(help|\?|commands|what can you do)/.test(t)) return { type: 'HELP' };
   if (/^(logout|exit|bye|done|end session)/.test(t)) return { type: 'LOGOUT' };
+
+  if (/\b(daily\s+report|full\s+report|day\s+report|report\s+today)\b/.test(t)) return { type: 'DAILY_REPORT' };
 
   const statsMatch = t.match(/\b(stats?|summary|report)\b.*\b(today|daily|day)\b/);
   if (statsMatch) return { type: 'STATS', scope: 'today' };
@@ -90,9 +103,25 @@ function parse(text: string): ParsedCommand {
 
 // ── Response builders ─────────────────────────────────────────────────────────
 
+export const OPERATOR_SETUP_CONFIRMATION = `✅ *Operator mode is now active.*
+
+You can WhatsApp this number from your personal phone to manage your business. Here are all available commands:
+
+• *daily report* — full day summary (messages, incidents, invoices, revenue, work orders)
+• *stats [today|week|month]* — quick metrics snapshot
+• *mark INV-YYYYMM-XXXX as paid* — mark an invoice paid
+• *cancel INV-YYYYMM-XXXX* — cancel an invoice
+• *note for [property]: [text]* — add a note to a property
+• *incident: [description]* — log a new incident (add "high" or "urgent" for high severity)
+• *logout* — end your session
+
+📱 *How it works:*
+Message this number → get a PIN challenge → reply with your PIN → 30-minute authenticated session. After 3 wrong PIN attempts the session is locked. All commands are scoped to your business only.`;
+
 const HELP_TEXT = `🔐 *Operator Commands*
 
-• *stats [today|week|month]* — summary
+• *daily report* — full day summary (messages, incidents, invoices, revenue, work orders)
+• *stats [today|week|month]* — quick metrics snapshot
 • *mark INV-XXXXXX-XXXX as paid* — mark invoice paid
 • *cancel INV-XXXXXX-XXXX* — cancel invoice
 • *note for [property]: [text]* — add property note
@@ -100,6 +129,27 @@ const HELP_TEXT = `🔐 *Operator Commands*
 • *logout* — end session
 
 All commands are scoped to your business only.`;
+
+// ── WhatsApp setup wizard ─────────────────────────────────────────────────────
+// In-memory: setup sessions are short-lived (10 min) and non-critical.
+// If the server restarts mid-wizard, the user just triggers the code word again.
+
+interface WaSetupSession {
+  step: 'AWAITING_PIN' | 'AWAITING_PIN_CONFIRM';
+  initiatorJid: string;
+  pendingPin: string;
+  expiresAt: number;
+}
+
+const WA_SETUP_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const waSetupSessions = new Map<string, WaSetupSession>(); // key: `${businessId}:${jid}`
+
+function waSetupKey(businessId: string, jid: string): string {
+  return `${businessId}:${normaliseJid(jid)}`;
+}
+
+// Trigger phrase: "setup operator [CODE]" — case-insensitive, flexible spacing.
+const WA_SETUP_TRIGGER = /^setup\s+operator\s+([A-Z0-9]+)\s*$/i;
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
@@ -112,6 +162,93 @@ export class OperatorCommandService {
   constructor(db: Queryable) {
     this.db = db;
     this.repo = new OperatorModeRepository(db);
+  }
+
+  // Returns true if the message is part of a WA setup wizard (trigger or ongoing session).
+  // Check this BEFORE isOperatorMessage so unauthenticated JIDs can start the wizard.
+  async isWaSetupMessage(businessId: string, senderJid: string, text: string): Promise<boolean> {
+    const key = waSetupKey(businessId, senderJid);
+    const session = waSetupSessions.get(key);
+    if (session && session.expiresAt > Date.now()) return true;
+    if (session) waSetupSessions.delete(key);
+    return WA_SETUP_TRIGGER.test(text.trim());
+  }
+
+  // Drives the multi-turn setup wizard.
+  async handleWaSetup(businessId: string, senderJid: string, text: string): Promise<OperatorResult> {
+    const key = waSetupKey(businessId, senderJid);
+    const existing = waSetupSessions.get(key);
+
+    // ── Step 0: trigger phrase ───────────────────────────────────────────────
+    if (!existing || existing.expiresAt <= Date.now()) {
+      waSetupSessions.delete(key);
+      const match = WA_SETUP_TRIGGER.exec(text.trim());
+      if (!match) return { reply: '⚠️ Setup session expired. Send *setup operator [CODE]* to try again.' };
+
+      const candidateToken = match[1]!.toUpperCase();
+      const stored = await this.repo.getSetupToken(businessId);
+      if (!stored) {
+        return { reply: '⚠️ No setup code is active for this account. Generate one in Settings → Operator Mode.' };
+      }
+
+      const candidateHash = hashPin(candidateToken, stored.tokenSalt);
+      const matches = timingSafeEqual(Buffer.from(candidateHash, 'hex'), Buffer.from(stored.tokenHash, 'hex'));
+      if (!matches) {
+        return { reply: '❌ Setup code is incorrect. Check the code in your Settings and try again.' };
+      }
+
+      // Token verified — start wizard
+      waSetupSessions.set(key, {
+        step: 'AWAITING_PIN',
+        initiatorJid: senderJid,
+        pendingPin: '',
+        expiresAt: Date.now() + WA_SETUP_TTL_MS,
+      });
+      return {
+        reply: `🔐 *Operator Mode Setup*\n\nSetup code verified! Your WhatsApp number will be registered as the operator.\n\nChoose a PIN (minimum 4 characters):`,
+      };
+    }
+
+    // ── Step 1: collect PIN ──────────────────────────────────────────────────
+    if (existing.step === 'AWAITING_PIN') {
+      const pin = text.trim();
+      if (pin.length < 4) {
+        return { reply: '❌ PIN must be at least 4 characters. Try again:' };
+      }
+      waSetupSessions.set(key, { ...existing, step: 'AWAITING_PIN_CONFIRM', pendingPin: pin, expiresAt: Date.now() + WA_SETUP_TTL_MS });
+      return { reply: '✅ Got it. Confirm your PIN:' };
+    }
+
+    // ── Step 2: confirm PIN → save ───────────────────────────────────────────
+    if (existing.step === 'AWAITING_PIN_CONFIRM') {
+      const confirmPin = text.trim();
+      if (confirmPin !== existing.pendingPin) {
+        waSetupSessions.delete(key);
+        return { reply: "❌ PINs didn't match. Setup cancelled. Send *setup operator [CODE]* to start again." };
+      }
+
+      const salt = generatePinSalt();
+      const hash = hashPin(existing.pendingPin, salt);
+      const jidForStorage = senderJid.includes('@') ? senderJid : `${senderJid}@s.whatsapp.net`;
+
+      await this.repo.upsertSettings({
+        businessId,
+        operatorWaJid: jidForStorage,
+        pinSalt: salt,
+        pinHash: hash,
+        pinN: SCRYPT_N,
+        pinR: SCRYPT_R,
+        pinP: SCRYPT_P,
+        enabled: true,
+      });
+
+      await this.repo.deleteSetupToken(businessId);
+      waSetupSessions.delete(key);
+
+      return { reply: OPERATOR_SETUP_CONFIRMATION };
+    }
+
+    return { reply: '⚠️ Unexpected wizard state. Send *setup operator [CODE]* to restart.' };
   }
 
   // Returns true if operator mode is configured and enabled for this business AND
@@ -177,6 +314,9 @@ export class OperatorCommandService {
       case 'STATS':
         return this.handleStats(businessId, command.scope);
 
+      case 'DAILY_REPORT':
+        return this.handleDailyReport(businessId);
+
       case 'INVOICE_STATUS':
         return this.handleInvoiceStatus(businessId, command.invoiceNumber, command.newStatus);
 
@@ -220,6 +360,87 @@ export class OperatorCommandService {
       };
     } catch {
       return { reply: '⚠️ Could not fetch stats. Try again shortly.' };
+    }
+  }
+
+  private async handleDailyReport(businessId: string): Promise<OperatorResult> {
+    try {
+      type ReportRow = {
+        msgs_in: string;
+        msgs_out: string;
+        active_chats: string;
+        new_contacts: string;
+        incidents_open: string;
+        incidents_resolved_today: string;
+        invoices_draft: string;
+        invoices_pending: string;
+        invoices_paid_today: string;
+        revenue_today_cents: string;
+        work_orders_open: string;
+        work_orders_completed_today: string;
+      };
+      const { rows } = await this.db.query<ReportRow>(
+        `SELECT
+           (SELECT COUNT(*) FROM whatsapp_messages wm
+            JOIN whatsapp_chats wc ON wc.id = wm.chat_id
+            WHERE wc.business_id = $1 AND NOT wm.from_me AND wm.created_at >= CURRENT_DATE) AS msgs_in,
+           (SELECT COUNT(*) FROM whatsapp_messages wm
+            JOIN whatsapp_chats wc ON wc.id = wm.chat_id
+            WHERE wc.business_id = $1 AND wm.from_me AND wm.created_at >= CURRENT_DATE) AS msgs_out,
+           (SELECT COUNT(DISTINCT wc.id) FROM whatsapp_chats wc
+            JOIN whatsapp_messages wm ON wm.chat_id = wc.id
+            WHERE wc.business_id = $1 AND wm.created_at >= CURRENT_DATE) AS active_chats,
+           (SELECT COUNT(*) FROM crm_contacts
+            WHERE business_id = $1 AND created_at >= CURRENT_DATE) AS new_contacts,
+           (SELECT COUNT(*) FROM property_incidents
+            WHERE business_id = $1 AND status = 'OPEN') AS incidents_open,
+           (SELECT COUNT(*) FROM property_incidents
+            WHERE business_id = $1 AND status = 'RESOLVED' AND updated_at >= CURRENT_DATE) AS incidents_resolved_today,
+           (SELECT COUNT(*) FROM invoices
+            WHERE business_id = $1 AND status = 'DRAFT') AS invoices_draft,
+           (SELECT COUNT(*) FROM invoices
+            WHERE business_id = $1 AND status IN ('PENDING_APPROVAL','APPROVED','SENT')) AS invoices_pending,
+           (SELECT COUNT(*) FROM invoices
+            WHERE business_id = $1 AND status = 'PAID' AND paid_at >= CURRENT_DATE) AS invoices_paid_today,
+           (SELECT COALESCE(SUM(total_cents),0) FROM invoices
+            WHERE business_id = $1 AND status = 'PAID' AND paid_at >= CURRENT_DATE) AS revenue_today_cents,
+           (SELECT COUNT(*) FROM property_work_orders
+            WHERE business_id = $1 AND status NOT IN ('COMPLETED','CANCELLED')) AS work_orders_open,
+           (SELECT COUNT(*) FROM property_work_orders
+            WHERE business_id = $1 AND status = 'COMPLETED' AND completed_at >= CURRENT_DATE) AS work_orders_completed_today`,
+        [businessId],
+      );
+      const r = rows[0] ?? {} as ReportRow;
+      const rev = Number(r.revenue_today_cents ?? 0) / 100;
+      const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+
+      return {
+        reply: `📋 *Daily Report — ${today}*
+
+💬 *Messages*
+• Received: ${r.msgs_in ?? 0}
+• Sent: ${r.msgs_out ?? 0}
+• Active chats: ${r.active_chats ?? 0}
+• New contacts: ${r.new_contacts ?? 0}
+
+🚨 *Incidents*
+• Open: ${r.incidents_open ?? 0}
+• Resolved today: ${r.incidents_resolved_today ?? 0}
+
+🔧 *Work Orders*
+• Open: ${r.work_orders_open ?? 0}
+• Completed today: ${r.work_orders_completed_today ?? 0}
+
+🧾 *Invoices & Revenue*
+• Paid today: ${r.invoices_paid_today ?? 0}
+• Revenue collected: BBD ${rev.toFixed(2)}
+• Drafts: ${r.invoices_draft ?? 0}
+• Outstanding (pending/approved/sent): ${r.invoices_pending ?? 0}
+
+_Report for today's activity only. Send *stats week* or *stats month* for broader trends._`,
+      };
+    } catch {
+      return { reply: '⚠️ Could not generate the daily report. Try again shortly.' };
     }
   }
 

@@ -166,6 +166,27 @@ async function runAiHandoff(params: {
       [contactId, businessId],
     );
     const senderJid = jidRows[0]?.whatsapp_jid;
+
+    // Check WA setup wizard FIRST: this works even before operator mode is configured,
+    // so the sender JID doesn't need to be the registered operator yet.
+    if (senderJid && (await operatorCommandService.isWaSetupMessage(businessId, senderJid, queryText))) {
+      const { reply } = await operatorCommandService.handleWaSetup(businessId, senderJid, queryText);
+      try {
+        await whatsappOutboundMessageService.send({
+          businessId,
+          whatsappAccountId,
+          chatId,
+          idempotencyKey: `operator-setup-wa:${messageId}`,
+          messageType: 'text',
+          text: reply,
+          requestedBy: 'ai',
+        });
+      } catch (err) {
+        console.error('[IncomingMessagesWorker] WA setup reply failed to send:', err instanceof Error ? err.message : err);
+      }
+      return;
+    }
+
     if (senderJid && (await operatorCommandService.isOperatorMessage(businessId, senderJid))) {
       const { reply } = await operatorCommandService.handle(businessId, senderJid, queryText);
       try {

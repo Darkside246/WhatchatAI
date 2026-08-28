@@ -2,11 +2,15 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { pool } from '../db/pool.js';
 import { OperatorModeRepository } from '../repositories/operatorModeRepository.js';
-import { generatePinSalt, hashPin } from '../services/operator/operatorCommandService.js';
+import { WhatsAppChatRepository } from '../repositories/whatsappChatRepository.js';
+import { WhatsAppOutboundMessageService } from '../services/whatsappOutboundMessageService.js';
+import { generatePinSalt, generateSetupToken, hashPin, OPERATOR_SETUP_CONFIRMATION } from '../services/operator/operatorCommandService.js';
 import type { AuthContext } from './authMiddleware.js';
 
 const router = Router();
 const repo = new OperatorModeRepository(pool);
+const chatRepo = new WhatsAppChatRepository(pool);
+const outboundSvc = new WhatsAppOutboundMessageService();
 
 const SetupSchema = z.object({
   operatorWaJid: z.string().min(5).max(64),
@@ -49,6 +53,36 @@ router.post('/settings', async (req, res) => {
     ...(enabled !== undefined ? { enabled } : {}),
   });
 
+  // Fire-and-forget: send a confirmation WhatsApp message to the operator's personal number.
+  // This requires the operator to have messaged the business number at least once so a chat row exists.
+  void (async () => {
+    try {
+      type AccountRow = { id: string };
+      const { rows: accts } = await pool.query<AccountRow>(
+        `SELECT id FROM whatsapp_accounts WHERE business_id = $1 AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 1`,
+        [auth.businessId],
+      );
+      const whatsappAccountId = accts[0]?.id;
+      if (!whatsappAccountId) return;
+
+      const normalJid = operatorWaJid.includes('@') ? operatorWaJid : `${operatorWaJid}@s.whatsapp.net`;
+      const chat = await chatRepo.findByJid(auth.businessId, whatsappAccountId, normalJid);
+      if (!chat) return;
+
+      await outboundSvc.send({
+        businessId: auth.businessId,
+        whatsappAccountId,
+        chatId: chat.id,
+        idempotencyKey: `operator-setup-confirm:${auth.businessId}:${Date.now()}`,
+        messageType: 'text',
+        text: OPERATOR_SETUP_CONFIRMATION,
+        requestedBy: 'ai',
+      });
+    } catch {
+      // Non-fatal — setup is saved; message will be shown in app instead.
+    }
+  })();
+
   return res.json({
     configured: true,
     operatorWaJid: settings.operatorWaJid,
@@ -70,6 +104,31 @@ router.patch('/settings/enabled', async (req, res) => {
 router.delete('/session', async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
   await repo.deleteSession(auth.businessId);
+  return res.json({ ok: true });
+});
+
+// POST /api/operator-mode/setup-token — generate a new one-time WhatsApp setup code.
+// Returns the plain-text code ONCE. It is stored only as a scrypt hash.
+router.post('/setup-token', async (req, res) => {
+  const auth = res.locals['auth'] as AuthContext;
+  const plain = generateSetupToken();
+  const salt = generatePinSalt();
+  const hash = hashPin(plain, salt);
+  await repo.upsertSetupToken(auth.businessId, hash, salt);
+  return res.json({ token: plain });
+});
+
+// GET /api/operator-mode/setup-token — check whether a setup token exists (not its value)
+router.get('/setup-token', async (req, res) => {
+  const auth = res.locals['auth'] as AuthContext;
+  const exists = await repo.hasSetupToken(auth.businessId);
+  return res.json({ exists });
+});
+
+// DELETE /api/operator-mode/setup-token — revoke the active setup token
+router.delete('/setup-token', async (req, res) => {
+  const auth = res.locals['auth'] as AuthContext;
+  await repo.deleteSetupToken(auth.businessId);
   return res.json({ ok: true });
 });
 

@@ -1202,6 +1202,7 @@ export const api = {
   /** The only path to sending. Requires the email.send permission server-side. */
   approveEmail: (id: string) => request<{ email: EmailMessageDto }>(`/workspace/email/${id}/approve`, { method: 'POST' }),
   cancelEmail: (id: string) => request<{ email: EmailMessageDto }>(`/workspace/email/${id}/cancel`, { method: 'POST' }),
+  deleteEmail: (id: string) => request<{ ok: boolean }>(`/workspace/email/${id}`, { method: 'DELETE' }),
   aiDraftEmail: (input: {
     agentId: string;
     kind: EmailKind;
@@ -1227,6 +1228,7 @@ export const api = {
   }) => request<{ status: ScheduledStatusDto }>('/workspace/scheduled-statuses', { method: 'POST', body: JSON.stringify(input) }),
   scheduleStatus: (id: string) => request<{ status: ScheduledStatusDto }>(`/workspace/scheduled-statuses/${id}/schedule`, { method: 'POST' }),
   cancelScheduledStatus: (id: string) => request<{ status: ScheduledStatusDto }>(`/workspace/scheduled-statuses/${id}/cancel`, { method: 'POST' }),
+  deleteScheduledStatus: (id: string) => request<{ ok: boolean }>(`/workspace/scheduled-statuses/${id}`, { method: 'DELETE' }),
 
   listFunnels: () => request<{ funnels: FunnelDto[] }>('/workspace/funnels'),
   createFunnel: (name: string, description: string | null) =>
@@ -1300,6 +1302,12 @@ export const api = {
     }),
   killOperatorSession: () =>
     request<{ ok: boolean }>('/operator-mode/session', { method: 'DELETE' }),
+  generateOperatorSetupToken: () =>
+    request<{ token: string }>('/operator-mode/setup-token', { method: 'POST' }),
+  hasOperatorSetupToken: () =>
+    request<{ exists: boolean }>('/operator-mode/setup-token'),
+  revokeOperatorSetupToken: () =>
+    request<{ ok: boolean }>('/operator-mode/setup-token', { method: 'DELETE' }),
 
   // ── Invoices ───────────────────────────────────────────────────────────────
   listInvoices: (opts?: { status?: string; type?: string }) =>

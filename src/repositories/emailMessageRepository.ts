@@ -246,6 +246,18 @@ export class EmailMessageRepository {
     );
   }
 
+  // Hard-delete a terminal-state email (cancelled, failed, sent, indeterminate).
+  // Returns true if a row was deleted, false if it wasn't found or is still in-flight.
+  async deleteTerminal(businessId: string, id: string): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      `DELETE FROM email_messages
+       WHERE id = $1 AND business_id = $2
+         AND status IN ('cancelled', 'failed', 'sent', 'indeterminate')`,
+      [id, businessId],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
   async cancel(businessId: string, id: string): Promise<EmailMessageRecord | null> {
     const { rows } = await this.db.query<EmailMessageRow>(
       `UPDATE email_messages

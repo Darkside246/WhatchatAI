@@ -189,6 +189,7 @@ import {
   getScheduledStatus,
   scheduleStatus,
   cancelScheduledStatus,
+  deleteScheduledStatus,
   isScheduledStatusNotFoundError,
   isInvalidScheduledStatusError,
 } from '../services/scheduledStatusService.js';
@@ -201,6 +202,7 @@ import {
   updateDraft as updateEmailDraft,
   approveAndSend as approveAndSendEmail,
   cancelEmail,
+  deleteEmail,
   getEmailCapabilities,
   getSettings as getEmailSettings,
   updateEmailSettings,
@@ -1147,6 +1149,23 @@ app.post(
   scheduledStatusActionHandler((businessId, id) => cancelScheduledStatus(businessId, id)),
 );
 
+app.delete(
+  '/api/workspace/scheduled-statuses/:id',
+  requireWorkspaceContext,
+  requirePermission('marketing.create'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    try {
+      await deleteScheduledStatus(businessId, String(req.params.id ?? ''));
+      return res.status(200).json({ ok: true });
+    } catch (error) {
+      if (isScheduledStatusNotFoundError(error)) return res.status(404).json({ error: 'SCHEDULED_STATUS_NOT_FOUND' });
+      if (isInvalidScheduledStatusError(error)) return res.status(409).json({ error: 'INVALID_SCHEDULED_STATUS', message: (error as Error).message });
+      throw error;
+    }
+  },
+);
+
 /**
  * Delete-from-WhatsApp. These issue WhatsApp's real "delete for everyone",
  * the same action the phone offers. A 202 means the instruction was queued
@@ -1591,6 +1610,18 @@ app.post('/api/workspace/email/:id/cancel', requirePermission('email.draft'), as
   try {
     const email = await cancelEmail(auth.businessId, String(req.params.id ?? ''), auth.userId);
     return res.status(200).json({ email });
+  } catch (error) {
+    const handled = emailErrorResponse(error, res);
+    if (handled) return handled;
+    throw error;
+  }
+});
+
+app.delete('/api/workspace/email/:id', requirePermission('email.draft'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  try {
+    await deleteEmail(auth.businessId, String(req.params.id ?? ''));
+    return res.status(200).json({ ok: true });
   } catch (error) {
     const handled = emailErrorResponse(error, res);
     if (handled) return handled;

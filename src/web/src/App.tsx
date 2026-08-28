@@ -4,6 +4,7 @@ import { useAppGate } from './hooks/useAppGate.js';
 import { OnboardingPage } from './pages/OnboardingPage.js';
 import { SyncingPage } from './pages/SyncingPage.js';
 import { WorkspaceShell } from './pages/WorkspaceShell.js';
+import { OperatorSetupPage } from './pages/OperatorSetupPage.js';
 import { ScreenLock } from './components/ScreenLock.js';
 import { LoginPage } from './pages/LoginPage.js';
 import { RegisterPage } from './pages/RegisterPage.js';
@@ -19,6 +20,8 @@ function AuthenticatedApp() {
     content = <OnboardingPage connection={gate.connection} />;
   } else if (gate.phase === 'syncing') {
     content = <SyncingPage connection={gate.connection} sync={gate.sync} onContinueAnyway={gate.continueAnyway} />;
+  } else if (gate.phase === 'operator-setup') {
+    content = <OperatorSetupPage onDone={gate.skipOperatorSetup} onSkip={gate.skipOperatorSetup} />;
   } else {
     content = <WorkspaceShell connection={gate.connection} sync={gate.sync} />;
   }

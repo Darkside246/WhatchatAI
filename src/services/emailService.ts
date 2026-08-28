@@ -215,6 +215,11 @@ export async function cancelEmail(businessId: string, id: string, cancelledBy: s
   return cancelled;
 }
 
+export async function deleteEmail(businessId: string, id: string): Promise<void> {
+  const deleted = await emailRepository.deleteTerminal(businessId, id);
+  if (!deleted) throw new EmailNotApprovableError('This email cannot be deleted — it may still be in progress or not found.');
+}
+
 export async function getSettings(businessId: string) {
   return integrationSettingsRepository.getEmailPublic(businessId);
 }

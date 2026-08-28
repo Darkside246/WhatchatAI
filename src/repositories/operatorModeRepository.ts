@@ -147,4 +147,41 @@ export class OperatorModeRepository {
   async deleteSession(businessId: string): Promise<void> {
     await this.db.query(`DELETE FROM operator_sessions WHERE business_id = $1`, [businessId]);
   }
+
+  // ── WhatsApp setup tokens ────────────────────────────────────────────────────
+  // One-time tokens the owner generates in the web UI and sends via WhatsApp to
+  // trigger the operator mode setup wizard. Burned on first successful use.
+
+  async upsertSetupToken(businessId: string, tokenHash: string, tokenSalt: string): Promise<void> {
+    await this.db.query(
+      `INSERT INTO operator_wa_setup_tokens (business_id, token_hash, token_salt)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (business_id) DO UPDATE SET
+         token_hash = EXCLUDED.token_hash,
+         token_salt = EXCLUDED.token_salt,
+         created_at = NOW()`,
+      [businessId, tokenHash, tokenSalt],
+    );
+  }
+
+  async getSetupToken(businessId: string): Promise<{ tokenHash: string; tokenSalt: string } | null> {
+    const { rows } = await this.db.query<{ tokenHash: string; tokenSalt: string }>(
+      `SELECT token_hash AS "tokenHash", token_salt AS "tokenSalt"
+       FROM operator_wa_setup_tokens WHERE business_id = $1`,
+      [businessId],
+    );
+    return rows[0] ?? null;
+  }
+
+  async hasSetupToken(businessId: string): Promise<boolean> {
+    const { rows } = await this.db.query<{ exists: boolean }>(
+      `SELECT EXISTS(SELECT 1 FROM operator_wa_setup_tokens WHERE business_id = $1) AS exists`,
+      [businessId],
+    );
+    return rows[0]?.exists ?? false;
+  }
+
+  async deleteSetupToken(businessId: string): Promise<void> {
+    await this.db.query(`DELETE FROM operator_wa_setup_tokens WHERE business_id = $1`, [businessId]);
+  }
 }
