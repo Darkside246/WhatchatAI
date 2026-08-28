@@ -1368,7 +1368,7 @@ export const api = {
         labels: string[];
         receivedAt: string | null;
       }>;
-    }>(`/email-oauth/messages/${accountId}${q ? `?${q}` : ''}`),
+    }>(`/email-oauth/messages/${accountId}${q ? `?${q}` : ''}`);
   },
   oauthConnectUrl: (provider: 'gmail' | 'outlook') => `/api/email-oauth/connect/${provider}`,
 
