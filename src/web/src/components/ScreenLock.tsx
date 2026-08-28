@@ -6,7 +6,16 @@ import { useIdleTimer } from '../hooks/useIdleTimer.js';
 import { LOCK_NOW_EVENT } from '../lib/lockEvents.js';
 import { AlertNotifier } from './AlertNotifier.js';
 
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+export const LOCK_TIMEOUT_KEY = 'lock_timeout_minutes';
+const DEFAULT_TIMEOUT_MIN = 5;
+
+function getLockTimeoutMs(): number {
+  try {
+    const n = parseInt(localStorage.getItem(LOCK_TIMEOUT_KEY) ?? '', 10);
+    if (!isNaN(n) && n > 0) return n * 60 * 1000;
+  } catch {}
+  return DEFAULT_TIMEOUT_MIN * 60 * 1000;
+}
 const PIN_PATTERN = /^\d{6,8}$/;
 
 interface Props {
@@ -31,6 +40,7 @@ export function ScreenLock({ children }: Props) {
   const [remainingAttempts, setRemainingAttempts] = useState<number | null>(null);
   const [revoked, setRevoked] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [timeoutMs, setTimeoutMs] = useState(getLockTimeoutMs);
 
   useEffect(() => {
     let cancelled = false;
@@ -47,6 +57,14 @@ export function ScreenLock({ children }: Props) {
     };
   }, []);
 
+  useEffect(() => {
+    function onStorage(e: StorageEvent) {
+      if (e.key === LOCK_TIMEOUT_KEY) setTimeoutMs(getLockTimeoutMs());
+    }
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
   const engageLock = useCallback(() => {
     setPin('');
     setConfirmPin('');
@@ -54,7 +72,7 @@ export function ScreenLock({ children }: Props) {
     setLocked(true);
   }, []);
 
-  useIdleTimer(IDLE_TIMEOUT_MS, engageLock, configured === true && !locked);
+  useIdleTimer(timeoutMs, engageLock, configured === true && !locked);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {

@@ -99,12 +99,12 @@ function CreateInvoiceModal({ onClose, onCreated }: { onClose: () => void; onCre
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="w-full max-w-2xl rounded-2xl border border-border-subtle bg-surface-1 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-border-subtle px-5 py-4">
+      <div className="flex w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border-subtle bg-surface-1 shadow-2xl" style={{ maxHeight: 'calc(100vh - 2rem)' }}>
+        <div className="flex shrink-0 items-center justify-between border-b border-border-subtle px-5 py-4">
           <h2 className="text-body font-semibold text-fg">New document</h2>
           <button type="button" onClick={onClose} className="rounded p-1 text-fg-muted hover:text-fg"><X size={16} /></button>
         </div>
-        <form onSubmit={(e) => void handleSubmit(e)} className="max-h-[80vh] overflow-y-auto p-5 space-y-4">
+        <form onSubmit={(e) => void handleSubmit(e)} className="min-h-0 flex-1 overflow-y-auto p-5 space-y-4">
           <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="mb-1 block text-caption font-medium text-fg">Type</label>

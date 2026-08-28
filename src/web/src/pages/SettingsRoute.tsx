@@ -21,6 +21,7 @@ import { MediaLightbox } from '../components/MediaLightbox.js';
 import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
 import { triggerLockNow } from '../lib/lockEvents.js';
+import { LOCK_TIMEOUT_KEY } from '../components/ScreenLock.js';
 import { DEFAULT_ARGON2_PARAMS, generateSalt, hashPin } from '../lib/pinCrypto.js';
 import { useAuth } from '../hooks/useAuth.js';
 
@@ -627,6 +628,18 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
   );
 }
 
+const LOCK_TIMEOUT_OPTIONS = [
+  { value: '1', label: '1 minute' },
+  { value: '5', label: '5 minutes' },
+  { value: '15', label: '15 minutes' },
+  { value: '30', label: '30 minutes' },
+  { value: '60', label: '1 hour' },
+];
+
+function getLockTimeoutValue(): string {
+  try { return localStorage.getItem(LOCK_TIMEOUT_KEY) ?? '5'; } catch { return '5'; }
+}
+
 function SecurityCard() {
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [showChange, setShowChange] = useState(false);
@@ -636,6 +649,7 @@ function SecurityCard() {
   const [changeBusy, setChangeBusy] = useState(false);
   const [changeError, setChangeError] = useState<string | null>(null);
   const [changeOk, setChangeOk] = useState(false);
+  const [lockTimeout, setLockTimeout] = useState(getLockTimeoutValue);
 
   useEffect(() => {
     api
@@ -687,9 +701,31 @@ function SecurityCard() {
       <h2 className="text-body font-semibold text-fg">Screen lock</h2>
       <p className="mt-1 text-caption text-fg-muted">
         {configured
-          ? 'A PIN is set - the app locks automatically after 5 minutes idle, or press Alt+L any time. Live messaging, AI replies, and the CRM keep running while locked.'
+          ? 'A PIN is set — the app locks after the selected idle time, or press Alt+L any time. Live messaging, AI replies, and the CRM keep running while locked.'
           : 'No PIN set up yet. Press "Lock now" (or Alt+L) to set one.'}
       </p>
+      {configured && (
+        <div className="mt-3 flex items-center gap-2">
+          <label className="text-caption font-medium text-fg-secondary" htmlFor="lock-timeout">
+            Lock after idle for
+          </label>
+          <select
+            id="lock-timeout"
+            value={lockTimeout}
+            onChange={(e) => {
+              const v = e.target.value;
+              setLockTimeout(v);
+              try { localStorage.setItem(LOCK_TIMEOUT_KEY, v); } catch {}
+              window.dispatchEvent(new StorageEvent('storage', { key: LOCK_TIMEOUT_KEY, newValue: v }));
+            }}
+            className="rounded-lg border border-border-subtle bg-surface-3 px-2 py-1 text-caption text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+          >
+            {LOCK_TIMEOUT_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </div>
+      )}
       {changeOk && <p className="mt-2 text-caption text-green-600">PIN changed successfully.</p>}
       <div className="mt-3 flex flex-wrap gap-2">
         <button
