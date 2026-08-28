@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 
-type Product = 'property' | 'food' | 'retail' | 'beauty' | 'auto' | 'health';
+type Product = 'property' | 'food' | 'retail' | 'beauty' | 'auto' | 'health' | 'legal' | 'hospitality' | 'construction' | 'logistics';
 
 const copy: Record<Product, { name: string; description: string; sections: Array<[string, string, string]> }> = {
   property: {
@@ -84,6 +84,62 @@ const copy: Record<Product, { name: string; description: string; sections: Array
       ['Patients', 'View patient history and contact information.', '/crm'],
       ['Communications', 'Send health tips, reminders and follow-ups.', '/marketing'],
       ['AI Care Agent', 'Answer FAQs and handle appointment requests.', '/agents'],
+      ['Settings', 'Manage product and connection settings.', '/settings'],
+    ],
+  },
+  legal: {
+    name: 'WhatsChat Legal',
+    description: 'Client intake, case enquiries and document requests for law practices — all via WhatsApp.',
+    sections: [
+      ['Conversations', 'Handle client enquiries and intake via WhatsApp.', '/chats'],
+      ['Cases & Clients', 'Manage active cases and client contact records.', '/legal/operations'],
+      ['Document Requests', 'Track document submissions and outstanding items.', '/legal/operations'],
+      ['Consultations', 'Schedule and log consultation sessions.', '/legal/operations'],
+      ['Invoices', 'Issue legal service invoices and receipts.', '/invoices'],
+      ['Clients', 'View full client history and communication records.', '/crm'],
+      ['AI Legal Agent', 'Answer intake questions and direct enquiries.', '/agents'],
+      ['Settings', 'Manage product and connection settings.', '/settings'],
+    ],
+  },
+  hospitality: {
+    name: 'WhatsChat Hospitality',
+    description: 'Room bookings, guest services and housekeeping coordination for hotels and short-stay properties.',
+    sections: [
+      ['Conversations', 'Respond to guest messages and booking requests.', '/chats'],
+      ['Bookings & Rooms', 'Manage room availability, check-ins and check-outs.', '/hospitality/operations'],
+      ['Housekeeping', 'Coordinate cleaning schedules and room status.', '/hospitality/operations'],
+      ['Guest Services', 'Handle special requests and concierge tasks.', '/hospitality/operations'],
+      ['Invoices', 'Generate guest folios and stay invoices.', '/invoices'],
+      ['Guests', 'View guest profiles, preferences and history.', '/crm'],
+      ['AI Guest Agent', 'Answer FAQs and capture booking requests.', '/agents'],
+      ['Settings', 'Manage product and connection settings.', '/settings'],
+    ],
+  },
+  construction: {
+    name: 'WhatsChat Construction',
+    description: 'Project tracking, subcontractor coordination and client communication for construction and trade businesses.',
+    sections: [
+      ['Conversations', 'Communicate with clients and contractors over WhatsApp.', '/chats'],
+      ['Projects', 'Track active projects, milestones and progress.', '/construction/operations'],
+      ['Subcontractors', 'Coordinate trades, schedules and site assignments.', '/construction/operations'],
+      ['Materials', 'Track material orders, deliveries and on-site stock.', '/construction/operations'],
+      ['Invoices', 'Create and send progress and completion invoices.', '/invoices'],
+      ['Clients', 'Manage client contact records and job history.', '/crm'],
+      ['AI Site Agent', 'Handle enquiries and status updates automatically.', '/agents'],
+      ['Settings', 'Manage product and connection settings.', '/settings'],
+    ],
+  },
+  logistics: {
+    name: 'WhatsChat Logistics',
+    description: 'Delivery tracking, route management and real-time customer notifications for logistics and courier businesses.',
+    sections: [
+      ['Conversations', 'Handle delivery enquiries and customer messages.', '/chats'],
+      ['Deliveries', 'Track active shipments, status and proof of delivery.', '/logistics/operations'],
+      ['Routes', 'Plan and optimise daily delivery routes.', '/logistics/operations'],
+      ['Driver Dispatch', 'Assign and communicate with drivers in real time.', '/logistics/operations'],
+      ['Customers', 'View customer delivery history and preferences.', '/crm'],
+      ['Notifications', 'Send automated delivery status messages.', '/marketing'],
+      ['AI Dispatch Agent', 'Answer status queries and capture delivery requests.', '/agents'],
       ['Settings', 'Manage product and connection settings.', '/settings'],
     ],
   },

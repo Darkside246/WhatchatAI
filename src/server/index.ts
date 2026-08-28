@@ -434,7 +434,16 @@ app.post('/api/auth/logout', async (req, res) => {
 app.get('/api/auth/me', requireAuth, async (_req, res) => {
   const auth = res.locals.auth as AuthContext;
   const business = await ensureDefaultBusinessProvisioned();
-  return res.status(200).json({ user: auth.user, business, role: auth.role });
+  const paResult = await pool.query<{ product_key: string }>(
+    `SELECT pc.product_key FROM product_accounts pa
+       JOIN product_catalog pc ON pa.product_id = pc.id
+      WHERE pa.business_id = $1 AND pa.status NOT IN ('CLOSED','SUSPENDED')
+      LIMIT 1`,
+    [auth.businessId],
+  );
+  const productKey = paResult.rows[0]?.product_key ?? null;
+  const isDeveloper = auth.platformRole === 'DEVELOPER';
+  return res.status(200).json({ user: auth.user, business: { ...business, productKey, isDeveloper }, role: auth.role });
 });
 
 app.get('/api/auth/sessions', requireAuth, async (_req, res) => {

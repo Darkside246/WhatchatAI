@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
-export const ProductKeySchema = z.enum(['property', 'food', 'commerce', 'scheduling', 'support']);
+export const ProductKeySchema = z.enum([
+  'property', 'food', 'commerce', 'scheduling', 'support',
+  'retail', 'beauty', 'auto', 'health', 'legal', 'hospitality', 'construction', 'logistics',
+]);
 export type ProductKey = z.infer<typeof ProductKeySchema>;
 
 export const ProductAccountStatusSchema = z.enum(['PROVISIONING', 'ACTIVE', 'RESTRICTED', 'SUSPENDED', 'CLOSED']);

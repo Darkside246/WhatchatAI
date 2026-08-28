@@ -241,6 +241,8 @@ export interface WorkspaceBusiness {
   timeSource: 'AUTOMATIC' | 'MANUAL';
   manualOverrideTargetUtc: string | null;
   manualOverrideSetAt: string | null;
+  productKey: string | null;
+  isDeveloper: boolean;
 }
 
 export type TimeSyncStatus = 'SYNCED' | 'DEGRADED' | 'STALE' | 'MANUAL_OVERRIDE';
@@ -1394,4 +1396,22 @@ export const api = {
       | { status: 'not_found' }
       | { status: 'already_used' }
     >(`/legal/consent/confirm?token=${encodeURIComponent(token)}`),
+
+  // ── Developer — Vertical Catalog ──────────────────────────────────────────
+  listVerticals: () =>
+    request<{
+      verticals: Array<{ id: string; product_key: string; name: string; description: string; is_active: boolean }>;
+    }>('/platform/developer/verticals'),
+  assignVertical: (businessId: string, productKey: string) =>
+    request<{ ok: boolean; businessId: string; productKey: string }>(
+      `/platform/developer/accounts/${businessId}/assign-vertical`,
+      { method: 'POST', body: JSON.stringify({ productKey }) },
+    ),
+  listAllProductAccountsDev: () =>
+    request<{
+      accounts: Array<{
+        id: string; businessId: string; productId: string; productKey: string;
+        displayName: string; status: string; ownerUserId: string | null;
+      }>;
+    }>('/platform/developer/product-accounts'),
 };

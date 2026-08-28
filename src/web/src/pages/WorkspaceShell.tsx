@@ -45,6 +45,14 @@ export function WorkspaceShell({ connection, sync }: Props) {
         <Route path="/auto/operations" element={<PlaceholderPage title="Auto Operations" description="Service jobs, vehicle tracking and estimates — coming soon." />} />
         <Route path="/health" element={<ProductDashboardPage product="health" />} />
         <Route path="/health/operations" element={<PlaceholderPage title="Health & Appointments" description="Patient scheduling, records and reminders — coming soon." />} />
+        <Route path="/legal" element={<ProductDashboardPage product="legal" />} />
+        <Route path="/legal/operations" element={<PlaceholderPage title="Cases & Clients" description="Case management, document requests and consultations — coming soon." />} />
+        <Route path="/hospitality" element={<ProductDashboardPage product="hospitality" />} />
+        <Route path="/hospitality/operations" element={<PlaceholderPage title="Bookings & Rooms" description="Room reservations, housekeeping and guest services — coming soon." />} />
+        <Route path="/construction" element={<ProductDashboardPage product="construction" />} />
+        <Route path="/construction/operations" element={<PlaceholderPage title="Projects & Teams" description="Project tracking, subcontractors and materials management — coming soon." />} />
+        <Route path="/logistics" element={<ProductDashboardPage product="logistics" />} />
+        <Route path="/logistics/operations" element={<PlaceholderPage title="Deliveries & Routes" description="Delivery tracking, route optimisation and driver dispatch — coming soon." />} />
         <Route path="/developer" element={<DeveloperControlPlanePage />} />
         <Route path="/chats" element={<ChatsRoute />} /><Route path="/chats/:chatId" element={<ChatsRoute />} /><Route path="/agents" element={<AgentsPage />} /><Route path="/dashboard" element={<DashboardRoute />} /><Route path="/crm" element={<CrmRoute />} /><Route path="/property-operations" element={<PropertyOperationsPage />} /><Route path="/invoices" element={<InvoicesPage />} /><Route path="/automations" element={<FunnelsRoute />} /><Route path="/marketing" element={<MarketingRoute />} /><Route path="/email" element={<EmailRoute />} /><Route path="/billing" element={<BillingRoute />} /><Route path="/settings" element={<SettingsRoute connection={connection} />} /><Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes></Suspense></div>

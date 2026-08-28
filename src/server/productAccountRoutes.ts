@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { listAvailableProducts, listUserProductAccounts, provisionProductAccount, listAllProductAccounts } from '../services/productAccountService.js';
+import { listAvailableProducts, listUserProductAccounts, provisionProductAccount, listAllProductAccounts, assignVertical } from '../services/productAccountService.js';
 import { registerTrial, TrialAlreadyUsedOnboardingError, TrialProductUnavailableOnboardingError } from '../services/trialOnboardingService.js';
 import { hasUsedTrial } from '../services/trialService.js';
 import { TrialRepository } from '../repositories/trialRepository.js';
@@ -46,6 +46,23 @@ router.post('/product-accounts', requireAuth, async (req, res) => {
 
 router.get('/developer/product-accounts', requireAuth, requireDeveloper, async (_req, res) => res.status(200).json({ accounts: await listAllProductAccounts() }));
 router.get('/developer/trials', requireAuth, requireDeveloper, async (_req, res) => res.status(200).json({ trials: await trials.listAll() }));
+
+/** List all verticals available in the product catalog. */
+router.get('/developer/verticals', requireAuth, requireDeveloper, async (_req, res) => {
+  const { rows } = await pool.query<{ id: string; product_key: string; name: string; description: string; is_active: boolean }>(
+    `SELECT id, product_key, name, description, is_active FROM product_catalog ORDER BY name`,
+  );
+  return res.status(200).json({ verticals: rows });
+});
+
+/** Assign (or re-assign) a vertical to a specific business account. */
+router.post('/developer/accounts/:businessId/assign-vertical', requireAuth, requireDeveloper, async (req, res) => {
+  const businessId = req.params['businessId'];
+  const parsed = z.object({ productKey: ProductKeySchema }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PRODUCT_KEY', details: parsed.error.flatten() });
+  await assignVertical(businessId, parsed.data.productKey);
+  return res.status(200).json({ ok: true, businessId, productKey: parsed.data.productKey });
+});
 
 router.get('/developer/control-plane-stats', requireAuth, requireDeveloper, async (_req, res) => {
   const { rows } = await pool.query<{
