@@ -1,10 +1,9 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import 'dotenv/config';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createWriteStream, existsSync, chmodSync, unlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { homedir, platform } from 'node:os';
+import { tmpdir, homedir, platform } from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 
 const SERVICE_HOST = process.env.GOOSE_SERVICE_HOST ?? '127.0.0.1';
