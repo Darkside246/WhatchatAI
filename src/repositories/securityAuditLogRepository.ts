@@ -52,7 +52,9 @@ export type SecurityEventType =
   | 'writing_twin_backfill_requested'
   | 'writing_twin_deleted'
   | 'writing_twin_profile_reset'
-  | 'writing_twin_example_removed';
+  | 'writing_twin_example_removed'
+  | 'contact_privacy_updated'
+  | 'handover_auto_reverted';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 

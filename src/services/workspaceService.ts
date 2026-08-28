@@ -1151,6 +1151,7 @@ export class WorkspaceService {
 export const workspaceService = new WorkspaceService();
 
 const _chatRepoForLogout = new WhatsAppChatRepository(pool);
+const _auditRepoForLogout = new SecurityAuditLogRepository(pool);
 
 /**
  * On logout, revert all HUMAN_TAKEOVER chats for the user's business back to
@@ -1160,5 +1161,11 @@ export async function revertHumanTakeoverOnLogout(businessId: string): Promise<v
   const reverted = await _chatRepoForLogout.revertHumanTakeoverChats(businessId);
   if (reverted > 0) {
     console.log(`[WorkspaceService] Reverted ${reverted} HUMAN_TAKEOVER chat(s) to AI_ACTIVE on logout for business ${businessId}`);
+    await _auditRepoForLogout.record({
+      businessId,
+      whatsappAccountId: null,
+      eventType: 'handover_auto_reverted',
+      rawMetadata: { revertedCount: reverted, trigger: 'logout' },
+    }).catch((err: unknown) => console.error('[WorkspaceService] Failed to record handover_auto_reverted audit:', err));
   }
 }

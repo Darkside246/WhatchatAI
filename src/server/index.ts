@@ -31,6 +31,7 @@ import { mountPlatformRoutes } from './platformRoutes.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import { CrmContactRepository } from '../repositories/crmContactRepository.js';
 import { UserPreferenceRepository } from '../repositories/userPreferenceRepository.js';
+import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
 import { checkRedisHealth } from '../redis/client.js';
 import { ensureDefaultBusinessProvisioned } from '../services/businessBootstrapService.js';
@@ -2282,8 +2283,15 @@ app.patch('/api/workspace/crm-contacts/:id/privacy', requireWorkspaceContext, re
     return res.status(400).json({ error: 'INVALID_PRIVACY_FLAGS' });
   }
   const repo = new CrmContactRepository(pool);
-  const updated = await repo.setPrivacyFlags(businessId, String(req.params.id ?? ''), parsed.data);
+  const contactId = String(req.params.id ?? '');
+  const updated = await repo.setPrivacyFlags(businessId, contactId, parsed.data);
   if (!updated) return res.status(404).json({ error: 'CRM_CONTACT_NOT_FOUND' });
+  await new SecurityAuditLogRepository(pool).record({
+    businessId,
+    whatsappAccountId: null,
+    eventType: 'contact_privacy_updated',
+    rawMetadata: { contactId, flags: parsed.data },
+  });
   return res.status(200).json({ crmContact: updated });
 });
 
