@@ -3,8 +3,8 @@ import { useAuth } from '../hooks/useAuth.js';
 
 export function RegisterPage() {
   const auth = useAuth();
-  const [displayName, setDisplayName] = useState('');
-  const [email, setEmail] = useState('');
+  const [displayName, setDisplayName] = useState(() => window.localStorage.getItem('whatchat:prefill-name') ?? '');
+  const [email, setEmail] = useState(() => window.localStorage.getItem('whatchat:prefill-email') ?? '');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
 
