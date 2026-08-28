@@ -602,6 +602,21 @@ export interface KnowledgeBaseDocumentDto {
   updatedAt: string;
 }
 
+export interface BusinessDocumentDto {
+  id: string;
+  businessId: string;
+  createdBy: string;
+  filename: string;
+  currentVersionId: string | null;
+  status: string;
+  aiRetrievable: boolean;
+  aiSendable: boolean;
+  customerVisible: boolean;
+  humanOnly: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type PromptOptimizationStatus = 'pending_review' | 'approved' | 'rejected';
 
 /**
@@ -1192,6 +1207,15 @@ export const api = {
     }),
   deleteKnowledgeBaseDocument: (documentId: string) =>
     request<{ status: string }>(`/workspace/knowledge-base/${documentId}`, { method: 'DELETE' }),
+
+  listBusinessDocuments: () => request<{ documents: BusinessDocumentDto[] }>('/workspace/documents'),
+  uploadBusinessDocument: (filename: string, mimeType: string, fileBase64: string) =>
+    request<{ document: BusinessDocumentDto }>('/workspace/documents', {
+      method: 'POST',
+      body: JSON.stringify({ filename, mimeType, fileBase64 }),
+    }),
+  deleteBusinessDocument: (documentId: string) =>
+    request<{ status: string }>(`/workspace/documents/${documentId}`, { method: 'DELETE' }),
 
   getControlPlaneStats: () =>
     request<{

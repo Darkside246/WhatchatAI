@@ -5,7 +5,6 @@ import {
   mediaUrl,
   ApiError,
   BUSINESS_ROLES,
-  type WorkspaceBusiness,
   type WhatsAppConnectionSnapshot,
   type AuthSessionDto,
   type MemberDto,
@@ -61,84 +60,6 @@ function formatDate(iso: string | null): string {
   return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-function BusinessProfileCard() {
-  const [business, setBusiness] = useState<WorkspaceBusiness | null>(null);
-  const [name, setName] = useState('');
-  const [editing, setEditing] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    api
-      .getBusiness()
-      .then((res) => {
-        setBusiness(res.business);
-        setName(res.business.name);
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load business profile.'));
-  }, []);
-
-  async function handleSave() {
-    if (!name.trim()) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await api.updateBusiness(name.trim());
-      setBusiness(res.business);
-      setEditing(false);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to save.');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
-      <h2 className="text-body font-semibold text-fg">Business profile</h2>
-      {error && <p className="mt-2 text-caption text-error">{error}</p>}
-      {business && !editing && (
-        <div className="mt-3 flex items-center justify-between">
-          <p className="text-body text-fg">{business.name}</p>
-          <button
-            type="button"
-            onClick={() => setEditing(true)}
-            className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3"
-          >
-            Rename
-          </button>
-        </div>
-      )}
-      {business && editing && (
-        <div className="mt-3 flex items-center gap-2">
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="flex-1 rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-body text-fg outline-none focus:border-accent"
-          />
-          <button
-            type="button"
-            onClick={() => void handleSave()}
-            disabled={saving || !name.trim()}
-            className="rounded-lg bg-accent px-3 py-2 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
-          >
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setEditing(false);
-              setName(business.name);
-            }}
-            className="rounded-lg px-3 py-2 text-caption text-fg-muted hover:text-fg"
-          >
-            Cancel
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
 
 const SYNC_STATUS_LABEL: Record<TimeStatusResponse['timeContext']['syncStatus'], string> = {
   SYNCED: 'Internet synchronized',
@@ -378,164 +299,329 @@ function TimeLocationCard() {
   );
 }
 
-function WhatsAppAccountCard({ connection }: { connection: WhatsAppConnectionSnapshot | null }) {
-  const [busy, setBusy] = useState<'disconnect' | 'logout' | null>(null);
-  const [error, setError] = useState<string | null>(null);
+// ─── Profile card (Business + WhatsApp merged) ───────────────────────────────
+
+const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as const;
+type DayName = (typeof DAYS)[number];
+const DAY_SHORT: Record<DayName, string> = {
+  Monday: 'Mon', Tuesday: 'Tue', Wednesday: 'Wed', Thursday: 'Thu',
+  Friday: 'Fri', Saturday: 'Sat', Sunday: 'Sun',
+};
+interface DayHours { open: boolean; from: string; to: string; }
+type WeekHours = Record<DayName, DayHours>;
+
+function defaultHours(): WeekHours {
+  return Object.fromEntries(DAYS.map((d, i) => [d, { open: i < 5, from: '09:00', to: '17:00' }])) as WeekHours;
+}
+
+const PROFILE_KB_TITLE = 'Business Profile';
+
+function buildProfileContent(s: string, m: string, addr: string, ph: string, em: string, web: string, hours: WeekHours): string {
+  const lines: string[] = ['[Auto-generated from business profile settings]\n'];
+  if (s) lines.push(`Slogan: ${s}`);
+  if (m) lines.push(`Motto: ${m}`);
+  if (addr) lines.push(`Address: ${addr}`);
+  if (ph) lines.push(`Alt Phone: ${ph}`);
+  if (em) lines.push(`Alt Email: ${em}`);
+  if (web) lines.push(`Website: ${web}`);
+  lines.push('\nOpening Hours:');
+  for (const day of DAYS) {
+    const h = hours[day];
+    lines.push(`  ${day}: ${h.open ? `${h.from}–${h.to}` : 'Closed'}`);
+  }
+  return lines.join('\n');
+}
+
+function parseProfileContent(content: string): { slogan: string; motto: string; address: string; altPhone: string; altEmail: string; website: string; hours: WeekHours } {
+  const get = (key: string) => content.match(new RegExp(`^${key}: (.+)`, 'mi'))?.[1]?.trim() ?? '';
+  const hours = defaultHours();
+  for (const day of DAYS) {
+    const match = content.match(new RegExp(`  ${day}: (.+)`, 'i'));
+    if (match) {
+      const val = match[1].trim();
+      if (val.toLowerCase() === 'closed') {
+        hours[day] = { open: false, from: '09:00', to: '17:00' };
+      } else {
+        const [from, to] = val.split('–');
+        if (from && to) hours[day] = { open: true, from: from.trim(), to: to.trim() };
+      }
+    }
+  }
+  return { slogan: get('Slogan'), motto: get('Motto'), address: get('Address'), altPhone: get('Alt Phone'), altEmail: get('Alt Email'), website: get('Website'), hours };
+}
+
+function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | null }) {
+  // Business name
+  const [bizName, setBizName] = useState('');
+  const [editingName, setEditingName] = useState(false);
+  const [savingName, setSavingName] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+
+  // Rich profile (saved as KB doc)
+  const [profileDocId, setProfileDocId] = useState<string | null>(null);
+  const [slogan, setSlogan] = useState('');
+  const [motto, setMotto] = useState('');
+  const [address, setAddress] = useState('');
+  const [altPhone, setAltPhone] = useState('');
+  const [altEmail, setAltEmail] = useState('');
+  const [website, setWebsite] = useState('');
+  const [hours, setHours] = useState<WeekHours>(defaultHours);
+  const [showDetails, setShowDetails] = useState(false);
+  const [showHours, setShowHours] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileSaved, setProfileSaved] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+
+  // WA photo
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  async function handlePhotoSelected(file: File) {
-    if (!file.type.startsWith('image/')) {
-      setError('Please choose an image file.');
-      return;
-    }
-    if (file.size > MAX_PROFILE_PICTURE_BYTES) {
-      setError('Image is too large (max 5MB).');
-      return;
-    }
+  // WA actions
+  const [waBusy, setWaBusy] = useState<'disconnect' | 'logout' | null>(null);
+  const [waError, setWaError] = useState<string | null>(null);
 
-    setError(null);
-    setUploadingPhoto(true);
+  useEffect(() => {
+    api.getBusiness().then((res) => setBizName(res.business.name)).catch(() => undefined);
+    api.listKnowledgeBaseDocuments().then((res) => {
+      const doc = res.documents.find((d) => d.title === PROFILE_KB_TITLE);
+      if (doc) {
+        setProfileDocId(doc.id);
+        const parsed = parseProfileContent(doc.content);
+        setSlogan(parsed.slogan); setMotto(parsed.motto); setAddress(parsed.address);
+        setAltPhone(parsed.altPhone); setAltEmail(parsed.altEmail); setWebsite(parsed.website);
+        setHours(parsed.hours);
+      }
+    }).catch(() => undefined);
+  }, []);
+
+  async function handleSaveName() {
+    if (!bizName.trim()) return;
+    setSavingName(true); setNameError(null);
+    try { await api.updateBusiness(bizName.trim()); setEditingName(false); }
+    catch (err) { setNameError(err instanceof ApiError ? err.message : 'Failed to save.'); }
+    finally { setSavingName(false); }
+  }
+
+  async function handleSaveProfile(e: FormEvent) {
+    e.preventDefault();
+    setSavingProfile(true); setProfileSaved(false); setProfileError(null);
+    const content = buildProfileContent(slogan, motto, address, altPhone, altEmail, website, hours);
+    try {
+      if (profileDocId) {
+        await api.updateKnowledgeBaseDocument(profileDocId, PROFILE_KB_TITLE, content);
+      } else {
+        const res = await api.createKnowledgeBaseDocument(PROFILE_KB_TITLE, content);
+        setProfileDocId(res.document.id);
+      }
+      setProfileSaved(true);
+    } catch (err) {
+      setProfileError(err instanceof ApiError ? err.message : 'Failed to save profile.');
+    } finally {
+      setSavingProfile(false);
+    }
+  }
+
+  async function handlePhotoSelected(file: File) {
+    if (!file.type.startsWith('image/')) { setWaError('Please choose an image file.'); return; }
+    if (file.size > MAX_PROFILE_PICTURE_BYTES) { setWaError('Image is too large (max 5 MB).'); return; }
+    setWaError(null); setUploadingPhoto(true);
     const objectUrl = URL.createObjectURL(file);
     setPreviewUrl(objectUrl);
-    try {
-      const imageBase64 = await fileToBase64(file);
-      await api.updateAccountProfilePicture(imageBase64, file.type);
-      // The real photo will replace this local preview once the next
-      // connection-status poll picks up the newly attached media id.
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to update profile picture on WhatsApp.');
-      setPreviewUrl(null);
-      URL.revokeObjectURL(objectUrl);
-    } finally {
-      setUploadingPhoto(false);
-    }
+    try { await api.updateAccountProfilePicture(await fileToBase64(file), file.type); }
+    catch (err) { setWaError(err instanceof ApiError ? err.message : 'Failed to update profile photo.'); setPreviewUrl(null); URL.revokeObjectURL(objectUrl); }
+    finally { setUploadingPhoto(false); }
+  }
+
+  async function handleDisconnect() {
+    setWaBusy('disconnect'); setWaError(null);
+    try { await api.disconnectWhatsApp(); }
+    catch (err) { setWaError(err instanceof Error ? err.message : 'Failed to disconnect.'); }
+    finally { setWaBusy(null); }
+  }
+
+  async function handleLogout() {
+    if (!window.confirm('Log out of WhatsApp? You will need to re-scan a QR code to reconnect.')) return;
+    setWaBusy('logout'); setWaError(null);
+    try { await api.logoutWhatsApp(); }
+    catch (err) { setWaError(err instanceof Error ? err.message : 'Failed to log out.'); }
+    finally { setWaBusy(null); }
   }
 
   const currentPhotoUrl = previewUrl ?? (connection?.avatarMediaId ? mediaUrl(connection.avatarMediaId) : null);
 
-  async function handleDisconnect() {
-    setBusy('disconnect');
-    setError(null);
-    try {
-      await api.disconnectWhatsApp();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to disconnect.');
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleLogout() {
-    if (!window.confirm('Log out of WhatsApp? You will need to re-scan a QR code on your phone to reconnect.')) return;
-    setBusy('logout');
-    setError(null);
-    try {
-      await api.logoutWhatsApp();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to log out.');
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  if (!connection) return null;
-
   return (
-    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
-      <div className="flex items-center justify-between">
-        <h2 className="text-body font-semibold text-fg">WhatsApp account</h2>
-        <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${STATUS_COLOR[connection.status]}`}>
-          {connection.status.replace('_', ' ')}
-        </span>
-      </div>
-
-      <div className="mt-4 flex items-center gap-3">
-        <div className="group relative">
-          <button
-            type="button"
-            onClick={() => currentPhotoUrl && setLightboxOpen(true)}
-            disabled={!currentPhotoUrl}
-            className="block disabled:cursor-default"
-            title={currentPhotoUrl ? 'View photo' : undefined}
-          >
-            <Avatar label={connection.pushName ?? connection.phoneNumber ?? '?'} photoUrl={currentPhotoUrl} />
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+      {/* Identity row */}
+      <div className="flex items-center gap-3">
+        <div className="relative shrink-0">
+          <button type="button" onClick={() => currentPhotoUrl && setLightboxOpen(true)} disabled={!currentPhotoUrl} className="block disabled:cursor-default">
+            <Avatar label={connection?.pushName ?? bizName || '?'} photoUrl={currentPhotoUrl} />
           </button>
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploadingPhoto}
-            title="Change profile photo on WhatsApp"
-            className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full border border-surface-1 bg-accent text-white shadow transition hover:bg-accent-dim disabled:opacity-50"
-          >
+          <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploadingPhoto} title="Change WhatsApp profile photo"
+            className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full border border-surface-1 bg-accent text-white shadow hover:bg-accent-dim disabled:opacity-50">
             <Camera size={11} aria-hidden />
           </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              event.target.value = '';
-              if (file) void handlePhotoSelected(file);
-            }}
-          />
+          <input ref={fileInputRef} type="file" accept="image/*" className="hidden"
+            onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void handlePhotoSelected(f); }} />
         </div>
-        <div className="min-w-0">
-          <p className="truncate text-body font-medium text-fg">{connection.pushName ?? '—'}</p>
-          <p className="truncate text-caption text-fg-muted">{connection.phoneNumber ?? '—'}</p>
-          {uploadingPhoto && <p className="text-meta text-fg-muted">Updating on WhatsApp…</p>}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            {editingName ? (
+              <input value={bizName} onChange={(e) => setBizName(e.target.value)} autoFocus
+                className="flex-1 rounded-md border border-border-subtle bg-surface-1 px-2 py-1 text-body font-medium text-fg outline-none focus:border-accent" />
+            ) : (
+              <p className="truncate text-body font-semibold text-fg">{bizName || '—'}</p>
+            )}
+            {!editingName
+              ? <button type="button" onClick={() => setEditingName(true)} className="text-fg-muted hover:text-fg"><ChevronRight size={13} aria-hidden /></button>
+              : <button type="button" onClick={() => void handleSaveName()} disabled={savingName || !bizName.trim()}
+                  className="rounded-md bg-accent px-2 py-0.5 text-meta font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+                  {savingName ? '…' : 'Save'}
+                </button>
+            }
+            {editingName && (
+              <button type="button" onClick={() => setEditingName(false)} className="text-meta text-fg-muted hover:text-fg">Cancel</button>
+            )}
+          </div>
+          {nameError && <p className="text-meta text-error">{nameError}</p>}
+          <p className="truncate text-caption text-fg-muted">
+            {connection?.phoneNumber ?? 'WhatsApp not connected'}
+            {connection?.connectedAt ? ` · Connected ${formatDate(connection.connectedAt)}` : ''}
+          </p>
         </div>
+        {connection && (
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-meta font-medium ${STATUS_COLOR[connection.status]}`}>
+            {connection.status.replace('_', ' ')}
+          </span>
+        )}
       </div>
 
-      {lightboxOpen && currentPhotoUrl && (
-        <MediaLightbox imageUrl={currentPhotoUrl} fileName={null} onClose={() => setLightboxOpen(false)} />
+      {lightboxOpen && currentPhotoUrl && <MediaLightbox imageUrl={currentPhotoUrl} fileName={null} onClose={() => setLightboxOpen(false)} />}
+      {uploadingPhoto && <p className="mt-1 text-meta text-fg-muted">Updating on WhatsApp…</p>}
+
+      {/* WA connection actions */}
+      {connection && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {waError && <p className="w-full text-caption text-error">{waError}</p>}
+          {connection.lastError && <p className="w-full text-caption text-error">{connection.lastError}</p>}
+          <button type="button" onClick={() => void handleDisconnect()}
+            disabled={waBusy !== null || connection.status === 'DISCONNECTED' || connection.status === 'LOGGED_OUT'}
+            title="Keeps your session - reconnect without re-scanning"
+            className="rounded-lg border border-border-subtle px-3 py-1.5 text-meta font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50">
+            {waBusy === 'disconnect' ? 'Disconnecting…' : 'Disconnect'}
+          </button>
+          <button type="button" onClick={() => void handleLogout()} disabled={waBusy !== null}
+            title="Ends the session - you'll need to scan a new QR code"
+            className="rounded-lg border border-error/30 px-3 py-1.5 text-meta font-medium text-error hover:bg-error/10 disabled:opacity-50">
+            {waBusy === 'logout' ? 'Logging out…' : 'Log out of WhatsApp'}
+          </button>
+        </div>
       )}
 
-      <dl className="mt-4 grid grid-cols-2 gap-3 text-caption">
-        <div>
-          <dt className="text-fg-muted">Name</dt>
-          <dd className="mt-0.5 text-fg-secondary">{connection.pushName ?? '—'}</dd>
-        </div>
-        <div>
-          <dt className="text-fg-muted">Phone number</dt>
-          <dd className="mt-0.5 text-fg-secondary">{connection.phoneNumber ?? '—'}</dd>
-        </div>
-        <div>
-          <dt className="text-fg-muted">Connected since</dt>
-          <dd className="mt-0.5 text-fg-secondary">{formatDate(connection.connectedAt)}</dd>
-        </div>
-        <div>
-          <dt className="text-fg-muted">Last disconnect</dt>
-          <dd className="mt-0.5 text-fg-secondary">{formatDate(connection.lastDisconnectAt)}</dd>
-        </div>
-      </dl>
-
-      {connection.lastError && <p className="mt-3 text-caption text-error">{connection.lastError}</p>}
-      {error && <p className="mt-3 text-caption text-error">{error}</p>}
-
-      <div className="mt-4 flex gap-2">
-        <button
-          type="button"
-          onClick={() => void handleDisconnect()}
-          disabled={busy !== null || connection.status === 'DISCONNECTED' || connection.status === 'LOGGED_OUT'}
-          title="Closes the connection but keeps your session - reconnect without re-scanning"
-          className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
-        >
-          {busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect'}
+      <div className="mt-4 space-y-2 border-t border-border-subtle pt-4">
+        {/* Business details accordion */}
+        <button type="button" onClick={() => setShowDetails((v) => !v)}
+          className="flex w-full items-center justify-between text-caption font-medium text-fg-secondary hover:text-fg">
+          <span className="flex items-center gap-1.5">
+            {showDetails ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+            Business details
+          </span>
+          <span className="text-meta text-fg-muted">AI-visible · saved to knowledge base</span>
         </button>
-        <button
-          type="button"
-          onClick={() => void handleLogout()}
-          disabled={busy !== null}
-          title="Ends the session entirely - you'll need to scan a new QR code"
-          className="rounded-lg border border-error/30 px-3 py-1.5 text-caption font-medium text-error hover:bg-error/10 disabled:opacity-50"
-        >
-          {busy === 'logout' ? 'Logging out…' : 'Log out'}
+
+        {showDetails && (
+          <form onSubmit={handleSaveProfile} className="space-y-2 pl-4">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div>
+                <label className="text-meta font-medium text-fg-muted">Slogan</label>
+                <input value={slogan} onChange={(e) => setSlogan(e.target.value)} placeholder="Your tagline"
+                  className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
+              </div>
+              <div>
+                <label className="text-meta font-medium text-fg-muted">Motto</label>
+                <input value={motto} onChange={(e) => setMotto(e.target.value)} placeholder="Internal guiding phrase"
+                  className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
+              </div>
+            </div>
+            <div>
+              <label className="text-meta font-medium text-fg-muted">Business address</label>
+              <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Street, city, country"
+                className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
+            </div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <div>
+                <label className="text-meta font-medium text-fg-muted">Alt phone</label>
+                <input value={altPhone} onChange={(e) => setAltPhone(e.target.value)} placeholder="+1 246 …"
+                  className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
+              </div>
+              <div>
+                <label className="text-meta font-medium text-fg-muted">Alt email</label>
+                <input type="email" value={altEmail} onChange={(e) => setAltEmail(e.target.value)} placeholder="info@…"
+                  className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
+              </div>
+              <div>
+                <label className="text-meta font-medium text-fg-muted">Website</label>
+                <input value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="https://…"
+                  className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
+              </div>
+            </div>
+            {profileError && <p className="text-meta text-error">{profileError}</p>}
+            {profileSaved && <p className="text-meta text-success">Saved to knowledge base.</p>}
+            <button type="submit" disabled={savingProfile}
+              className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+              {savingProfile ? 'Saving…' : 'Save details'}
+            </button>
+          </form>
+        )}
+
+        {/* Opening hours accordion */}
+        <button type="button" onClick={() => setShowHours((v) => !v)}
+          className="flex w-full items-center justify-between text-caption font-medium text-fg-secondary hover:text-fg">
+          <span className="flex items-center gap-1.5">
+            {showHours ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+            Opening hours
+          </span>
+          <span className="text-meta text-fg-muted">AI-visible · saved with business details</span>
         </button>
+
+        {showHours && (
+          <form onSubmit={handleSaveProfile} className="pl-4">
+            <div className="grid grid-cols-1 gap-y-1.5 sm:grid-cols-2">
+              {DAYS.map((day) => {
+                const h = hours[day];
+                return (
+                  <div key={day} className="flex items-center gap-2">
+                    <input type="checkbox" id={`h-${day}`} checked={h.open}
+                      onChange={(e) => setHours((prev) => ({ ...prev, [day]: { ...prev[day], open: e.target.checked } }))}
+                      className="h-3.5 w-3.5 accent-accent" />
+                    <label htmlFor={`h-${day}`} className="w-8 text-meta font-medium text-fg-secondary">{DAY_SHORT[day]}</label>
+                    {h.open ? (
+                      <>
+                        <input type="time" value={h.from}
+                          onChange={(e) => setHours((prev) => ({ ...prev, [day]: { ...prev[day], from: e.target.value } }))}
+                          className="rounded border border-border-subtle bg-surface-1 px-1.5 py-0.5 text-meta text-fg outline-none focus:border-accent" />
+                        <span className="text-meta text-fg-muted">–</span>
+                        <input type="time" value={h.to}
+                          onChange={(e) => setHours((prev) => ({ ...prev, [day]: { ...prev[day], to: e.target.value } }))}
+                          className="rounded border border-border-subtle bg-surface-1 px-1.5 py-0.5 text-meta text-fg outline-none focus:border-accent" />
+                      </>
+                    ) : (
+                      <span className="text-meta text-fg-muted">Closed</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {profileError && <p className="mt-2 text-meta text-error">{profileError}</p>}
+            {profileSaved && <p className="mt-2 text-meta text-success">Saved to knowledge base.</p>}
+            <button type="submit" disabled={savingProfile}
+              className="mt-3 rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+              {savingProfile ? 'Saving…' : 'Save hours'}
+            </button>
+          </form>
+        )}
       </div>
     </div>
   );
@@ -1333,11 +1419,10 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
       <h1 className="text-title font-semibold text-fg">Settings</h1>
       <p className="mt-1 text-body text-fg-muted">Only settings with a real backend - or a real, persisted client-side effect - appear here.</p>
 
-      <div className="mt-6 max-w-2xl space-y-4">
+      <div className="mt-6 max-w-2xl space-y-3">
         <ThemeCard />
         <TimeLocationCard />
-        <BusinessProfileCard />
-        <WhatsAppAccountCard connection={connection} />
+        <ProfileCard connection={connection} />
         <KnowledgeBaseCard />
         <IntegrationSettingsPanel />
         <AccountCard />
