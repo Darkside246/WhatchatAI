@@ -6,6 +6,8 @@ import { productAccountRouter } from './productAccountRoutes.js';
 import { billingRouter } from './billingRoutes.js';
 import { invoiceRouter } from './invoiceRouter.js';
 import { operatorModeRouter } from './operatorModeRouter.js';
+import { legalRouter } from './legalRouter.js';
+import { emailOAuthRouter } from './emailOAuthRouter.js';
 import { pool } from '../db/pool.js';
 import { PlatformActionRepository } from '../repositories/platformActionRepository.js';
 import { PlatformAuditLedgerRepository } from '../repositories/platformAuditLedgerRepository.js';
@@ -25,4 +27,8 @@ export function mountPlatformRoutes(app: Express): void {
   app.use('/api/billing', billingRouter);
   app.use('/api/invoices', invoiceRouter);
   app.use('/api/operator-mode', operatorModeRouter);
+  // Public legal routes — no auth required (landing page consent flow).
+  app.use('/api/legal', legalRouter);
+  // Email OAuth — mix of public (callback) and authenticated routes.
+  app.use('/api/email-oauth', emailOAuthRouter);
 }

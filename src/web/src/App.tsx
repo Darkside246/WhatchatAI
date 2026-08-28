@@ -9,6 +9,9 @@ import { ScreenLock } from './components/ScreenLock.js';
 import { LoginPage } from './pages/LoginPage.js';
 import { RegisterPage } from './pages/RegisterPage.js';
 import { PublicLandingPage, TrialStartPage } from './pages/PublicLandingPage.js';
+import { TermsPage } from './pages/TermsPage.js';
+import { PrivacyPage } from './pages/PrivacyPage.js';
+import { ConsentConfirmPage } from './pages/ConsentConfirmPage.js';
 
 function AuthenticatedApp() {
   const gate = useAppGate();
@@ -41,8 +44,16 @@ export default function App() {
     if (location.pathname === '/trial') return <TrialStartPage />;
     if (location.pathname === '/login') return <LoginPage />;
     if (location.pathname === '/register') return <RegisterPage />;
+    if (location.pathname === '/terms') return <TermsPage />;
+    if (location.pathname === '/privacy') return <PrivacyPage />;
+    if (location.pathname === '/consent/confirm') return <ConsentConfirmPage />;
     return <PublicLandingPage />;
   }
+
+  // Legal and consent pages accessible to everyone, even authenticated users.
+  if (location.pathname === '/terms') return <TermsPage />;
+  if (location.pathname === '/privacy') return <PrivacyPage />;
+  if (location.pathname === '/consent/confirm') return <ConsentConfirmPage />;
 
   return <AuthenticatedApp />;
 }

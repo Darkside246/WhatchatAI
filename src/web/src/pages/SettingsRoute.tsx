@@ -1,5 +1,5 @@
 import { type ComponentType, type ReactNode, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Bot, Building2, Camera, ChevronDown, ChevronRight, Clipboard, Clock, KeyRound, Lock, LogOut, Monitor, Palette, PanelLeft, PanelLeftClose, RefreshCw, ShieldCheck, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
+import { Bot, Building2, Camera, ChevronDown, ChevronRight, Clipboard, Clock, KeyRound, Lock, LogOut, Mail, Monitor, Palette, PanelLeft, PanelLeftClose, RefreshCw, ShieldCheck, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
 import {
   api,
   mediaUrl,
@@ -1449,11 +1449,12 @@ const COUNTRIES: [string, string][] = [
 ];
 
 
-type SettingsView = 'business' | 'ai' | 'appearance' | 'team' | 'account';
+type SettingsView = 'business' | 'ai' | 'appearance' | 'team' | 'account' | 'inbox';
 
 const SETTINGS_NAV: { id: SettingsView; label: string; sub: string; Icon: ComponentType<{ size?: number; className?: string; 'aria-hidden'?: boolean }> }[] = [
   { id: 'business',   label: 'Business',           sub: 'Profile · Time & location',       Icon: Building2   },
   { id: 'ai',         label: 'AI & Knowledge',      sub: 'Knowledge base · Integrations',   Icon: Bot         },
+  { id: 'inbox',      label: 'Connected Inbox',     sub: 'Gmail · Outlook · App mail',      Icon: Mail        },
   { id: 'appearance', label: 'Appearance',           sub: 'Theme',                           Icon: Palette     },
   { id: 'team',       label: 'Team',                sub: 'Members · Teams · Availability',  Icon: Users       },
   { id: 'account',    label: 'Account & Security',  sub: 'Sessions · PIN · Sign out',       Icon: ShieldCheck },
@@ -1554,6 +1555,13 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
           </div>
         )}
 
+        {view === 'inbox' && (
+          <div className="space-y-4">
+            <SectionTitle title="Connected Inbox" desc="Link Gmail and Outlook accounts to receive and read all your business email in one place." />
+            <ConnectedInboxCard />
+          </div>
+        )}
+
         {view === 'account' && (
           <div className="space-y-4">
             <SectionTitle title="Account & Security" desc="Your signed-in session, screen lock PIN, and active devices." />
@@ -1566,6 +1574,136 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ConnectedInboxCard() {
+  type Account = {
+    id: string;
+    provider: 'gmail' | 'outlook';
+    emailAddress: string;
+    displayName: string | null;
+    lastSyncedAt: string | null;
+    syncEnabled: boolean;
+  };
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [disconnectingId, setDisconnectingId] = useState<string | null>(null);
+
+  function load() {
+    api.listOAuthAccounts().then((r) => setAccounts(r.accounts)).catch(() => undefined).finally(() => setLoading(false));
+  }
+
+  useEffect(() => { load(); }, []);
+
+  // Check for OAuth success/error redirected from callback
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const success = params.get('oauth_success');
+    const error = params.get('oauth_error');
+    if (success || error) {
+      window.history.replaceState({}, '', window.location.pathname);
+      if (success) load();
+    }
+  }, []);
+
+  async function handleSync(id: string) {
+    setSyncingId(id);
+    try { await api.syncOAuthAccount(id); load(); } finally { setSyncingId(null); }
+  }
+
+  async function handleDisconnect(id: string) {
+    setDisconnectingId(id);
+    try {
+      await api.disconnectOAuthAccount(id);
+      setAccounts((prev) => prev.filter((a) => a.id !== id));
+    } finally { setDisconnectingId(null); }
+  }
+
+  const PROVIDER_LABELS = { gmail: 'Gmail', outlook: 'Outlook' };
+  const PROVIDER_COLORS: Record<string, string> = {
+    gmail: 'bg-red-500/15 text-red-600 dark:text-red-400',
+    outlook: 'bg-blue-500/15 text-blue-600 dark:text-blue-400',
+  };
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-1 p-5">
+      <div className="mb-4 flex items-center gap-2">
+        <Mail size={16} className="text-accent" aria-hidden />
+        <h3 className="text-body font-semibold text-fg">Connected email accounts</h3>
+      </div>
+
+      {loading ? (
+        <p className="text-caption text-fg-muted">Loading…</p>
+      ) : accounts.length === 0 ? (
+        <p className="mb-4 text-caption text-fg-muted">No accounts connected yet. Link Gmail or Outlook to see all your email in one inbox.</p>
+      ) : (
+        <ul className="mb-4 divide-y divide-border-subtle">
+          {accounts.map((a) => (
+            <li key={a.id} className="flex flex-wrap items-center gap-3 py-3">
+              <span className={`rounded-full px-2 py-0.5 text-meta font-medium ${PROVIDER_COLORS[a.provider] ?? ''}`}>
+                {PROVIDER_LABELS[a.provider] ?? a.provider}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-caption font-medium text-fg">{a.emailAddress}</p>
+                {a.lastSyncedAt && (
+                  <p className="text-meta text-fg-muted">
+                    Last synced {new Date(a.lastSyncedAt).toLocaleString()}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={syncingId === a.id}
+                  onClick={() => void handleSync(a.id)}
+                  className="flex items-center gap-1 rounded-lg border border-border-subtle px-2.5 py-1 text-meta text-fg-secondary hover:border-accent hover:text-accent disabled:opacity-40"
+                >
+                  <RefreshCw size={11} className={syncingId === a.id ? 'animate-spin' : ''} aria-hidden />
+                  {syncingId === a.id ? 'Syncing…' : 'Sync'}
+                </button>
+                <button
+                  type="button"
+                  disabled={disconnectingId === a.id}
+                  onClick={() => void handleDisconnect(a.id)}
+                  className="flex items-center gap-1 rounded-lg border border-border-subtle px-2.5 py-1 text-meta text-error/70 hover:border-error/40 hover:text-error disabled:opacity-40"
+                >
+                  <X size={11} aria-hidden />
+                  Disconnect
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* Connect buttons */}
+      <div className="flex flex-wrap gap-3">
+        {(['gmail', 'outlook'] as const).map((provider) => {
+          const already = accounts.some((a) => a.provider === provider);
+          return (
+            <a
+              key={provider}
+              href={api.oauthConnectUrl(provider)}
+              className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-caption font-medium transition-colors ${
+                already
+                  ? 'border-border-subtle text-fg-muted hover:border-accent hover:text-accent'
+                  : 'border-accent/40 text-accent hover:bg-accent/5'
+              }`}
+            >
+              <Mail size={13} aria-hidden />
+              {already ? `Reconnect ${PROVIDER_LABELS[provider]}` : `Connect ${PROVIDER_LABELS[provider]}`}
+            </a>
+          );
+        })}
+      </div>
+
+      <p className="mt-4 text-meta text-fg-muted">
+        Accounts connect via OAuth — your passwords are never stored. Only read access is requested.
+        You can disconnect at any time.
+      </p>
     </div>
   );
 }

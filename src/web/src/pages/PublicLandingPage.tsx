@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, Check } from 'lucide-react';
+import { ArrowRight, Check, Loader2, QrCode, Mail, RefreshCw } from 'lucide-react';
+import { api, ApiError } from '../lib/api.js';
 
 type BusinessId = 'property' | 'food' | 'retail' | 'beauty' | 'auto' | 'health';
 
@@ -43,20 +44,71 @@ const BUSINESSES: Array<{ id: BusinessId; label: string; description: string; fe
   },
 ];
 
+type LegalDocs = {
+  terms: { version: string; title: string } | null;
+  privacy: { version: string; title: string } | null;
+};
+
+type FormPhase = 'form' | 'submitting' | 'qr';
+
 export function PublicLandingPage() {
   const navigate = useNavigate();
   const [selectedId, setSelectedId] = useState<BusinessId | ''>('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [marketingOptIn, setMarketingOptIn] = useState(false);
+  const [legalDocs, setLegalDocs] = useState<LegalDocs>({ terms: null, privacy: null });
+  const [phase, setPhase] = useState<FormPhase>('form');
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const qrRef = useRef<HTMLDivElement>(null);
 
   const selected = BUSINESSES.find((b) => b.id === selectedId) ?? null;
 
-  function handleStart() {
-    if (!selectedId || !name.trim() || !email.trim()) return;
-    window.localStorage.setItem('whatchat:selected-product', selectedId);
-    window.localStorage.setItem('whatchat:prefill-name', name.trim());
-    window.localStorage.setItem('whatchat:prefill-email', email.trim());
-    navigate('/register');
+  useEffect(() => {
+    api.getLegalDocuments()
+      .then((docs) => setLegalDocs({ terms: docs.terms, privacy: docs.privacy }))
+      .catch(() => undefined);
+  }, []);
+
+  const canSubmit =
+    !!selectedId && name.trim().length > 0 && email.trim().length > 0 &&
+    phone.trim().length >= 5 && agreedToTerms && phase === 'form';
+
+  async function handleStart() {
+    if (!canSubmit) return;
+    if (!legalDocs.terms || !legalDocs.privacy) {
+      setSubmitError('Could not load legal documents. Please refresh and try again.');
+      return;
+    }
+
+    setPhase('submitting');
+    setSubmitError(null);
+
+    try {
+      const result = await api.recordConsent({
+        fullName: name.trim(),
+        email: email.trim(),
+        phone: phone.trim(),
+        termsVersion: legalDocs.terms.version,
+        privacyVersion: legalDocs.privacy.version,
+        marketingOptIn,
+      });
+
+      window.localStorage.setItem('whatchat:selected-product', selectedId);
+      window.localStorage.setItem('whatchat:prefill-name', name.trim());
+      window.localStorage.setItem('whatchat:prefill-email', email.trim());
+      window.localStorage.setItem('whatchat:consent-id', result.consentId);
+
+      setQrDataUrl(result.qrCodeDataUrl);
+      setPhase('qr');
+      setTimeout(() => qrRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
+    } catch (err) {
+      setPhase('form');
+      setSubmitError(err instanceof ApiError ? err.message : 'Something went wrong. Please try again.');
+    }
   }
 
   return (
@@ -77,7 +129,7 @@ export function PublicLandingPage() {
       </header>
 
       {/* Hero + form */}
-      <section className="mx-auto grid max-w-6xl items-start gap-12 px-6 pb-24 pt-12 lg:grid-cols-[1fr_420px] lg:px-10">
+      <section className="mx-auto grid max-w-6xl items-start gap-12 px-6 pb-24 pt-12 lg:grid-cols-[1fr_440px] lg:px-10">
         {/* Left — copy */}
         <div className="lg:pt-4">
           <p className="mb-4 text-caption font-semibold uppercase tracking-[0.2em] text-accent">
@@ -100,7 +152,7 @@ export function PublicLandingPage() {
             ))}
           </div>
 
-          {/* Feature preview — shown once a business type is selected */}
+          {/* Feature preview */}
           {selected && (
             <div className="mt-10 rounded-2xl border border-border-subtle bg-surface-1 p-6">
               <p className="text-meta font-semibold uppercase tracking-widest text-accent">{selected.label}</p>
@@ -125,85 +177,194 @@ export function PublicLandingPage() {
           )}
         </div>
 
-        {/* Right — form */}
+        {/* Right — form / QR */}
         <div className="rounded-2xl border border-border-subtle bg-surface-1 p-7 shadow-sm lg:sticky lg:top-8">
-          <h2 className="text-xl font-semibold text-fg">Start your free trial</h2>
-          <p className="mt-1.5 text-caption text-fg-muted">48 hours, no credit card required.</p>
+          {phase !== 'qr' ? (
+            <>
+              <h2 className="text-xl font-semibold text-fg">Start your free trial</h2>
+              <p className="mt-1.5 text-caption text-fg-muted">48 hours, no credit card required.</p>
 
-          <div className="mt-6 flex flex-col gap-4">
-            {/* Business type */}
-            <div>
-              <label className="block text-caption font-medium text-fg-secondary" htmlFor="biz-type">
-                Type of business
-              </label>
-              <select
-                id="biz-type"
-                value={selectedId}
-                onChange={(e) => setSelectedId(e.target.value as BusinessId | '')}
-                className="mt-1.5 w-full rounded-xl border border-border-subtle bg-surface-0 px-3 py-2.5 text-body text-fg outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-              >
-                <option value="">Choose your industry…</option>
-                {BUSINESSES.map((b) => (
-                  <option key={b.id} value={b.id}>{b.label}</option>
-                ))}
-              </select>
+              <div className="mt-6 flex flex-col gap-4">
+                {/* Business type */}
+                <div>
+                  <label className="block text-caption font-medium text-fg-secondary" htmlFor="biz-type">Type of business</label>
+                  <select
+                    id="biz-type"
+                    value={selectedId}
+                    onChange={(e) => setSelectedId(e.target.value as BusinessId | '')}
+                    className="mt-1.5 w-full rounded-xl border border-border-subtle bg-surface-0 px-3 py-2.5 text-body text-fg outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  >
+                    <option value="">Choose your industry…</option>
+                    {BUSINESSES.map((b) => (
+                      <option key={b.id} value={b.id}>{b.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Name */}
+                <div>
+                  <label className="block text-caption font-medium text-fg-secondary" htmlFor="full-name">Your name</label>
+                  <input
+                    id="full-name"
+                    type="text"
+                    required
+                    placeholder="Jane Smith"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className="mt-1.5 w-full rounded-xl border border-border-subtle bg-surface-0 px-3 py-2.5 text-body text-fg outline-none placeholder:text-fg-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  />
+                </div>
+
+                {/* Email */}
+                <div>
+                  <label className="block text-caption font-medium text-fg-secondary" htmlFor="work-email">Work email</label>
+                  <input
+                    id="work-email"
+                    type="email"
+                    required
+                    placeholder="you@yourbusiness.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="mt-1.5 w-full rounded-xl border border-border-subtle bg-surface-0 px-3 py-2.5 text-body text-fg outline-none placeholder:text-fg-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  />
+                </div>
+
+                {/* Phone */}
+                <div>
+                  <label className="block text-caption font-medium text-fg-secondary" htmlFor="phone">Phone number</label>
+                  <input
+                    id="phone"
+                    type="tel"
+                    required
+                    placeholder="+1 246 000 0000"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    className="mt-1.5 w-full rounded-xl border border-border-subtle bg-surface-0 px-3 py-2.5 text-body text-fg outline-none placeholder:text-fg-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  />
+                </div>
+
+                {/* T&C consent */}
+                <label className="flex cursor-pointer items-start gap-3">
+                  <input
+                    type="checkbox"
+                    checked={agreedToTerms}
+                    onChange={(e) => setAgreedToTerms(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 rounded border-border-subtle accent-accent"
+                  />
+                  <span className="text-caption leading-5 text-fg-secondary">
+                    I have read and agree to the{' '}
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); window.open('/terms', '_blank'); }}
+                      className="font-medium text-accent underline underline-offset-2 hover:opacity-80"
+                    >
+                      Terms of Service
+                    </button>{' '}
+                    and{' '}
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); window.open('/privacy', '_blank'); }}
+                      className="font-medium text-accent underline underline-offset-2 hover:opacity-80"
+                    >
+                      Privacy Policy
+                    </button>.
+                    <span className="ml-1 text-error">*</span>
+                  </span>
+                </label>
+
+                {/* Marketing opt-in */}
+                <label className="flex cursor-pointer items-start gap-3">
+                  <input
+                    type="checkbox"
+                    checked={marketingOptIn}
+                    onChange={(e) => setMarketingOptIn(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 rounded border-border-subtle accent-accent"
+                  />
+                  <span className="text-caption leading-5 text-fg-muted">
+                    I'd like to receive product updates, tips, and occasional promotions from WhatsChat. (Optional — unsubscribe any time.)
+                  </span>
+                </label>
+
+                {submitError && (
+                  <p className="rounded-lg bg-error/10 px-3 py-2 text-caption text-error">{submitError}</p>
+                )}
+
+                <button
+                  type="button"
+                  disabled={!canSubmit || phase === 'submitting'}
+                  onClick={() => void handleStart()}
+                  className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl bg-accent py-3 text-body font-semibold text-white transition-opacity hover:bg-accent-dim disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {phase === 'submitting' ? (
+                    <><Loader2 size={16} className="animate-spin" aria-hidden /> Processing…</>
+                  ) : (
+                    <>Get started free <ArrowRight size={16} aria-hidden /></>
+                  )}
+                </button>
+
+                <p className="text-center text-meta text-fg-muted">
+                  Already have an account?{' '}
+                  <button type="button" onClick={() => navigate('/login')} className="font-medium text-accent hover:underline">
+                    Sign in
+                  </button>
+                </p>
+              </div>
+            </>
+          ) : (
+            /* QR confirmation panel */
+            <div ref={qrRef} className="flex flex-col items-center text-center">
+              <div className="mb-3 flex items-center gap-2 text-body font-semibold text-fg">
+                <QrCode size={18} className="text-accent" aria-hidden />
+                Confirm your agreement
+              </div>
+              <p className="mb-5 text-caption leading-5 text-fg-secondary">
+                Scan the QR code to sign your consent, or click the link in the confirmation email we just sent to <strong className="text-fg">{email}</strong>.
+              </p>
+
+              {qrDataUrl && (
+                <img
+                  src={qrDataUrl}
+                  alt="Consent confirmation QR code"
+                  className="h-52 w-52 rounded-xl border border-border-subtle"
+                />
+              )}
+
+              <div className="mt-4 flex w-full items-center gap-2 rounded-xl border border-border-subtle bg-surface-2 px-3 py-2.5 text-caption text-fg-secondary">
+                <Mail size={14} className="shrink-0 text-fg-muted" aria-hidden />
+                Check your email for a confirmation link — valid for 48 hours.
+              </div>
+
+              <div className="mt-5 w-full border-t border-border-subtle pt-5">
+                <p className="mb-3 text-caption text-fg-muted">You can also continue to account setup now. Confirmation can be completed after.</p>
+                <button
+                  type="button"
+                  onClick={() => navigate('/register')}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-accent py-3 text-body font-semibold text-white hover:bg-accent-dim"
+                >
+                  Continue to account setup
+                  <ArrowRight size={16} aria-hidden />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setPhase('form'); setQrDataUrl(null); }}
+                  className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-xl py-2 text-caption text-fg-muted hover:text-fg"
+                >
+                  <RefreshCw size={12} aria-hidden />
+                  Start over
+                </button>
+              </div>
             </div>
-
-            {/* Name */}
-            <div>
-              <label className="block text-caption font-medium text-fg-secondary" htmlFor="full-name">
-                Your name
-              </label>
-              <input
-                id="full-name"
-                type="text"
-                required
-                placeholder="Jane Smith"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="mt-1.5 w-full rounded-xl border border-border-subtle bg-surface-0 px-3 py-2.5 text-body text-fg outline-none placeholder:text-fg-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
-              />
-            </div>
-
-            {/* Email */}
-            <div>
-              <label className="block text-caption font-medium text-fg-secondary" htmlFor="work-email">
-                Work email
-              </label>
-              <input
-                id="work-email"
-                type="email"
-                required
-                placeholder="you@yourbusiness.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="mt-1.5 w-full rounded-xl border border-border-subtle bg-surface-0 px-3 py-2.5 text-body text-fg outline-none placeholder:text-fg-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
-              />
-            </div>
-
-            <button
-              type="button"
-              disabled={!selectedId || !name.trim() || !email.trim()}
-              onClick={handleStart}
-              className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl bg-accent py-3 text-body font-semibold text-white transition-opacity hover:bg-accent-dim disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Get started free
-              <ArrowRight size={16} aria-hidden />
-            </button>
-
-            <p className="text-center text-meta text-fg-muted">
-              Already have an account?{' '}
-              <button type="button" onClick={() => navigate('/login')} className="font-medium text-accent hover:underline">
-                Sign in
-              </button>
-            </p>
-          </div>
+          )}
         </div>
       </section>
 
       <footer className="border-t border-border-subtle">
-        <div className="mx-auto max-w-6xl px-6 py-5 text-caption text-fg-muted lg:px-10">
-          Clients see only the product they choose. Platform administration, AI providers and infrastructure remain behind the experience.
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-6 py-5 text-caption text-fg-muted lg:px-10">
+          <span>Clients see only the product they choose. Platform administration, AI providers and infrastructure remain behind the experience.</span>
+          <div className="flex gap-4">
+            <button type="button" onClick={() => navigate('/terms')} className="hover:text-fg hover:underline">Terms</button>
+            <button type="button" onClick={() => navigate('/privacy')} className="hover:text-fg hover:underline">Privacy</button>
+          </div>
         </div>
       </footer>
     </main>

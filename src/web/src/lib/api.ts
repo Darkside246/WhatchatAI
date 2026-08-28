@@ -1329,4 +1329,69 @@ export const api = {
   markInvoicePaid: (id: string) => request<{ invoice: InvoiceDto }>(`/invoices/${id}/pay`, { method: 'POST' }),
   cancelInvoice: (id: string) => request<{ invoice: InvoiceDto }>(`/invoices/${id}/cancel`, { method: 'POST' }),
   invoiceHtmlUrl: (id: string) => `/api/invoices/${id}/html`,
+
+  // ── Email OAuth ────────────────────────────────────────────────────────────
+  listOAuthAccounts: () =>
+    request<{
+      accounts: Array<{
+        id: string;
+        provider: 'gmail' | 'outlook';
+        emailAddress: string;
+        displayName: string | null;
+        lastSyncedAt: string | null;
+        syncEnabled: boolean;
+      }>;
+    }>('/email-oauth/accounts'),
+  disconnectOAuthAccount: (id: string) =>
+    request<{ ok: boolean }>(`/email-oauth/accounts/${id}`, { method: 'DELETE' }),
+  syncOAuthAccount: (accountId: string) =>
+    request<{ ok: boolean }>(`/email-oauth/sync/${accountId}`, { method: 'POST' }),
+  getOAuthMessages: (accountId: string, opts?: { limit?: number; unread?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (opts?.limit) qs.set('limit', String(opts.limit));
+    if (opts?.unread) qs.set('unread', 'true');
+    const q = qs.toString();
+    return request<{
+      messages: Array<{
+        id: string;
+        accountId: string;
+        providerMessageId: string;
+        providerThreadId: string | null;
+        folder: string;
+        subject: string | null;
+        fromAddress: string | null;
+        fromName: string | null;
+        toAddresses: string | null;
+        snippet: string | null;
+        isRead: boolean;
+        isStarred: boolean;
+        labels: string[];
+        receivedAt: string | null;
+      }>;
+    }>(`/email-oauth/messages/${accountId}${q ? `?${q}` : ''}`),
+  },
+  oauthConnectUrl: (provider: 'gmail' | 'outlook') => `/api/email-oauth/connect/${provider}`,
+
+  // ── Legal & Consent (public — no auth required) ───────────────────────────
+  getLegalDocuments: () =>
+    request<{
+      terms: { version: string; title: string; contentHtml: string; effectiveAt: string } | null;
+      privacy: { version: string; title: string; contentHtml: string; effectiveAt: string } | null;
+    }>('/legal/documents'),
+  recordConsent: (input: {
+    fullName: string;
+    email: string;
+    phone: string;
+    termsVersion: string;
+    privacyVersion: string;
+    marketingOptIn: boolean;
+  }) => request<{ consentId: string; qrCodeDataUrl: string }>('/legal/consent', { method: 'POST', body: JSON.stringify(input) }),
+  confirmConsent: (token: string) =>
+    request<
+      | { status: 'confirmed'; email: string; fullName: string }
+      | { status: 'already_confirmed' }
+      | { status: 'expired' }
+      | { status: 'not_found' }
+      | { status: 'already_used' }
+    >(`/legal/consent/confirm?token=${encodeURIComponent(token)}`),
 };
