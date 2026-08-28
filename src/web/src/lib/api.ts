@@ -884,6 +884,61 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export { ApiError };
 
+export type InvoiceDto = {
+  id: string;
+  businessId: string;
+  contactId: string | null;
+  propertyId: string | null;
+  documentType: 'INVOICE' | 'QUOTE' | 'RECEIPT';
+  status: 'DRAFT' | 'PENDING_APPROVAL' | 'APPROVED' | 'SENT' | 'PAID' | 'OVERDUE' | 'CANCELLED' | 'VOID';
+  invoiceNumber: string;
+  currencyCode: string;
+  subtotalCents: number;
+  taxBasisPoints: number;
+  discountCents: number;
+  totalCents: number;
+  dueDate: string | null;
+  notes: string | null;
+  terms: string | null;
+  footerText: string | null;
+  aiGenerated: boolean;
+  approvedAt: string | null;
+  sentAt: string | null;
+  paidAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type InvoiceLineItemDto = {
+  id: string;
+  invoiceId: string;
+  sortOrder: number;
+  description: string;
+  quantity: string;
+  unitPriceCents: number;
+  discountBasisPoints: number;
+  totalCents: number;
+};
+
+export type CreateInvoiceInput = {
+  contactId?: string;
+  propertyId?: string;
+  documentType?: 'INVOICE' | 'QUOTE' | 'RECEIPT';
+  currencyCode?: string;
+  taxBasisPoints?: number;
+  dueDate?: string;
+  notes?: string;
+  terms?: string;
+  footerText?: string;
+  lineItems: Array<{
+    description: string;
+    quantity: number;
+    unitPriceCents: number;
+    discountBasisPoints?: number;
+    sortOrder?: number;
+  }>;
+};
+
 export const api = {
   getWhatsAppStatus: () => request<WhatsAppConnectionSnapshot>('/whatsapp/status'),
   connectWhatsApp: () => request<WhatsAppConnectionSnapshot>('/whatsapp/connect', { method: 'POST' }),
@@ -1227,4 +1282,43 @@ export const api = {
         recentSecurityEvents: number;
       };
     }>('/platform/developer/control-plane-stats'),
+
+  // ── Operator Mode ──────────────────────────────────────────────────────────
+  getOperatorSettings: () =>
+    request<{ configured: false } | { configured: true; operatorWaJid: string; enabled: boolean; createdAt: string; updatedAt: string }>(
+      '/operator-mode/settings',
+    ),
+  setOperatorSettings: (input: { operatorWaJid: string; pin: string; enabled?: boolean }) =>
+    request<{ configured: true; operatorWaJid: string; enabled: boolean; updatedAt: string }>(
+      '/operator-mode/settings',
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+  setOperatorEnabled: (enabled: boolean) =>
+    request<{ enabled: boolean }>('/operator-mode/settings/enabled', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    }),
+  killOperatorSession: () =>
+    request<{ ok: boolean }>('/operator-mode/session', { method: 'DELETE' }),
+
+  // ── Invoices ───────────────────────────────────────────────────────────────
+  listInvoices: (opts?: { status?: string; type?: string }) =>
+    request<{ invoices: InvoiceDto[] }>(
+      `/invoices${opts ? `?${new URLSearchParams(Object.fromEntries(Object.entries(opts).filter(([, v]) => v != null) as [string, string][])).toString()}` : ''}`,
+    ),
+  createInvoice: (input: CreateInvoiceInput) =>
+    request<{ invoice: InvoiceDto; lineItems: InvoiceLineItemDto[] }>('/invoices', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  getInvoice: (id: string) =>
+    request<{ invoice: InvoiceDto; lineItems: InvoiceLineItemDto[] }>(`/invoices/${id}`),
+  patchInvoice: (id: string, patch: Partial<Pick<InvoiceDto, 'notes' | 'terms' | 'footerText' | 'dueDate' | 'taxBasisPoints' | 'currencyCode'>>) =>
+    request<{ invoice: InvoiceDto }>(`/invoices/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  submitInvoice: (id: string) => request<{ invoice: InvoiceDto }>(`/invoices/${id}/submit`, { method: 'POST' }),
+  approveInvoice: (id: string) => request<{ invoice: InvoiceDto }>(`/invoices/${id}/approve`, { method: 'POST' }),
+  sendInvoice: (id: string) => request<{ invoice: InvoiceDto }>(`/invoices/${id}/send`, { method: 'POST' }),
+  markInvoicePaid: (id: string) => request<{ invoice: InvoiceDto }>(`/invoices/${id}/pay`, { method: 'POST' }),
+  cancelInvoice: (id: string) => request<{ invoice: InvoiceDto }>(`/invoices/${id}/cancel`, { method: 'POST' }),
+  invoiceHtmlUrl: (id: string) => `/api/invoices/${id}/html`,
 };

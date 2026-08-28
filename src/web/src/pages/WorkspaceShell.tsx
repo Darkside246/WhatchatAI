@@ -18,6 +18,7 @@ const PropertyOperationsPage = lazy(() => import('./PropertyOperationsPage.js').
 const ProductDashboardPage = lazy(() => import('./ProductDashboardPage.js').then((m) => ({ default: m.ProductDashboardPage })));
 const FoodOperationsPage = lazy(() => import('./FoodOperationsPage.js').then((m) => ({ default: m.FoodOperationsPage })));
 const DeveloperControlPlanePage = lazy(() => import('./DeveloperControlPlanePage.js').then((m) => ({ default: m.DeveloperControlPlanePage })));
+const InvoicesPage = lazy(() => import('./InvoicesPage.js').then((m) => ({ default: m.InvoicesPage })));
 
 function RouteFallback() { return <div className="flex h-full flex-1 items-center justify-center text-caption text-fg-muted">Loading…</div>; }
 interface Props { connection: WhatsAppConnectionSnapshot | null; sync: SyncStatusResponse | null; }
@@ -36,7 +37,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
         <Route path="/food" element={<ProductDashboardPage product="food" />} />
         <Route path="/food/operations" element={<FoodOperationsPage />} />
         <Route path="/developer" element={<DeveloperControlPlanePage />} />
-        <Route path="/chats" element={<ChatsRoute />} /><Route path="/chats/:chatId" element={<ChatsRoute />} /><Route path="/agents" element={<AgentsPage />} /><Route path="/dashboard" element={<DashboardRoute />} /><Route path="/crm" element={<CrmRoute />} /><Route path="/property-operations" element={<PropertyOperationsPage />} /><Route path="/automations" element={<FunnelsRoute />} /><Route path="/marketing" element={<MarketingRoute />} /><Route path="/email" element={<EmailRoute />} /><Route path="/billing" element={<BillingRoute />} /><Route path="/settings" element={<SettingsRoute connection={connection} />} /><Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/chats" element={<ChatsRoute />} /><Route path="/chats/:chatId" element={<ChatsRoute />} /><Route path="/agents" element={<AgentsPage />} /><Route path="/dashboard" element={<DashboardRoute />} /><Route path="/crm" element={<CrmRoute />} /><Route path="/property-operations" element={<PropertyOperationsPage />} /><Route path="/invoices" element={<InvoicesPage />} /><Route path="/automations" element={<FunnelsRoute />} /><Route path="/marketing" element={<MarketingRoute />} /><Route path="/email" element={<EmailRoute />} /><Route path="/billing" element={<BillingRoute />} /><Route path="/settings" element={<SettingsRoute connection={connection} />} /><Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes></Suspense></div>
     </div></div><SaasNavBottomBar />
   </div>;

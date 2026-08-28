@@ -51,6 +51,7 @@ import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaReposi
 import type { MediaDownloadErrorCategory } from '../../domain/whatsapp/types.js';
 import { verifyMasterKeyStability } from '../../security/encryption/keyStabilityCheck.js';
 import { installCrashSafetyHandlers } from '../../process/crashSafety.js';
+import { OperatorCommandService } from '../../services/operator/operatorCommandService.js';
 
 // Fail loud here, at boot, before either Worker below starts pulling jobs -
 // see keyStabilityCheck.ts. A top-level await, so nothing further in this
@@ -156,6 +157,33 @@ async function runAiHandoff(params: {
   const { businessId, whatsappAccountId, chatId, contactId, messageId, queryText, mediaId } = params;
 
   if (contactId) {
+    // ── Operator Mode check ─────────────────────────────────────────────────
+    // If the sender is the registered operator, route to the operator command
+    // handler instead of the customer AI. Tenant-locked: businessId comes from
+    // the authenticated job context, never from the message payload itself.
+    const { rows: jidRows } = await pool.query<{ whatsapp_jid: string }>(
+      `SELECT whatsapp_jid FROM whatsapp_contacts WHERE id = $1 AND business_id = $2`,
+      [contactId, businessId],
+    );
+    const senderJid = jidRows[0]?.whatsapp_jid;
+    if (senderJid && (await operatorCommandService.isOperatorMessage(businessId, senderJid))) {
+      const { reply } = await operatorCommandService.handle(businessId, senderJid, queryText);
+      try {
+        await whatsappOutboundMessageService.send({
+          businessId,
+          whatsappAccountId,
+          chatId,
+          idempotencyKey: `operator-reply:${messageId}`,
+          messageType: 'text',
+          text: reply,
+          requestedBy: 'ai',
+        });
+      } catch (err) {
+        console.error('[IncomingMessagesWorker] Operator reply failed to send:', err instanceof Error ? err.message : err);
+      }
+      return;
+    }
+
     const crmContact = await crmContactRepository.findByWhatsAppContact(businessId, contactId);
     if (crmContact?.aiExcluded) {
       console.log(`[IncomingMessagesWorker] Chat ${chatId}: AI excluded for contact ${contactId}, skipping AI reply`);
@@ -322,6 +350,7 @@ const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
 const emailMessageRepository = new EmailMessageRepository(pool);
 const chatRepository = new WhatsAppChatRepository(pool);
 const crmContactRepository = new CrmContactRepository(pool);
+const operatorCommandService = new OperatorCommandService(pool);
 
 // Configurable, not hardcoded: operators can raise/lower this per deployment.
 const MAX_MEDIA_DOWNLOAD_BYTES = Number(process.env.MEDIA_MAX_DOWNLOAD_BYTES ?? 100 * 1024 * 1024);

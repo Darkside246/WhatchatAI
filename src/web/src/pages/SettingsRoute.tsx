@@ -1526,9 +1526,150 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
               <SecurityCard />
             </div>
             <SessionsCard />
+            <OperatorModeCard />
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function OperatorModeCard() {
+  type Settings = { configured: true; operatorWaJid: string; enabled: boolean; updatedAt: string } | { configured: false };
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [showSetup, setShowSetup] = useState(false);
+  const [jid, setJid] = useState('');
+  const [pin, setPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [ok, setOk] = useState(false);
+
+  useEffect(() => {
+    api.getOperatorSettings().then(setSettings).catch(() => setSettings({ configured: false }));
+  }, []);
+
+  async function handleSave(e: FormEvent) {
+    e.preventDefault();
+    setErr(null);
+    if (!jid.trim()) { setErr('Enter a WhatsApp number (JID or phone).'); return; }
+    if (pin.length < 4) { setErr('PIN must be at least 4 characters.'); return; }
+    if (pin !== confirmPin) { setErr('PINs do not match.'); return; }
+    setBusy(true);
+    try {
+      const result = await api.setOperatorSettings({ operatorWaJid: jid.trim(), pin });
+      setSettings(result);
+      setShowSetup(false);
+      setPin('');
+      setConfirmPin('');
+      setOk(true);
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Failed to save.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleToggle() {
+    if (!settings?.configured) return;
+    const next = !settings.enabled;
+    await api.setOperatorEnabled(next).catch(() => undefined);
+    setSettings({ ...settings, enabled: next });
+  }
+
+  async function handleKillSession() {
+    await api.killOperatorSession().catch(() => undefined);
+  }
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-body font-semibold text-fg flex items-center gap-2">
+            <KeyRound size={15} aria-hidden className="text-fg-muted" />
+            WhatsApp Operator Mode
+          </h2>
+          <p className="mt-1 text-caption text-fg-muted">
+            Message your own business number from your personal WhatsApp to run admin commands — update records, log incidents, check stats — after PIN authentication. Only your registered number can access this.
+          </p>
+        </div>
+        {settings?.configured && (
+          <button
+            type="button"
+            onClick={() => void handleToggle()}
+            className={`mt-0.5 shrink-0 rounded-full px-3 py-1 text-caption font-medium transition-colors ${settings.enabled ? 'bg-success/15 text-success' : 'bg-fg-muted/15 text-fg-muted'}`}
+          >
+            {settings.enabled ? 'Enabled' : 'Disabled'}
+          </button>
+        )}
+      </div>
+
+      {settings === null ? (
+        <p className="mt-3 text-caption text-fg-muted">Loading…</p>
+      ) : settings.configured ? (
+        <div className="mt-4 space-y-2">
+          <div className="rounded-lg bg-surface-1 px-3 py-2 text-caption text-fg-secondary">
+            <span className="font-medium">Operator JID:</span> {settings.operatorWaJid}
+          </div>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => { setShowSetup(true); setJid(settings.operatorWaJid); }} className="text-caption text-accent underline-offset-2 hover:underline">
+              Change setup
+            </button>
+            <span className="text-fg-muted">·</span>
+            <button type="button" onClick={() => void handleKillSession()} className="text-caption text-fg-muted underline-offset-2 hover:underline hover:text-error">
+              Kill active session
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setShowSetup(true)}
+          className="mt-4 rounded-lg bg-accent px-4 py-2 text-caption font-medium text-white hover:bg-accent-dim transition-colors"
+        >
+          Configure operator mode
+        </button>
+      )}
+
+      {ok && !showSetup && (
+        <p className="mt-3 text-caption text-success">✓ Operator mode configured. Test by messaging your business number from your personal WA.</p>
+      )}
+
+      {showSetup && (
+        <form onSubmit={(e) => void handleSave(e)} className="mt-4 space-y-3 rounded-lg border border-border-subtle bg-surface-1 p-4">
+          <p className="text-caption text-fg-muted">
+            Enter your <strong>personal WhatsApp number</strong> (the one you'll message from) and a PIN you'll use to authenticate each session.
+          </p>
+          <div>
+            <label className="mb-1 block text-caption font-medium text-fg">Your personal WA number</label>
+            <input
+              type="text"
+              value={jid}
+              onChange={(e) => setJid(e.target.value)}
+              placeholder="e.g. +12461234567"
+              className="w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg placeholder:text-fg-muted focus:outline-none focus:ring-1 focus:ring-accent"
+            />
+            <p className="mt-1 text-caption text-fg-muted">Enter the full number with country code. The system stores this as-is.</p>
+          </div>
+          <div>
+            <label className="mb-1 block text-caption font-medium text-fg">Operator PIN (min. 4 chars)</label>
+            <input type="password" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="PIN" className="w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg placeholder:text-fg-muted focus:outline-none focus:ring-1 focus:ring-accent" />
+          </div>
+          <div>
+            <label className="mb-1 block text-caption font-medium text-fg">Confirm PIN</label>
+            <input type="password" value={confirmPin} onChange={(e) => setConfirmPin(e.target.value)} placeholder="Confirm PIN" className="w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg placeholder:text-fg-muted focus:outline-none focus:ring-1 focus:ring-accent" />
+          </div>
+          {err && <p className="text-caption text-error">{err}</p>}
+          <div className="flex gap-2">
+            <button type="submit" disabled={busy} className="rounded-lg bg-accent px-4 py-2 text-caption font-medium text-white disabled:opacity-50 hover:bg-accent-dim transition-colors">
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+            <button type="button" onClick={() => { setShowSetup(false); setErr(null); setPin(''); setConfirmPin(''); }} className="rounded-lg border border-border-subtle px-4 py-2 text-caption text-fg-secondary hover:text-fg transition-colors">
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }

@@ -1,15 +1,15 @@
 import { NavLink, useLocation } from 'react-router-dom';
-import { MessageCircle, BarChart3, Bot, Contact, Zap, Megaphone, Mail, CreditCard, Settings, Building2, CookingPot, ClipboardList, Store, Truck, UsersRound, ShieldCheck, type LucideIcon } from 'lucide-react';
+import { MessageCircle, BarChart3, Bot, Contact, Zap, Megaphone, Mail, CreditCard, Settings, Building2, CookingPot, ClipboardList, Store, Truck, UsersRound, ShieldCheck, Receipt, type LucideIcon } from 'lucide-react';
 
 export type ProductNav = 'platform' | 'property' | 'food';
 type NavItem = { to: string; label: string; icon: LucideIcon };
 
 const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
   platform: [
-    { to: '/chats', label: 'Inbox', icon: MessageCircle }, { to: '/dashboard', label: 'Dashboard', icon: BarChart3 }, { to: '/agents', label: 'AI Agents', icon: Bot }, { to: '/crm', label: 'CRM & Leads', icon: Contact }, { to: '/property-operations', label: 'Property Operations', icon: Building2 }, { to: '/automations', label: 'Automations', icon: Zap }, { to: '/marketing', label: 'Marketing', icon: Megaphone }, { to: '/email', label: 'Email', icon: Mail }, { to: '/billing', label: 'Billing', icon: CreditCard }, { to: '/settings', label: 'Settings', icon: Settings },
+    { to: '/chats', label: 'Inbox', icon: MessageCircle }, { to: '/dashboard', label: 'Dashboard', icon: BarChart3 }, { to: '/agents', label: 'AI Agents', icon: Bot }, { to: '/crm', label: 'CRM & Leads', icon: Contact }, { to: '/property-operations', label: 'Property Operations', icon: Building2 }, { to: '/invoices', label: 'Invoices', icon: Receipt }, { to: '/automations', label: 'Automations', icon: Zap }, { to: '/marketing', label: 'Marketing', icon: Megaphone }, { to: '/email', label: 'Email', icon: Mail }, { to: '/billing', label: 'Billing', icon: CreditCard }, { to: '/settings', label: 'Settings', icon: Settings },
   ],
   property: [
-    { to: '/property', label: 'Overview', icon: BarChart3 }, { to: '/chats', label: 'Conversations', icon: MessageCircle }, { to: '/property-operations', label: 'Maintenance', icon: Building2 }, { to: '/property-operations', label: 'Work Orders', icon: ClipboardList }, { to: '/crm', label: 'Tenants & Contacts', icon: UsersRound }, { to: '/agents', label: 'Property Agent', icon: Bot }, { to: '/settings', label: 'Settings', icon: Settings },
+    { to: '/property', label: 'Overview', icon: BarChart3 }, { to: '/chats', label: 'Conversations', icon: MessageCircle }, { to: '/property-operations', label: 'Maintenance', icon: Building2 }, { to: '/invoices', label: 'Invoices', icon: Receipt }, { to: '/crm', label: 'Tenants & Contacts', icon: UsersRound }, { to: '/agents', label: 'Property Agent', icon: Bot }, { to: '/settings', label: 'Settings', icon: Settings },
   ],
   food: [
     { to: '/food', label: 'Overview', icon: BarChart3 }, { to: '/food/operations', label: 'Orders & Kitchen', icon: CookingPot }, { to: '/chats', label: 'Conversations', icon: MessageCircle }, { to: '/food/operations', label: 'Menu', icon: Store }, { to: '/food/operations', label: 'Pickup & Delivery', icon: Truck }, { to: '/crm', label: 'Customers', icon: UsersRound }, { to: '/agents', label: 'Food Agent', icon: Bot }, { to: '/settings', label: 'Settings', icon: Settings },

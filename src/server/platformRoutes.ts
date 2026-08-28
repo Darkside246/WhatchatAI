@@ -4,6 +4,8 @@ import { platformApprovalRouter } from './platformApprovalRouter.js';
 import { propertyConversationBindingRouter } from './propertyConversationBindingRouter.js';
 import { productAccountRouter } from './productAccountRoutes.js';
 import { billingRouter } from './billingRoutes.js';
+import { invoiceRouter } from './invoiceRouter.js';
+import { operatorModeRouter } from './operatorModeRouter.js';
 import { pool } from '../db/pool.js';
 import { PlatformActionRepository } from '../repositories/platformActionRepository.js';
 import { PlatformAuditLedgerRepository } from '../repositories/platformAuditLedgerRepository.js';
@@ -21,4 +23,6 @@ export function mountPlatformRoutes(app: Express): void {
   app.use('/api/platform/approvals', platformApprovalRouter);
   app.use('/api/platform', productAccountRouter);
   app.use('/api/billing', billingRouter);
+  app.use('/api/invoices', invoiceRouter);
+  app.use('/api/operator-mode', operatorModeRouter);
 }
