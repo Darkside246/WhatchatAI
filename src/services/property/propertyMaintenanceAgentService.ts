@@ -4,6 +4,7 @@ import type { ActionRequest, CommunicationEvent } from '../../domain/platform/co
 import { aiGateway, type AiGateway } from '../ai/aiGateway.js';
 import { classifyMaintenanceMessage, type MaintenanceClassification } from './propertyMaintenancePolicy.js';
 import { skillRegistry, propertyMaintenanceTriageSkill } from '../platform/skillRegistry.js';
+import type { TriageFeedbackRepository } from '../../repositories/triageFeedbackRepository.js';
 
 const AiTriageSchema = z.object({
   category: z.enum(['WATER', 'ELECTRICAL', 'HVAC', 'APPLIANCE', 'PLUMBING', 'STRUCTURAL', 'SECURITY', 'OTHER']),
@@ -90,6 +91,7 @@ export async function runPropertyMaintenanceTriage(input: {
   context: Record<string, unknown>;
   agentId: string;
   gateway?: AiGateway;
+  feedbackRepo?: TriageFeedbackRepository;
 }): Promise<PropertyMaintenanceAgentResult> {
   const skill = skillRegistry.get(propertyMaintenanceTriageSkill.id);
   if (!skill || !skill.enabled) throw new Error(`skill ${propertyMaintenanceTriageSkill.id} is disabled`);
@@ -139,6 +141,22 @@ export async function runPropertyMaintenanceTriage(input: {
     }
   }
 
+  const feedbackLines: string[] = [];
+  if (input.feedbackRepo) {
+    try {
+      const examples = await input.feedbackRepo.getRecentExamples(input.event.tenantId, 8);
+      if (examples.length > 0) {
+        feedbackLines.push('Recent team decisions (use as calibration examples, most recent first):');
+        for (const ex of examples) {
+          const outcome = ex.humanDecision === 'APPROVED' ? 'APPROVED → work order created' : `REJECTED (${ex.decisionReason ?? 'no reason given'})`;
+          feedbackLines.push(`- "${ex.messageText.slice(0, 200)}" → AI: ${ex.aiCategory}/${ex.aiUrgency} → Team ${outcome}`);
+        }
+      }
+    } catch {
+      // Feedback fetch is best-effort; never block triage on it.
+    }
+  }
+
   const request: Parameters<AiGateway['generate']>[0] = {
     tenantId: input.event.tenantId,
     operation: 'property.maintenance.triage',
@@ -156,6 +174,7 @@ export async function runPropertyMaintenanceTriage(input: {
           'A blocked toilet is not automatically an emergency. Determine whether it is overflowing, backing up, creating a sanitation risk, or simply unusable.',
           'Return only the requested JSON classification.',
           `Property context: ${JSON.stringify(input.context).slice(0, 12000)}`,
+          ...(feedbackLines.length > 0 ? [feedbackLines.join('\n')] : []),
         ].join('\n'),
       },
       {
@@ -240,6 +259,8 @@ export async function runPropertyMaintenanceTriage(input: {
     category: aiTriage.category,
     urgency: aiTriage.urgency,
     confidence: aiTriage.confidence,
+    messageText: text.slice(0, 2000),
+    conversationId: input.event.conversationId,
   };
   if (input.event.propertyId !== undefined) basePayload.propertyId = input.event.propertyId;
 

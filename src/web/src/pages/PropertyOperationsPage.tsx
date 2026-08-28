@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNo
 import {
   AlertTriangle, Building2, CheckCircle2, ChevronRight, Clock,
   DollarSign, Filter, HardHat, Home, Loader2, Mail, MapPin, Package,
-  Phone, Plus, RefreshCw, Search, ShieldAlert, Users, Wrench, X,
+  Phone, Plus, RefreshCw, Search, ShieldAlert, ThumbsDown, ThumbsUp,
+  Users, Wrench, X,
 } from 'lucide-react';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -19,8 +20,13 @@ type AssetRec = { id: string; unitId: string; category: string; name: string; ma
 type VendorRec = { id: string; name: string; serviceCategories: string[]; phone: string | null; whatsappAddress: string | null; email: string | null; emergencyAvailable: boolean; active: boolean };
 type IncidentRec = { id: string; propertyId: string; unitId: string | null; assetId: string | null; sourceChannel: string; title: string; description: string | null; category: string; severity: string; status: string; aiSummary: string | null; confidence: number | null; createdAt: string; updatedAt: string; resolvedAt: string | null };
 type WorkOrderRec = { id: string; incidentId: string; vendorId: string | null; status: string; priority: string; scheduledFor: string | null; estimatedCostCents: number | null; approvedCostCents: number | null; description: string; completionNotes: string | null; createdAt: string; completedAt: string | null };
+type ActionRequestRec = {
+  id: string; type: string; riskLevel: string;
+  payload: { summary?: string; category?: string; urgency?: string; confidence?: number; messageText?: string; propertyId?: string };
+  approvalStatus: string; status: string; createdAt: string;
+};
 
-type Tab = 'overview' | 'properties' | 'incidents' | 'vendors';
+type Tab = 'overview' | 'properties' | 'incidents' | 'vendors' | 'approvals';
 type SeverityFilter = 'ALL' | 'EMERGENCY' | 'PRIORITY' | 'ROUTINE';
 
 // ── API helper ────────────────────────────────────────────────────────────────
@@ -788,6 +794,192 @@ function IncidentsTab({ incidents, properties, onIncidentsChange }: { incidents:
 
 // ── Vendors tab ───────────────────────────────────────────────────────────────
 
+// ── Approvals tab ─────────────────────────────────────────────────────────────
+
+async function platformApi<T>(path: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(`/api/platform${path}`, {
+    ...options,
+    credentials: 'include',
+    headers: { 'content-type': 'application/json', ...(options?.headers ?? {}) },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error((payload as { error?: string }).error ?? `Request failed (${response.status})`);
+  return payload as T;
+}
+
+function UrgencyBadge({ label }: { label: string }) {
+  const cls = label === 'EMERGENCY' ? 'bg-error/10 text-error' : label === 'PRIORITY' ? 'bg-warning/10 text-warning' : 'bg-surface-2 text-fg-muted';
+  return <span className={`inline-flex shrink-0 rounded-full px-2 py-0.5 text-meta font-medium ${cls}`}>{label}</span>;
+}
+
+function RiskBadge({ level }: { level: string }) {
+  const cls = level === 'CRITICAL' ? 'bg-error/10 text-error' : level === 'HIGH' ? 'bg-warning/10 text-warning' : 'bg-surface-2 text-fg-muted';
+  return <span className={`inline-flex shrink-0 rounded-full px-2 py-0.5 text-meta font-medium ${cls}`}>{level}</span>;
+}
+
+function ApprovalsTab() {
+  const [items, setItems] = useState<ActionRequestRec[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [approveNote, setApproveNote] = useState<Record<string, string>>({});
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const data = await platformApi<{ approvals: ActionRequestRec[] }>('/approvals/pending');
+      setItems(data.approvals);
+    } catch (err) { setError(err instanceof Error ? err.message : 'Failed to load pending approvals'); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function handleApprove(id: string) {
+    setBusyId(id);
+    try {
+      await platformApi(`/approvals/${id}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: approveNote[id] ?? undefined }),
+      });
+      setApprovingId(null);
+      setItems((prev) => prev.filter((a) => a.id !== id));
+    } catch (err) { setError(err instanceof Error ? err.message : 'Approval failed'); }
+    finally { setBusyId(null); }
+  }
+
+  async function handleReject(id: string) {
+    if (!rejectReason.trim()) return;
+    setBusyId(id);
+    try {
+      await platformApi(`/approvals/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason: rejectReason.trim() }) });
+      setRejectingId(null);
+      setRejectReason('');
+      setItems((prev) => prev.filter((a) => a.id !== id));
+    } catch (err) { setError(err instanceof Error ? err.message : 'Rejection failed'); }
+    finally { setBusyId(null); }
+  }
+
+  if (loading) return <div className="flex items-center justify-center py-16"><Loader2 size={24} className="animate-spin text-fg-muted" /></div>;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-body font-semibold text-fg">Pending approvals</h2>
+          <p className="mt-0.5 text-caption text-fg-muted">AI-triaged maintenance requests waiting for your decision. Approved requests auto-create a work order.</p>
+        </div>
+        <button type="button" onClick={() => void load()} className="inline-flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-0 px-3 py-2 text-caption text-fg hover:bg-surface-2">
+          <RefreshCw size={13} /> Refresh
+        </button>
+      </div>
+
+      {error && <div className="rounded-xl border border-error/30 bg-error/5 p-4 text-caption text-error">{error}</div>}
+
+      {items.length === 0 && !error && (
+        <EmptyState icon={CheckCircle2} text="No pending approvals. When AI detects a maintenance issue, it will appear here." />
+      )}
+
+      {items.map((item) => {
+        const p = item.payload;
+        const isApproving = approvingId === item.id;
+        const isRejecting = rejectingId === item.id;
+        const busy = busyId === item.id;
+
+        return (
+          <div key={item.id} className="rounded-xl border border-border-subtle bg-surface-1 p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-caption font-semibold text-fg">{p.category ?? item.type.split('.').pop()?.toUpperCase() ?? 'MAINTENANCE'}</span>
+                  {p.urgency && <UrgencyBadge label={p.urgency} />}
+                  <RiskBadge level={item.riskLevel} />
+                  {p.confidence != null && (
+                    <span className="text-meta text-fg-muted">AI confidence: {Math.round(p.confidence * 100)}%</span>
+                  )}
+                </div>
+                {p.summary && <p className="mt-2 text-caption text-fg-secondary">{p.summary}</p>}
+                {p.messageText && p.messageText !== p.summary && (
+                  <p className="mt-1 rounded-lg bg-surface-2 px-3 py-2 text-meta text-fg-muted italic">
+                    &ldquo;{p.messageText.length > 300 ? `${p.messageText.slice(0, 300)}…` : p.messageText}&rdquo;
+                  </p>
+                )}
+                <p className="mt-2 text-meta text-fg-muted">{fmtDatetime(item.createdAt)}</p>
+              </div>
+
+              {!isApproving && !isRejecting && (
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => { setRejectingId(item.id); setApprovingId(null); setRejectReason(''); }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-error/30 px-3 py-2 text-caption font-medium text-error hover:bg-error/8 disabled:opacity-50"
+                  >
+                    <ThumbsDown size={13} aria-hidden /> Reject
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => { setApprovingId(item.id); setRejectingId(null); }}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+                  >
+                    <ThumbsUp size={13} aria-hidden /> Approve
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {isApproving && (
+              <div className="mt-4 rounded-xl border border-success/20 bg-success/5 p-4">
+                <p className="mb-2 text-caption font-medium text-fg">Approve this action?</p>
+                <p className="mb-3 text-meta text-fg-muted">A work order will be created automatically. You can add an optional note.</p>
+                <textarea
+                  rows={2}
+                  placeholder="Optional note…"
+                  value={approveNote[item.id] ?? ''}
+                  onChange={(e) => setApproveNote((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                  className="mb-3 w-full resize-none rounded-lg border border-border-subtle bg-surface-0 px-3 py-2 text-caption text-fg outline-none focus:border-accent"
+                />
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setApprovingId(null)} className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption hover:bg-surface-2">Cancel</button>
+                  <button type="button" disabled={busy} onClick={() => void handleApprove(item.id)} className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+                    {busy ? <Loader2 size={13} className="animate-spin" /> : <ThumbsUp size={13} />}
+                    Confirm approval
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {isRejecting && (
+              <div className="mt-4 rounded-xl border border-error/20 bg-error/5 p-4">
+                <p className="mb-2 text-caption font-medium text-fg">Reason for rejection</p>
+                <p className="mb-3 text-meta text-fg-muted">Your reason is saved as feedback to improve future AI triage decisions.</p>
+                <textarea
+                  rows={2}
+                  placeholder="e.g. Tenant responsibility per lease, not a structural issue…"
+                  value={rejectReason}
+                  onChange={(e) => setRejectReason(e.target.value)}
+                  className="mb-3 w-full resize-none rounded-lg border border-border-subtle bg-surface-0 px-3 py-2 text-caption text-fg outline-none focus:border-accent"
+                />
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => { setRejectingId(null); setRejectReason(''); }} className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption hover:bg-surface-2">Cancel</button>
+                  <button type="button" disabled={busy || !rejectReason.trim()} onClick={() => void handleReject(item.id)} className="inline-flex items-center gap-1.5 rounded-lg bg-error px-4 py-1.5 text-caption font-medium text-white hover:opacity-90 disabled:opacity-50">
+                    {busy ? <Loader2 size={13} className="animate-spin" /> : <ThumbsDown size={13} />}
+                    Confirm rejection
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function VendorsTab() {
   const [vendors, setVendors] = useState<VendorRec[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -911,6 +1103,7 @@ const TABS: { id: Tab; label: string; icon: typeof Building2 }[] = [
   { id: 'overview',    label: 'Overview',    icon: Building2   },
   { id: 'properties', label: 'Properties',  icon: Home        },
   { id: 'incidents',  label: 'Incidents',   icon: Wrench      },
+  { id: 'approvals',  label: 'Approvals',   icon: ThumbsUp    },
   { id: 'vendors',    label: 'Vendors',     icon: HardHat     },
 ];
 
@@ -918,18 +1111,21 @@ export function PropertyOperationsPage() {
   const [tab, setTab] = useState<Tab>('overview');
   const [properties, setProperties] = useState<PropertyRec[]>([]);
   const [incidents, setIncidents] = useState<IncidentRec[]>([]);
+  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [pd, id_] = await Promise.all([
+      const [pd, id_, approvalData] = await Promise.all([
         api<{ properties: PropertyRec[] }>('/properties'),
         api<{ incidents: IncidentRec[] }>('/incidents'),
+        platformApi<{ approvals: ActionRequestRec[] }>('/approvals/pending').catch(() => ({ approvals: [] })),
       ]);
       setProperties(pd.properties);
       setIncidents(id_.incidents);
+      setPendingApprovalCount(approvalData.approvals.length);
     } catch (err) { setError(err instanceof Error ? err.message : 'Unable to load property operations'); }
     finally { setLoading(false); }
   }, []);
@@ -957,7 +1153,7 @@ export function PropertyOperationsPage() {
         <nav className="mt-4 flex gap-1">
           {TABS.map(({ id, label, icon: Icon }) => {
             const active = tab === id;
-            const badge = id === 'incidents' && emergencyCount > 0 ? emergencyCount : null;
+            const badge = (id === 'incidents' && emergencyCount > 0) ? emergencyCount : (id === 'approvals' && pendingApprovalCount > 0) ? pendingApprovalCount : null;
             return (
               <button key={id} type="button" onClick={() => setTab(id)}
                 className={`relative inline-flex items-center gap-2 rounded-lg px-3 py-2 text-caption font-medium transition ${active ? 'bg-accent/10 text-accent' : 'text-fg-secondary hover:bg-surface-2 hover:text-fg'}`}>
@@ -991,6 +1187,7 @@ export function PropertyOperationsPage() {
             {tab === 'overview' && <OverviewTab properties={properties} incidents={incidents} onGoTo={setTab} />}
             {tab === 'properties' && <PropertiesTab properties={properties} onPropertiesChange={() => void load()} />}
             {tab === 'incidents' && <IncidentsTab incidents={incidents} properties={properties} onIncidentsChange={() => void load()} />}
+            {tab === 'approvals' && <ApprovalsTab />}
             {tab === 'vendors' && <VendorsTab />}
           </>
         )}

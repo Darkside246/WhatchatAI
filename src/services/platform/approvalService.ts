@@ -22,6 +22,8 @@ export class ApprovalService {
       status: action.status,
       idempotencyKey: action.idempotencyKey,
       correlationId: action.correlationId,
+      executionResult: null,
+      executionError: null,
     });
     if (row.approvalRequired && row.approvalStatus === 'PENDING' && row.status === 'PENDING_APPROVAL') {
       await this.actions.createApproval({
