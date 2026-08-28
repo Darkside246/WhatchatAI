@@ -42,9 +42,8 @@
     "pg": "^8.23.0",
     "pino": "latest",
     "qrcode": "latest",
-    "zod": "latest",
-    "qrcode": "latest",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "latest"
   },
   "devDependencies": {
     "@types/express": "latest",
