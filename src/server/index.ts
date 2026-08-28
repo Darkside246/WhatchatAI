@@ -18,6 +18,7 @@ import { suggestReplies } from '../services/replySuggestionService.js';
 import { routeInboundMessage } from '../services/agentRoutingService.js';
 import {
   workspaceService,
+  revertHumanTakeoverOnLogout,
   isChatNotFoundError,
   isEntitlementDeniedError,
   isCrmContactNotFoundError,
@@ -125,6 +126,7 @@ import {
   register,
   login,
   logout,
+  validateSession,
   listSessions,
   revokeSession,
   revokeOtherSessions,
@@ -413,7 +415,15 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.post('/api/auth/logout', async (req, res) => {
   const token = readSessionToken(req);
-  if (token) await logout(token);
+  if (token) {
+    const session = await validateSession(token);
+    if (session) {
+      await revertHumanTakeoverOnLogout(session.membership.businessId).catch((err: unknown) => {
+        console.error('[Logout] Failed to revert human takeover chats:', err);
+      });
+    }
+    await logout(token);
+  }
   clearSessionCookie(req, res);
   return res.status(200).json({ status: 'logged_out' });
 });

@@ -250,6 +250,16 @@ export class WhatsAppChatRepository {
     return { total: Number(rows[0]?.total ?? 0), activeSince: Number(rows[0]?.active_since ?? 0) };
   }
 
+  /** Revert all HUMAN_TAKEOVER chats for a business to AI_ACTIVE. Returns the count reverted. */
+  async revertHumanTakeoverChats(businessId: string): Promise<number> {
+    const { rowCount } = await this.db.query(
+      `UPDATE whatsapp_chats SET ai_mode = 'AI_ACTIVE', updated_at = now()
+       WHERE business_id = $1 AND ai_mode = 'HUMAN_TAKEOVER' AND deleted_at IS NULL`,
+      [businessId],
+    );
+    return rowCount ?? 0;
+  }
+
   /** Human takeover belongs to the specific conversation, not globally to the account. */
   async setAiMode(id: string, aiMode: ChatAiMode): Promise<WhatsAppChatRecord | null> {
     const { rows } = await this.db.query<ChatRow>(

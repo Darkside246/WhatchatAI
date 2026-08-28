@@ -1149,3 +1149,16 @@ export class WorkspaceService {
 }
 
 export const workspaceService = new WorkspaceService();
+
+const _chatRepoForLogout = new WhatsAppChatRepository(pool);
+
+/**
+ * On logout, revert all HUMAN_TAKEOVER chats for the user's business back to
+ * AI_ACTIVE so no chat is stranded without an AI agent after the agent leaves.
+ */
+export async function revertHumanTakeoverOnLogout(businessId: string): Promise<void> {
+  const reverted = await _chatRepoForLogout.revertHumanTakeoverChats(businessId);
+  if (reverted > 0) {
+    console.log(`[WorkspaceService] Reverted ${reverted} HUMAN_TAKEOVER chat(s) to AI_ACTIVE on logout for business ${businessId}`);
+  }
+}
