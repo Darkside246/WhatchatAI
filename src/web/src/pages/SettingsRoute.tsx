@@ -457,7 +457,7 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
       <div className="flex items-center gap-3">
         <div className="relative shrink-0">
           <button type="button" onClick={() => currentPhotoUrl && setLightboxOpen(true)} disabled={!currentPhotoUrl} className="block disabled:cursor-default">
-            <Avatar label={connection?.pushName ?? bizName || '?'} photoUrl={currentPhotoUrl} />
+            <Avatar label={(connection?.pushName ?? bizName) || '?'} photoUrl={currentPhotoUrl} />
           </button>
           <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploadingPhoto} title="Change WhatsApp profile photo"
             className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full border border-surface-1 bg-accent text-white shadow hover:bg-accent-dim disabled:opacity-50">
