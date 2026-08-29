@@ -7,6 +7,17 @@ import { pool } from '../../db/pool.js';
 const settingsRepository = new IntegrationSettingsRepository(pool);
 const originalGooseServiceUrl = process.env.GOOSE_SERVICE_URL;
 
+const generateContentMock = vi.fn();
+
+// GeminiProvider's tool-calling path calls getGeminiClient() itself, so its
+// tests need a fake client rather than real network access - mirroring the
+// same mock shape test/aiReplyServiceRetry.test.ts already uses for the
+// production WhatsApp reply path this provider must stay behaviourally
+// consistent with.
+vi.mock('../geminiClient.js', () => ({
+  getGeminiClient: () => ({ models: { generateContent: (...args: unknown[]) => generateContentMock(...args) } }),
+}));
+
 // test/helpers.ts lives outside src/ (tsconfig rootDir), so this file - a
 // src/**/*.test.ts, unlike the ones under test/ - creates its own minimal
 // fixture rather than importing it. Each test gets a genuinely fresh
@@ -46,7 +57,7 @@ describe('GooseProvider', () => {
   it('capabilities() reports unavailable when nothing is configured, never fabricating availability', async () => {
     const provider = new GooseProvider();
     const caps = await provider.capabilities();
-    expect(caps).toEqual({ text: false, vision: false, audio: false, video: false, documents: false });
+    expect(caps).toEqual({ text: false, vision: false, audio: false, video: false, documents: false, functionCalling: false });
   });
 
   it('capabilities() reports available when the global fallback URL is set', async () => {
@@ -148,5 +159,99 @@ describe('GooseProvider', () => {
     expect(response.provider).toBe('goose');
     expect(response.text).toBe('Goose saved the day.');
     expect(response.attemptedProviders).toEqual(['gemini', 'goose']);
+  });
+});
+
+describe('GeminiProvider tool calling', () => {
+  const timeTool = { name: 'get_current_time', description: 'Returns the current time', parameters: { type: 'OBJECT', properties: {} } };
+
+  beforeEach(() => {
+    generateContentMock.mockReset();
+  });
+
+  it('capabilities() reports functionCalling matching text availability', async () => {
+    const provider = new GeminiProvider();
+    const caps = await provider.capabilities();
+    expect(caps.functionCalling).toBe(caps.text);
+  });
+
+  it('sends functionDeclarations built from the requested tools and surfaces a returned tool call', async () => {
+    generateContentMock.mockResolvedValueOnce({
+      text: '',
+      functionCalls: [{ name: 'get_current_time', args: {} }],
+    });
+    const provider = new GeminiProvider();
+
+    const result = await provider.generate({
+      tenantId: 'tenant-1',
+      operation: 'reply.generate',
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Are you open right now?' },
+      ],
+      tools: [timeTool],
+    });
+
+    expect(result.toolCalls).toEqual([{ name: 'get_current_time', args: {} }]);
+    expect(result.text).toBe('');
+    const call = generateContentMock.mock.calls[0]![0] as { contents: unknown; config: { systemInstruction: string; tools: unknown } };
+    expect(call.config.systemInstruction).toBe('You are a helpful assistant.');
+    expect(call.config.tools).toEqual([{ functionDeclarations: [timeTool] }]);
+    expect(call.contents).toEqual([{ role: 'user', parts: [{ text: 'Are you open right now?' }] }]);
+  });
+
+  it('builds the functionCall/functionResponse follow-up turns for a pendingToolCalls answer', async () => {
+    generateContentMock.mockResolvedValueOnce({ text: 'We are open until 5pm.' });
+    const provider = new GeminiProvider();
+
+    const result = await provider.generate({
+      tenantId: 'tenant-1',
+      operation: 'reply.generate',
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Are you open right now?' },
+      ],
+      tools: [timeTool],
+      pendingToolCalls: [{ name: 'get_current_time', args: {} }],
+      toolResponses: [{ name: 'get_current_time', response: { iso: '2026-08-28T15:00:00Z' } }],
+    });
+
+    expect(result.text).toBe('We are open until 5pm.');
+    expect(result.toolCalls).toBeUndefined();
+    const call = generateContentMock.mock.calls[0]![0] as { contents: Array<{ role: string; parts: unknown[] }> };
+    expect(call.contents).toEqual([
+      { role: 'user', parts: [{ text: 'Are you open right now?' }] },
+      { role: 'model', parts: [{ functionCall: { name: 'get_current_time', args: {} } }] },
+      { role: 'user', parts: [{ functionResponse: { name: 'get_current_time', response: { iso: '2026-08-28T15:00:00Z' } } }] },
+    ]);
+  });
+
+  it('rejects a mismatched pendingToolCalls/toolResponses count rather than guessing', async () => {
+    const provider = new GeminiProvider();
+    await expect(
+      provider.generate({
+        tenantId: 'tenant-1',
+        operation: 'reply.generate',
+        messages: [{ role: 'user', content: 'Are you open right now?' }],
+        tools: [timeTool],
+        pendingToolCalls: [{ name: 'get_current_time', args: {} }],
+        toolResponses: [],
+      }),
+    ).rejects.toThrow('matching pendingToolCalls and toolResponses');
+    expect(generateContentMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects media on the tool-calling path - not yet supported', async () => {
+    const provider = new GeminiProvider();
+    await expect(
+      provider.generate({
+        tenantId: 'tenant-1',
+        operation: 'reply.generate',
+        messages: [{ role: 'user', content: 'What time is it?' }],
+        tools: [timeTool],
+        media: [{ mimeType: 'image/png', base64Data: 'AAAA' }],
+      }),
+    ).rejects.toThrow('does not currently support media');
+    expect(generateContentMock).not.toHaveBeenCalled();
   });
 });

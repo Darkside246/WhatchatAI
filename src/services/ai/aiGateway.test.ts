@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { AiGateway, type RegisteredAiProvider } from './aiGateway.js';
+import { describe, expect, it, vi } from 'vitest';
+import { AiGateway, type RegisteredAiProvider, type GatewayToolCall } from './aiGateway.js';
 
 type Caps = Awaited<ReturnType<RegisteredAiProvider['capabilities']>>;
 
@@ -10,17 +10,25 @@ function fakeProvider(options: {
   caps?: Caps;
   result?: string;
   error?: string;
+  toolCalls?: GatewayToolCall[];
+  onGenerate?: (input: Parameters<RegisteredAiProvider['generate']>[0]) => void;
 }): RegisteredAiProvider {
   const provider: RegisteredAiProvider = {
     name: options.name,
     model: options.model ?? `${options.name}-test-model`,
     priority: options.priority,
     async capabilities() {
-      return options.caps ?? { text: true, vision: false, audio: false, video: false, documents: false };
+      return options.caps ?? { text: true, vision: false, audio: false, video: false, documents: false, functionCalling: false };
     },
-    async generate() {
+    async generate(input) {
+      options.onGenerate?.(input);
       if (options.error) throw new Error(options.error);
-      return { provider: options.name, text: options.result ?? 'ok' };
+      const response: { provider: string; text: string; toolCalls?: GatewayToolCall[] } = {
+        provider: options.name,
+        text: options.result ?? 'ok',
+      };
+      if (options.toolCalls) response.toolCalls = options.toolCalls;
+      return response;
     },
   };
   return provider;
@@ -64,7 +72,7 @@ describe('AiGateway', () => {
   it('does not send image work to a provider without vision capability', async () => {
     const gateway = new AiGateway();
     gateway.register(fakeProvider({ name: 'text-only', priority: 10, result: 'wrong provider' }));
-    gateway.register(fakeProvider({ name: 'vision', priority: 20, caps: { text: true, vision: true, audio: false, video: false, documents: false }, result: 'seen' }));
+    gateway.register(fakeProvider({ name: 'vision', priority: 20, caps: { text: true, vision: true, audio: false, video: false, documents: false, functionCalling: false }, result: 'seen' }));
 
     const result = await gateway.generate({
       ...baseRequest,
@@ -79,5 +87,41 @@ describe('AiGateway', () => {
     const gateway = new AiGateway();
     gateway.register(fakeProvider({ name: 'one', priority: 10 }));
     await expect(gateway.generate({ ...baseRequest, providerAllowlist: ['missing'] })).rejects.toThrow('No eligible AI providers');
+  });
+
+  const timeToolDefinition = { name: 'get_current_time', description: 'Returns the current time', parameters: { type: 'OBJECT', properties: {} } };
+
+  it('does not send tool-bearing requests to a provider without functionCalling capability', async () => {
+    const gateway = new AiGateway();
+    gateway.register(fakeProvider({ name: 'no-tools', priority: 10, caps: { text: true, vision: false, audio: false, video: false, documents: false, functionCalling: false }, result: 'wrong provider' }));
+    gateway.register(fakeProvider({ name: 'tool-capable', priority: 20, caps: { text: true, vision: false, audio: false, video: false, documents: false, functionCalling: true }, result: 'seen' }));
+
+    const result = await gateway.generate({ ...baseRequest, tools: [timeToolDefinition] });
+    expect(result.provider).toBe('tool-capable');
+    expect(result.attemptedProviders).toEqual(['no-tools', 'tool-capable']);
+  });
+
+  it('threads tools, pendingToolCalls and toolResponses through to the provider', async () => {
+    const gateway = new AiGateway();
+    const onGenerate = vi.fn();
+    const pendingToolCalls: GatewayToolCall[] = [{ name: 'get_current_time', args: {} }];
+    const toolResponses = [{ name: 'get_current_time', response: { iso: '2026-08-28T00:00:00Z' } }];
+    gateway.register(fakeProvider({ name: 'tool-capable', priority: 10, caps: { text: true, vision: false, audio: false, video: false, documents: false, functionCalling: true }, result: 'It is 2026-08-28.', onGenerate }));
+
+    await gateway.generate({ ...baseRequest, tools: [timeToolDefinition], pendingToolCalls, toolResponses });
+
+    expect(onGenerate).toHaveBeenCalledWith(
+      expect.objectContaining({ tools: [timeToolDefinition], pendingToolCalls, toolResponses }),
+    );
+  });
+
+  it('accepts an empty-text response carrying toolCalls instead of rejecting it as empty', async () => {
+    const gateway = new AiGateway();
+    const toolCalls: GatewayToolCall[] = [{ name: 'get_current_time', args: {} }];
+    gateway.register(fakeProvider({ name: 'tool-capable', priority: 10, caps: { text: true, vision: false, audio: false, video: false, documents: false, functionCalling: true }, result: '', toolCalls }));
+
+    const result = await gateway.generate({ ...baseRequest, tools: [timeToolDefinition] });
+    expect(result.text).toBe('');
+    expect(result.toolCalls).toEqual(toolCalls);
   });
 });

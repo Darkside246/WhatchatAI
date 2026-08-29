@@ -113,9 +113,33 @@ export interface AIProviderMedia {
   base64Data?: string;
 }
 
+/**
+ * A JSON-schema-shaped function/tool declaration, provider-agnostic. The
+ * gateway never interprets `parameters` itself - each provider adapter
+ * translates it into whatever native shape its own SDK expects (Gemini's
+ * `Type` enum values, a plain OpenAI-style JSON schema, etc). Named to match
+ * the vocabulary every provider's own function-calling API already uses
+ * (name/description/parameters), not a WhatchatAI-specific shape.
+ */
+export interface AIProviderToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface AIProviderToolCall {
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export interface AIProviderToolResponse {
+  name: string;
+  response: Record<string, unknown>;
+}
+
 export interface AIProviderAdapter {
   readonly name: string;
-  capabilities(): Promise<{ text: boolean; vision: boolean; audio: boolean; video: boolean; documents: boolean }>;
+  capabilities(): Promise<{ text: boolean; vision: boolean; audio: boolean; video: boolean; documents: boolean; functionCalling: boolean }>;
   generate(input: {
     tenantId: string;
     operation: string;
@@ -124,5 +148,15 @@ export interface AIProviderAdapter {
     responseFormat?: 'text' | 'json';
     maxOutputTokens?: number;
     temperature?: number;
-  }): Promise<{ text: string; provider: string; usage?: { inputTokens?: number; outputTokens?: number } }>;
+    tools?: AIProviderToolDefinition[];
+    /** Present only on a follow-up call answering a tool call the model just made - the exact call(s) being answered. */
+    pendingToolCalls?: AIProviderToolCall[];
+    toolResponses?: AIProviderToolResponse[];
+  }): Promise<{
+    text: string;
+    provider: string;
+    usage?: { inputTokens?: number; outputTokens?: number };
+    /** Present instead of (or alongside a possibly-empty) text when the model wants to call a tool. */
+    toolCalls?: AIProviderToolCall[];
+  }>;
 }

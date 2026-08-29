@@ -1,9 +1,35 @@
-import type { AIProviderAdapter } from '../../domain/platform/contracts.js';
+import type { AIProviderAdapter, AIProviderToolDefinition, AIProviderToolCall, AIProviderToolResponse } from '../../domain/platform/contracts.js';
 
 export interface GatewayMedia { mimeType: string; url?: string; base64Data?: string; }
 export interface GatewayMessage { role: 'system' | 'user' | 'assistant'; content: string; }
-export interface GatewayRequest { tenantId: string; operation: string; messages: GatewayMessage[]; media?: GatewayMedia[]; responseFormat?: 'text' | 'json'; preferredProvider?: string; providerAllowlist?: string[]; maxOutputTokens?: number; temperature?: number; }
-export interface GatewayResponse { provider: string; model: string; text: string; usage?: { inputTokens?: number; outputTokens?: number }; attemptedProviders: string[]; }
+export type GatewayToolDefinition = AIProviderToolDefinition;
+export type GatewayToolCall = AIProviderToolCall;
+export type GatewayToolResponse = AIProviderToolResponse;
+export interface GatewayRequest {
+  tenantId: string;
+  operation: string;
+  messages: GatewayMessage[];
+  media?: GatewayMedia[];
+  responseFormat?: 'text' | 'json';
+  preferredProvider?: string;
+  providerAllowlist?: string[];
+  maxOutputTokens?: number;
+  temperature?: number;
+  /** Tools available to the model this turn. Providers that don't advertise functionCalling capability are excluded from eligibility when present. */
+  tools?: GatewayToolDefinition[];
+  /** The exact tool call(s) being answered - present only on a follow-up call after the caller executed a tool the model requested. Must be paired with toolResponses. */
+  pendingToolCalls?: GatewayToolCall[];
+  toolResponses?: GatewayToolResponse[];
+}
+export interface GatewayResponse {
+  provider: string;
+  model: string;
+  text: string;
+  usage?: { inputTokens?: number; outputTokens?: number };
+  attemptedProviders: string[];
+  /** Present instead of (or alongside a possibly-empty) text when the model wants to call a tool. The caller decides whether/how to execute it - the gateway never executes anything itself. */
+  toolCalls?: GatewayToolCall[];
+}
 export interface RegisteredAiProvider extends AIProviderAdapter { model: string; priority: number; }
 
 const MAX_MESSAGES = 64;
@@ -37,6 +63,19 @@ function validateRequest(request: GatewayRequest): void {
   }
   if (request.maxOutputTokens !== undefined && (!Number.isInteger(request.maxOutputTokens) || request.maxOutputTokens < 1 || request.maxOutputTokens > MAX_OUTPUT_TOKENS)) throw new Error(`maxOutputTokens must be an integer between 1 and ${MAX_OUTPUT_TOKENS}`);
   if (request.temperature !== undefined && (request.temperature < 0 || request.temperature > 2)) throw new Error('temperature must be between 0 and 2');
+  if (request.tools !== undefined) {
+    if (request.tools.length === 0) throw new Error('AI gateway tools array must not be empty when provided');
+    for (const tool of request.tools) {
+      if (!tool.name.trim()) throw new Error('AI gateway tool definition requires a name');
+    }
+  }
+  // A follow-up call answering a tool call needs both halves - one without
+  // the other is a caller bug (either "answering nothing" or "a call the
+  // model made with no answer"), not a state the gateway should try to
+  // guess its way through.
+  if ((request.pendingToolCalls === undefined) !== (request.toolResponses === undefined)) {
+    throw new Error('AI gateway requires pendingToolCalls and toolResponses together, or neither');
+  }
 }
 
 export class AiGateway {
@@ -61,17 +100,29 @@ export class AiGateway {
         const capabilities = await provider.capabilities();
         if (!capabilities.text) throw new Error('provider does not advertise text generation');
         if (request.media?.length) { const mediaError = mediaRequires(capabilities, request.media); if (mediaError) throw new Error(mediaError); }
+        // Never sent to a provider that can't honour it - a provider silently
+        // ignoring a declared tool and answering in plain text would look
+        // like a working reply while actually dropping the caller's tool
+        // contract entirely.
+        if (request.tools?.length && !capabilities.functionCalling) throw new Error('provider does not advertise function calling');
         const providerInput: Parameters<AIProviderAdapter['generate']>[0] = { tenantId: request.tenantId, operation: request.operation, messages: request.messages };
         if (request.media !== undefined) providerInput.media = request.media;
         if (request.responseFormat !== undefined) providerInput.responseFormat = request.responseFormat;
         if (request.maxOutputTokens !== undefined) providerInput.maxOutputTokens = request.maxOutputTokens;
         if (request.temperature !== undefined) providerInput.temperature = request.temperature;
+        if (request.tools !== undefined) providerInput.tools = request.tools;
+        if (request.pendingToolCalls !== undefined) providerInput.pendingToolCalls = request.pendingToolCalls;
+        if (request.toolResponses !== undefined) providerInput.toolResponses = request.toolResponses;
         const response = await provider.generate(providerInput);
         const text = response.text.trim();
-        if (!text) throw new Error('provider returned an empty response');
-        if (request.responseFormat === 'json') { try { JSON.parse(text); } catch { throw new Error('provider returned invalid JSON for a JSON-formatted request'); } }
+        const toolCalls = response.toolCalls?.length ? response.toolCalls : undefined;
+        // A tool-call response legitimately has no text yet - the model is
+        // asking for information before it can answer, not failing to answer.
+        if (!text && !toolCalls) throw new Error('provider returned an empty response');
+        if (request.responseFormat === 'json' && text) { try { JSON.parse(text); } catch { throw new Error('provider returned invalid JSON for a JSON-formatted request'); } }
         const result: GatewayResponse = { provider: response.provider, model: provider.model, text, attemptedProviders };
         if (response.usage !== undefined) result.usage = response.usage;
+        if (toolCalls) result.toolCalls = toolCalls;
         return result;
       } catch (error) { failures.push(`${provider.name}: ${error instanceof Error ? error.message : String(error)}`); }
     }

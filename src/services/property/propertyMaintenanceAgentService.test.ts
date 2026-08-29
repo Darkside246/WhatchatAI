@@ -23,7 +23,7 @@ function event(text: string, overrides: Partial<CommunicationEvent> = {}): Commu
 function provider(text: string): AIProviderAdapter & { model: string; priority: number } {
   return {
     name: 'test-provider', model: 'test-model', priority: 1,
-    async capabilities() { return { text: true, vision: false, audio: false, video: false, documents: false }; },
+    async capabilities() { return { text: true, vision: false, audio: false, video: false, documents: false, functionCalling: false }; },
     async generate() { return { provider: 'test-provider', text }; },
   };
 }
