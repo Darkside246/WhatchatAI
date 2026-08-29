@@ -1,5 +1,5 @@
 export interface WhatsAppConnectionSnapshot {
-  status: 'DISCONNECTED' | 'CONNECTING' | 'QR_READY' | 'CONNECTED' | 'RECONNECTING' | 'LOGGED_OUT' | 'ERROR';
+  status: 'DISCONNECTED' | 'CONNECTING' | 'QR_READY' | 'CONNECTED' | 'RECONNECTING' | 'LOGGED_OUT' | 'CONFLICT_REPLACED' | 'ERROR';
   connected: boolean;
   qrAvailable: boolean;
   qrDataUrl: string | null;

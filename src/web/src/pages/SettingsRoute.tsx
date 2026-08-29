@@ -53,6 +53,7 @@ const STATUS_COLOR: Record<WhatsAppConnectionSnapshot['status'], string> = {
   RECONNECTING: 'bg-warning/15 text-warning',
   DISCONNECTED: 'bg-fg-muted/15 text-fg-muted',
   LOGGED_OUT: 'bg-error/15 text-error',
+  CONFLICT_REPLACED: 'bg-error/15 text-error',
   ERROR: 'bg-error/15 text-error',
 };
 

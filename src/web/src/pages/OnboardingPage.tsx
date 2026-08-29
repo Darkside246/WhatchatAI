@@ -21,6 +21,10 @@ const STATUS_COPY: Record<Status, { title: string; detail: string }> = {
   CONNECTED: { title: 'Linked', detail: 'Your WhatsApp account is connected.' },
   RECONNECTING: { title: 'Reconnecting', detail: 'The link dropped. Trying to restore it…' },
   LOGGED_OUT: { title: 'Session ended', detail: 'This device was unlinked. Generate a new code to link again.' },
+  CONFLICT_REPLACED: {
+    title: 'Connected elsewhere',
+    detail: 'This WhatsApp account is already connected from another location or device. Disconnect it there first, then try linking again here.',
+  },
   ERROR: { title: 'Could not get a code', detail: 'WhatsApp did not return a pairing code.' },
 };
 
@@ -47,7 +51,7 @@ function QrPanel({ connection, onRetry, retrying }: { connection: WhatsAppConnec
     return () => clearInterval(timer);
   }, []);
 
-  const failed = status === 'ERROR' || status === 'LOGGED_OUT';
+  const failed = status === 'ERROR' || status === 'LOGGED_OUT' || status === 'CONFLICT_REPLACED';
   const ago = refreshedAgo(connection?.qrGeneratedAt ?? null, now);
 
   return (

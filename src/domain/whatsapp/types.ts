@@ -5,6 +5,7 @@ export type ConnectionStatus =
   | 'CONNECTED'
   | 'RECONNECTING'
   | 'LOGGED_OUT'
+  | 'CONFLICT_REPLACED'
   | 'ERROR';
 
 export type SyncStatus = 'not_started' | 'in_progress' | 'completed' | 'failed';
@@ -92,6 +93,7 @@ export type ConnectionEventType =
   | 'disconnected'
   | 'reconnecting'
   | 'logged_out'
+  | 'conflict_replaced'
   | 'error';
 
 export type SyncType =

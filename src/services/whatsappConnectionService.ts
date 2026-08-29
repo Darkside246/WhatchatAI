@@ -37,6 +37,7 @@ export type WhatsAppConnectionStatus =
   | 'CONNECTED'
   | 'RECONNECTING'
   | 'LOGGED_OUT'
+  | 'CONFLICT_REPLACED'
   | 'ERROR';
 
 export interface WhatsAppConnectionSnapshot {
@@ -505,6 +506,42 @@ export class WhatsAppConnectionService {
         };
 
         const code = this.getDisconnectCode(lastDisconnect);
+
+        // WhatsApp itself is telling us another connection took ownership
+        // of this exact session (a second process/device/deployment using
+        // the same credentials, a hot-reloaded dev server that never fully
+        // tore down its old socket, or genuinely two backend instances
+        // pointed at the same session directory). Baileys surfaces this as
+        // a stream-level <conflict type="replaced"> that it normalizes to
+        // this status code (see @whiskeysockets/baileys's own mapping in
+        // Utils/generics.js). Treating this like an ordinary transient
+        // disconnect - the previous behavior, falling through to
+        // scheduleReconnect() below - creates an unbounded reconnect
+        // storm: every reconnect briefly reaches 'open' (which resets
+        // reconnectAttempt to 0, defeating backoff) before immediately
+        // being replaced again by whichever connection actually owns the
+        // session, uploading a fresh batch of pre-keys each cycle.
+        // Reconnecting from here would just re-enter that same conflict
+        // immediately, so this stops outright rather than retrying -
+        // recovery requires either the other connection releasing the
+        // session or an explicit manual reconnect (a fresh connect() call
+        // still works normally afterward; this only stops the automatic
+        // loop).
+        if (code === DisconnectReason.connectionReplaced) {
+          this.snapshot = {
+            ...this.snapshot,
+            status: 'CONFLICT_REPLACED',
+            lastError:
+              'This WhatsApp session was taken over by another active connection (same account connected elsewhere). Automatic reconnect has been stopped to avoid a reconnect loop - check for a duplicate running instance before reconnecting manually.',
+          };
+          console.error(
+            '[WhatsApp] Connection replaced by another session (DisconnectReason.connectionReplaced) - stopping automatic reconnect. ' +
+              'Check for a duplicate backend process/deployment using the same WhatsApp credentials before reconnecting manually.',
+          );
+          this.recordDisconnectEvent('conflict_replaced', 'CONFLICT_REPLACED');
+          return;
+        }
+
         if (code === DisconnectReason.loggedOut) {
           this.snapshot = { ...this.snapshot, status: 'LOGGED_OUT' };
           this.recordDisconnectEvent('logged_out', 'LOGGED_OUT');
@@ -650,7 +687,7 @@ export class WhatsAppConnectionService {
     fn(this.businessId, this.persistedAccountId, this.snapshot.jid);
   }
 
-  private recordDisconnectEvent(eventType: 'disconnected' | 'logged_out', status: string): void {
+  private recordDisconnectEvent(eventType: 'disconnected' | 'logged_out' | 'conflict_replaced', status: string): void {
     if (!this.businessId || !this.persistedAccountId) return;
     const businessId = this.businessId;
     const accountId = this.persistedAccountId;
