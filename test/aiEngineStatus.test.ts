@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getAiEngineStatus, testGeminiConnection } from '../src/services/aiEngineStatusService.js';
+import { resetDatabase } from './helpers.js';
 
 const serverSource = readFileSync(
   path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/server/index.ts'),
@@ -44,9 +45,15 @@ describe('aiEngineStatusService (honest engine reporting, never a fabricated gre
   const originalGemini = process.env.GEMINI_API_KEY;
   const originalGoose = process.env.GOOSE_SERVICE_URL;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     delete process.env.GEMINI_API_KEY;
     delete process.env.GOOSE_SERVICE_URL;
+    // getAiEngineStatus() with no businessId reads business_goose_settings
+    // across every tenant to decide whether exactly one workspace has Goose
+    // configured - without this, a row left behind by an unrelated test
+    // file earlier in a full suite run makes this test's outcome depend on
+    // what else happened to run first.
+    await resetDatabase();
   });
 
   afterEach(() => {
