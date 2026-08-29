@@ -4,10 +4,10 @@ import type { TrialState } from '../services/trialPolicy.js';
 
 interface TrialRow {
   id: string; trial_identity_id: string; email: string; user_id: string | null; product_id: string; product_key: ProductKey;
-  product_account_id: string | null; state: TrialState; starts_at: Date | null; ends_at: Date | null; expired_at: Date | null;
-  converted_at: Date | null; created_at: Date; updated_at: Date;
+  product_account_id: string | null; state: TrialState; starts_at: string | null; ends_at: string | null; expired_at: string | null;
+  converted_at: string | null; created_at: string; updated_at: string;
 }
-function toTrial(row: TrialRow) { return { id: row.id, trialIdentityId: row.trial_identity_id, email: row.email, userId: row.user_id, productId: row.product_id, productKey: row.product_key, productAccountId: row.product_account_id, state: row.state, startsAt: row.starts_at?.toISOString() ?? null, endsAt: row.ends_at?.toISOString() ?? null, expiredAt: row.expired_at?.toISOString() ?? null, convertedAt: row.converted_at?.toISOString() ?? null, createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString() }; }
+function toTrial(row: TrialRow) { return { id: row.id, trialIdentityId: row.trial_identity_id, email: row.email, userId: row.user_id, productId: row.product_id, productKey: row.product_key, productAccountId: row.product_account_id, state: row.state, startsAt: row.starts_at, endsAt: row.ends_at, expiredAt: row.expired_at, convertedAt: row.converted_at, createdAt: row.created_at, updatedAt: row.updated_at }; }
 const TRIAL_SELECT = `SELECT pt.id, pt.trial_identity_id, ti.email, ti.user_id, pt.product_id, pc.product_key, pt.product_account_id, pt.state, pt.starts_at, pt.ends_at, pt.expired_at, pt.converted_at, pt.created_at, pt.updated_at FROM product_trials pt JOIN trial_identities ti ON ti.id = pt.trial_identity_id JOIN product_catalog pc ON pc.id = pt.product_id`;
 
 export class TrialRepository {
