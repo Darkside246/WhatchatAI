@@ -4,12 +4,12 @@ import { pool } from '../src/db/pool.js';
 import { OperatorCommandService, generatePinSalt, hashPin } from '../src/services/operator/operatorCommandService.js';
 import { OperatorModeRepository } from '../src/repositories/operatorModeRepository.js';
 import { PropertyOperationsRepository } from '../src/repositories/propertyOperationsRepository.js';
-import { createTestBusiness, resetDatabase } from './helpers.js';
+import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 
 const OPERATOR_JID = '12461234567@s.whatsapp.net';
 const PIN = '1234';
 
-async function authenticatedService(businessId: string): Promise<OperatorCommandService> {
+async function authenticatedService(businessId: string, accountId: string): Promise<OperatorCommandService> {
   const opRepo = new OperatorModeRepository(pool);
   const salt = generatePinSalt();
   await opRepo.upsertSettings({
@@ -24,8 +24,8 @@ async function authenticatedService(businessId: string): Promise<OperatorCommand
   });
 
   const service = new OperatorCommandService(pool);
-  await service.handle(businessId, OPERATOR_JID, 'anything'); // issues the PIN challenge
-  await service.handle(businessId, OPERATOR_JID, PIN); // authenticates
+  await service.handle(businessId, accountId, OPERATOR_JID, 'anything'); // issues the PIN challenge
+  await service.handle(businessId, accountId, OPERATOR_JID, PIN); // authenticates
   return service;
 }
 
@@ -50,17 +50,19 @@ async function createTestProperty(businessId: string, name: string): Promise<str
 
 describe('OperatorCommandService - "note for [property]: [text]"', () => {
   let businessId: string;
+  let accountId: string;
 
   beforeEach(async () => {
     await resetDatabase();
     businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId);
   });
 
   it('actually persists the note against the matched property - the stub used to just say "queued" and save nothing', async () => {
     await createTestProperty(businessId, 'Sunset Villa');
-    const service = await authenticatedService(businessId);
+    const service = await authenticatedService(businessId, accountId);
 
-    const result = await service.handle(businessId, OPERATOR_JID, 'note for Sunset Villa: pool filter needs replacing');
+    const result = await service.handle(businessId, accountId, OPERATOR_JID, 'note for Sunset Villa: pool filter needs replacing');
     expect(result.reply).toContain('Sunset Villa');
     expect(result.reply).toContain('pool filter needs replacing');
     expect(result.reply).not.toContain('next release');
@@ -75,9 +77,9 @@ describe('OperatorCommandService - "note for [property]: [text]"', () => {
 
   it('never writes to the guest-facing guest_instructions field - internal notes must not leak to customers', async () => {
     const propertyId = await createTestProperty(businessId, 'Ocean Breeze');
-    const service = await authenticatedService(businessId);
+    const service = await authenticatedService(businessId, accountId);
 
-    await service.handle(businessId, OPERATOR_JID, 'note for Ocean Breeze: owner wants weekly check-ins');
+    await service.handle(businessId, accountId, OPERATOR_JID, 'note for Ocean Breeze: owner wants weekly check-ins');
 
     const propertyRepo = new PropertyOperationsRepository(pool);
     const property = await propertyRepo.getProperty(businessId, propertyId);
@@ -85,8 +87,8 @@ describe('OperatorCommandService - "note for [property]: [text]"', () => {
   });
 
   it('reports honestly, and saves nothing, when no property matches', async () => {
-    const service = await authenticatedService(businessId);
-    const result = await service.handle(businessId, OPERATOR_JID, 'note for Nonexistent Place: test');
+    const service = await authenticatedService(businessId, accountId);
+    const result = await service.handle(businessId, accountId, OPERATOR_JID, 'note for Nonexistent Place: test');
     expect(result.reply).toContain('No property matching');
 
     const propertyRepo = new PropertyOperationsRepository(pool);
@@ -97,9 +99,9 @@ describe('OperatorCommandService - "note for [property]: [text]"', () => {
   it('reports ambiguity rather than guessing when multiple properties match', async () => {
     await createTestProperty(businessId, 'Beach House North');
     await createTestProperty(businessId, 'Beach House South');
-    const service = await authenticatedService(businessId);
+    const service = await authenticatedService(businessId, accountId);
 
-    const result = await service.handle(businessId, OPERATOR_JID, 'note for Beach House: leak reported');
+    const result = await service.handle(businessId, accountId, OPERATOR_JID, 'note for Beach House: leak reported');
     expect(result.reply).toContain('more than one property');
     expect(result.reply).toContain('Beach House North');
     expect(result.reply).toContain('Beach House South');
@@ -108,9 +110,9 @@ describe('OperatorCommandService - "note for [property]: [text]"', () => {
   it('tenant isolation - a note cannot be created against another business\'s property', async () => {
     const otherBusinessId = await createTestBusiness('Other Business');
     await createTestProperty(otherBusinessId, 'Other Business Villa');
-    const service = await authenticatedService(businessId);
+    const service = await authenticatedService(businessId, accountId);
 
-    const result = await service.handle(businessId, OPERATOR_JID, 'note for Other Business Villa: should not work');
+    const result = await service.handle(businessId, accountId, OPERATOR_JID, 'note for Other Business Villa: should not work');
     expect(result.reply).toContain('No property matching');
   });
 });

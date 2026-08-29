@@ -206,7 +206,7 @@ async function runAiHandoff(params: {
     }
 
     if (senderJid && (await operatorCommandService.isOperatorMessage(businessId, senderJid))) {
-      const { reply } = await operatorCommandService.handle(businessId, senderJid, queryText);
+      const { reply } = await operatorCommandService.handle(businessId, whatsappAccountId, senderJid, queryText);
       try {
         await whatsappOutboundMessageService.send({
           businessId,

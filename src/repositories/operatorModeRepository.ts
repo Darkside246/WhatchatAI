@@ -10,6 +10,8 @@ export type OperatorSettingsRecord = {
   pinN: number;
   pinR: number;
   pinP: number;
+  /** Null until the business names their assistant - see OperatorCommandService's /<name> trigger. */
+  assistantName: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -23,19 +25,23 @@ export type OperatorSessionRecord = {
   expiresAt: string;
   lastCommandAt: string | null;
   createdAt: string;
+  /** COMMAND (the existing rigid parser) or ASSISTANT (natural-language routing) - see assistantModeService.ts. Reuses this session's own 30-minute sliding expiry as the only timeout; no separate timer. */
+  interactionMode: 'COMMAND' | 'ASSISTANT';
 };
 
 const SETTINGS_COLS = `
   id, business_id AS "businessId", operator_wa_jid AS "operatorWaJid", enabled,
   pin_salt AS "pinSalt", pin_hash AS "pinHash",
   pin_n AS "pinN", pin_r AS "pinR", pin_p AS "pinP",
+  assistant_name AS "assistantName",
   created_at AS "createdAt", updated_at AS "updatedAt"
 `.trim();
 
 const SESSION_COLS = `
   id, business_id AS "businessId", wa_jid AS "waJid", status,
   pin_attempts AS "pinAttempts", expires_at AS "expiresAt",
-  last_command_at AS "lastCommandAt", created_at AS "createdAt"
+  last_command_at AS "lastCommandAt", created_at AS "createdAt",
+  interaction_mode AS "interactionMode"
 `.trim();
 
 export class OperatorModeRepository {
@@ -89,6 +95,13 @@ export class OperatorModeRepository {
     await this.db.query(
       `UPDATE operator_settings SET enabled = $2, updated_at = NOW() WHERE business_id = $1`,
       [businessId, enabled],
+    );
+  }
+
+  async setAssistantName(businessId: string, name: string): Promise<void> {
+    await this.db.query(
+      `UPDATE operator_settings SET assistant_name = $2, updated_at = NOW() WHERE business_id = $1`,
+      [businessId, name],
     );
   }
 
@@ -146,6 +159,21 @@ export class OperatorModeRepository {
 
   async deleteSession(businessId: string): Promise<void> {
     await this.db.query(`DELETE FROM operator_sessions WHERE business_id = $1`, [businessId]);
+  }
+
+  /**
+   * Only ever called against an already-AUTHENTICATED session - the /<name>
+   * trigger and exit phrases both require that to have already happened
+   * (see OperatorCommandService.handle()). Bumps expiry the same as a
+   * normal command, so entering/leaving assistant mode counts as activity.
+   */
+  async setInteractionMode(businessId: string, mode: 'COMMAND' | 'ASSISTANT'): Promise<void> {
+    await this.db.query(
+      `UPDATE operator_sessions
+       SET interaction_mode = $2, expires_at = NOW() + INTERVAL '30 minutes', last_command_at = NOW()
+       WHERE business_id = $1 AND status = 'AUTHENTICATED'`,
+      [businessId, mode],
+    );
   }
 
   // ── WhatsApp setup tokens ────────────────────────────────────────────────────

@@ -1,7 +1,12 @@
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { OperatorModeRepository } from '../../repositories/operatorModeRepository.js';
 import { PropertyOperationsRepository } from '../../repositories/propertyOperationsRepository.js';
+import { hasEntitlement } from '../platform/entitlementService.js';
+import { handleAssistantMessage } from './assistantModeService.js';
 import type { Queryable } from '../../repositories/types.js';
+
+const ASSISTANT_ENTITLEMENT_KEY = 'ai_personal_assistant';
+const EXIT_ASSISTANT_MODE = /^\/(bye|later|exit)\s*$/i;
 
 // ── PIN hashing ──────────────────────────────────────────────────────────────
 // scrypt via Node.js built-ins — no extra dependencies, server-side only.
@@ -50,7 +55,8 @@ export type OperatorCommandType =
   | 'DAILY_REPORT'
   | 'PROPERTY_NOTE'
   | 'INVOICE_STATUS'
-  | 'INCIDENT_LOG';
+  | 'INCIDENT_LOG'
+  | 'SET_ASSISTANT_NAME';
 
 type ParsedCommand =
   | { type: 'HELP' }
@@ -60,6 +66,7 @@ type ParsedCommand =
   | { type: 'PROPERTY_NOTE'; propertyRef: string; note: string }
   | { type: 'INVOICE_STATUS'; invoiceNumber: string; newStatus: 'PAID' | 'CANCELLED' }
   | { type: 'INCIDENT_LOG'; title: string; description: string; severity: 'low' | 'medium' | 'high' }
+  | { type: 'SET_ASSISTANT_NAME'; name: string }
   | { type: 'UNKNOWN'; original: string };
 
 // ── Simple rule-based parser ──────────────────────────────────────────────────
@@ -99,6 +106,9 @@ function parse(text: string): ParsedCommand {
     return { type: 'INCIDENT_LOG', title: body.slice(0, 80), description: body, severity: severity as 'low' | 'medium' | 'high' };
   }
 
+  const assistantNameMatch = text.match(/^(?:set\s+)?assistant\s+name\s+(?:to\s+)?(.+)/i);
+  if (assistantNameMatch) return { type: 'SET_ASSISTANT_NAME', name: assistantNameMatch[1]!.trim() };
+
   return { type: 'UNKNOWN', original: text };
 }
 
@@ -114,6 +124,7 @@ You can WhatsApp this number from your personal phone to manage your business. H
 • *cancel INV-YYYYMM-XXXX* — cancel an invoice
 • *note for [property]: [text]* — add a note to a property
 • *incident: [description]* — log a new incident (add "high" or "urgent" for high severity)
+• *set assistant name to [name]* — name your AI personal assistant, then message */[name]* any time to talk to it naturally (set reminders, and more over time)
 • *logout* — end your session
 
 📱 *How it works:*
@@ -127,6 +138,7 @@ const HELP_TEXT = `🔐 *Operator Commands*
 • *cancel INV-XXXXXX-XXXX* — cancel invoice
 • *note for [property]: [text]* — add property note
 • *incident: [description]* — log incident
+• *set assistant name to [name]* — name your AI assistant (message */[name]* to talk to it)
 • *logout* — end session
 
 All commands are scoped to your business only.`;
@@ -267,7 +279,7 @@ export class OperatorCommandService {
 
   // Main entry point called from the message worker.
   // Returns the text to send back to the operator via WhatsApp.
-  async handle(businessId: string, senderJid: string, text: string): Promise<OperatorResult> {
+  async handle(businessId: string, whatsappAccountId: string, senderJid: string, text: string): Promise<OperatorResult> {
     const settings = await this.repo.getSettings(businessId);
     if (!settings || !settings.enabled) {
       return { reply: 'Operator mode is not configured for this account.' };
@@ -299,6 +311,46 @@ export class OperatorCommandService {
       return { reply: `✅ *Authenticated.* Session active for 30 minutes.\n\n${HELP_TEXT}` };
     }
 
+    const trimmed = text.trim();
+
+    // ── Already in assistant mode: exit phrase, or route to natural language ──
+    // Only ever reachable from an already-AUTHENTICATED session (this branch
+    // is below the AWAITING_PIN check above) - the assistant never gets its
+    // own separate authentication, by design (see assistantModeService.ts's
+    // own doc comment).
+    if (session.interactionMode === 'ASSISTANT') {
+      if (EXIT_ASSISTANT_MODE.test(trimmed)) {
+        await this.repo.setInteractionMode(businessId, 'COMMAND');
+        return { reply: `👋 Leaving ${settings.assistantName ?? 'assistant'} mode. Back to normal commands — send *help* for a list.` };
+      }
+      await this.repo.bumpSession(businessId);
+      return handleAssistantMessage({
+        businessId,
+        whatsappAccountId,
+        operatorJid: senderJid,
+        assistantName: settings.assistantName ?? 'Assistant',
+        text: trimmed,
+      });
+    }
+
+    // ── Not yet in assistant mode: check for the /<assistantName> trigger ────
+    // Case-insensitive, exact match on the whole message - "/Aria" enters,
+    // "/Aria please help" does not (avoids a customer-service-style message
+    // that merely starts with the name accidentally entering assistant mode).
+    if (settings.assistantName) {
+      const triggerMatch = /^\/(.+)$/.exec(trimmed);
+      if (triggerMatch && triggerMatch[1]!.trim().toLowerCase() === settings.assistantName.trim().toLowerCase()) {
+        const entitled = await hasEntitlement(businessId, ASSISTANT_ENTITLEMENT_KEY);
+        if (!entitled) {
+          return { reply: `⚠️ ${settings.assistantName} mode isn't included in your current plan yet.` };
+        }
+        await this.repo.setInteractionMode(businessId, 'ASSISTANT');
+        return {
+          reply: `👋 Hi, I'm *${settings.assistantName}*. What can I help with?\n\n_Say */bye*, */later*, or */exit* to leave this mode._`,
+        };
+      }
+    }
+
     // ── Authenticated session: execute command ───────────────────────────────
     await this.repo.bumpSession(businessId);
     const command = parse(text);
@@ -328,6 +380,9 @@ export class OperatorCommandService {
 
       case 'INCIDENT_LOG':
         return this.handleIncidentLog(businessId, command.title, command.description, command.severity);
+
+      case 'SET_ASSISTANT_NAME':
+        return this.handleSetAssistantName(businessId, command.name);
 
       case 'UNKNOWN':
         return {
@@ -506,6 +561,27 @@ _Report for today's activity only. Send *stats week* or *stats month* for broade
       return { reply: `🚨 Incident logged (${severity.toUpperCase()}).\nRef: ${(rows[0]?.id ?? '?').slice(0, 8)}\n\n_"${title}"_` };
     } catch {
       return { reply: '⚠️ Could not log incident. Check your property operations setup.' };
+    }
+  }
+
+  private async handleSetAssistantName(businessId: string, rawName: string): Promise<OperatorResult> {
+    const name = rawName.trim();
+    if (name.length < 2 || name.length > 30) {
+      return { reply: '⚠️ Assistant name must be 2-30 characters.' };
+    }
+    if (name.startsWith('/')) {
+      return { reply: '⚠️ Do not include the "/" - just the name itself, e.g. "set assistant name to Aria".' };
+    }
+    if (EXIT_ASSISTANT_MODE.test(`/${name}`)) {
+      return { reply: '⚠️ That name conflicts with a reserved exit phrase (bye/later/exit). Choose a different name.' };
+    }
+    try {
+      await this.repo.setAssistantName(businessId, name);
+      return {
+        reply: `✅ Your assistant is now named *${name}*. Message */${name}* any time to start talking to it — say */bye*, */later*, or */exit* to leave that mode.`,
+      };
+    } catch {
+      return { reply: '⚠️ Could not save the assistant name. Try again shortly.' };
     }
   }
 }
