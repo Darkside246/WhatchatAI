@@ -1,18 +1,56 @@
-import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import { pool } from '../db/pool.js';
 import { ApprovalService } from '../services/platform/approvalService.js';
 import { TriageFeedbackRepository } from '../repositories/triageFeedbackRepository.js';
-import { PropertyOperationsRepository } from '../repositories/propertyOperationsRepository.js';
 import { notifyBusiness } from '../services/notificationService.js';
 import { requireAuth, requirePermission, type AuthContext } from './authMiddleware.js';
+import { actionBusService } from '../services/platform/actionBusService.js';
+import type { PlatformActionRow } from '../repositories/platformActionRepository.js';
+import type { ActionRequest, AgentCapability } from '../domain/platform/contracts.js';
 
 const router = Router();
 const approvals = new ApprovalService(pool);
 const feedbackRepo = new TriageFeedbackRepository(pool);
-const propertyRepo = new PropertyOperationsRepository(pool);
 const uuid = z.string().uuid();
+
+/** Maps the DB row back into the domain ActionRequest shape ActionBusService.execute() expects. Exported for direct unit testing. */
+export function actionRowToRequest(row: PlatformActionRow): ActionRequest {
+  return {
+    id: row.id,
+    tenantId: row.businessId,
+    type: row.type,
+    payload: row.payload,
+    requestedBy: { kind: row.requestedByKind, id: row.requestedById },
+    riskLevel: row.riskLevel,
+    approval: { required: row.approvalRequired, status: row.approvalStatus },
+    status: row.status,
+    idempotencyKey: row.idempotencyKey,
+    correlationId: row.correlationId,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+/**
+ * A human operator approving an action through this endpoint is a
+ * different kind of authority than the AI agent capability that originally
+ * proposed it - this synthesizes exactly enough capability to let
+ * evaluateActionPolicy's checks pass for this one already-approved action,
+ * scoped to nothing broader. agentId matches the original requester so the
+ * "requester must match capability owner" check still holds when the
+ * action was originally proposed by an agent. Exported for direct unit testing.
+ */
+export function humanApprovalCapability(action: ActionRequest): AgentCapability {
+  return {
+    id: `human-approval:${action.id}`,
+    agentId: action.requestedBy.id,
+    description: 'Synthetic capability representing a human operator dispatching an action they just approved.',
+    allowedActions: [action.type],
+    forbiddenActions: [],
+    requiresApprovalFor: [],
+    maxRiskLevel: 'CRITICAL',
+  };
+}
 
 router.use(requireAuth);
 
@@ -54,46 +92,33 @@ router.post('/:actionId/approve', requirePermission('property.approve'), async (
           });
         }
 
-        // For maintenance work order actions: create incident + work order.
-        if (action.type === 'maintenance.create_work_order' && typeof p.propertyId === 'string') {
-          const summary = typeof p.summary === 'string' ? p.summary : typeof p.messageText === 'string' ? p.messageText : 'Maintenance issue';
-          const category = String(p.category ?? 'OTHER');
-          const urgency = String(p.urgency ?? 'ROUTINE');
-          const incident = await propertyRepo.createIncident({
-            id: randomUUID(),
-            businessId: auth.businessId,
-            propertyId: p.propertyId,
-            sourceChannel: 'WHATSAPP',
-            title: `${category} — ${urgency}`,
-            description: typeof p.messageText === 'string' ? p.messageText : summary,
-            category,
-            severity: urgency,
-            status: 'OPEN',
-            confidence: typeof p.confidence === 'number' ? p.confidence : undefined,
-            aiSummary: summary,
-          });
-
-          // Prefer a vendor that handles this category and is emergency-available.
-          const vendors = await propertyRepo.listVendors(auth.businessId, category.toLowerCase());
-          const vendor = vendors.find((v) => v.emergencyAvailable) ?? vendors[0];
-          await propertyRepo.createWorkOrder({
-            id: randomUUID(),
-            businessId: auth.businessId,
-            incidentId: incident.id,
-            vendorId: vendor?.id,
-            status: 'PENDING_APPROVAL',
-            priority: urgency,
-            description: summary,
-          });
+        // Real dispatch through ActionBusService - the production
+        // execution path for this action type, registered during
+        // platformBootstrap.ts's initializePlatformFoundation(). Not every
+        // approved action type has a registered executor (e.g.
+        // maintenance.request_human_review and
+        // maintenance.contact_emergency_service have no further side
+        // effect beyond the notification below) - DENIED for "no executor
+        // registered" is an expected, benign outcome for those, not a
+        // failure to alarm on. Only a genuine FAILED means the real side
+        // effect (creating the incident/work order) did not happen.
+        const actionRequest = actionRowToRequest(action);
+        const dispatch = await actionBusService.execute(actionRequest, humanApprovalCapability(actionRequest), {
+          tenantId: auth.businessId,
+          actorId: auth.userId,
+        });
+        if (dispatch.status === 'FAILED') {
+          console.error(`[PlatformApprovalRouter] ActionBus dispatch failed for action ${action.id} (${action.type}):`, dispatch.error);
         }
 
         // Notify the team.
+        const workOrderCreated = dispatch.status === 'SUCCEEDED' && action.type === 'maintenance.create_work_order';
         await notifyBusiness({
           businessId: auth.businessId,
           type: 'HUMAN_HANDOFF',
           severity: 'info',
           title: 'Action request approved',
-          body: `A maintenance action was approved${body.data.reason ? `: ${body.data.reason}` : ''}. A work order has been created.`,
+          body: `A maintenance action was approved${body.data.reason ? `: ${body.data.reason}` : ''}.${workOrderCreated ? ' A work order has been created.' : ''}`,
         });
       } catch (err) {
         console.error('[PlatformApprovalRouter] Post-approval side-effect failed:', err instanceof Error ? err.message : err);

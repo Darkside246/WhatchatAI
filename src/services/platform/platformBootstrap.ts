@@ -2,6 +2,10 @@ import { propertyMaintenanceTriageSkill, skillRegistry } from './skillRegistry.j
 import { moduleRegistry, propertyOperationsModule } from './moduleRegistry.js';
 import { initializeAiGateway } from '../ai/aiGatewayBootstrap.js';
 import { initializeAgentRuntimes } from '../agents/agentRuntimeService.js';
+import { actionBusService } from './actionBusService.js';
+import { PlatformActionRepository } from '../../repositories/platformActionRepository.js';
+import { pool } from '../../db/pool.js';
+import { MaintenanceCreateWorkOrderExecutor, MAINTENANCE_CREATE_WORK_ORDER_ACTION_TYPE } from '../property/maintenanceWorkOrderExecutor.js';
 
 let initialized = false;
 
@@ -18,6 +22,11 @@ export function initializePlatformFoundation(): void {
 
   if (!moduleRegistry.get(propertyOperationsModule.id)) moduleRegistry.register(propertyOperationsModule);
   if (!skillRegistry.get(propertyMaintenanceTriageSkill.id)) skillRegistry.register(propertyMaintenanceTriageSkill);
+
+  actionBusService.setRepository(new PlatformActionRepository(pool));
+  if (!actionBusService.listExecutors().includes(MAINTENANCE_CREATE_WORK_ORDER_ACTION_TYPE)) {
+    actionBusService.register(new MaintenanceCreateWorkOrderExecutor());
+  }
 
   // Property maintenance triage is a real, sellable product capability, not
   // an experimental feature - on by default. PROPERTY_OPERATIONS_ENABLED=false
