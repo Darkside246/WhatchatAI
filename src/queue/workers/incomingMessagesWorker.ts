@@ -56,6 +56,7 @@ import { OperatorCommandService } from '../../services/operator/operatorCommandS
 import { ReminderRepository } from '../../repositories/reminderRepository.js';
 import { initializePlatformFoundation } from '../../services/platform/platformBootstrap.js';
 import { runPropertyMaintenanceHandoff } from '../../services/property/propertyMaintenanceOrchestrator.js';
+import { stripDeviceSuffix } from '../../services/whatsappConnectionService.js';
 // Runs here, not in server/index.ts: that process owns the live Baileys
 // socket AND sends every outbound message, so it is exactly the event loop
 // that must never stall. documentParseWorker has no live-socket dependency
@@ -126,6 +127,35 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     }
   }
 
+  // A message sent to yourself (fromMe, in the chat whose remoteJid is the
+  // connected account's own JID) can never be a real customer conversation -
+  // it is either an Operator Mode / named-assistant command, or an ordinary
+  // private note. needsAiHandoff below requires !message.fromMe, which
+  // correctly stops the AI from replying to its own echoed outbound sends
+  // inside a *customer* chat - but it also has the side effect of silencing
+  // this entirely separate self-chat pathway for the common solo-owner
+  // setup where the operator's own personal number IS the connected
+  // account (WhatsApp's own "Message Yourself" chat). Handled here instead:
+  // immediately, never debounced, and never falls through to a customer AI
+  // reply either way, since a self-chat is never a real customer.
+  if (
+    result.message.wasInserted &&
+    message.fromMe &&
+    message.isLive &&
+    stripDeviceSuffix(message.remoteJid) === accountJid &&
+    result.message.textContent
+  ) {
+    await tryHandleOperatorMessage({
+      businessId,
+      whatsappAccountId,
+      chatId: result.chat.id,
+      senderJid: accountJid,
+      text: result.message.textContent,
+      messageId: message.messageId,
+    });
+    return;
+  }
+
   // Only a genuinely new, live, inbound message in an AI-driven chat needs a
   // response - not duplicates, not historical backfill, not our own outbound
   // sends, and not chats a human has taken over. A media message (with or
@@ -151,6 +181,66 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
   if (needsAiHandoff) {
     await scheduleAiDebounce({ businessId, whatsappAccountId, chatId: result.chat.id });
   }
+}
+
+/**
+ * Checks whether `text` from `senderJid` is a WA-setup-wizard message or a
+ * registered-operator command and, if so, handles it and sends the reply -
+ * returning true so the caller stops there and never falls through to a
+ * customer AI reply. Shared by the debounced customer-chat path
+ * (runAiHandoff, below) and the immediate self-chat path (processJob,
+ * above) so both apply the exact same operator-authentication boundary
+ * rather than two copies that could quietly drift apart.
+ */
+async function tryHandleOperatorMessage(params: {
+  businessId: string;
+  whatsappAccountId: string;
+  chatId: string;
+  senderJid: string;
+  text: string;
+  messageId: string;
+}): Promise<boolean> {
+  const { businessId, whatsappAccountId, chatId, senderJid, text, messageId } = params;
+
+  // Check WA setup wizard FIRST: this works even before operator mode is configured,
+  // so the sender JID doesn't need to be the registered operator yet.
+  if (await operatorCommandService.isWaSetupMessage(businessId, senderJid, text)) {
+    const { reply } = await operatorCommandService.handleWaSetup(businessId, senderJid, text);
+    try {
+      await whatsappOutboundMessageService.send({
+        businessId,
+        whatsappAccountId,
+        chatId,
+        idempotencyKey: `operator-setup-wa:${messageId}`,
+        messageType: 'text',
+        text: reply,
+        requestedBy: 'ai',
+      });
+    } catch (err) {
+      console.error('[IncomingMessagesWorker] WA setup reply failed to send:', err instanceof Error ? err.message : err);
+    }
+    return true;
+  }
+
+  if (await operatorCommandService.isOperatorMessage(businessId, senderJid)) {
+    const { reply } = await operatorCommandService.handle(businessId, whatsappAccountId, senderJid, text);
+    try {
+      await whatsappOutboundMessageService.send({
+        businessId,
+        whatsappAccountId,
+        chatId,
+        idempotencyKey: `operator-reply:${messageId}`,
+        messageType: 'text',
+        text: reply,
+        requestedBy: 'ai',
+      });
+    } catch (err) {
+      console.error('[IncomingMessagesWorker] Operator reply failed to send:', err instanceof Error ? err.message : err);
+    }
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -185,41 +275,7 @@ async function runAiHandoff(params: {
     );
     senderJid = jidRows[0]?.whatsapp_jid;
 
-    // Check WA setup wizard FIRST: this works even before operator mode is configured,
-    // so the sender JID doesn't need to be the registered operator yet.
-    if (senderJid && (await operatorCommandService.isWaSetupMessage(businessId, senderJid, queryText))) {
-      const { reply } = await operatorCommandService.handleWaSetup(businessId, senderJid, queryText);
-      try {
-        await whatsappOutboundMessageService.send({
-          businessId,
-          whatsappAccountId,
-          chatId,
-          idempotencyKey: `operator-setup-wa:${messageId}`,
-          messageType: 'text',
-          text: reply,
-          requestedBy: 'ai',
-        });
-      } catch (err) {
-        console.error('[IncomingMessagesWorker] WA setup reply failed to send:', err instanceof Error ? err.message : err);
-      }
-      return;
-    }
-
-    if (senderJid && (await operatorCommandService.isOperatorMessage(businessId, senderJid))) {
-      const { reply } = await operatorCommandService.handle(businessId, whatsappAccountId, senderJid, queryText);
-      try {
-        await whatsappOutboundMessageService.send({
-          businessId,
-          whatsappAccountId,
-          chatId,
-          idempotencyKey: `operator-reply:${messageId}`,
-          messageType: 'text',
-          text: reply,
-          requestedBy: 'ai',
-        });
-      } catch (err) {
-        console.error('[IncomingMessagesWorker] Operator reply failed to send:', err instanceof Error ? err.message : err);
-      }
+    if (senderJid && (await tryHandleOperatorMessage({ businessId, whatsappAccountId, chatId, senderJid, text: queryText, messageId }))) {
       return;
     }
 
