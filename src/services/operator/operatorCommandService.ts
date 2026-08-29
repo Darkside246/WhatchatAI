@@ -1,5 +1,6 @@
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { OperatorModeRepository } from '../../repositories/operatorModeRepository.js';
+import { PropertyOperationsRepository } from '../../repositories/propertyOperationsRepository.js';
 import type { Queryable } from '../../repositories/types.js';
 
 // ── PIN hashing ──────────────────────────────────────────────────────────────
@@ -157,11 +158,13 @@ export type OperatorResult = { reply: string };
 
 export class OperatorCommandService {
   private readonly repo: OperatorModeRepository;
+  private readonly propertyRepo: PropertyOperationsRepository;
   private readonly db: Queryable;
 
   constructor(db: Queryable) {
     this.db = db;
     this.repo = new OperatorModeRepository(db);
+    this.propertyRepo = new PropertyOperationsRepository(db);
   }
 
   // Returns true if the message is part of a WA setup wizard (trigger or ongoing session).
@@ -299,10 +302,10 @@ export class OperatorCommandService {
     // ── Authenticated session: execute command ───────────────────────────────
     await this.repo.bumpSession(businessId);
     const command = parse(text);
-    return this.executeCommand(businessId, command);
+    return this.executeCommand(businessId, senderJid, command);
   }
 
-  private async executeCommand(businessId: string, command: ParsedCommand): Promise<OperatorResult> {
+  private async executeCommand(businessId: string, senderJid: string, command: ParsedCommand): Promise<OperatorResult> {
     switch (command.type) {
       case 'HELP':
         return { reply: HELP_TEXT };
@@ -321,7 +324,7 @@ export class OperatorCommandService {
         return this.handleInvoiceStatus(businessId, command.invoiceNumber, command.newStatus);
 
       case 'PROPERTY_NOTE':
-        return this.handlePropertyNote(businessId, command.propertyRef, command.note);
+        return this.handlePropertyNote(businessId, senderJid, command.propertyRef, command.note);
 
       case 'INCIDENT_LOG':
         return this.handleIncidentLog(businessId, command.title, command.description, command.severity);
@@ -460,9 +463,29 @@ _Report for today's activity only. Send *stats week* or *stats month* for broade
     }
   }
 
-  private async handlePropertyNote(_businessId: string, propertyRef: string, note: string): Promise<OperatorResult> {
-    // Future: look up property by name/ref and append to guest_instructions or notes field.
-    return { reply: `📝 Note queued for property matching "${propertyRef}":\n\n_${note}_\n\n(Full write-back coming in the next release.)` };
+  private async handlePropertyNote(businessId: string, senderJid: string, propertyRef: string, note: string): Promise<OperatorResult> {
+    try {
+      const matches = await this.propertyRepo.findPropertiesByNameForBusiness(businessId, propertyRef);
+      if (matches.length === 0) {
+        return { reply: `⚠️ No property matching "${propertyRef}" found. Check the name and try again.` };
+      }
+      if (matches.length > 1) {
+        const names = matches.map((property) => `• ${property.name}`).join('\n');
+        return { reply: `⚠️ "${propertyRef}" matches more than one property:\n${names}\n\nBe more specific.` };
+      }
+
+      const property = matches[0]!;
+      await this.propertyRepo.createPropertyNote({
+        id: randomUUID(),
+        businessId,
+        propertyId: property.id,
+        note,
+        createdByJid: senderJid,
+      });
+      return { reply: `📝 Note saved for *${property.name}*:\n\n_${note}_` };
+    } catch {
+      return { reply: '⚠️ Could not save the note. Check the property name and try again.' };
+    }
   }
 
   private async handleIncidentLog(businessId: string, title: string, description: string, severity: 'low' | 'medium' | 'high'): Promise<OperatorResult> {
