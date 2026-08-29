@@ -1,10 +1,27 @@
 import type { Content } from '@google/genai';
+import { ApiError } from '@google/genai';
 import { getGeminiClient } from '../geminiClient.js';
 import * as gooseService from '../gooseService.js';
 import { IntegrationSettingsRepository } from '../../repositories/integrationSettingsRepository.js';
 import { pool } from '../../db/pool.js';
 import type { RegisteredAiProvider, GatewayMedia, GatewayToolDefinition, GatewayToolCall, GatewayToolResponse } from './aiGateway.js';
-import { aiGateway } from './aiGateway.js';
+import { aiGateway, ProviderConfigRejectedError } from './aiGateway.js';
+
+/**
+ * Translates a bare Gemini 400 into the gateway's generic
+ * ProviderConfigRejectedError - real evidence (the "Test Gemini connection"
+ * diagnostic) showed this exact status rejecting the temperature +
+ * thinkingConfig combination outright for at least one deployed model/key,
+ * with no field-level detail to act on beyond the status code. Any other
+ * error (auth, capacity, network) passes through unchanged so AiGateway's
+ * ordinary failover still applies to it.
+ */
+function asConfigRejection(error: unknown): never {
+  if (error instanceof ApiError && error.status === 400) {
+    throw new ProviderConfigRejectedError(`Gemini rejected the request configuration: ${error.message}`);
+  }
+  throw error;
+}
 
 export interface ProviderGenerateInput {
   tenantId: string;
@@ -37,7 +54,27 @@ export class GeminiProvider implements RegisteredAiProvider {
     // tokens competing with maxOutputTokens for the same budget.
     const config:{maxOutputTokens:number;responseMimeType:string;thinkingConfig:{thinkingBudget:number};temperature?:number}={maxOutputTokens:input.maxOutputTokens??1024,responseMimeType:input.responseFormat==='json'?'application/json':'text/plain',thinkingConfig:{thinkingBudget:0}};
     if(input.temperature!==undefined)config.temperature=input.temperature;
-    const response=await client.models.generateContent({model:this.model,contents:[{role:'user',parts}],config});const text=response.text?.trim()??'';if(!text)throw new Error('Gemini returned an empty response');return{provider:this.name,text};}
+    const response=await client.models.generateContent({model:this.model,contents:[{role:'user',parts}],config}).catch(asConfigRejection);const text=response.text?.trim()??'';if(!text)throw new Error('Gemini returned an empty response');return{provider:this.name,text};}
+
+  /**
+   * The same-provider fallback AiGateway calls at most once, only after
+   * generate() threw ProviderConfigRejectedError - the literal bare-minimum
+   * request real models must support (system instruction + conversation
+   * turns + maxOutputTokens, nothing else). No thinkingConfig override, no
+   * temperature, no tools: this mirrors aiReplyService.ts's own
+   * production-incident-driven retry byte for byte, because that retry is
+   * the only evidence this bare shape is actually safe.
+   */
+  async generateReduced(input:{tenantId:string;operation:string;messages:Array<{role:'system'|'user'|'assistant';content:string}>;maxOutputTokens?:number}){
+    const client=getGeminiClient();if(!client)throw new Error('GEMINI_API_KEY is not configured');
+    const systemInstruction=input.messages.filter((message)=>message.role==='system').map((message)=>message.content).join('\n\n');
+    const contents:Content[]=input.messages.filter((message)=>message.role!=='system').map((message)=>({role:message.role==='assistant'?('model' as const):('user' as const),parts:[{text:message.content}]}));
+    const config={systemInstruction,maxOutputTokens:input.maxOutputTokens??1024};
+    const response=await client.models.generateContent({model:this.model,contents,config});
+    const text=response.text?.trim()??'';
+    if(!text)throw new Error('Gemini returned an empty response on the reduced retry');
+    return{provider:this.name,text};
+  }
 
   /**
    * A deliberately separate path from the flattened-single-blob buildPrompt()
@@ -68,7 +105,7 @@ export class GeminiProvider implements RegisteredAiProvider {
       tools:[{functionDeclarations:input.tools!}],
     };
     if(input.temperature!==undefined)config.temperature=input.temperature;
-    const response=await client.models.generateContent({model:this.model,contents,config});
+    const response=await client.models.generateContent({model:this.model,contents,config}).catch(asConfigRejection);
     const toolCalls:GatewayToolCall[]|undefined=response.functionCalls?.length?response.functionCalls.map((call)=>({name:call.name??'',args:(call.args??{}) as Record<string,unknown>})):undefined;
     const text=response.text?.trim()??'';
     if(!text&&!toolCalls?.length)throw new Error('Gemini returned an empty response');

@@ -137,6 +137,25 @@ export interface AIProviderToolResponse {
   response: Record<string, unknown>;
 }
 
+/**
+ * Thrown by a provider's generate() to signal "this specific request shape
+ * (an optional-parameter combination) was rejected, but a stripped-down
+ * request would likely succeed" - as opposed to a generic failure (bad
+ * credentials, network error, capacity), which should just fail over to the
+ * next provider as usual. Grounded in a real production incident: at least
+ * one deployed Gemini model/key rejects the temperature+thinkingConfig
+ * combination outright with a bare 400, no field-level detail. A provider
+ * throws this instead of a plain Error only when it can actually identify
+ * that class of rejection (e.g. an HTTP 400 from its own SDK) - never as a
+ * generic "something went wrong" catch-all.
+ */
+export class ProviderConfigRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProviderConfigRejectedError';
+  }
+}
+
 export interface AIProviderAdapter {
   readonly name: string;
   capabilities(): Promise<{ text: boolean; vision: boolean; audio: boolean; video: boolean; documents: boolean; functionCalling: boolean }>;
@@ -158,5 +177,25 @@ export interface AIProviderAdapter {
     usage?: { inputTokens?: number; outputTokens?: number };
     /** Present instead of (or alongside a possibly-empty) text when the model wants to call a tool. */
     toolCalls?: AIProviderToolCall[];
+  }>;
+  /**
+   * Optional same-provider fallback: the most minimal request this provider
+   * can make - no media, no tools, no temperature, no responseFormat
+   * override. Called by AiGateway at most once, on the same provider,
+   * strictly after generate() threw ProviderConfigRejectedError - never as
+   * a normal code path, and never by a caller directly. A provider that
+   * doesn't implement this simply has no reduced fallback: AiGateway treats
+   * the ProviderConfigRejectedError like any other failure and moves on to
+   * the next provider in the chain.
+   */
+  generateReduced?(input: {
+    tenantId: string;
+    operation: string;
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+    maxOutputTokens?: number;
+  }): Promise<{
+    text: string;
+    provider: string;
+    usage?: { inputTokens?: number; outputTokens?: number };
   }>;
 }

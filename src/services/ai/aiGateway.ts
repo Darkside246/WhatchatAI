@@ -1,4 +1,7 @@
 import type { AIProviderAdapter, AIProviderToolDefinition, AIProviderToolCall, AIProviderToolResponse } from '../../domain/platform/contracts.js';
+import { ProviderConfigRejectedError } from '../../domain/platform/contracts.js';
+
+export { ProviderConfigRejectedError };
 
 export interface GatewayMedia { mimeType: string; url?: string; base64Data?: string; }
 export interface GatewayMessage { role: 'system' | 'user' | 'assistant'; content: string; }
@@ -124,7 +127,24 @@ export class AiGateway {
         if (response.usage !== undefined) result.usage = response.usage;
         if (toolCalls) result.toolCalls = toolCalls;
         return result;
-      } catch (error) { failures.push(`${provider.name}: ${error instanceof Error ? error.message : String(error)}`); }
+      } catch (error) {
+        if (error instanceof ProviderConfigRejectedError && provider.generateReduced) {
+          try {
+            const reducedInput: Parameters<NonNullable<AIProviderAdapter['generateReduced']>>[0] = { tenantId: request.tenantId, operation: request.operation, messages: request.messages };
+            if (request.maxOutputTokens !== undefined) reducedInput.maxOutputTokens = request.maxOutputTokens;
+            const reducedResponse = await provider.generateReduced(reducedInput);
+            const text = reducedResponse.text.trim();
+            if (!text) throw new Error('provider returned an empty response on the reduced retry');
+            const result: GatewayResponse = { provider: reducedResponse.provider, model: provider.model, text, attemptedProviders };
+            if (reducedResponse.usage !== undefined) result.usage = reducedResponse.usage;
+            return result;
+          } catch (reducedError) {
+            failures.push(`${provider.name}: config rejected (${error.message}); reduced retry also failed: ${reducedError instanceof Error ? reducedError.message : String(reducedError)}`);
+            continue;
+          }
+        }
+        failures.push(`${provider.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     throw new Error(`All eligible AI providers failed. ${failures.join(' | ')}`);
   }

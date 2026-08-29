@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AiGateway, type RegisteredAiProvider, type GatewayToolCall } from './aiGateway.js';
+import { AiGateway, ProviderConfigRejectedError, type RegisteredAiProvider, type GatewayToolCall } from './aiGateway.js';
 
 type Caps = Awaited<ReturnType<RegisteredAiProvider['capabilities']>>;
 
@@ -10,8 +10,10 @@ function fakeProvider(options: {
   caps?: Caps;
   result?: string;
   error?: string;
+  configRejected?: string;
   toolCalls?: GatewayToolCall[];
   onGenerate?: (input: Parameters<RegisteredAiProvider['generate']>[0]) => void;
+  reduced?: { result?: string; error?: string; onGenerateReduced?: (input: Parameters<NonNullable<RegisteredAiProvider['generateReduced']>>[0]) => void };
 }): RegisteredAiProvider {
   const provider: RegisteredAiProvider = {
     name: options.name,
@@ -22,6 +24,7 @@ function fakeProvider(options: {
     },
     async generate(input) {
       options.onGenerate?.(input);
+      if (options.configRejected) throw new ProviderConfigRejectedError(options.configRejected);
       if (options.error) throw new Error(options.error);
       const response: { provider: string; text: string; toolCalls?: GatewayToolCall[] } = {
         provider: options.name,
@@ -31,6 +34,13 @@ function fakeProvider(options: {
       return response;
     },
   };
+  if (options.reduced) {
+    provider.generateReduced = async (input) => {
+      options.reduced!.onGenerateReduced?.(input);
+      if (options.reduced!.error) throw new Error(options.reduced!.error);
+      return { provider: options.name, text: options.reduced!.result ?? 'reduced-ok' };
+    };
+  }
   return provider;
 }
 
@@ -123,5 +133,64 @@ describe('AiGateway', () => {
     const result = await gateway.generate({ ...baseRequest, tools: [timeToolDefinition] });
     expect(result.text).toBe('');
     expect(result.toolCalls).toEqual(toolCalls);
+  });
+
+  it('retries the same provider with a reduced request after a ProviderConfigRejectedError, never touching the next provider', async () => {
+    const gateway = new AiGateway();
+    const onGenerate = vi.fn();
+    const onGenerateReduced = vi.fn();
+    gateway.register(fakeProvider({
+      name: 'flaky',
+      priority: 10,
+      onGenerate,
+      configRejected: 'rejected the temperature+thinkingConfig combination',
+      reduced: { result: 'bare minimum reply', onGenerateReduced },
+    }));
+    gateway.register(fakeProvider({ name: 'never-reached', priority: 20, result: 'should not be used' }));
+
+    const result = await gateway.generate({ ...baseRequest, temperature: 0.6 });
+
+    expect(result.provider).toBe('flaky');
+    expect(result.text).toBe('bare minimum reply');
+    expect(result.attemptedProviders).toEqual(['flaky']);
+    expect(onGenerateReduced).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId: baseRequest.tenantId, operation: baseRequest.operation, messages: baseRequest.messages }),
+    );
+    // The reduced retry must never carry the rejected optional parameters -
+    // it IS the "strip everything but the essentials" request by definition.
+    const reducedInput = onGenerateReduced.mock.calls[0]![0] as Record<string, unknown>;
+    expect(reducedInput).not.toHaveProperty('temperature');
+    expect(reducedInput).not.toHaveProperty('tools');
+  });
+
+  it('falls through to the next provider when the config-rejected provider has no reduced fallback', async () => {
+    const gateway = new AiGateway();
+    gateway.register(fakeProvider({ name: 'flaky', priority: 10, configRejected: 'rejected' }));
+    gateway.register(fakeProvider({ name: 'fallback', priority: 20, result: 'fallback answer' }));
+
+    const result = await gateway.generate(baseRequest);
+    expect(result.provider).toBe('fallback');
+    expect(result.attemptedProviders).toEqual(['flaky', 'fallback']);
+  });
+
+  it('falls through to the next provider when the reduced retry itself fails', async () => {
+    const gateway = new AiGateway();
+    gateway.register(fakeProvider({ name: 'flaky', priority: 10, configRejected: 'rejected', reduced: { error: 'still broken' } }));
+    gateway.register(fakeProvider({ name: 'fallback', priority: 20, result: 'fallback answer' }));
+
+    const result = await gateway.generate(baseRequest);
+    expect(result.provider).toBe('fallback');
+    expect(result.attemptedProviders).toEqual(['flaky', 'fallback']);
+  });
+
+  it('does not apply the reduced-retry path to an ordinary (non-config-rejection) failure', async () => {
+    const gateway = new AiGateway();
+    const onGenerateReduced = vi.fn();
+    gateway.register(fakeProvider({ name: 'down', priority: 10, error: 'network timeout', reduced: { onGenerateReduced } }));
+    gateway.register(fakeProvider({ name: 'fallback', priority: 20, result: 'fallback answer' }));
+
+    const result = await gateway.generate(baseRequest);
+    expect(result.provider).toBe('fallback');
+    expect(onGenerateReduced).not.toHaveBeenCalled();
   });
 });

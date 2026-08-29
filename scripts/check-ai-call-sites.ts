@@ -53,7 +53,7 @@ const ALLOWLIST: Record<string, AllowlistEntry> = {
   },
   'src/services/aiReplyService.ts': {
     reason: 'migrate-to-gateway',
-    note: 'PATH A - production WhatsApp replies. Blocked on AiGateway gaining tool-calling support (the time tool) and a temperature/thinkingConfig 400-retry fallback equivalent to what this file already does - not a simple swap, see blueprint audit P5 trace.',
+    note: 'PATH A - production WhatsApp replies. AiGateway now supports tool-calling (P5.3) and a same-provider reduced-request retry equivalent to this file\'s 400-retry fallback - the migration itself (P5.4) is a deliberate, separately-audited swap of the live path, not yet done.',
   },
 };
 

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from '@google/genai';
 import { GooseProvider, GeminiProvider } from './providerAdapters.js';
-import { AiGateway } from './aiGateway.js';
+import { AiGateway, ProviderConfigRejectedError } from './aiGateway.js';
 import { IntegrationSettingsRepository } from '../../repositories/integrationSettingsRepository.js';
 import { pool } from '../../db/pool.js';
 
@@ -253,5 +254,94 @@ describe('GeminiProvider tool calling', () => {
       }),
     ).rejects.toThrow('does not currently support media');
     expect(generateContentMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GeminiProvider config-rejection retry', () => {
+  const timeTool = { name: 'get_current_time', description: 'Returns the current time', parameters: { type: 'OBJECT', properties: {} } };
+
+  beforeEach(() => {
+    generateContentMock.mockReset();
+  });
+
+  it('translates a bare 400 into ProviderConfigRejectedError on the non-tool path', async () => {
+    generateContentMock.mockRejectedValueOnce(new ApiError({ message: 'Bad Request', status: 400 }));
+    const provider = new GeminiProvider();
+    await expect(
+      provider.generate({ tenantId: 'tenant-1', operation: 'reply.suggest', messages: [{ role: 'user', content: 'Draft a reply.' }], temperature: 0.7 }),
+    ).rejects.toThrow(ProviderConfigRejectedError);
+  });
+
+  it('translates a bare 400 into ProviderConfigRejectedError on the tool-calling path', async () => {
+    generateContentMock.mockRejectedValueOnce(new ApiError({ message: 'Bad Request', status: 400 }));
+    const provider = new GeminiProvider();
+    await expect(
+      provider.generate({ tenantId: 'tenant-1', operation: 'reply.generate', messages: [{ role: 'user', content: 'Are you open?' }], tools: [timeTool], temperature: 0.6 }),
+    ).rejects.toThrow(ProviderConfigRejectedError);
+  });
+
+  it('does not convert an unrelated failure (503, generic error) into a config rejection', async () => {
+    generateContentMock.mockRejectedValueOnce(new ApiError({ message: 'The service is currently unavailable.', status: 503 }));
+    const provider = new GeminiProvider();
+    let caught: unknown;
+    try {
+      await provider.generate({ tenantId: 'tenant-1', operation: 'reply.suggest', messages: [{ role: 'user', content: 'Draft a reply.' }] });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ApiError);
+    expect(caught).not.toBeInstanceOf(ProviderConfigRejectedError);
+  });
+
+  it('generateReduced() sends only system instruction, conversation turns, and maxOutputTokens - no tools, no temperature', async () => {
+    generateContentMock.mockResolvedValueOnce({ text: 'We are open until 5pm.' });
+    const provider = new GeminiProvider();
+
+    const result = await provider.generateReduced({
+      tenantId: 'tenant-1',
+      operation: 'reply.generate',
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Are you open right now?' },
+      ],
+      maxOutputTokens: 512,
+    });
+
+    expect(result).toEqual({ provider: 'gemini', text: 'We are open until 5pm.' });
+    const call = generateContentMock.mock.calls[0]![0] as { contents: unknown; config: Record<string, unknown> };
+    expect(call.config).toEqual({ systemInstruction: 'You are a helpful assistant.', maxOutputTokens: 512 });
+    expect(call.contents).toEqual([{ role: 'user', parts: [{ text: 'Are you open right now?' }] }]);
+    expect(call.config).not.toHaveProperty('temperature');
+    expect(call.config).not.toHaveProperty('tools');
+    expect(call.config).not.toHaveProperty('thinkingConfig');
+  });
+
+  it('generateReduced() throws on an empty response rather than fabricating a reply', async () => {
+    generateContentMock.mockResolvedValueOnce({ text: '' });
+    const provider = new GeminiProvider();
+    await expect(
+      provider.generateReduced({ tenantId: 'tenant-1', operation: 'reply.generate', messages: [{ role: 'user', content: 'hi' }] }),
+    ).rejects.toThrow('empty response');
+  });
+
+  it('AiGateway end-to-end: a config-rejected Gemini call recovers via generateReduced without falling over to another provider', async () => {
+    generateContentMock
+      .mockRejectedValueOnce(new ApiError({ message: 'Bad Request', status: 400 }))
+      .mockResolvedValueOnce({ text: 'Recovered with the bare minimum request.' });
+
+    const gateway = new AiGateway();
+    gateway.register(new GeminiProvider());
+
+    const response = await gateway.generate({
+      tenantId: 'tenant-1',
+      operation: 'reply.generate',
+      messages: [{ role: 'user', content: 'Are you open right now?' }],
+      temperature: 0.6,
+    });
+
+    expect(response.provider).toBe('gemini');
+    expect(response.text).toBe('Recovered with the bare minimum request.');
+    expect(response.attemptedProviders).toEqual(['gemini']);
+    expect(generateContentMock).toHaveBeenCalledTimes(2);
   });
 });
