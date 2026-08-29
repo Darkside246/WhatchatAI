@@ -10,11 +10,9 @@ export interface AiToolPolicyEntry {
  * Every AI-invocable tool must be registered here with an explicit risk
  * tier before it can be wired into any Gemini/Goose call - this is the
  * production-safety directive's "zero-trust AI tool model" (Section 7)
- * made real rather than aspirational. Today there is exactly one tool,
- * and it is READ-only, deliberately: no WRITE/SEND/HIGH_RISK/SYSTEM-tier
- * tool has ever been given to the model in this codebase. Adding a new
- * tool anywhere without also registering it here means `agentGuard`
- * rejects it - fails closed, not open.
+ * made real rather than aspirational. Adding a new tool anywhere without
+ * also registering it here means `agentGuard` rejects it - fails closed,
+ * not open.
  */
 const AI_TOOL_POLICY: Record<string, AiToolPolicyEntry> = {
   get_current_time: {
@@ -22,6 +20,13 @@ const AI_TOOL_POLICY: Record<string, AiToolPolicyEntry> = {
     risk: 'READ',
     description:
       'Reads the trusted, server-computed TimeContext for the business. Takes no arguments; no corresponding write/set tool exists anywhere in this codebase.',
+  },
+  update_conversation_memory: {
+    name: 'update_conversation_memory',
+    risk: 'WRITE',
+    description:
+      'Writes a goal/facts/open-questions patch to this exact conversation\'s structured state row (conversation_states). ' +
+      'Cannot touch any other business record, execute any action, or affect any other conversation.',
   },
 };
 

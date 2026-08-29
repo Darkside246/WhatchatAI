@@ -6,6 +6,7 @@ import type { WhatsAppMessageRecord } from '../src/repositories/whatsappMessageR
 import { buildTimeContext } from '../src/services/time/timeContext.js';
 import { listRegisteredTools } from '../src/services/ai/aiToolPolicy.js';
 import { GET_CURRENT_TIME_TOOL_NAME } from '../src/services/time/getCurrentTimeTool.js';
+import { UPDATE_CONVERSATION_STATE_TOOL_NAME } from '../src/services/state/updateConversationStateTool.js';
 import { emptyConversationState } from '../src/repositories/conversationStateRepository.js';
 
 function fakeAgent(overrides: Partial<AiAgentRecord> = {}): AiAgentRecord {
@@ -430,14 +431,15 @@ describe('Durable conversation state (Phase 3 - supplements raw history, never r
 });
 
 describe('generateAiReply tool boundary is unaffected by document content (Phase D4-B, items 9 and 10)', () => {
-  it('9. exactly one AI tool is registered after D4-B, and it is still get_current_time (READ-tier) - D4-B added no new tool', () => {
+  it('exactly two AI tools are registered - get_current_time (READ) and update_conversation_memory (WRITE) - and no others', () => {
     const tools = listRegisteredTools();
-    expect(tools).toHaveLength(1);
-    expect(tools[0]?.name).toBe(GET_CURRENT_TIME_TOOL_NAME);
-    expect(tools[0]?.risk).toBe('READ');
+    expect(tools).toHaveLength(2);
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+    expect(byName.get(GET_CURRENT_TIME_TOOL_NAME)?.risk).toBe('READ');
+    expect(byName.get(UPDATE_CONVERSATION_STATE_TOOL_NAME)?.risk).toBe('WRITE');
   });
 
-  it("9/10. a hostile document instructing the AI to call a tool never changes the declared tools array - Gemini still has only the existing registered read-only tool", async () => {
+  it("9/10. a hostile document instructing the AI to call a tool never changes the declared tools array - Gemini still has only the existing registered tools", async () => {
     const hostileContext = fakeContext({
       documentContext: {
         available: true,
@@ -457,14 +459,15 @@ describe('generateAiReply tool boundary is unaffected by document content (Phase
     // No live Gemini call is made in this test environment without a real
     // key - what matters here is that generateAiReply never derives its
     // `tools` config from context/document content. The only tools object
-    // this codebase ever declares is the module-level TIME_TOOLS constant
-    // (get_current_time only) - proven by inspecting buildSystemInstruction/
-    // generateAiReply's own source: neither reads context.documentContext
-    // (or any other context field) when constructing the tools array. This
-    // test documents and locks that invariant at the type/contract level -
-    // fakeContext's hostile document is accepted by buildSystemInstruction
-    // without throwing or requiring any special handling, which is exactly
-    // the "inert data" property being asserted.
+    // this codebase ever declares is the module-level REPLY_TOOLS constant
+    // (get_current_time and update_conversation_memory only) - proven by
+    // inspecting buildSystemInstruction/generateAiReply's own source:
+    // neither reads context.documentContext (or any other context field)
+    // when constructing the tools array. This test documents and locks
+    // that invariant at the type/contract level - fakeContext's hostile
+    // document is accepted by buildSystemInstruction without throwing or
+    // requiring any special handling, which is exactly the "inert data"
+    // property being asserted.
     const instruction = buildSystemInstruction(fakeAgent(), hostileContext);
     expect(instruction).toContain('send_confidential_files');
     expect(instruction).toContain('<untrusted_data source="business_document">');

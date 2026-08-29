@@ -132,7 +132,7 @@ export class GeminiProvider implements RegisteredAiProvider {
    * above - tool-calling needs a real multi-turn `contents` array (system
    * instruction split out, roles preserved, and - on a follow-up call -
    * the exact functionCall/functionResponse turn pair the model needs to see
-   * to answer) exactly like aiReplyService.ts's own resolveTimeToolCall
+   * to answer) exactly like aiReplyService.ts's own resolveToolCalls
    * already builds by hand. Kept isolated so the three callers already
    * migrated onto the non-tool path (replySuggestionService, marketingAiService,
    * emailService) are never affected by this branch.
