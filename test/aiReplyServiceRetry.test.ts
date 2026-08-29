@@ -6,6 +6,7 @@ import type { AiHandoffContext } from '../src/services/aiContextGathererService.
 import type { WhatsAppMessageRecord } from '../src/repositories/whatsappMessageRepository.js';
 import { buildTimeContext } from '../src/services/time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME } from '../src/services/time/getCurrentTimeTool.js';
+import { UPDATE_CONVERSATION_STATE_TOOL_NAME } from '../src/services/state/updateConversationStateTool.js';
 import { geminiCircuitBreaker } from '../src/services/aiCircuitBreaker.js';
 import { register } from '../src/services/authService.js';
 import { aiGateway } from '../src/services/ai/aiGateway.js';
@@ -248,12 +249,15 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
 
     await generateAiReply(fakeAgent(), hostileContext);
 
-    // The exact same single-tool array as the unmodified request above -
+    // The exact same declared tools as the unmodified request above -
     // document content never influences what tools are declared to Gemini.
     const tools = generateContentMock.mock.calls[0]?.[0]?.config?.tools;
     expect(tools).toHaveLength(1);
-    expect(tools?.[0]?.functionDeclarations).toHaveLength(1);
-    expect(tools?.[0]?.functionDeclarations?.[0]?.name).toBe(GET_CURRENT_TIME_TOOL_NAME);
+    expect(tools?.[0]?.functionDeclarations).toHaveLength(2);
+    expect(tools?.[0]?.functionDeclarations?.map((declaration: { name: string }) => declaration.name)).toEqual([
+      GET_CURRENT_TIME_TOOL_NAME,
+      UPDATE_CONVERSATION_STATE_TOOL_NAME,
+    ]);
 
     // The hostile instruction is present only inside the wrapped,
     // untrusted document block of the system instruction - never as a

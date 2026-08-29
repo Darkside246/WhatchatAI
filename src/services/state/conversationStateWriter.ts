@@ -97,11 +97,17 @@ export async function applyConversationStateUpdate(
   args: UpdateConversationStateToolArgs,
 ): Promise<void> {
   for (let attempt = 0; attempt < MAX_CONFLICT_RETRIES; attempt++) {
-    const current = await repository.getOrCreate(businessId, chatId);
+    // find(), not getOrCreate() - reading here must never have the
+    // side effect of materializing a row, or a genuinely empty tool call
+    // would still leave behind an empty conversation_states row.
+    const existing = await repository.find(businessId, chatId);
     const now = new Date().toISOString();
-    const patch = buildPatch(current, args, now);
+    const patch = buildPatch(existing ?? { confirmedFacts: [], openQuestions: [] }, args, now);
 
     if (Object.keys(patch).length === 0) return;
+
+    // Only now, with real content to write, do we need the row to exist.
+    const current = existing ?? (await repository.getOrCreate(businessId, chatId));
 
     try {
       await repository.update(businessId, chatId, current.version, patch);

@@ -221,7 +221,7 @@ describe('OpenClawToolGateway - update_lead adversarial acceptance suite', () =>
   });
 
   it('leaves the existing Gemini-facing tool policy completely untouched', () => {
-    expect(listRegisteredTools()).toHaveLength(1);
+    expect(listRegisteredTools()).toHaveLength(2);
     expect(isToolRegistered('get_current_time')).toBe(true);
     expect(isToolRegistered('update_lead')).toBe(false); // never added to the SHARED registry the live Gemini path reads
   });
