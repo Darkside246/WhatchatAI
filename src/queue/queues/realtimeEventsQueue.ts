@@ -106,6 +106,31 @@ export interface AiDebounceJobData {
   chatId: string;
 }
 
+// Manual-reply-detected auto-pause/resume: a chat auto-paused because the
+// business owner typed a reply directly in WhatsApp on the linked device
+// (see whatsappMessagePersistenceService.ts's detection, and
+// whatsappChatRepository.ts's pauseAiForManualReply/resumeAiIfManualReplyDetected)
+// resumes AI_ACTIVE after this many milliseconds of no *further* manual
+// reply. Trailing-edge, same as AI_DEBOUNCE_DELAY_MS above: every new manual
+// reply resets the countdown rather than letting the first one's timer run
+// out mid-conversation.
+export const HUMAN_TAKEOVER_RESUME_MIN_DELAY_MS = 5_000;
+export const HUMAN_TAKEOVER_RESUME_MAX_DELAY_MS = 10 * 60_000;
+const HUMAN_TAKEOVER_RESUME_DEFAULT_DELAY_MS = 20_000;
+
+export const HUMAN_TAKEOVER_RESUME_DELAY_MS = clampedEnvInt(
+  'HUMAN_TAKEOVER_RESUME_DELAY_MS',
+  HUMAN_TAKEOVER_RESUME_DEFAULT_DELAY_MS,
+  HUMAN_TAKEOVER_RESUME_MIN_DELAY_MS,
+  HUMAN_TAKEOVER_RESUME_MAX_DELAY_MS,
+);
+
+export interface HumanTakeoverResumeJobData {
+  businessId: string;
+  whatsappAccountId: string;
+  chatId: string;
+}
+
 /**
  * Lightweight, non-Sentinel-gated background jobs: delivery-receipt status
  * updates and call events. Kept off the Baileys event loop for the same
@@ -264,5 +289,48 @@ export async function scheduleAiDebounce(data: AiDebounceJobData): Promise<void>
     // jobId between our getJob() check and this add() - safe to ignore,
     // it already scheduled the check this call was trying to make.
     console.warn(`[RealtimeEventsQueue] Failed to schedule AI debounce for chat ${data.chatId}: ${error.message}`);
+  });
+}
+
+/**
+ * Trailing-edge resume timer for the manual-reply-detected auto-pause - see
+ * HumanTakeoverResumeJobData above. Structurally identical to
+ * scheduleAiDebounce: a deterministic jobId per chat so a new manual reply
+ * resets the countdown via changeDelay() rather than letting the first
+ * reply's timer expire mid-conversation, and the handler
+ * (processHumanTakeoverResume in incomingMessagesWorker.ts) re-checks the
+ * real chat row at fire time rather than trusting this payload - it must
+ * never resume a chat that moved to a different mode/source since this was
+ * scheduled (see whatsappChatRepository.ts's resumeAiIfManualReplyDetected).
+ */
+export async function scheduleHumanTakeoverResume(data: HumanTakeoverResumeJobData): Promise<void> {
+  const jobId = `human-takeover-resume-${data.chatId}`;
+  const existing = await realtimeEventsQueue.getJob(jobId);
+
+  if (existing) {
+    const state = await existing.getState();
+    if (state === 'delayed') {
+      try {
+        await existing.changeDelay(HUMAN_TAKEOVER_RESUME_DELAY_MS);
+        return;
+      } catch {
+        // Raced past 'delayed' between getState() and changeDelay() - fall through to a fresh add below.
+      }
+    } else if (state === 'active' || state === 'waiting') {
+      // Already firing right now - the handler re-reads the real chat state
+      // at that moment anyway, so there is nothing more useful to do here.
+      return;
+    } else {
+      // completed/failed: a terminal leftover jobId from a prior round - see
+      // the identical case in scheduleAiDebounce for why this must be
+      // removed before a fresh add() below, not silently reused.
+      await existing.remove().catch(() => {
+        // A concurrent caller may have already removed it - fine, fall through to add() below.
+      });
+    }
+  }
+
+  await realtimeEventsQueue.add('human-takeover-resume', data, { jobId, delay: HUMAN_TAKEOVER_RESUME_DELAY_MS }).catch((error: Error) => {
+    console.warn(`[RealtimeEventsQueue] Failed to schedule human-takeover resume for chat ${data.chatId}: ${error.message}`);
   });
 }

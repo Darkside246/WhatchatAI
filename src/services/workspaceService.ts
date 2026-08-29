@@ -629,7 +629,7 @@ export class WorkspaceService {
     if (!chat || chat.whatsappAccountId !== whatsappAccountId) {
       throw this.notFound();
     }
-    const updated = await this.chatRepository.setAiMode(chatId, aiMode);
+    const updated = await this.chatRepository.setAiMode(chatId, aiMode, 'manual_toggle');
 
     // Real handoff notification - fires whenever a chat actually transitions
     // INTO human-takeover (never on a redundant re-set of the same mode),

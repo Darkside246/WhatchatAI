@@ -245,6 +245,26 @@ export class WhatsAppOutboundMessageRepository {
     );
   }
 
+  /**
+   * True when this exact WhatsApp message ID was sent through our own
+   * outbound pipeline (AI, a human via the dashboard, Operator Mode, a
+   * campaign/funnel - anything that calls WhatsAppOutboundMessageService),
+   * regardless of requestedBy. False means the fromMe echo Baileys just
+   * delivered was never queued by this app at all - a message typed
+   * directly into the WhatsApp client on the linked device itself, since
+   * markSent() records whatsapp_message_id the instant our own send call
+   * returns, strictly before the echoed messages.upsert event that
+   * eventually calls this method even reaches us. See
+   * whatsappMessagePersistenceService.ts's manual-reply-detected auto-pause.
+   */
+  async wasSentByThisApp(whatsappAccountId: string, whatsappMessageId: string): Promise<boolean> {
+    const { rows } = await this.db.query(
+      `SELECT 1 FROM whatsapp_outbound_messages WHERE whatsapp_account_id = $1 AND whatsapp_message_id = $2 LIMIT 1`,
+      [whatsappAccountId, whatsappMessageId],
+    );
+    return rows.length > 0;
+  }
+
   /** Backfilled once the echoed messages.upsert event asynchronously persists the real whatsapp_messages row. */
   async linkPersistedMessage(whatsappAccountId: string, whatsappMessageId: string, messageId: string): Promise<void> {
     await this.db.query(

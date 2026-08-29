@@ -4,6 +4,8 @@ import { whatsappMessagePersistenceService } from '../src/services/whatsappMessa
 import { WhatsAppJidMappingRepository } from '../src/repositories/whatsappJidMappingRepository.js';
 import { CustomerIdentityRepository } from '../src/repositories/customerIdentityRepository.js';
 import { ConversationEventRepository } from '../src/repositories/conversationEventRepository.js';
+import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
+import { WhatsAppOutboundMessageRepository } from '../src/repositories/whatsappOutboundMessageRepository.js';
 import type { IngestedWhatsAppMessage } from '../src/services/whatsappMessageIngestionService.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 
@@ -279,5 +281,92 @@ describe('WhatsAppMessagePersistenceService', () => {
 
     const events = await new ConversationEventRepository(pool).listByChat(businessId, result.chat.id);
     expect(events).toEqual([]);
+  });
+
+  describe('manual-reply-detected auto-pause', () => {
+    it('pauses an AI_ACTIVE chat when a live fromMe message has no matching outbound record - a genuine manual reply typed on the linked device', async () => {
+      const result = await whatsappMessagePersistenceService.persist({
+        businessId,
+        whatsappAccountId: accountId,
+        accountJid,
+        ingested: ingestedMessage({ messageId: 'WA-MANUAL-REPLY-1', fromMe: true }),
+      });
+
+      const chat = await new WhatsAppChatRepository(pool).findById(result.chat.id);
+      expect(chat?.aiMode).toBe('HUMAN_TAKEOVER');
+      expect(chat?.aiModeSource).toBe('manual_reply_detected');
+    });
+
+    it('does not pause when the fromMe echo matches a real outbound record - the AI/dashboard/Operator Mode sent this itself', async () => {
+      // Establish the chat first with a real inbound message.
+      const inbound = await whatsappMessagePersistenceService.persist({
+        businessId,
+        whatsappAccountId: accountId,
+        accountJid,
+        ingested: ingestedMessage({ messageId: 'WA-CUSTOMER-1' }),
+      });
+
+      // Simulate this app actually sending a reply: create the outbound row
+      // and mark it sent with the WhatsApp message id BEFORE the echo
+      // arrives, exactly like WhatsAppOutboundMessageService does.
+      const outboundRepo = new WhatsAppOutboundMessageRepository(pool);
+      const outbound = await outboundRepo.createIdempotent({
+        businessId,
+        whatsappAccountId: accountId,
+        chatId: inbound.chat.id,
+        toJid: '15550003333@s.whatsapp.net',
+        idempotencyKey: 'test-app-reply-1',
+        messageType: 'text',
+        textContent: 'Thanks, on it!',
+        requestedBy: 'human',
+      });
+      await outboundRepo.markSent(outbound.id, 'WA-APP-REPLY-ECHO');
+
+      const echoed = await whatsappMessagePersistenceService.persist({
+        businessId,
+        whatsappAccountId: accountId,
+        accountJid,
+        ingested: ingestedMessage({ messageId: 'WA-APP-REPLY-ECHO', fromMe: true }),
+      });
+
+      const chat = await new WhatsAppChatRepository(pool).findById(echoed.chat.id);
+      expect(chat?.aiMode).toBe('AI_ACTIVE');
+      expect(chat?.aiModeSource).not.toBe('manual_reply_detected');
+    });
+
+    it('never overrides a chat already in HUMAN_TAKEOVER for a different reason', async () => {
+      const first = await whatsappMessagePersistenceService.persist({
+        businessId,
+        whatsappAccountId: accountId,
+        accountJid,
+        ingested: ingestedMessage({ messageId: 'WA-CUSTOMER-2' }),
+      });
+
+      const chatRepo = new WhatsAppChatRepository(pool);
+      await chatRepo.setAiMode(first.chat.id, 'HUMAN_TAKEOVER', 'blocked_keyword');
+
+      await whatsappMessagePersistenceService.persist({
+        businessId,
+        whatsappAccountId: accountId,
+        accountJid,
+        ingested: ingestedMessage({ messageId: 'WA-MANUAL-REPLY-2', fromMe: true }),
+      });
+
+      const chat = await chatRepo.findById(first.chat.id);
+      expect(chat?.aiMode).toBe('HUMAN_TAKEOVER');
+      expect(chat?.aiModeSource).toBe('blocked_keyword'); // untouched by the manual-reply detector
+    });
+
+    it('does not trigger for historical (non-live) fromMe backfill', async () => {
+      const result = await whatsappMessagePersistenceService.persist({
+        businessId,
+        whatsappAccountId: accountId,
+        accountJid,
+        ingested: ingestedMessage({ messageId: 'WA-HISTORICAL-OUTBOUND', fromMe: true, isLive: false, upsertType: 'append' }),
+      });
+
+      const chat = await new WhatsAppChatRepository(pool).findById(result.chat.id);
+      expect(chat?.aiMode).toBe('AI_ACTIVE');
+    });
   });
 });

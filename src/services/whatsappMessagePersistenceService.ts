@@ -8,11 +8,12 @@ import { WhatsAppMediaRepository, type WhatsAppMediaRecord } from '../repositori
 import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMappingRepository.js';
 import { CustomerIdentityRepository } from '../repositories/customerIdentityRepository.js';
 import { ConversationEventRepository } from '../repositories/conversationEventRepository.js';
+import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import type { WhatsAppChatRecord } from '../repositories/whatsappChatRepository.js';
 import type { MediaType, MessageType } from '../domain/whatsapp/types.js';
 import { chatTypeFromJidKind } from '../domain/whatsapp/chatType.js';
 import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
-import { enqueueMediaDownload } from '../queue/queues/realtimeEventsQueue.js';
+import { enqueueMediaDownload, scheduleHumanTakeoverResume } from '../queue/queues/realtimeEventsQueue.js';
 import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 import type {
   IngestedWhatsAppMessage,
@@ -62,6 +63,8 @@ export interface PersistIngestedMessageResult {
 
 export class WhatsAppMessagePersistenceService {
   private readonly conversationEventRepository = new ConversationEventRepository(pool);
+  private readonly chatRepository = new WhatsAppChatRepository(pool);
+  private readonly outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
 
   /**
    * The one authoritative write path for an inbound/outbound WhatsApp message:
@@ -116,6 +119,38 @@ export class WhatsAppMessagePersistenceService {
         });
       } catch (error) {
         console.error('[WhatsAppMessagePersistenceService] Failed to append message_received event:', error instanceof Error ? error.message : error);
+      }
+    }
+
+    // Manual-reply-detected auto-pause: the fromMe counterpart of the block
+    // above. A genuinely new, live, fromMe message that this app never sent
+    // through its own outbound pipeline (see wasSentByThisApp - the AI,
+    // Operator Mode, a human's dashboard reply, a campaign/funnel all leave
+    // a whatsapp_outbound_messages row; typing directly into WhatsApp on the
+    // linked device does not) means the business owner is actively handling
+    // this conversation from their own phone right now. Best-effort and
+    // never allowed to fail the real message write, same as the event
+    // append above.
+    if (!result.deduplicated && input.ingested.fromMe && input.ingested.isLive) {
+      try {
+        const sentByApp = await this.outboundMessageRepository.wasSentByThisApp(input.whatsappAccountId, input.ingested.messageId);
+        if (!sentByApp) {
+          const paused = await this.chatRepository.pauseAiForManualReply(result.chat.id);
+          // pauseAiForManualReply only succeeds from AI_ACTIVE (see its own
+          // doc comment) - a chat already auto-paused for this exact reason
+          // still needs its resume timer reset on every further manual
+          // reply, just without re-writing ai_mode/ai_mode_source again.
+          const isOngoingAutoPause = !paused && result.chat.aiMode === 'HUMAN_TAKEOVER' && result.chat.aiModeSource === 'manual_reply_detected';
+          if (paused || isOngoingAutoPause) {
+            await scheduleHumanTakeoverResume({
+              businessId: input.businessId,
+              whatsappAccountId: input.whatsappAccountId,
+              chatId: result.chat.id,
+            });
+          }
+        }
+      } catch (error) {
+        console.error('[WhatsAppMessagePersistenceService] Manual-reply takeover detection failed:', error instanceof Error ? error.message : error);
       }
     }
 

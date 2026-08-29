@@ -17,6 +17,7 @@ import {
   type MessageReactionJobData,
   type PresenceUpdateJobData,
   type AiDebounceJobData,
+  type HumanTakeoverResumeJobData,
 } from '../queues/realtimeEventsQueue.js';
 import { whatsappMessagePersistenceService } from '../../services/whatsappMessagePersistenceService.js';
 import { persistStatusUpdate } from '../../services/whatsappStatusPersistenceService.js';
@@ -275,7 +276,7 @@ async function runAiHandoff(params: {
   // message from the same customer) and the business is notified.
   if (outcome.kind === 'no_agent') {
     console.log(`[IncomingMessagesWorker] Chat ${chatId}: ${outcome.reason}`);
-    await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER');
+    await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER', 'no_agent');
     await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
     await notifyBusiness({
       businessId,
@@ -297,7 +298,7 @@ async function runAiHandoff(params: {
   // customer waiting on a reply that never comes.
   if (outcome.kind === 'escalate_to_human') {
     console.warn(`[IncomingMessagesWorker] Chat ${chatId}: ${outcome.reason}`);
-    await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER');
+    await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER', 'blocked_keyword');
     await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
     await notifyBusiness({
       businessId,
@@ -325,7 +326,7 @@ async function runAiHandoff(params: {
   // operator does not have to guess.
   if (outcome.kind === 'unavailable') {
     console.log(`[IncomingMessagesWorker] AI reply unavailable for chat ${chatId}: ${outcome.reason}`);
-    await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER');
+    await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER', 'ai_unavailable');
     await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
     await notifyBusiness({
       businessId,
@@ -709,6 +710,24 @@ async function processAiDebounce(data: AiDebounceJobData): Promise<void> {
   }
 }
 
+/**
+ * Fires HUMAN_TAKEOVER_RESUME_DELAY_MS after the last manual reply detected
+ * for this chat (see whatsappMessagePersistenceService.ts's detection and
+ * scheduleHumanTakeoverResume's trailing-edge reset). Re-checks the real
+ * chat row rather than trusting this job's payload -
+ * resumeAiIfManualReplyDetected is a single guarded UPDATE that only
+ * succeeds when the row is *still* exactly ('HUMAN_TAKEOVER',
+ * 'manual_reply_detected'), so a chat a human explicitly re-took-over (or a
+ * genuinely new AI-failure escalation) from the dashboard in the meantime
+ * is never clobbered back to AI_ACTIVE by a stale timer.
+ */
+async function processHumanTakeoverResume(data: HumanTakeoverResumeJobData): Promise<void> {
+  const resumed = await chatRepository.resumeAiIfManualReplyDetected(data.chatId);
+  if (resumed) {
+    await publishRealtimeEvent({ type: 'chat.updated', businessId: data.businessId, chatId: data.chatId });
+  }
+}
+
 async function processMessageStatus(data: MessageStatusJobData): Promise<void> {
   const { businessId, whatsappAccountId, whatsappMessageId, status } = data;
   const message = await messageRepository.findByWhatsAppId(businessId, whatsappAccountId, whatsappMessageId);
@@ -1056,6 +1075,7 @@ async function processRealtimeEventJob(
     | MessageReactionJobData
     | PresenceUpdateJobData
     | AiDebounceJobData
+    | HumanTakeoverResumeJobData
   >,
 ): Promise<void> {
   if (job.name === 'message-status') {
@@ -1074,6 +1094,8 @@ async function processRealtimeEventJob(
     await sweepStaleAiHandoff();
   } else if (job.name === 'ai-debounce') {
     await processAiDebounce(job.data as AiDebounceJobData);
+  } else if (job.name === 'human-takeover-resume') {
+    await processHumanTakeoverResume(job.data as HumanTakeoverResumeJobData);
   } else if (job.name === 'outbound-message-timeout-sweep') {
     await sweepStaleOutboundMessages();
   } else if (job.name === 'email-timeout-sweep') {

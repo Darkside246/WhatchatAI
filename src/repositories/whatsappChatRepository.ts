@@ -23,6 +23,15 @@ export interface WhatsAppChatRecord {
   lastMessageId: string | null;
   lastMessageAt: string | null;
   aiMode: ChatAiMode;
+  /**
+   * Provenance for the current aiMode value - who/what set it, so an
+   * automatic mechanism (the manual-reply-detected auto-pause/resume) can
+   * tell its own prior transition apart from a deliberate dashboard action
+   * or a separate AI-failure escalation, and never touch the latter two.
+   * Null for any transition that predates this column.
+   */
+  aiModeSource: string | null;
+  aiModeSetAt: string | null;
   assigneeUserId: string | null;
   assigneeTeamId: string | null;
   /** Phase 3B debounce watermark: the last inbound message this chat's AI handoff has already considered - see claimAiHandoff/releaseAiHandoff. */
@@ -53,6 +62,8 @@ interface ChatRow {
   last_message_id: string | null;
   last_message_at: string | null;
   ai_mode: ChatAiMode;
+  ai_mode_source: string | null;
+  ai_mode_set_at: string | null;
   assignee_user_id: string | null;
   assignee_team_id: string | null;
   last_ai_handoff_message_id: string | null;
@@ -82,6 +93,8 @@ function toRecord(row: ChatRow): WhatsAppChatRecord {
     lastMessageId: row.last_message_id,
     lastMessageAt: row.last_message_at,
     aiMode: row.ai_mode,
+    aiModeSource: row.ai_mode_source,
+    aiModeSetAt: row.ai_mode_set_at,
     assigneeUserId: row.assignee_user_id,
     assigneeTeamId: row.assignee_team_id,
     lastAiHandoffMessageId: row.last_ai_handoff_message_id,
@@ -253,18 +266,64 @@ export class WhatsAppChatRepository {
   /** Revert all HUMAN_TAKEOVER chats for a business to AI_ACTIVE. Returns the count reverted. */
   async revertHumanTakeoverChats(businessId: string): Promise<number> {
     const { rowCount } = await this.db.query(
-      `UPDATE whatsapp_chats SET ai_mode = 'AI_ACTIVE', updated_at = now()
+      `UPDATE whatsapp_chats SET ai_mode = 'AI_ACTIVE', ai_mode_source = 'logout_revert', ai_mode_set_at = now(), updated_at = now()
        WHERE business_id = $1 AND ai_mode = 'HUMAN_TAKEOVER' AND deleted_at IS NULL`,
       [businessId],
     );
     return rowCount ?? 0;
   }
 
-  /** Human takeover belongs to the specific conversation, not globally to the account. */
-  async setAiMode(id: string, aiMode: ChatAiMode): Promise<WhatsAppChatRecord | null> {
+  /**
+   * Human takeover belongs to the specific conversation, not globally to the
+   * account. `source` records who/what made this transition (see
+   * WhatsAppChatRecord.aiModeSource) - always pass one for any new caller;
+   * it is optional only so existing call sites that predate this column
+   * still compile, not because omitting it is encouraged.
+   */
+  async setAiMode(id: string, aiMode: ChatAiMode, source?: string): Promise<WhatsAppChatRecord | null> {
     const { rows } = await this.db.query<ChatRow>(
-      'UPDATE whatsapp_chats SET ai_mode = $2, updated_at = now() WHERE id = $1 RETURNING *',
-      [id, aiMode],
+      'UPDATE whatsapp_chats SET ai_mode = $2, ai_mode_source = $3, ai_mode_set_at = now(), updated_at = now() WHERE id = $1 RETURNING *',
+      [id, aiMode, source ?? null],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
+   * Guarded, atomic revert for the manual-reply-detected auto-pause: only
+   * flips back to AI_ACTIVE when the row is *currently* exactly
+   * ('HUMAN_TAKEOVER', 'manual_reply_detected') - a single UPDATE ... WHERE,
+   * not a read-then-write, so it can never race a concurrent write and
+   * clobber a deliberate dashboard takeover or a different AI-failure
+   * escalation that happened after this job was scheduled. Returns null
+   * (a safe no-op) for every other case: already reverted, or moved to a
+   * different mode/source since scheduling.
+   */
+  /**
+   * The other half of the guarded pair below - only pauses when the row is
+   * *currently* AI_ACTIVE. A chat already in HUMAN_TAKEOVER/AI_PAUSED for
+   * any other reason (a deliberate dashboard action, a blocked keyword, an
+   * AI failure) is left completely untouched: this must never override or
+   * "refresh" someone else's takeover, only ever transition a genuinely
+   * active AI conversation into the auto-pause state.
+   */
+  async pauseAiForManualReply(id: string): Promise<WhatsAppChatRecord | null> {
+    const { rows } = await this.db.query<ChatRow>(
+      `UPDATE whatsapp_chats
+       SET ai_mode = 'HUMAN_TAKEOVER', ai_mode_source = 'manual_reply_detected', ai_mode_set_at = now(), updated_at = now()
+       WHERE id = $1 AND ai_mode = 'AI_ACTIVE'
+       RETURNING *`,
+      [id],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  async resumeAiIfManualReplyDetected(id: string): Promise<WhatsAppChatRecord | null> {
+    const { rows } = await this.db.query<ChatRow>(
+      `UPDATE whatsapp_chats
+       SET ai_mode = 'AI_ACTIVE', ai_mode_source = 'auto_resume_after_manual_reply', ai_mode_set_at = now(), updated_at = now()
+       WHERE id = $1 AND ai_mode = 'HUMAN_TAKEOVER' AND ai_mode_source = 'manual_reply_detected'
+       RETURNING *`,
+      [id],
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }
