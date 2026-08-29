@@ -161,4 +161,131 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
     const session = await new OperatorModeRepository(pool).getActiveSession(businessId);
     expect(session).toBeNull();
   }, 15_000);
+
+  /**
+   * Reproduces the second, more subtle real symptom: even after the routing
+   * fix above, a genuine operator command like "set assistant name to Kai"
+   * never reached operatorCommandService.handle() at all - the Tiered
+   * Security Sentinel, which exists to catch a customer trying to
+   * prompt-inject the AI, ran on this message first and (correctly, for its
+   * actual threat model) flagged "instructing the assistant to change its
+   * name" as suspicious. A self-chat can never be an external threat - it's
+   * the device owner talking to their own number - so it must never be
+   * screened as if it might be one. Uses a Stage 1 (static heuristic)
+   * trigger here since Stage 2 needs a real Gemini call; the code path that
+   * skips runSentinel() doesn't distinguish which stage would have blocked
+   * it, so this exercises the same fix.
+   */
+  it('a self-chat message is never screened by the Sentinel, even when its content would otherwise trip it', async () => {
+    const spammyCommand = 'free money, you\'ve won! wire transfer now: https://bit.ly/totally-legit';
+    const messageId = `SELFCHAT-SENTINEL-${Date.now()}`;
+    const ingested: IngestedWhatsAppMessage = {
+      messageId,
+      remoteJid: ACCOUNT_JID,
+      jidKind: 'individual',
+      phoneNumber: '+12461234567',
+      participant: null,
+      remoteJidAlt: null,
+      participantAlt: null,
+      fromMe: true,
+      pushName: 'Owner',
+      isLive: true,
+      upsertType: 'notify',
+      messageTimestamp: new Date().toISOString(),
+      contentType: 'text',
+      documentSubtype: null,
+      mimetype: null,
+      fileName: null,
+      textPreview: spammyCommand,
+      mediaDescriptor: null,
+      ingestedAt: new Date().toISOString(),
+    };
+
+    const completed = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timed out waiting for worker to process job')), 10_000);
+      incomingMessagesWorker.on('completed', function onCompleted(job) {
+        if (job.data.message.messageId !== messageId) return;
+        clearTimeout(timeout);
+        incomingMessagesWorker.off('completed', onCompleted);
+        resolve();
+      });
+      incomingMessagesWorker.on('failed', function onFailed(job, error) {
+        if (job?.data.message.messageId !== messageId) return;
+        clearTimeout(timeout);
+        incomingMessagesWorker.off('failed', onFailed);
+        reject(error);
+      });
+    });
+
+    await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid: ACCOUNT_JID, message: ingested });
+    await completed;
+
+    // Reached operatorCommandService.handle() despite the spammy content -
+    // proof the Sentinel never ran for this message.
+    const session = await new OperatorModeRepository(pool).getActiveSession(businessId);
+    expect(session?.status).toBe('AWAITING_PIN');
+
+    const { rows: audit } = await pool.query(
+      `SELECT event_type FROM security_audit_logs WHERE business_id = $1 AND event_type = 'sentinel_heuristic_block'`,
+      [businessId],
+    );
+    expect(audit).toHaveLength(0);
+  }, 15_000);
+
+  it('the exact same spammy content sent as a genuine customer message is still blocked by the Sentinel', async () => {
+    const spammyCommand = 'free money, you\'ve won! wire transfer now: https://bit.ly/totally-legit';
+    const messageId = `CUSTOMER-SENTINEL-${Date.now()}`;
+    const ingested: IngestedWhatsAppMessage = {
+      messageId,
+      remoteJid: '15550008888@s.whatsapp.net', // a real customer, not the self-chat
+      jidKind: 'individual',
+      phoneNumber: '+15550008888',
+      participant: null,
+      remoteJidAlt: null,
+      participantAlt: null,
+      fromMe: false,
+      pushName: 'A Customer',
+      isLive: true,
+      upsertType: 'notify',
+      messageTimestamp: new Date().toISOString(),
+      contentType: 'text',
+      documentSubtype: null,
+      mimetype: null,
+      fileName: null,
+      textPreview: spammyCommand,
+      mediaDescriptor: null,
+      ingestedAt: new Date().toISOString(),
+    };
+
+    const completed = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timed out waiting for worker to process job')), 10_000);
+      incomingMessagesWorker.on('completed', function onCompleted(job) {
+        if (job.data.message.messageId !== messageId) return;
+        clearTimeout(timeout);
+        incomingMessagesWorker.off('completed', onCompleted);
+        resolve();
+      });
+      incomingMessagesWorker.on('failed', function onFailed(job, error) {
+        if (job?.data.message.messageId !== messageId) return;
+        clearTimeout(timeout);
+        incomingMessagesWorker.off('failed', onFailed);
+        reject(error);
+      });
+    });
+
+    await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid: ACCOUNT_JID, message: ingested });
+    await completed;
+
+    const { rows } = await pool.query('SELECT id FROM whatsapp_messages WHERE business_id = $1 AND whatsapp_message_id = $2', [
+      businessId,
+      messageId,
+    ]);
+    expect(rows).toHaveLength(0); // Sentinel blocked it before persistence ever ran.
+
+    const { rows: audit } = await pool.query(
+      `SELECT event_type FROM security_audit_logs WHERE business_id = $1 AND event_type = 'sentinel_heuristic_block'`,
+      [businessId],
+    );
+    expect(audit.length).toBeGreaterThan(0);
+  }, 15_000);
 });

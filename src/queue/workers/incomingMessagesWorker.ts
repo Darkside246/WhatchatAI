@@ -88,18 +88,31 @@ initializePlatformFoundation();
 async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
   const { businessId, whatsappAccountId, accountJid, message } = job.data;
 
-  const verdict = await runSentinel({
-    businessId,
-    whatsappAccountId,
-    senderJid: message.fromMe ? accountJid : (message.participant ?? message.remoteJid),
-    textContent: message.textPreview,
-    mimetype: message.mimetype,
-    fileName: message.fileName,
-  });
+  // A message sent to yourself (fromMe, remoteJid === the connected
+  // account's own JID) can never be an external threat - the Sentinel
+  // exists to catch a customer trying to prompt-inject the AI, and there is
+  // no "customer" here, only the device owner talking to their own number.
+  // Left ungated, the Sentinel's own heuristics correctly flag the exact
+  // shape of a real operator command like "set assistant name to X" as a
+  // suspicious "instructing the assistant to change its name" attempt,
+  // silently blocking every legitimate attempt to configure Operator Mode
+  // or the named assistant from a self-chat.
+  const isSelfChat = message.fromMe && stripDeviceSuffix(message.remoteJid) === accountJid;
 
-  if (!verdict.allowed) {
-    console.warn(`[IncomingMessagesWorker] Sentinel blocked message ${message.messageId}: ${verdict.reason}`);
-    return;
+  if (!isSelfChat) {
+    const verdict = await runSentinel({
+      businessId,
+      whatsappAccountId,
+      senderJid: message.fromMe ? accountJid : (message.participant ?? message.remoteJid),
+      textContent: message.textPreview,
+      mimetype: message.mimetype,
+      fileName: message.fileName,
+    });
+
+    if (!verdict.allowed) {
+      console.warn(`[IncomingMessagesWorker] Sentinel blocked message ${message.messageId}: ${verdict.reason}`);
+      return;
+    }
   }
 
   const result = await whatsappMessagePersistenceService.persist({
@@ -138,13 +151,7 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
   // account (WhatsApp's own "Message Yourself" chat). Handled here instead:
   // immediately, never debounced, and never falls through to a customer AI
   // reply either way, since a self-chat is never a real customer.
-  if (
-    result.message.wasInserted &&
-    message.fromMe &&
-    message.isLive &&
-    stripDeviceSuffix(message.remoteJid) === accountJid &&
-    result.message.textContent
-  ) {
+  if (result.message.wasInserted && isSelfChat && message.isLive && result.message.textContent) {
     await tryHandleOperatorMessage({
       businessId,
       whatsappAccountId,
