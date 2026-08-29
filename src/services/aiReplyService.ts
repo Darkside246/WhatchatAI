@@ -1,9 +1,7 @@
 import { ApiError } from '@google/genai';
 import type { GoogleGenAI, Content, GenerateContentResponse } from '@google/genai';
 import { getGeminiClient } from './geminiClient.js';
-import * as gooseService from './gooseService.js';
-import { IntegrationSettingsRepository } from '../repositories/integrationSettingsRepository.js';
-import { pool } from '../db/pool.js';
+import { aiGateway } from './ai/aiGateway.js';
 import { ADVICE_RESTRICTED_CATEGORIES, type AiAgentRecord } from '../repositories/aiAgentRepository.js';
 import type { AiHandoffContext } from './aiContextGathererService.js';
 import { describeTimeContext } from './time/timeContext.js';
@@ -235,74 +233,63 @@ function toContents(history: AiHandoffContext['conversationHistory'], media: Inl
  * top of that, never a reason to break ingestion.
  */
 /**
- * Real Goose failover, only ever attempted after a genuine Gemini failure.
- * Never fabricates availability: if GOOSE_SERVICE_URL isn't configured,
- * the composed reason honestly says so while still preserving the
- * original Gemini failure reason as a substring (existing callers match
- * on e.g. "GEMINI_API_KEY" in the returned reason).
+ * Real failover, only ever attempted after a genuine Gemini failure. Routed
+ * through AiGateway (P5) rather than calling Goose directly - a Gemini
+ * outage now gets whatever of OpenAI/OpenRouter/Goose is actually configured
+ * for this business, in the gateway's own priority order, instead of being
+ * hardcoded to Goose-or-nothing. Gemini itself is excluded from the
+ * allowlist since we already know it just failed - retrying it here would
+ * be redundant, not incorrect.
+ *
+ * Never fabricates availability: if nothing in the fallback chain is
+ * configured, or every configured provider also fails (including Goose's
+ * own per-workspace enable/disable check, now internal to GooseProvider),
+ * the composed reason says so honestly while still preserving the original
+ * Gemini failure reason as a substring (existing tests match on e.g.
+ * "GEMINI_API_KEY" in the returned reason).
+ *
+ * Text-only: every turn `toContents` builds always starts with a real
+ * {text} part (a caption, or an honest media placeholder), so dropping
+ * inline media bytes here only ever drops bytes a text-only fallback
+ * provider could not have used anyway.
  */
-async function tryGooseFallback(
+async function tryFallbackProviders(
   geminiReason: string,
   agent: AiAgentRecord,
   context: AiHandoffContext,
   contents: ReturnType<typeof toContents>,
   skipEscalation: boolean,
 ): Promise<AiReplyResult> {
-  /*
-   * Workspace settings win over the environment, and a workspace that has
-   * switched the failover off is honoured even if the env var is still set.
-   *
-   * The lookup is guarded because this whole function exists to FAIL SAFE.
-   * It is already on the path where Gemini has failed; letting a database
-   * hiccup throw from here would turn a graceful "AI unavailable" into an
-   * unhandled error in the reply worker. A failed lookup degrades to "no
-   * workspace endpoint", which is the honest reading of "we could not
-   * confirm one".
-   */
-  const settings = await new IntegrationSettingsRepository(pool)
-    .getGooseResolved(agent.businessId)
-    .catch(() => null);
-  const workspaceEndpoint =
-    settings?.isEnabled && settings.serviceUrl ? { serviceUrl: settings.serviceUrl, apiKey: settings.apiKey } : undefined;
-
-  if (settings && !settings.isEnabled) {
+  const fallbackProviders = aiGateway.listProviders().filter((provider) => provider.name !== 'gemini');
+  if (fallbackProviders.length === 0) {
     return {
       status: 'unavailable',
-      reason: `Gemini unavailable (${geminiReason}); Goose failover is turned off for this workspace`,
-      skipEscalation,
-    };
-  }
-  if (!workspaceEndpoint && !gooseService.getCapabilities().configured) {
-    return {
-      status: 'unavailable',
-      reason: `Gemini unavailable (${geminiReason}); Goose fallback not configured`,
+      reason: `Gemini unavailable (${geminiReason}); no fallback provider is configured`,
       skipEscalation,
     };
   }
 
-  // Goose's own contract is text-only - it has no multimodal understanding
-  // to hand image/audio bytes to. Every turn `toContents` builds always
-  // starts with a real {text} part (a caption, or an honest media
-  // placeholder), so this never silently drops a turn's meaning - it only
-  // ever drops bytes Goose could not have used anyway.
-  const gooseResult = await gooseService.generateResponse({
-    systemInstruction: buildSystemInstruction(agent, context),
-    contents: contents.map((content) => ({
-      role: content.role,
-      parts: [content.parts[0] as { text: string }],
-    })),
-    endpoint: workspaceEndpoint,
-  });
-
-  if (gooseResult.status === 'generated') {
-    return { status: 'generated', text: gooseResult.text.slice(0, MAX_REPLY_CHARS) };
+  try {
+    const response = await aiGateway.generate({
+      tenantId: agent.businessId,
+      operation: 'reply.fallback',
+      providerAllowlist: fallbackProviders.map((provider) => provider.name),
+      messages: [
+        { role: 'system', content: buildSystemInstruction(agent, context) },
+        ...contents.map((content) => ({
+          role: content.role === 'model' ? ('assistant' as const) : ('user' as const),
+          content: (content.parts[0] as { text: string }).text,
+        })),
+      ],
+    });
+    return { status: 'generated', text: response.text.slice(0, MAX_REPLY_CHARS) };
+  } catch (error) {
+    return {
+      status: 'unavailable',
+      reason: `Gemini unavailable (${geminiReason}); fallback also unavailable (${error instanceof Error ? error.message : String(error)})`,
+      skipEscalation,
+    };
   }
-
-  return {
-    status: 'unavailable',
-    reason: `Gemini unavailable (${geminiReason}); Goose fallback also unavailable (${gooseResult.reason})`,
-    skipEscalation,
-  };
 }
 
 /**
@@ -357,14 +344,14 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
   }
 
   const genAi = getGeminiClient();
-  if (!genAi) return tryGooseFallback('GEMINI_API_KEY is not configured', agent, context, contents, true);
+  if (!genAi) return tryFallbackProviders('GEMINI_API_KEY is not configured', agent, context, contents, true);
 
   // Sustained Gemini outages must not cost every queued message a full
   // network timeout before falling back - once several consecutive real
   // calls have failed, skip straight to Goose (or "unavailable") until the
   // cooldown elapses and a single probe call is allowed through again.
   if (!geminiCircuitBreaker.canAttempt()) {
-    return tryGooseFallback(
+    return tryFallbackProviders(
       `Gemini unavailable (${geminiCircuitBreaker.describeUnavailable()})`,
       agent,
       context,
@@ -435,7 +422,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
     const text = response.text?.trim();
     if (!text) {
       console.warn(`[aiReplyService] Gemini returned an empty response for chat ${context.chatId}; falling back to Goose.`);
-      return tryGooseFallback('Reply model returned an empty response', agent, context, contents, false);
+      return tryFallbackProviders('Reply model returned an empty response', agent, context, contents, false);
     }
 
     return { status: 'generated', text: text.slice(0, MAX_REPLY_CHARS) };
@@ -466,7 +453,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
       // against. Escalating to a second agent right now is pointless: the
       // same outage almost certainly still applies.
       geminiCircuitBreaker.recordFailure(reason);
-      return tryGooseFallback(reason, agent, context, contents, true);
+      return tryFallbackProviders(reason, agent, context, contents, true);
     }
 
     if (classified.category === 'auth' || classified.category === 'provider_config') {
@@ -497,13 +484,13 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
           );
         });
       }
-      return tryGooseFallback(reason, agent, context, contents, true);
+      return tryFallbackProviders(reason, agent, context, contents, true);
     }
 
     // 'malformed_request' - the one class where a *different* agent's own
     // prompt shape could plausibly avoid the same 400, so escalation stays
     // worth trying. Feeds neither breaker: retrying via a probe cannot fix
     // a request shape problem.
-    return tryGooseFallback(reason, agent, context, contents, false);
+    return tryFallbackProviders(reason, agent, context, contents, false);
   }
 }

@@ -15,7 +15,7 @@ import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepo
 import { enqueueEmailSend } from '../queue/queues/emailSendQueue.js';
 import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 import * as emailProvider from './emailProviderService.js';
-import { getGeminiClient } from './geminiClient.js';
+import { aiGateway } from './ai/aiGateway.js';
 
 const emailRepository = new EmailMessageRepository(pool);
 const integrationSettingsRepository = new IntegrationSettingsRepository(pool);
@@ -358,9 +358,6 @@ export async function draftWithAi(
   const agent = await agentRepository.findByIdForBusiness(input.agentId, businessId);
   if (!agent) throw new EmailNotFoundError('Agent not found.');
 
-  const genAi = getGeminiClient();
-  if (!genAi) return { status: 'unavailable', reason: 'GEMINI_API_KEY is not configured, so no draft can be generated.' };
-
   const systemInstruction = [
     `You are drafting a business email on behalf of "${agent.name}".`,
     agent.persona ? `Persona: ${agent.persona}` : '',
@@ -380,12 +377,15 @@ export async function draftWithAi(
   const prompt = `${factsBlock}\n\nWhat this email needs to do:\n${input.instruction.trim()}`;
 
   try {
-    const response = await genAi.models.generateContent({
-      model: process.env.GEMINI_REPLY_MODEL ?? process.env.GEMINI_MODEL ?? 'gemini-3.5-flash',
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: { systemInstruction },
+    const response = await aiGateway.generate({
+      tenantId: businessId,
+      operation: 'email.draft',
+      messages: [
+        { role: 'system', content: systemInstruction },
+        { role: 'user', content: prompt },
+      ],
     });
-    const text = response.text?.trim();
+    const text = response.text.trim();
     if (!text) return { status: 'unavailable', reason: 'The model returned an empty draft.' };
 
     const subject = `${input.kind.replace(/_/g, ' ')} from ${agent.name}`.slice(0, MAX_SUBJECT_CHARS);

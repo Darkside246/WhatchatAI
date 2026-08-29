@@ -2,7 +2,7 @@ import type { AIProviderAdapter } from '../../domain/platform/contracts.js';
 
 export interface GatewayMedia { mimeType: string; url?: string; base64Data?: string; }
 export interface GatewayMessage { role: 'system' | 'user' | 'assistant'; content: string; }
-export interface GatewayRequest { tenantId: string; operation: string; messages: GatewayMessage[]; media?: GatewayMedia[]; responseFormat?: 'text' | 'json'; preferredProvider?: string; providerAllowlist?: string[]; maxOutputTokens?: number; }
+export interface GatewayRequest { tenantId: string; operation: string; messages: GatewayMessage[]; media?: GatewayMedia[]; responseFormat?: 'text' | 'json'; preferredProvider?: string; providerAllowlist?: string[]; maxOutputTokens?: number; temperature?: number; }
 export interface GatewayResponse { provider: string; model: string; text: string; usage?: { inputTokens?: number; outputTokens?: number }; attemptedProviders: string[]; }
 export interface RegisteredAiProvider extends AIProviderAdapter { model: string; priority: number; }
 
@@ -36,6 +36,7 @@ function validateRequest(request: GatewayRequest): void {
     if (message.content.length > MAX_MESSAGE_CHARS) throw new Error(`AI gateway message ${index} exceeds ${MAX_MESSAGE_CHARS} characters`);
   }
   if (request.maxOutputTokens !== undefined && (!Number.isInteger(request.maxOutputTokens) || request.maxOutputTokens < 1 || request.maxOutputTokens > MAX_OUTPUT_TOKENS)) throw new Error(`maxOutputTokens must be an integer between 1 and ${MAX_OUTPUT_TOKENS}`);
+  if (request.temperature !== undefined && (request.temperature < 0 || request.temperature > 2)) throw new Error('temperature must be between 0 and 2');
 }
 
 export class AiGateway {
@@ -64,6 +65,7 @@ export class AiGateway {
         if (request.media !== undefined) providerInput.media = request.media;
         if (request.responseFormat !== undefined) providerInput.responseFormat = request.responseFormat;
         if (request.maxOutputTokens !== undefined) providerInput.maxOutputTokens = request.maxOutputTokens;
+        if (request.temperature !== undefined) providerInput.temperature = request.temperature;
         const response = await provider.generate(providerInput);
         const text = response.text.trim();
         if (!text) throw new Error('provider returned an empty response');

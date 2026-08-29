@@ -1792,11 +1792,12 @@ const suggestCopySchema = z.object({
 });
 
 app.post('/api/workspace/marketing/ai-suggest', requireWorkspaceContext, requirePermission('marketing.create'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const parsed = suggestCopySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_SUGGEST_REQUEST', details: parsed.error.flatten() });
-  // Always 200 - "unavailable" (e.g. Gemini not configured) is an honest,
+  // Always 200 - "unavailable" (e.g. no AI provider configured) is an honest,
   // expected outcome the frontend reads from result.status, not a transport error.
-  const result = await suggestMarketingCopy(parsed.data);
+  const result = await suggestMarketingCopy({ ...parsed.data, businessId });
   return res.status(200).json(result);
 });
 

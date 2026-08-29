@@ -8,6 +8,7 @@ import { buildTimeContext } from '../src/services/time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME } from '../src/services/time/getCurrentTimeTool.js';
 import { geminiCircuitBreaker } from '../src/services/aiCircuitBreaker.js';
 import { register } from '../src/services/authService.js';
+import { aiGateway } from '../src/services/ai/aiGateway.js';
 import { resetDatabase } from './helpers.js';
 
 function fakeAgent(overrides: Partial<AiAgentRecord> = {}): AiAgentRecord {
@@ -380,5 +381,92 @@ describe('generateAiReply respects the Gemini circuit breaker', () => {
 
     expect(result.status).toBe('generated');
     expect(geminiCircuitBreaker.getState()).toBe('CLOSED');
+  });
+});
+
+/**
+ * P5: the fallback path after a genuine Gemini failure now goes through the
+ * real, shared AiGateway singleton (same one every other business workload
+ * uses) instead of calling Goose directly - these tests register a fake
+ * provider on that shared instance to prove the new path actually recovers
+ * a reply, not just that the old Goose-only behavior still compiles.
+ */
+describe('generateAiReply fallback routes through AiGateway after a genuine Gemini failure', () => {
+  const registeredProviderNames: string[] = [];
+
+  function registerFakeFallbackProvider(name: string, options: { result?: string; error?: string } = {}) {
+    aiGateway.register({
+      name,
+      model: `${name}-test-model`,
+      priority: 99,
+      async capabilities() {
+        return { text: true, vision: false, audio: false, video: false, documents: false };
+      },
+      async generate() {
+        if (options.error) throw new Error(options.error);
+        return { provider: name, text: options.result ?? 'ok' };
+      },
+    });
+    registeredProviderNames.push(name);
+  }
+
+  beforeEach(() => {
+    generateContentMock.mockReset();
+    geminiCircuitBreaker.reset();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    for (const name of registeredProviderNames.splice(0)) aiGateway.unregister(name);
+  });
+
+  it('recovers a real reply from a fallback provider registered on the shared AiGateway when Gemini fails', async () => {
+    generateContentMock.mockRejectedValue(new ApiError({ message: 'The service is currently unavailable.', status: 503 }));
+    registerFakeFallbackProvider('fake-fallback', { result: 'A fallback provider answered instead.' });
+
+    const result = await generateAiReply(fakeAgent(), fakeContext());
+
+    expect(result.status).toBe('generated');
+    if (result.status === 'generated') expect(result.text).toBe('A fallback provider answered instead.');
+  });
+
+  it('never retries Gemini itself as part of the fallback chain - only non-Gemini providers are offered', async () => {
+    generateContentMock.mockRejectedValue(new ApiError({ message: 'The service is currently unavailable.', status: 503 }));
+    registerFakeFallbackProvider('fake-fallback', { result: 'ok' });
+
+    await generateAiReply(fakeAgent(), fakeContext());
+
+    // The real Gemini SDK mock was called exactly once (the original
+    // attempt) - the fallback never routes back through Gemini again via
+    // the gateway, even though a 'gemini' entry could theoretically be
+    // registered on the same shared instance elsewhere in the app.
+    expect(generateContentMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an honest "unavailable" preserving the original Gemini reason when every fallback provider also fails', async () => {
+    generateContentMock.mockRejectedValue(new ApiError({ message: 'The service is currently unavailable.', status: 503 }));
+    registerFakeFallbackProvider('fake-fallback', { error: 'fake fallback provider is down too' });
+
+    const result = await generateAiReply(fakeAgent(), fakeContext());
+
+    expect(result.status).toBe('unavailable');
+    if (result.status === 'unavailable') {
+      expect(result.reason).toContain('The service is currently unavailable.');
+      expect(result.reason).toContain('fake fallback provider is down too');
+    }
+  });
+
+  it('reports "no fallback provider is configured" honestly when nothing is registered - never a fabricated reply', async () => {
+    generateContentMock.mockRejectedValue(new ApiError({ message: 'The service is currently unavailable.', status: 503 }));
+    // Deliberately no registerFakeFallbackProvider() call - the shared
+    // aiGateway singleton has whatever this environment configured, which
+    // in the test environment is nothing.
+
+    const result = await generateAiReply(fakeAgent(), fakeContext());
+
+    expect(result.status).toBe('unavailable');
+    if (result.status === 'unavailable') {
+      expect(result.reason).toContain('The service is currently unavailable.');
+    }
   });
 });

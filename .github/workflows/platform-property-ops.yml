@@ -53,6 +53,8 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Check AI call sites (no direct Gemini access outside AiGateway)
+        run: npm run check:ai-call-sites
       - name: Typecheck
         run: npm run typecheck
       - name: Test

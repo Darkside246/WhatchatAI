@@ -123,5 +123,6 @@ export interface AIProviderAdapter {
     media?: AIProviderMedia[];
     responseFormat?: 'text' | 'json';
     maxOutputTokens?: number;
+    temperature?: number;
   }): Promise<{ text: string; provider: string; usage?: { inputTokens?: number; outputTokens?: number } }>;
 }

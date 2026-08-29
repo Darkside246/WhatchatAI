@@ -19,6 +19,7 @@
     "start:worker": "node dist/queue/workers/incomingMessagesWorker.js",
     "start:goose": "node dist/services/gooseFallbackSupervisor.js",
     "typecheck": "tsc --noEmit && npm run typecheck --workspace=src/web",
+    "check:ai-call-sites": "tsx scripts/check-ai-call-sites.ts",
     "db:migrate": "tsx src/db/migrate.ts",
     "test": "vitest run"
   },
