@@ -5,9 +5,10 @@ import { OperatorModeRepository } from '../repositories/operatorModeRepository.j
 import { WhatsAppChatRepository } from '../repositories/whatsappChatRepository.js';
 import { WhatsAppOutboundMessageService } from '../services/whatsappOutboundMessageService.js';
 import { generatePinSalt, generateSetupToken, hashPin, OPERATOR_SETUP_CONFIRMATION } from '../services/operator/operatorCommandService.js';
-import type { AuthContext } from './authMiddleware.js';
+import { requireAuth, type AuthContext } from './authMiddleware.js';
 
 const router = Router();
+router.use(requireAuth);
 const repo = new OperatorModeRepository(pool);
 const chatRepo = new WhatsAppChatRepository(pool);
 const outboundSvc = new WhatsAppOutboundMessageService();

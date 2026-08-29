@@ -68,6 +68,29 @@ const DEFAULT_SESSION_DIR = path.resolve(
   process.env.WHATSAPP_SESSION_DIR ?? '.data/whatsapp/primary',
 );
 
+/**
+ * Baileys' own `socket.user.id` for a QR-paired session includes a
+ * ":<deviceId>" suffix (e.g. "12462451422:20@s.whatsapp.net") - that
+ * device slot number changes on every fresh pairing (logged out and
+ * re-scanned), even though the underlying WhatsApp account/phone number
+ * does not. whatsapp_accounts.upsertConnected() matches/creates a row by
+ * this exact JID string - passing the raw, device-suffixed value through
+ * would silently mint a brand-new account row (orphaning every previously
+ * synced chat/message/contact from the one the live connection now uses)
+ * every time this account gets re-paired, instead of reconnecting the
+ * existing one. derivePhoneNumber() already strips this same suffix when
+ * computing the phone number; this applies the identical strip to the JID
+ * itself, once, at the single point it is captured from the socket, so
+ * every downstream consumer (the account upsert, message persistence's
+ * accountJid, sync context) sees the device-independent form.
+ */
+export function stripDeviceSuffix(jid: string): string {
+  const atIndex = jid.indexOf('@');
+  if (atIndex === -1) return jid;
+  const userPart = (jid.slice(0, atIndex).split(':')[0]) ?? '';
+  return `${userPart}${jid.slice(atIndex)}`;
+}
+
 export class WhatsAppConnectionService {
   private socket: WASocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -464,7 +487,7 @@ export class WhatsAppConnectionService {
 
       if (connection === 'open') {
         const user = socket.user;
-        const jid = user?.id ?? null;
+        const jid = user?.id ? stripDeviceSuffix(user.id) : null;
         const jidKind = classifyJid(jid);
         const phoneNumber = jid ? derivePhoneNumber(jid, jidKind, null) : null;
         const pushName = user?.name ?? null;

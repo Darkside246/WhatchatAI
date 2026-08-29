@@ -18,7 +18,7 @@ vi.mock('node:fs/promises', async () => {
 });
 
 const { DisconnectReason } = await import('@whiskeysockets/baileys');
-const { WhatsAppConnectionService } = await import('../src/services/whatsappConnectionService.js');
+const { WhatsAppConnectionService, stripDeviceSuffix } = await import('../src/services/whatsappConnectionService.js');
 
 /**
  * A fake Baileys socket carrying a real EventEmitter for `.ev` - Baileys'
@@ -108,5 +108,34 @@ describe('WhatsAppConnectionService - DisconnectReason.connectionReplaced handli
     await vi.waitFor(() => {
       expect(makeWASocketMock).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+describe('stripDeviceSuffix', () => {
+  it('removes the ":<deviceId>" suffix from an individual JID', () => {
+    expect(stripDeviceSuffix('12462451422:20@s.whatsapp.net')).toBe('12462451422@s.whatsapp.net');
+  });
+
+  it('is stable across different device slots for the same account - the real bug this fixes', () => {
+    // Before this fix, whatsapp_accounts.upsertConnected() matched on the
+    // raw JID, so a fresh re-pairing (device slot changing after a
+    // conflict/logout) silently created a second account row and orphaned
+    // every previously-synced chat/message from it.
+    const beforePairing = stripDeviceSuffix('12462451422:19@s.whatsapp.net');
+    const afterRePairing = stripDeviceSuffix('12462451422:20@s.whatsapp.net');
+    expect(afterRePairing).toBe(beforePairing);
+  });
+
+  it('leaves a JID with no device suffix unchanged', () => {
+    expect(stripDeviceSuffix('12462451422@s.whatsapp.net')).toBe('12462451422@s.whatsapp.net');
+  });
+
+  it('leaves non-individual JID kinds (group, lid) unaffected in shape - only strips a colon-suffixed user part', () => {
+    expect(stripDeviceSuffix('120363000000000000@g.us')).toBe('120363000000000000@g.us');
+    expect(stripDeviceSuffix('1048156573714:20@lid')).toBe('1048156573714@lid');
+  });
+
+  it('returns a malformed JID (no "@") unchanged rather than throwing', () => {
+    expect(stripDeviceSuffix('not-a-jid')).toBe('not-a-jid');
   });
 });
