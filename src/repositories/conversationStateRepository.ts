@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Queryable } from './types.js';
 
 /**
@@ -69,6 +70,33 @@ function toRecord(row: ConversationStateRow): ConversationStateRecord {
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * A valid-shaped ConversationStateRecord for a conversation that has never
+ * had state written - never persisted, and its id is not a real row id.
+ * Used by read-only callers (aiContextGathererService) so that just
+ * gathering context for a reply never has the side effect of creating a
+ * permanent row, and never requires chatId to already exist as a real
+ * whatsapp_chats row (some callers deliberately pass a syntactically valid
+ * but non-existent chatId, e.g. document-retrieval-only tests). The real
+ * row is created lazily, on first actual write, by update()'s caller
+ * calling getOrCreate() at that point - not by merely reading context.
+ */
+export function emptyConversationState(businessId: string, chatId: string): ConversationStateRecord {
+  const now = new Date().toISOString();
+  return {
+    id: randomUUID(),
+    businessId,
+    chatId,
+    currentGoal: null,
+    confirmedFacts: [],
+    openQuestions: [],
+    pendingActions: [],
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
   };
 }
 

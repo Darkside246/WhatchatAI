@@ -119,6 +119,26 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
     if (context.crmContact.notes) lines.push(`CRM notes for this customer:\n${wrapUntrustedData('crm_notes', context.crmContact.notes)}`);
   }
 
+  // Durable structured state (Phase 2/3 of the identity/state roadmap) -
+  // supplements the raw history above, never replaces it. Optional
+  // chaining because some existing test fixtures build AiHandoffContext
+  // without this field; every real call from gatherAiHandoffContext always
+  // populates it, but it is always an empty shell today since nothing yet
+  // writes goals/facts/questions into it - this block simply has nothing
+  // to add until a future phase starts populating real state.
+  const state = context.conversationState;
+  if (state?.currentGoal) {
+    lines.push(`Current goal for this conversation: ${state.currentGoal.description}`);
+  }
+  if (state?.confirmedFacts.length) {
+    const facts = state.confirmedFacts.map((fact) => `${fact.key}=${fact.value}`).join(', ');
+    lines.push(`Confirmed facts about this conversation: ${facts}.`);
+  }
+  if (state?.openQuestions.some((question) => !question.resolvedAt)) {
+    const open = state.openQuestions.filter((question) => !question.resolvedAt).map((question) => question.question);
+    lines.push(`Open questions not yet answered: ${open.join('; ')}.`);
+  }
+
   if (context.knowledgeBase.available && context.knowledgeBase.results.length > 0) {
     const excerpts = context.knowledgeBase.results
       .map((result) => `- ${result.title}: ${wrapUntrustedData('knowledge_base', result.snippet)}`)

@@ -2,6 +2,7 @@ import { pool } from '../db/pool.js';
 import { BusinessRepository } from '../repositories/businessRepository.js';
 import { CrmContactRepository, type CrmContactRecord } from '../repositories/crmContactRepository.js';
 import { WhatsAppMessageRepository, type WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
+import { ConversationStateRepository, emptyConversationState, type ConversationStateRecord } from '../repositories/conversationStateRepository.js';
 import { searchKnowledgeBase, type KnowledgeBaseSearchResult } from './knowledgeBaseSearchService.js';
 import { retrieveAiDocumentContext, type AiDocumentRetrievalResponse } from './aiDocumentRetrievalService.js';
 import { timeService, resolveBusinessTimezone, type TimeContext } from './time/timeService.js';
@@ -26,6 +27,20 @@ export interface AiHandoffContext {
   /** D4-B: AI-retrievable business documents (D3-C's retrieveAiDocumentContext), gathered the same way and with the same {available, results, reason} contract as knowledgeBase above - never a second retrieval/trust pattern. */
   documentContext: AiDocumentRetrievalResponse;
   conversationHistory: WhatsAppMessageRecord[];
+  /**
+   * Durable structured state for this conversation (current goal, confirmed
+   * facts, open questions) - supplements the raw history/CRM/knowledge-base
+   * context above, never replaces it. Read-only here: gathering context
+   * never creates a conversation_states row as a side effect (some callers
+   * legitimately gather context for a chatId with no real whatsapp_chats
+   * row yet), so a conversation with no real row gets a non-persisted
+   * empty default (see emptyConversationState()) rather than a
+   * lazily-created one. Nothing currently writes real goals/facts/questions
+   * into this yet, so today every real conversation's state is empty -
+   * included now so a future writer has somewhere to put it, and so the
+   * prompt already knows how to surface it once one exists.
+   */
+  conversationState: ConversationStateRecord;
   /** Real IANA name from the business's own Settings, defaulting to 'UTC' - never guessed from the server's own clock. */
   businessTimezone: string;
   /** Authoritative, TimeService-built context (internet-synchronized where possible) - the AI must use this, never its own model knowledge, for "now". */
@@ -46,8 +61,9 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
   const crmContactRepository = new CrmContactRepository(pool);
   const messageRepository = new WhatsAppMessageRepository(pool);
   const businessRepository = new BusinessRepository(pool);
+  const conversationStateRepository = new ConversationStateRepository(pool);
 
-  const [crmContact, knowledgeBase, documentContext, conversationHistory, business, media] = await Promise.all([
+  const [crmContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState] = await Promise.all([
     input.contactId
       ? crmContactRepository.findByWhatsAppContact(input.businessId, input.contactId)
       : Promise.resolve(null),
@@ -61,6 +77,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     messageRepository.listByChat(input.chatId, input.historyLimit ?? 20),
     businessRepository.findById(input.businessId),
     input.mediaId ? resolveInlineMediaPart(input.businessId, input.mediaId) : Promise.resolve(null),
+    conversationStateRepository.find(input.businessId, input.chatId),
   ]);
 
   const businessTimezone = resolveBusinessTimezone({ timezone: business?.timezone ?? null });
@@ -73,6 +90,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     knowledgeBase,
     documentContext,
     conversationHistory,
+    conversationState: conversationState ?? emptyConversationState(input.businessId, input.chatId),
     businessTimezone,
     timeContext,
     media,

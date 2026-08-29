@@ -3,6 +3,7 @@ import { pool } from '../src/db/pool.js';
 import { whatsappMessagePersistenceService } from '../src/services/whatsappMessagePersistenceService.js';
 import { WhatsAppJidMappingRepository } from '../src/repositories/whatsappJidMappingRepository.js';
 import { CustomerIdentityRepository } from '../src/repositories/customerIdentityRepository.js';
+import { ConversationEventRepository } from '../src/repositories/conversationEventRepository.js';
 import type { IngestedWhatsAppMessage } from '../src/services/whatsappMessageIngestionService.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 
@@ -229,5 +230,54 @@ describe('WhatsAppMessagePersistenceService', () => {
 
     const { rows } = await pool.query<{ count: string }>('SELECT count(*) FROM customer_identities WHERE business_id = $1', [businessId]);
     expect(rows[0]!.count).toBe('0');
+  });
+
+  it('appends a message_received conversation event for a new, live, inbound message', async () => {
+    const result = await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage(),
+    });
+
+    const events = await new ConversationEventRepository(pool).listByChat(businessId, result.chat.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      eventType: 'message_received',
+      payload: { messageId: result.message.id, contentType: 'text' },
+    });
+  });
+
+  it('does not append a duplicate event for a re-delivered (already-persisted) message', async () => {
+    const message = ingestedMessage({ messageId: 'WA-DUPLICATE-EVENT' });
+    const first = await whatsappMessagePersistenceService.persist({ businessId, whatsappAccountId: accountId, accountJid, ingested: message });
+    await whatsappMessagePersistenceService.persist({ businessId, whatsappAccountId: accountId, accountJid, ingested: message });
+
+    const events = await new ConversationEventRepository(pool).listByChat(businessId, first.chat.id);
+    expect(events).toHaveLength(1);
+  });
+
+  it('does not append a message_received event for an outbound (fromMe) message', async () => {
+    const result = await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({ messageId: 'WA-OUTBOUND-ECHO', fromMe: true }),
+    });
+
+    const events = await new ConversationEventRepository(pool).listByChat(businessId, result.chat.id);
+    expect(events).toEqual([]);
+  });
+
+  it('does not append a message_received event for historical (non-live) backfill', async () => {
+    const result = await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({ messageId: 'WA-HISTORICAL-BACKFILL', isLive: false, upsertType: 'append' }),
+    });
+
+    const events = await new ConversationEventRepository(pool).listByChat(businessId, result.chat.id);
+    expect(events).toEqual([]);
   });
 });

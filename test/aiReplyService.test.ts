@@ -6,6 +6,7 @@ import type { WhatsAppMessageRecord } from '../src/repositories/whatsappMessageR
 import { buildTimeContext } from '../src/services/time/timeContext.js';
 import { listRegisteredTools } from '../src/services/ai/aiToolPolicy.js';
 import { GET_CURRENT_TIME_TOOL_NAME } from '../src/services/time/getCurrentTimeTool.js';
+import { emptyConversationState } from '../src/repositories/conversationStateRepository.js';
 
 function fakeAgent(overrides: Partial<AiAgentRecord> = {}): AiAgentRecord {
   return {
@@ -68,6 +69,7 @@ function fakeContext(overrides: Partial<AiHandoffContext> = {}): AiHandoffContex
     businessTimezone: 'UTC',
     timeContext: buildTimeContext(Date.now(), 'UTC', { status: 'SYNCED', lastSyncedAt: new Date(), source: 'test' }),
     media: null,
+    conversationState: emptyConversationState('business-1', 'chat-1'),
     ...overrides,
   };
 }
@@ -380,6 +382,50 @@ describe('Context Trust Builder - business documents (Phase D4-B, reusing the id
   it('never adds the boundary-meaning rule when documents are the only would-be untrusted source and there are none', () => {
     const instruction = buildSystemInstruction(fakeAgent(), fakeContext());
     expect(instruction).not.toContain('untrusted_data');
+  });
+});
+
+describe('Durable conversation state (Phase 3 - supplements raw history, never replaces it)', () => {
+  it('adds nothing to the prompt when conversation state is the empty default - the current, universal case today', () => {
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext());
+    expect(instruction).not.toContain('Current goal');
+    expect(instruction).not.toContain('Confirmed facts');
+    expect(instruction).not.toContain('Open questions');
+  });
+
+  it('surfaces the current goal when one is set', () => {
+    const state = { ...emptyConversationState('business-1', 'chat-1'), currentGoal: { description: 'Resolve the AC complaint', setAt: new Date().toISOString() } };
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state }));
+    expect(instruction).toContain('Current goal for this conversation: Resolve the AC complaint');
+  });
+
+  it('surfaces confirmed facts', () => {
+    const state = {
+      ...emptyConversationState('business-1', 'chat-1'),
+      confirmedFacts: [{ key: 'unit_number', value: '4B', origin: 'user_confirmed' as const, confirmedAt: new Date().toISOString() }],
+    };
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state }));
+    expect(instruction).toContain('Confirmed facts about this conversation: unit_number=4B');
+  });
+
+  it('surfaces only unresolved open questions, never resolved ones', () => {
+    const state = {
+      ...emptyConversationState('business-1', 'chat-1'),
+      openQuestions: [
+        { id: 'q1', question: 'What unit number?', openedAt: new Date().toISOString(), resolvedAt: null },
+        { id: 'q2', question: 'Already resolved question', openedAt: new Date().toISOString(), resolvedAt: new Date().toISOString() },
+      ],
+    };
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state }));
+    expect(instruction).toContain('Open questions not yet answered: What unit number?');
+    expect(instruction).not.toContain('Already resolved question');
+  });
+
+  it('does not crash when conversationState is missing entirely (older test fixtures that predate this field)', () => {
+    const context = fakeContext();
+    // @ts-expect-error - deliberately simulating a fixture that omits the field, matching how some existing test files still build AiHandoffContext via Partial<> spreads.
+    delete context.conversationState;
+    expect(() => buildSystemInstruction(fakeAgent(), context)).not.toThrow();
   });
 });
 

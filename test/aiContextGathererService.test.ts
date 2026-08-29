@@ -111,6 +111,56 @@ describe('gatherAiHandoffContext (real Promise.all over Postgres, including real
     expect(context.crmContact).toBeNull();
     expect(context.conversationHistory).toEqual([]);
   });
+
+  it('gathers a valid, empty conversation state for a real chat with no state ever written - without creating a persisted row', async () => {
+    const chatRepo = new WhatsAppChatRepository(pool);
+    const chat = await chatRepo.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550001234@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+
+    const context = await gatherAiHandoffContext({ businessId, chatId: chat.id, contactId: null, queryText: 'hi' });
+
+    expect(context.conversationState.currentGoal).toBeNull();
+    expect(context.conversationState.confirmedFacts).toEqual([]);
+    expect(context.conversationState.openQuestions).toEqual([]);
+
+    const { rows } = await pool.query('SELECT count(*) FROM conversation_states WHERE business_id = $1 AND chat_id = $2', [businessId, chat.id]);
+    expect(rows[0].count).toBe('0');
+  });
+
+  it('returns the real persisted conversation state once one exists for the chat', async () => {
+    const chatRepo = new WhatsAppChatRepository(pool);
+    const chat = await chatRepo.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550005678@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+    const { ConversationStateRepository } = await import('../src/repositories/conversationStateRepository.js');
+    const stateRepo = new ConversationStateRepository(pool);
+    const state = await stateRepo.getOrCreate(businessId, chat.id);
+    await stateRepo.update(businessId, chat.id, state.version, {
+      currentGoal: { description: 'Book a repair visit', setAt: new Date().toISOString() },
+    });
+
+    const context = await gatherAiHandoffContext({ businessId, chatId: chat.id, contactId: null, queryText: 'hi' });
+    expect(context.conversationState.currentGoal?.description).toBe('Book a repair visit');
+  });
+
+  it('does not throw for a chatId with no backing whatsapp_chats row at all - a documented, deliberate usage pattern for context-only callers', async () => {
+    const context = await gatherAiHandoffContext({
+      businessId,
+      chatId: '00000000-0000-0000-0000-000000000099',
+      contactId: null,
+      queryText: 'hi',
+    });
+    expect(context.conversationState.currentGoal).toBeNull();
+  });
 });
 
 /**

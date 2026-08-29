@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import { pool } from '../db/pool.js';
 import { withTransaction } from '../db/transaction.js';
 import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
 import { WhatsAppChatRepository } from '../repositories/whatsappChatRepository.js';
@@ -6,6 +7,7 @@ import { WhatsAppMessageRepository, type WhatsAppMessageRecord } from '../reposi
 import { WhatsAppMediaRepository, type WhatsAppMediaRecord } from '../repositories/whatsappMediaRepository.js';
 import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMappingRepository.js';
 import { CustomerIdentityRepository } from '../repositories/customerIdentityRepository.js';
+import { ConversationEventRepository } from '../repositories/conversationEventRepository.js';
 import type { WhatsAppChatRecord } from '../repositories/whatsappChatRepository.js';
 import type { MediaType, MessageType } from '../domain/whatsapp/types.js';
 import { chatTypeFromJidKind } from '../domain/whatsapp/chatType.js';
@@ -59,6 +61,8 @@ export interface PersistIngestedMessageResult {
 }
 
 export class WhatsAppMessagePersistenceService {
+  private readonly conversationEventRepository = new ConversationEventRepository(pool);
+
   /**
    * The one authoritative write path for an inbound/outbound WhatsApp message:
    * upsert contact -> upsert chat -> insert message -> record chat's last
@@ -89,6 +93,30 @@ export class WhatsAppMessagePersistenceService {
         }),
         `media download ${result.media.id}`,
       );
+    }
+
+    // Additive observability, not a correctness-critical write: appended
+    // after the transaction above has already durably committed, on its
+    // own connection (ConversationEventRepository.append() opens its own
+    // transaction for the advisory lock + sequence computation), and never
+    // allowed to fail the real message write - a lost event is far less
+    // costly than a customer's message failing to persist because of a
+    // bug in this side channel. Awaited so callers/tests observe a
+    // consistent end state rather than racing a fire-and-forget write.
+    // Only a genuinely new, live, inbound message gets one, mirroring the
+    // same wasInserted/fromMe/isLive conditions already used above for the
+    // unread-counter increment.
+    if (!result.deduplicated && !input.ingested.fromMe && input.ingested.isLive) {
+      try {
+        await this.conversationEventRepository.append({
+          businessId: input.businessId,
+          chatId: result.chat.id,
+          eventType: 'message_received',
+          payload: { messageId: result.message.id, contentType: input.ingested.contentType },
+        });
+      } catch (error) {
+        console.error('[WhatsAppMessagePersistenceService] Failed to append message_received event:', error instanceof Error ? error.message : error);
+      }
     }
 
     return result;

@@ -5,6 +5,7 @@ import {
   WhatsAppOutboundMessageRepository,
   type WhatsAppOutboundMessageRecord,
 } from '../repositories/whatsappOutboundMessageRepository.js';
+import { ConversationEventRepository } from '../repositories/conversationEventRepository.js';
 import { enqueueOutboundMessage } from '../queue/queues/outboundMessagesQueue.js';
 import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 import { storeMedia } from '../media/localEncryptedMediaStorage.js';
@@ -43,6 +44,7 @@ const MAX_MEDIA_BYTES = 16 * 1024 * 1024;
 export class WhatsAppOutboundMessageService {
   private readonly chatRepository = new WhatsAppChatRepository(pool);
   private readonly outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
+  private readonly conversationEventRepository = new ConversationEventRepository(pool);
 
   /**
    * The one entry point for sending an outbound WhatsApp message, whether
@@ -119,6 +121,24 @@ export class WhatsAppOutboundMessageService {
     // - see enqueueWithTimeout's own comment for why.
     if (record.wasCreated) {
       await enqueueWithTimeout(enqueueOutboundMessage({ outboundMessageId: record.id }, input.delayMs), `outbound message ${record.id}`);
+
+      // Additive observability, not correctness-critical - awaited (so
+      // callers observe a consistent end state, no race with the caller
+      // returning first) but never allowed to fail a real outbound send;
+      // any error is caught and logged, never rethrown. Only on a
+      // genuinely new request (wasCreated), matching the guard above, so a
+      // retried/idempotent send never double-records the same logical
+      // message.
+      try {
+        await this.conversationEventRepository.append({
+          businessId: input.businessId,
+          chatId: chat.id,
+          eventType: 'message_sent',
+          payload: { outboundMessageId: record.id, messageType: record.messageType },
+        });
+      } catch (error) {
+        console.error('[WhatsAppOutboundMessageService] Failed to append message_sent event:', error instanceof Error ? error.message : error);
+      }
     }
 
     return record;
