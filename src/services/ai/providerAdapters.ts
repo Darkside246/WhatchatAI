@@ -38,23 +38,60 @@ export interface ProviderGenerateInput {
 }
 
 type ProviderCapabilities = Awaited<ReturnType<RegisteredAiProvider['capabilities']>>;
-function buildPrompt(input: ProviderGenerateInput): string { return `Operation: ${input.operation}\n\n${input.messages.map((m) => `${m.role.toUpperCase()}:\n${m.content}`).join('\n\n')}`; }
+
+function buildPrompt(input: ProviderGenerateInput): string {
+  return `Operation: ${input.operation}\n\n${input.messages.map((m) => `${m.role.toUpperCase()}:\n${m.content}`).join('\n\n')}`;
+}
 
 export class GeminiProvider implements RegisteredAiProvider {
-  readonly name='gemini'; readonly model:string; readonly priority:number;
-  constructor(model=process.env.GEMINI_GATEWAY_MODEL||process.env.GEMINI_REPLY_MODEL||process.env.GEMINI_MODEL||'gemini-3.5-flash', priority=10){this.model=model;this.priority=priority;}
-  async capabilities():Promise<ProviderCapabilities>{const available=getGeminiClient()!==null;return{text:available,vision:available,audio:false,video:false,documents:false,functionCalling:available};}
-  async generate(input:ProviderGenerateInput){const client=getGeminiClient();if(!client)throw new Error('GEMINI_API_KEY is not configured');
-    if(input.tools?.length)return this.generateWithTools(client,input);
-    const parts:Array<{text:string}|{inlineData:{mimeType:string;data:string}}>=[{text:buildPrompt(input)}];for(const media of input.media??[]){if(!media.mimeType.startsWith('image/'))throw new Error(`Gemini provider cannot currently process ${media.mimeType}`);if(!media.base64Data)throw new Error('Gemini image input requires base64Data from WhatchatAI media storage');parts.push({inlineData:{mimeType:media.mimeType,data:media.base64Data}});}
+  readonly name = 'gemini';
+  readonly model: string;
+  readonly priority: number;
+
+  constructor(
+    model = process.env.GEMINI_GATEWAY_MODEL || process.env.GEMINI_REPLY_MODEL || process.env.GEMINI_MODEL || 'gemini-3.5-flash',
+    priority = 10,
+  ) {
+    this.model = model;
+    this.priority = priority;
+  }
+
+  async capabilities(): Promise<ProviderCapabilities> {
+    const available = getGeminiClient() !== null;
+    return { text: available, vision: available, audio: false, video: false, documents: false, functionCalling: available };
+  }
+
+  async generate(input: ProviderGenerateInput) {
+    const client = getGeminiClient();
+    if (!client) throw new Error('GEMINI_API_KEY is not configured');
+    if (input.tools?.length) return this.generateWithTools(client, input);
+
+    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [{ text: buildPrompt(input) }];
+    for (const media of input.media ?? []) {
+      if (!media.mimeType.startsWith('image/')) throw new Error(`Gemini provider cannot currently process ${media.mimeType}`);
+      if (!media.base64Data) throw new Error('Gemini image input requires base64Data from WhatchatAI media storage');
+      parts.push({ inlineData: { mimeType: media.mimeType, data: media.base64Data } });
+    }
+
     // thinkingBudget: 0 is applied unconditionally, not exposed as a caller
     // option - every current caller of Gemini in this codebase (aiReplyService,
     // the callers migrating onto this gateway) explicitly disables it for the
     // same reason: a short reply/draft doesn't need internal "thinking"
     // tokens competing with maxOutputTokens for the same budget.
-    const config:{maxOutputTokens:number;responseMimeType:string;thinkingConfig:{thinkingBudget:number};temperature?:number}={maxOutputTokens:input.maxOutputTokens??1024,responseMimeType:input.responseFormat==='json'?'application/json':'text/plain',thinkingConfig:{thinkingBudget:0}};
-    if(input.temperature!==undefined)config.temperature=input.temperature;
-    const response=await client.models.generateContent({model:this.model,contents:[{role:'user',parts}],config}).catch(asConfigRejection);const text=response.text?.trim()??'';if(!text)throw new Error('Gemini returned an empty response');return{provider:this.name,text};}
+    const config: { maxOutputTokens: number; responseMimeType: string; thinkingConfig: { thinkingBudget: number }; temperature?: number } = {
+      maxOutputTokens: input.maxOutputTokens ?? 1024,
+      responseMimeType: input.responseFormat === 'json' ? 'application/json' : 'text/plain',
+      thinkingConfig: { thinkingBudget: 0 },
+    };
+    if (input.temperature !== undefined) config.temperature = input.temperature;
+
+    const response = await client.models
+      .generateContent({ model: this.model, contents: [{ role: 'user', parts }], config })
+      .catch(asConfigRejection);
+    const text = response.text?.trim() ?? '';
+    if (!text) throw new Error('Gemini returned an empty response');
+    return { provider: this.name, text };
+  }
 
   /**
    * The same-provider fallback AiGateway calls at most once, only after
@@ -65,15 +102,29 @@ export class GeminiProvider implements RegisteredAiProvider {
    * production-incident-driven retry byte for byte, because that retry is
    * the only evidence this bare shape is actually safe.
    */
-  async generateReduced(input:{tenantId:string;operation:string;messages:Array<{role:'system'|'user'|'assistant';content:string}>;maxOutputTokens?:number}){
-    const client=getGeminiClient();if(!client)throw new Error('GEMINI_API_KEY is not configured');
-    const systemInstruction=input.messages.filter((message)=>message.role==='system').map((message)=>message.content).join('\n\n');
-    const contents:Content[]=input.messages.filter((message)=>message.role!=='system').map((message)=>({role:message.role==='assistant'?('model' as const):('user' as const),parts:[{text:message.content}]}));
-    const config={systemInstruction,maxOutputTokens:input.maxOutputTokens??1024};
-    const response=await client.models.generateContent({model:this.model,contents,config});
-    const text=response.text?.trim()??'';
-    if(!text)throw new Error('Gemini returned an empty response on the reduced retry');
-    return{provider:this.name,text};
+  async generateReduced(input: {
+    tenantId: string;
+    operation: string;
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+    maxOutputTokens?: number;
+  }) {
+    const client = getGeminiClient();
+    if (!client) throw new Error('GEMINI_API_KEY is not configured');
+    const systemInstruction = input.messages
+      .filter((message) => message.role === 'system')
+      .map((message) => message.content)
+      .join('\n\n');
+    const contents: Content[] = input.messages
+      .filter((message) => message.role !== 'system')
+      .map((message) => ({
+        role: message.role === 'assistant' ? ('model' as const) : ('user' as const),
+        parts: [{ text: message.content }],
+      }));
+    const config = { systemInstruction, maxOutputTokens: input.maxOutputTokens ?? 1024 };
+    const response = await client.models.generateContent({ model: this.model, contents, config });
+    const text = response.text?.trim() ?? '';
+    if (!text) throw new Error('Gemini returned an empty response on the reduced retry');
+    return { provider: this.name, text };
   }
 
   /**
@@ -86,44 +137,151 @@ export class GeminiProvider implements RegisteredAiProvider {
    * migrated onto the non-tool path (replySuggestionService, marketingAiService,
    * emailService) are never affected by this branch.
    */
-  private async generateWithTools(client:NonNullable<ReturnType<typeof getGeminiClient>>,input:ProviderGenerateInput){
-    if(input.media?.length)throw new Error('Gemini tool-calling path does not currently support media inputs');
-    if((input.pendingToolCalls?.length??0)!==(input.toolResponses?.length??0))throw new Error('Gemini provider requires matching pendingToolCalls and toolResponses');
-    const systemInstruction=input.messages.filter((message)=>message.role==='system').map((message)=>message.content).join('\n\n');
-    const contents:Content[]=input.messages.filter((message)=>message.role!=='system').map((message)=>({role:message.role==='assistant'?('model' as const):('user' as const),parts:[{text:message.content}]}));
-    if(input.pendingToolCalls?.length){
-      for(const[index,call]of input.pendingToolCalls.entries()){
-        const toolResponse=input.toolResponses![index]!;
-        contents.push({role:'model',parts:[{functionCall:{name:call.name,args:call.args}}]});
-        contents.push({role:'user',parts:[{functionResponse:{name:toolResponse.name,response:toolResponse.response}}]});
+  private async generateWithTools(client: NonNullable<ReturnType<typeof getGeminiClient>>, input: ProviderGenerateInput) {
+    if (input.media?.length) throw new Error('Gemini tool-calling path does not currently support media inputs');
+    if ((input.pendingToolCalls?.length ?? 0) !== (input.toolResponses?.length ?? 0)) {
+      throw new Error('Gemini provider requires matching pendingToolCalls and toolResponses');
+    }
+    const systemInstruction = input.messages
+      .filter((message) => message.role === 'system')
+      .map((message) => message.content)
+      .join('\n\n');
+    const contents: Content[] = input.messages
+      .filter((message) => message.role !== 'system')
+      .map((message) => ({
+        role: message.role === 'assistant' ? ('model' as const) : ('user' as const),
+        parts: [{ text: message.content }],
+      }));
+    if (input.pendingToolCalls?.length) {
+      for (const [index, call] of input.pendingToolCalls.entries()) {
+        const toolResponse = input.toolResponses![index]!;
+        contents.push({ role: 'model', parts: [{ functionCall: { name: call.name, args: call.args } }] });
+        contents.push({ role: 'user', parts: [{ functionResponse: { name: toolResponse.name, response: toolResponse.response } }] });
       }
     }
-    const config:{systemInstruction:string;maxOutputTokens:number;thinkingConfig:{thinkingBudget:number};temperature?:number;tools:Array<{functionDeclarations:GatewayToolDefinition[]}>}={
+    const config: {
+      systemInstruction: string;
+      maxOutputTokens: number;
+      thinkingConfig: { thinkingBudget: number };
+      temperature?: number;
+      tools: Array<{ functionDeclarations: GatewayToolDefinition[] }>;
+    } = {
       systemInstruction,
-      maxOutputTokens:input.maxOutputTokens??1024,
-      thinkingConfig:{thinkingBudget:0},
-      tools:[{functionDeclarations:input.tools!}],
+      maxOutputTokens: input.maxOutputTokens ?? 1024,
+      thinkingConfig: { thinkingBudget: 0 },
+      tools: [{ functionDeclarations: input.tools! }],
     };
-    if(input.temperature!==undefined)config.temperature=input.temperature;
-    const response=await client.models.generateContent({model:this.model,contents,config}).catch(asConfigRejection);
-    const toolCalls:GatewayToolCall[]|undefined=response.functionCalls?.length?response.functionCalls.map((call)=>({name:call.name??'',args:(call.args??{}) as Record<string,unknown>})):undefined;
-    const text=response.text?.trim()??'';
-    if(!text&&!toolCalls?.length)throw new Error('Gemini returned an empty response');
-    const result:{provider:string;text:string;toolCalls?:GatewayToolCall[]}={provider:this.name,text};
-    if(toolCalls?.length)result.toolCalls=toolCalls;
+    if (input.temperature !== undefined) config.temperature = input.temperature;
+    const response = await client.models
+      .generateContent({ model: this.model, contents, config })
+      .catch(asConfigRejection);
+    const toolCalls: GatewayToolCall[] | undefined = response.functionCalls?.length
+      ? response.functionCalls.map((call) => ({ name: call.name ?? '', args: (call.args ?? {}) as Record<string, unknown> }))
+      : undefined;
+    const text = response.text?.trim() ?? '';
+    if (!text && !toolCalls?.length) throw new Error('Gemini returned an empty response');
+    const result: { provider: string; text: string; toolCalls?: GatewayToolCall[] } = { provider: this.name, text };
+    if (toolCalls?.length) result.toolCalls = toolCalls;
     return result;
   }
 }
 
 abstract class OpenAICompatibleProvider implements RegisteredAiProvider {
-  abstract readonly name:string; readonly model:string; readonly priority:number; private readonly apiKey:string|undefined; private readonly baseUrl:string; private readonly extraHeaders:Record<string,string>;
-  protected constructor(options:{name:string;model:string;priority:number;apiKey:string|undefined;baseUrl:string;extraHeaders:Record<string,string>}){this.model=options.model;this.priority=options.priority;this.apiKey=options.apiKey;const parsed=new URL(options.baseUrl);if(parsed.protocol!=='https:')throw new Error(`${options.name} base URL must use HTTPS`);this.baseUrl=parsed.toString().replace(/\/$/,'');this.extraHeaders=options.extraHeaders;}
-  async capabilities():Promise<ProviderCapabilities>{return{text:Boolean(this.apiKey&&this.model),vision:false,audio:false,video:false,documents:false,functionCalling:false};}
-  async generate(input:ProviderGenerateInput){if(!this.apiKey)throw new Error(`${this.name.toUpperCase()} API key is not configured`);if(!this.model)throw new Error(`${this.name.toUpperCase()} model is not configured`);if(input.media?.length)throw new Error(`${this.name} adapter currently accepts text only through the safe baseline path`);if(input.tools?.length)throw new Error(`${this.name} adapter does not support tool calling`);const response=await fetch(`${this.baseUrl}/chat/completions`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${this.apiKey}`,...this.extraHeaders},body:JSON.stringify({model:this.model,messages:input.messages,max_tokens:input.maxOutputTokens??1024,...(input.temperature!==undefined?{temperature:input.temperature}:{}),...(input.responseFormat==='json'?{response_format:{type:'json_object'}}:{})}),signal:AbortSignal.timeout(90_000)});if(!response.ok){const body=await response.text().catch(()=> '');throw new Error(`${this.name} HTTP ${response.status}${body?`: ${body.slice(0,500)}`:''}`);}const payload=(await response.json()) as{choices?:Array<{message?:{content?:string|null}}>;usage?:{prompt_tokens?:number;completion_tokens?:number}};const text=payload.choices?.[0]?.message?.content?.trim()??'';if(!text)throw new Error(`${this.name} returned an empty response`);const result:{provider:string;text:string;usage?:{inputTokens?:number;outputTokens?:number}}={provider:this.name,text};const usage:{inputTokens?:number;outputTokens?:number}={};if(payload.usage?.prompt_tokens!==undefined)usage.inputTokens=payload.usage.prompt_tokens;if(payload.usage?.completion_tokens!==undefined)usage.outputTokens=payload.usage.completion_tokens;if(Object.keys(usage).length>0)result.usage=usage;return result;}
+  abstract readonly name: string;
+  readonly model: string;
+  readonly priority: number;
+  private readonly apiKey: string | undefined;
+  private readonly baseUrl: string;
+  private readonly extraHeaders: Record<string, string>;
+
+  protected constructor(options: {
+    name: string;
+    model: string;
+    priority: number;
+    apiKey: string | undefined;
+    baseUrl: string;
+    extraHeaders: Record<string, string>;
+  }) {
+    this.model = options.model;
+    this.priority = options.priority;
+    this.apiKey = options.apiKey;
+    const parsed = new URL(options.baseUrl);
+    if (parsed.protocol !== 'https:') throw new Error(`${options.name} base URL must use HTTPS`);
+    this.baseUrl = parsed.toString().replace(/\/$/, '');
+    this.extraHeaders = options.extraHeaders;
+  }
+
+  async capabilities(): Promise<ProviderCapabilities> {
+    return { text: Boolean(this.apiKey && this.model), vision: false, audio: false, video: false, documents: false, functionCalling: false };
+  }
+
+  async generate(input: ProviderGenerateInput) {
+    if (!this.apiKey) throw new Error(`${this.name.toUpperCase()} API key is not configured`);
+    if (!this.model) throw new Error(`${this.name.toUpperCase()} model is not configured`);
+    if (input.media?.length) throw new Error(`${this.name} adapter currently accepts text only through the safe baseline path`);
+    if (input.tools?.length) throw new Error(`${this.name} adapter does not support tool calling`);
+
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}`, ...this.extraHeaders },
+      body: JSON.stringify({
+        model: this.model,
+        messages: input.messages,
+        max_tokens: input.maxOutputTokens ?? 1024,
+        ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
+        ...(input.responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {}),
+      }),
+      signal: AbortSignal.timeout(90_000),
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`${this.name} HTTP ${response.status}${body ? `: ${body.slice(0, 500)}` : ''}`);
+    }
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string | null } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+    };
+    const text = payload.choices?.[0]?.message?.content?.trim() ?? '';
+    if (!text) throw new Error(`${this.name} returned an empty response`);
+    const result: { provider: string; text: string; usage?: { inputTokens?: number; outputTokens?: number } } = { provider: this.name, text };
+    const usage: { inputTokens?: number; outputTokens?: number } = {};
+    if (payload.usage?.prompt_tokens !== undefined) usage.inputTokens = payload.usage.prompt_tokens;
+    if (payload.usage?.completion_tokens !== undefined) usage.outputTokens = payload.usage.completion_tokens;
+    if (Object.keys(usage).length > 0) result.usage = usage;
+    return result;
+  }
 }
 
-export class OpenAIProvider extends OpenAICompatibleProvider{readonly name='openai';constructor(model=process.env.OPENAI_GATEWAY_MODEL||'gpt-5-mini',priority=20){super({name:'openai',model,priority,apiKey:process.env.OPENAI_API_KEY,baseUrl:process.env.OPENAI_BASE_URL||'https://api.openai.com/v1',extraHeaders:{}});}}
-export class OpenRouterProvider extends OpenAICompatibleProvider{readonly name='openrouter';constructor(model=process.env.OPENROUTER_GATEWAY_MODEL||process.env.OPENROUTER_MODEL||'',priority=30){const extraHeaders:Record<string,string>={};if(process.env.OPENROUTER_HTTP_REFERER)extraHeaders['HTTP-Referer']=process.env.OPENROUTER_HTTP_REFERER;if(process.env.OPENROUTER_X_TITLE)extraHeaders['X-Title']=process.env.OPENROUTER_X_TITLE;super({name:'openrouter',model,priority,apiKey:process.env.OPENROUTER_API_KEY,baseUrl:process.env.OPENROUTER_BASE_URL||'https://openrouter.ai/api/v1',extraHeaders});}}
+export class OpenAIProvider extends OpenAICompatibleProvider {
+  readonly name = 'openai';
+  constructor(model = process.env.OPENAI_GATEWAY_MODEL || 'gpt-5-mini', priority = 20) {
+    super({
+      name: 'openai',
+      model,
+      priority,
+      apiKey: process.env.OPENAI_API_KEY,
+      baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+      extraHeaders: {},
+    });
+  }
+}
+
+export class OpenRouterProvider extends OpenAICompatibleProvider {
+  readonly name = 'openrouter';
+  constructor(model = process.env.OPENROUTER_GATEWAY_MODEL || process.env.OPENROUTER_MODEL || '', priority = 30) {
+    const extraHeaders: Record<string, string> = {};
+    if (process.env.OPENROUTER_HTTP_REFERER) extraHeaders['HTTP-Referer'] = process.env.OPENROUTER_HTTP_REFERER;
+    if (process.env.OPENROUTER_X_TITLE) extraHeaders['X-Title'] = process.env.OPENROUTER_X_TITLE;
+    super({
+      name: 'openrouter',
+      model,
+      priority,
+      apiKey: process.env.OPENROUTER_API_KEY,
+      baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+      extraHeaders,
+    });
+  }
+}
 
 /**
  * The "emergency text-only reply engine" (see gooseService.ts's own prompt
@@ -200,4 +358,15 @@ export class GooseProvider implements RegisteredAiProvider {
   }
 }
 
-export function registerDefaultAiProviders(gateway=aiGateway):void{const providers:RegisteredAiProvider[]=[];if(process.env.GEMINI_API_KEY)providers.push(new GeminiProvider());if(process.env.OPENAI_API_KEY)providers.push(new OpenAIProvider());if(process.env.OPENROUTER_API_KEY&&(process.env.OPENROUTER_GATEWAY_MODEL||process.env.OPENROUTER_MODEL))providers.push(new OpenRouterProvider());if(process.env.GOOSE_SERVICE_URL)providers.push(new GooseProvider());for(const provider of providers){if(!gateway.listProviders().some((entry)=>entry.name===provider.name))gateway.register(provider);}}
+export function registerDefaultAiProviders(gateway = aiGateway): void {
+  const providers: RegisteredAiProvider[] = [];
+  if (process.env.GEMINI_API_KEY) providers.push(new GeminiProvider());
+  if (process.env.OPENAI_API_KEY) providers.push(new OpenAIProvider());
+  if (process.env.OPENROUTER_API_KEY && (process.env.OPENROUTER_GATEWAY_MODEL || process.env.OPENROUTER_MODEL)) {
+    providers.push(new OpenRouterProvider());
+  }
+  if (process.env.GOOSE_SERVICE_URL) providers.push(new GooseProvider());
+  for (const provider of providers) {
+    if (!gateway.listProviders().some((entry) => entry.name === provider.name)) gateway.register(provider);
+  }
+}
