@@ -128,7 +128,15 @@ export class AiGateway {
         if (toolCalls) result.toolCalls = toolCalls;
         return result;
       } catch (error) {
-        if (error instanceof ProviderConfigRejectedError && provider.generateReduced) {
+        // A reduced retry strips every optional field down to the bare
+        // essentials (see GeminiProvider.generateReduced) - safe when the
+        // caller only wanted tone/length tuning, but never safe when the
+        // caller explicitly required tool-calling: silently answering in
+        // plain text instead of honouring (or correctly failing) a tool
+        // contract would look like a working reply while actually dropping
+        // it. Skip the reduced retry in that case and fall through to
+        // ordinary failover to the next eligible provider instead.
+        if (error instanceof ProviderConfigRejectedError && provider.generateReduced && !request.tools?.length) {
           try {
             const reducedInput: Parameters<NonNullable<AIProviderAdapter['generateReduced']>>[0] = { tenantId: request.tenantId, operation: request.operation, messages: request.messages };
             if (request.maxOutputTokens !== undefined) reducedInput.maxOutputTokens = request.maxOutputTokens;

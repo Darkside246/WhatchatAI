@@ -163,6 +163,23 @@ describe('AiGateway', () => {
     expect(reducedInput).not.toHaveProperty('tools');
   });
 
+  it('never attempts the reduced retry when the original request required tools - must not silently drop tool support', async () => {
+    const gateway = new AiGateway();
+    const onGenerateReduced = vi.fn();
+    gateway.register(fakeProvider({
+      name: 'flaky-tool-provider',
+      priority: 10,
+      caps: { text: true, vision: false, audio: false, video: false, documents: false, functionCalling: true },
+      configRejected: 'rejected the tools+temperature combination',
+      reduced: { result: 'bare minimum reply (should never be returned here)', onGenerateReduced },
+    }));
+
+    await expect(gateway.generate({ ...baseRequest, tools: [timeToolDefinition], temperature: 0.6 })).rejects.toThrow(
+      'All eligible AI providers failed',
+    );
+    expect(onGenerateReduced).not.toHaveBeenCalled();
+  });
+
   it('falls through to the next provider when the config-rejected provider has no reduced fallback', async () => {
     const gateway = new AiGateway();
     gateway.register(fakeProvider({ name: 'flaky', priority: 10, configRejected: 'rejected' }));
