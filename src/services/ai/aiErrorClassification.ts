@@ -33,12 +33,43 @@ function errorMessageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Node/undici often wraps the real network cause under `.cause` (e.g. `TypeError: fetch failed`). */
-function networkCodeOf(error: unknown): string | undefined {
-  const candidate = error as { code?: unknown; cause?: { code?: unknown } };
-  if (typeof candidate?.code === 'string') return candidate.code;
-  if (typeof candidate?.cause?.code === 'string') return candidate.cause.code;
+const MAX_CAUSE_DEPTH = 5;
+
+/**
+ * Node/undici wraps the real network cause under `.cause` (e.g. `TypeError:
+ * fetch failed`), but a DNS/connection failure with multiple attempts often
+ * makes that cause an AggregateError whose *own* `.code` is undefined - the
+ * real code lives on one of its `.errors[]` entries instead, which the
+ * original single-level `.cause.code` check could never see. Walks the
+ * full chain (cause-of-cause, AggregateError.errors) up to a bounded depth,
+ * not just one hop, so a network failure several layers deep is still
+ * recognized as one instead of falling through to 'programming'.
+ */
+function networkCodeOf(error: unknown, depth = 0): string | undefined {
+  if (!error || depth > MAX_CAUSE_DEPTH) return undefined;
+  const candidate = error as { code?: unknown; cause?: unknown; errors?: unknown[] };
+  if (typeof candidate.code === 'string') return candidate.code;
+  if (Array.isArray(candidate.errors)) {
+    for (const inner of candidate.errors) {
+      const found = networkCodeOf(inner, depth + 1);
+      if (found) return found;
+    }
+  }
+  if (candidate.cause) return networkCodeOf(candidate.cause, depth + 1);
   return undefined;
+}
+
+/**
+ * Undici's fetch() throws exactly this TypeError, with this exact message,
+ * only for a real network-level failure (DNS, TCP, TLS) - never for a bug
+ * in this codebase's own request construction (a malformed URL throws
+ * synchronously, with a different message, before any network attempt).
+ * A safety net for the case above where even the recursive cause-walk
+ * cannot find a recognized `.code` (an unfamiliar OS/runtime error shape) -
+ * the message itself is still a reliable, narrow signal by construction.
+ */
+function isBareFetchFailure(error: unknown): boolean {
+  return error instanceof TypeError && error.message === 'fetch failed';
 }
 
 /**
@@ -73,6 +104,10 @@ export function classifyAiError(error: unknown): ClassifiedAiError {
 
   const networkCode = networkCodeOf(error);
   if (networkCode && NETWORK_ERROR_CODES.has(networkCode)) {
+    return { category: 'capacity', message: errorMessageOf(error) };
+  }
+
+  if (isBareFetchFailure(error)) {
     return { category: 'capacity', message: errorMessageOf(error) };
   }
 

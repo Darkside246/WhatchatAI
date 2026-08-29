@@ -186,6 +186,33 @@ describe('classifyAiError - the five-way taxonomy (pure unit tests, no mocking)'
     expect(classifyAiError(error).category).toBe('capacity');
   });
 
+  it('1g-2. a network code nested inside an AggregateError.errors[] under .cause (real DNS-multi-attempt fetch-failed shape) still classifies as capacity, not programming', () => {
+    // The exact regression from tonight's live incident: node's fetch()
+    // throws TypeError('fetch failed') wrapping an AggregateError (DNS
+    // tried multiple addresses, all failed) whose OWN .code is undefined -
+    // the real code only exists on one of its nested .errors[] entries, one
+    // level deeper than the original single-hop `.cause.code` check saw.
+    const dnsFailure = Object.assign(new Error('getaddrinfo ENOTFOUND generativelanguage.googleapis.com'), { code: 'ENOTFOUND' });
+    const aggregate = new AggregateError([dnsFailure], 'All attempts failed');
+    const error = Object.assign(new TypeError('fetch failed'), { cause: aggregate });
+    expect(classifyAiError(error).category).toBe('capacity');
+  });
+
+  it('1g-3. a bare TypeError("fetch failed") with no recognizable code anywhere still classifies as capacity, never programming', () => {
+    // The safety net: undici's own generic wrapper message, by itself, only
+    // ever means a real network-level failure - never a bug in this
+    // codebase's own request construction (see isBareFetchFailure's doc
+    // comment). Covers a cause shape from an unfamiliar OS/runtime that the
+    // recursive code-walk above still could not resolve.
+    const error = new TypeError('fetch failed');
+    expect(classifyAiError(error).category).toBe('capacity');
+  });
+
+  it('1g-4. a TypeError with a DIFFERENT message than the exact undici wrapper still classifies as programming - the message match is exact, not a substring guess', () => {
+    const error = new TypeError('fetch failed while parsing the response body');
+    expect(classifyAiError(error).category).toBe('programming');
+  });
+
   it('1h. an AbortError (timeout) classifies as capacity', () => {
     const error = new DOMException('The operation was aborted', 'AbortError');
     expect(classifyAiError(error).category).toBe('capacity');
