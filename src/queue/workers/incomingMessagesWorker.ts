@@ -53,6 +53,7 @@ import type { MediaDownloadErrorCategory } from '../../domain/whatsapp/types.js'
 import { verifyMasterKeyStability } from '../../security/encryption/keyStabilityCheck.js';
 import { installCrashSafetyHandlers } from '../../process/crashSafety.js';
 import { OperatorCommandService } from '../../services/operator/operatorCommandService.js';
+import { ReminderRepository } from '../../repositories/reminderRepository.js';
 import { initializePlatformFoundation } from '../../services/platform/platformBootstrap.js';
 import { runPropertyMaintenanceHandoff } from '../../services/property/propertyMaintenanceOrchestrator.js';
 // Runs here, not in server/index.ts: that process owns the live Baileys
@@ -423,6 +424,7 @@ const emailMessageRepository = new EmailMessageRepository(pool);
 const chatRepository = new WhatsAppChatRepository(pool);
 const crmContactRepository = new CrmContactRepository(pool);
 const operatorCommandService = new OperatorCommandService(pool);
+const reminderRepository = new ReminderRepository(pool);
 
 // Configurable, not hardcoded: operators can raise/lower this per deployment.
 const MAX_MEDIA_DOWNLOAD_BYTES = Number(process.env.MEDIA_MAX_DOWNLOAD_BYTES ?? 100 * 1024 * 1024);
@@ -1010,6 +1012,44 @@ export async function sweepStaleOutboundMessages(): Promise<void> {
   }
 }
 
+const REMINDER_SWEEP_INTERVAL_MS = 30_000;
+
+/**
+ * Delivers every due reminder as a real WhatsApp message. claimDue() already
+ * did the concurrency-safe claim (see its own doc comment) - a reminder
+ * without a resolvable chat for its notify_jid (the operator never actually
+ * messaged this business number, an unlikely but real edge case) is walked
+ * back to FAILED rather than silently dropped, since claimDue already
+ * marked it SENT optimistically.
+ */
+export async function sweepDueReminders(): Promise<void> {
+  const due = await reminderRepository.claimDue(new Date().toISOString());
+  for (const reminder of due) {
+    try {
+      const chat = await chatRepository.findByJid(reminder.businessId, reminder.whatsappAccountId, reminder.notifyJid);
+      if (!chat) {
+        await reminderRepository.markFailed(reminder.id, `No chat found for notify_jid ${reminder.notifyJid}`);
+        continue;
+      }
+      await whatsappOutboundMessageService.send({
+        businessId: reminder.businessId,
+        whatsappAccountId: reminder.whatsappAccountId,
+        chatId: chat.id,
+        idempotencyKey: `reminder:${reminder.id}`,
+        messageType: 'text',
+        text: `⏰ *Reminder:*\n\n${reminder.message}`,
+        requestedBy: 'ai',
+      });
+    } catch (error) {
+      console.error(`[RealtimeEventsWorker] Failed to deliver reminder ${reminder.id}:`, error instanceof Error ? error.message : error);
+      await reminderRepository.markFailed(reminder.id, error instanceof Error ? error.message : String(error)).catch(() => {});
+    }
+  }
+  if (due.length > 0) {
+    console.log(`[RealtimeEventsWorker] Delivered ${due.length} due reminder(s)`);
+  }
+}
+
 // Same honesty problem as the outbound-message sweep above, but a genuinely
 // different outcome: markSending() on email_messages only ever re-claims a
 // row that is 'approved', so a stuck 'sending' row has no BullMQ retry
@@ -1098,6 +1138,8 @@ async function processRealtimeEventJob(
     await processHumanTakeoverResume(job.data as HumanTakeoverResumeJobData);
   } else if (job.name === 'outbound-message-timeout-sweep') {
     await sweepStaleOutboundMessages();
+  } else if (job.name === 'reminder-sweep') {
+    await sweepDueReminders();
   } else if (job.name === 'email-timeout-sweep') {
     await sweepStaleEmails();
   } else if (job.name === 'funnel-instance-timeout-sweep') {
@@ -1234,6 +1276,11 @@ void realtimeEventsQueue
   .upsertJobScheduler('email-timeout-sweep', { every: EMAIL_TIMEOUT_SWEEP_INTERVAL_MS }, { name: 'email-timeout-sweep' })
   .then(() => console.log(`[RealtimeEventsWorker] Scheduled email-timeout-sweep every ${EMAIL_TIMEOUT_SWEEP_INTERVAL_MS}ms`))
   .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule email-timeout-sweep:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler('reminder-sweep', { every: REMINDER_SWEEP_INTERVAL_MS }, { name: 'reminder-sweep' })
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled reminder-sweep every ${REMINDER_SWEEP_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule reminder-sweep:', error.message));
 
 void realtimeEventsQueue
   .upsertJobScheduler(
