@@ -28,6 +28,7 @@ const TABLES = [
   'user_preferences',
   'business_memberships',
   'users',
+  'conversation_events',
   'conversation_states',
   'customer_identities',
   'customers',
