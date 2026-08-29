@@ -28,6 +28,8 @@ const TABLES = [
   'user_preferences',
   'business_memberships',
   'users',
+  'customer_identities',
+  'customers',
   'whatsapp_jid_mappings',
   'whatsapp_sync_jobs',
   'whatsapp_connection_events',

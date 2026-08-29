@@ -5,6 +5,7 @@ import { WhatsAppChatRepository } from '../repositories/whatsappChatRepository.j
 import { WhatsAppMessageRepository, type WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { WhatsAppMediaRepository, type WhatsAppMediaRecord } from '../repositories/whatsappMediaRepository.js';
 import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMappingRepository.js';
+import { CustomerIdentityRepository } from '../repositories/customerIdentityRepository.js';
 import type { WhatsAppChatRecord } from '../repositories/whatsappChatRepository.js';
 import type { MediaType, MessageType } from '../domain/whatsapp/types.js';
 import { chatTypeFromJidKind } from '../domain/whatsapp/chatType.js';
@@ -124,6 +125,7 @@ export class WhatsAppMessagePersistenceService {
     const messageRepo = new WhatsAppMessageRepository(client);
     const mediaRepo = new WhatsAppMediaRepository(client);
     const jidMappingRepo = new WhatsAppJidMappingRepository(client);
+    const customerIdentityRepo = new CustomerIdentityRepository(client);
 
     // A real LID-to-phone pairing can arrive on ANY message, not just
     // during a contacts/history sync - Baileys attaches it directly to the
@@ -156,6 +158,12 @@ export class WhatsAppMessagePersistenceService {
         pushName: ingested.pushName,
       });
       contactId = contact.id;
+      // Additive: gives this contact a channel-agnostic customer UUID
+      // (Phase 1 of the identity roadmap) without changing anything about
+      // the WhatsApp identity this function already resolves - contactId
+      // above remains the one this function returns and every existing
+      // caller keeps using.
+      await customerIdentityRepo.getOrCreateForWhatsAppContact(businessId, contact.id, contact.displayName ?? contact.pushName ?? null);
     }
 
     const chat = await chatRepo.upsertFromWhatsApp({

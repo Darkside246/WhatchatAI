@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { whatsappMessagePersistenceService } from '../src/services/whatsappMessagePersistenceService.js';
 import { WhatsAppJidMappingRepository } from '../src/repositories/whatsappJidMappingRepository.js';
+import { CustomerIdentityRepository } from '../src/repositories/customerIdentityRepository.js';
 import type { IngestedWhatsAppMessage } from '../src/services/whatsappMessageIngestionService.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 
@@ -170,5 +171,63 @@ describe('WhatsAppMessagePersistenceService', () => {
     expect(rows[0].media_type).toBe('voice_note');
     expect(rows[0].download_status).toBe('pending');
     expect(rows[0].transcript).toBeNull();
+  });
+
+  it('opportunistically links an individual chat contact to a canonical customer identity', async () => {
+    await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage(),
+    });
+
+    const { rows: contactRows } = await pool.query<{ id: string }>(
+      'SELECT id FROM whatsapp_contacts WHERE whatsapp_jid = $1',
+      ['15550003333@s.whatsapp.net'],
+    );
+    const contactId = contactRows[0]!.id;
+
+    const customerId = await new CustomerIdentityRepository(pool).findCustomerIdByIdentity(
+      businessId,
+      'whatsapp',
+      'whatsapp_contact_id',
+      contactId,
+    );
+    expect(customerId).not.toBeNull();
+  });
+
+  it('links repeated messages from the same contact to the same customer, never a new one each time', async () => {
+    await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({ messageId: 'WA-FIRST' }),
+    });
+    await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({ messageId: 'WA-SECOND' }),
+    });
+
+    const { rows } = await pool.query<{ count: string }>('SELECT count(*) FROM customer_identities WHERE business_id = $1', [businessId]);
+    expect(rows[0]!.count).toBe('1');
+  });
+
+  it('never links a group chat to a customer identity - there is no single individual contact to link', async () => {
+    await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({
+        messageId: 'WA-GROUP',
+        remoteJid: '111222333-4444@g.us',
+        jidKind: 'group',
+        phoneNumber: null,
+      }),
+    });
+
+    const { rows } = await pool.query<{ count: string }>('SELECT count(*) FROM customer_identities WHERE business_id = $1', [businessId]);
+    expect(rows[0]!.count).toBe('0');
   });
 });
