@@ -97,7 +97,21 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
   // suspicious "instructing the assistant to change its name" attempt,
   // silently blocking every legitimate attempt to configure Operator Mode
   // or the named assistant from a self-chat.
-  const isSelfChat = message.fromMe && stripDeviceSuffix(message.remoteJid) === accountJid;
+  //
+  // remoteJid alone is not enough: WhatsApp's own PN->LID migration means a
+  // self-chat can legitimately arrive addressed by either identity - this
+  // account's own remoteJid was observed as the connected phone-number JID
+  // on some messages and as its own @lid identity on others, with no
+  // predictable pattern. accountJid is always the phone-number form (see
+  // stripDeviceSuffix's own doc comment), so a @lid-addressed self-chat
+  // message would never match on remoteJid alone. remoteJidAlt is Baileys'
+  // own authoritative real-JID counterpart for a @lid remoteJid (see
+  // IngestedWhatsAppMessage's doc comment) - checking it too catches both
+  // addressing forms without guessing at a mapping ourselves.
+  const isSelfChat =
+    message.fromMe &&
+    (stripDeviceSuffix(message.remoteJid) === accountJid ||
+      (message.remoteJidAlt !== null && stripDeviceSuffix(message.remoteJidAlt) === accountJid));
 
   if (!isSelfChat) {
     const verdict = await runSentinel({

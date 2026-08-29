@@ -115,6 +115,62 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
     expect(rows[0]?.text_content).toContain('PIN');
   }, 15_000);
 
+  /**
+   * Reproduces the real, live-observed variant of the same bug: WhatsApp's
+   * PN->LID migration means a self-chat message can arrive with remoteJid
+   * addressed by the account's own @lid identity instead of its phone
+   * number - accountJid is always the phone-number form, so a remoteJid-only
+   * comparison silently misses this shape entirely. Baileys attaches the
+   * real phone-number counterpart as remoteJidAlt whenever remoteJid is a
+   * @lid, which is exactly what a live self-chat message carried.
+   */
+  it('a fromMe message addressed by the account\'s own @lid identity (remoteJidAlt carries the real phone JID) still reaches the operator handler', async () => {
+    const messageId = `SELFCHAT-LID-${Date.now()}`;
+    const ingested: IngestedWhatsAppMessage = {
+      messageId,
+      remoteJid: '1048156573714@lid', // the account's own LID identity, not its phone-number JID
+      jidKind: 'individual',
+      phoneNumber: null,
+      participant: null,
+      remoteJidAlt: ACCOUNT_JID, // Baileys' own authoritative real-JID counterpart
+      participantAlt: null,
+      fromMe: true,
+      pushName: 'Owner',
+      isLive: true,
+      upsertType: 'notify',
+      messageTimestamp: new Date().toISOString(),
+      contentType: 'text',
+      documentSubtype: null,
+      mimetype: null,
+      fileName: null,
+      textPreview: 'anything',
+      mediaDescriptor: null,
+      ingestedAt: new Date().toISOString(),
+    };
+
+    const completed = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timed out waiting for worker to process job')), 10_000);
+      incomingMessagesWorker.on('completed', function onCompleted(job) {
+        if (job.data.message.messageId !== messageId) return;
+        clearTimeout(timeout);
+        incomingMessagesWorker.off('completed', onCompleted);
+        resolve();
+      });
+      incomingMessagesWorker.on('failed', function onFailed(job, error) {
+        if (job?.data.message.messageId !== messageId) return;
+        clearTimeout(timeout);
+        incomingMessagesWorker.off('failed', onFailed);
+        reject(error);
+      });
+    });
+
+    await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid: ACCOUNT_JID, message: ingested });
+    await completed;
+
+    const session = await new OperatorModeRepository(pool).getActiveSession(businessId);
+    expect(session?.status).toBe('AWAITING_PIN');
+  }, 15_000);
+
   it('a fromMe message in a real customer chat (remoteJid !== the connected account) is never treated as an operator command', async () => {
     const messageId = `NOTSELFCHAT-${Date.now()}`;
     const ingested: IngestedWhatsAppMessage = {
