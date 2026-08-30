@@ -175,10 +175,14 @@ export function SaasNavRail() {
     <nav className="hidden w-16 shrink-0 flex-col items-center gap-1 border-r border-border-subtle bg-surface-1 py-4 md:flex">
       <NavLink
         to="/"
-        className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg bg-accent-soft text-body font-bold text-accent"
-        title="WhatsChat"
+        className="mb-4 flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-accent-soft text-body font-bold text-accent"
+        title={business?.name ?? 'WhatsChat'}
       >
-        W
+        {business?.logoDataUrl ? (
+          <img src={business.logoDataUrl} alt="" className="h-full w-full object-contain" />
+        ) : (
+          'W'
+        )}
       </NavLink>
       {items.map((item) => <NavRailItem key={`${item.label}-${item.to}`} item={item} />)}
       {business?.isDeveloper && (

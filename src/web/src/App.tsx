@@ -1,6 +1,8 @@
+import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth.js';
 import { useAppGate } from './hooks/useAppGate.js';
+import { applyBrandTheme } from './lib/brandTheme.js';
 import { OnboardingPage } from './pages/OnboardingPage.js';
 import { SyncingPage } from './pages/SyncingPage.js';
 import { WorkspaceShell } from './pages/WorkspaceShell.js';
@@ -50,6 +52,12 @@ function AuthenticatedApp() {
 export default function App() {
   const auth = useAuth();
   const location = useLocation();
+
+  // Applied at this top level (not inside AuthenticatedApp) so it resets to
+  // the app default the moment a business's data leaves scope, e.g. logout.
+  useEffect(() => {
+    applyBrandTheme(auth.business?.brandColor ?? null);
+  }, [auth.business?.brandColor]);
 
   if (auth.status === 'loading') {
     return <div className="flex h-full items-center justify-center bg-surface-0 text-body text-gray-400">Loading WhatchatAI…</div>;

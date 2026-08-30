@@ -101,10 +101,24 @@ export class InvoiceService {
 
   // ── PDF HTML template ────────────────────────────────────────────────────────
 
-  renderHtml(invoice: InvoiceRecord, lineItems: InvoiceLineItemRecord[], businessName: string): string {
+  /**
+   * `business.brandColor`/`logoDataUrl` come straight from the businesses
+   * row (see migration 941) - the same values the dashboard UI uses for its
+   * own accent color, so an invoice a customer receives visually matches
+   * the business's own branding rather than this app's default blue.
+   */
+  renderHtml(
+    invoice: InvoiceRecord,
+    lineItems: InvoiceLineItemRecord[],
+    business: { name: string; brandColor: string | null; logoDataUrl: string | null },
+  ): string {
     const currency = invoice.currencyCode;
     const fmt = (cents: number) => `${currency} ${(cents / 100).toFixed(2)}`;
     const taxPct = (invoice.taxBasisPoints / 100).toFixed(2);
+    const accent = business.brandColor ?? '#0a84ff';
+    const logoHtml = business.logoDataUrl
+      ? `<img src="${business.logoDataUrl}" alt="" style="max-height:48px;max-width:180px;margin-bottom:8px;display:block;" />`
+      : '';
 
     const rows = lineItems
       .map(
@@ -131,7 +145,7 @@ export class InvoiceService {
   .brand { font-size:22px; font-weight:700; }
   .meta th { text-align:left; font-weight:600; padding-right:12px; color:#666; }
   .meta td { padding-right:8px; }
-  h2 { font-size:18px; margin-bottom:16px; text-transform:uppercase; letter-spacing:.05em; color:#0a84ff; }
+  h2 { font-size:18px; margin-bottom:16px; text-transform:uppercase; letter-spacing:.05em; color:${accent}; }
   table.items { width:100%; border-collapse:collapse; margin:24px 0; }
   table.items th { background:#f4f6fb; padding:8px 10px; text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
   table.items td { padding:8px 10px; border-bottom:1px solid #eee; }
@@ -152,7 +166,8 @@ export class InvoiceService {
 <body>
 <div class="header">
   <div>
-    <div class="brand">${businessName}</div>
+    ${logoHtml}
+    <div class="brand">${business.name}</div>
     <div style="margin-top:8px;color:#666;">${invoice.documentType}</div>
   </div>
   <table class="meta">

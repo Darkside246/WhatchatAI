@@ -12,6 +12,10 @@ export interface BusinessRecord {
   /** Set the moment account deletion is requested (accountDeletionService.ts) - null means no deletion is pending. */
   deletionRequestedAt: Date | null;
   scheduledPurgeAt: Date | null;
+  /** Hex color (e.g. "#0a84ff"), or null to fall back to the app's default accent. */
+  brandColor: string | null;
+  /** A data: URI (validated + size-capped in workspaceService.ts), or null for no logo set. */
+  logoDataUrl: string | null;
 }
 
 interface BusinessRow {
@@ -23,10 +27,12 @@ interface BusinessRow {
   manual_override_set_at: Date | null;
   deletion_requested_at: Date | null;
   scheduled_purge_at: Date | null;
+  brand_color: string | null;
+  logo_data_url: string | null;
 }
 
 const BUSINESS_COLUMNS =
-  'id, name, timezone, time_source, manual_override_target_utc, manual_override_set_at, deletion_requested_at, scheduled_purge_at';
+  'id, name, timezone, time_source, manual_override_target_utc, manual_override_set_at, deletion_requested_at, scheduled_purge_at, brand_color, logo_data_url';
 
 function toRecord(row: BusinessRow): BusinessRecord {
   return {
@@ -38,6 +44,8 @@ function toRecord(row: BusinessRow): BusinessRecord {
     manualOverrideSetAt: row.manual_override_set_at,
     deletionRequestedAt: row.deletion_requested_at,
     scheduledPurgeAt: row.scheduled_purge_at,
+    brandColor: row.brand_color,
+    logoDataUrl: row.logo_data_url,
   };
 }
 
@@ -108,6 +116,24 @@ export class BusinessRepository {
        WHERE id = $1
        RETURNING ${BUSINESS_COLUMNS}`,
       [id],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /** Caller must have already validated `color` is a "#rrggbb" hex string (see HEX_COLOR_PATTERN) - the DB CHECK constraint is the backstop, not the primary validation. */
+  async updateBrandColor(id: string, color: string | null): Promise<BusinessRecord | null> {
+    const { rows } = await this.db.query<BusinessRow>(
+      `UPDATE businesses SET brand_color = $2, updated_at = now() WHERE id = $1 RETURNING ${BUSINESS_COLUMNS}`,
+      [id, color],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /** Caller must have already validated `dataUrl` is a real, size-capped image data: URI. */
+  async updateLogo(id: string, dataUrl: string | null): Promise<BusinessRecord | null> {
+    const { rows } = await this.db.query<BusinessRow>(
+      `UPDATE businesses SET logo_data_url = $2, updated_at = now() WHERE id = $1 RETURNING ${BUSINESS_COLUMNS}`,
+      [id, dataUrl],
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }

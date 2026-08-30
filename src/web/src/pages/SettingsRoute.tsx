@@ -55,6 +55,16 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
+/** Unlike fileToBase64 above, keeps the full "data:<mime>;base64,<payload>" string - that's the shape businesses.logo_data_url stores and the shape <img src> needs. */
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
 const STATUS_COLOR: Record<WhatsAppConnectionSnapshot['status'], string> = {
   CONNECTED: 'bg-success/15 text-success',
   CONNECTING: 'bg-info/15 text-info',
@@ -634,6 +644,147 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
           </form>
         )}
       </div>
+    </div>
+  );
+}
+
+const MAX_LOGO_BYTES = 512 * 1024;
+const LOGO_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+
+/**
+ * A business-wide accent color and logo - unlike ThemeCard (a per-browser
+ * preference), this is saved to the business itself, so it's what every
+ * teammate sees and what appears on invoices/documents customers receive.
+ * Applied live across the dashboard via applyBrandTheme() overriding the
+ * app's own --color-accent token (see App.tsx) - refetching the shared
+ * auth business record after each save is what makes that, and the nav
+ * rail logo, update immediately with no reload.
+ */
+function BrandingCard() {
+  const auth = useAuth();
+  const canEdit = auth.role === 'OWNER' || auth.role === 'ADMIN'; // matches settings.manage in domain/auth/permissions.ts
+  const [brandColor, setBrandColor] = useState('#4f46e5');
+  const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
+  const [saving, setSaving] = useState<'color' | 'logo' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const business = auth.business;
+    if (!business) return;
+    setBrandColor(business.brandColor ?? '#4f46e5');
+    setLogoDataUrl(business.logoDataUrl);
+  }, [auth.business]);
+
+  async function handleSaveColor() {
+    setSaving('color'); setError(null);
+    try { await api.updateBusinessBranding({ brandColor }); await auth.refresh(); }
+    catch (err) { setError(err instanceof ApiError ? err.message : 'Failed to save color.'); }
+    finally { setSaving(null); }
+  }
+
+  async function handleResetColor() {
+    setSaving('color'); setError(null);
+    try { await api.updateBusinessBranding({ brandColor: null }); await auth.refresh(); }
+    catch (err) { setError(err instanceof ApiError ? err.message : 'Failed to reset color.'); }
+    finally { setSaving(null); }
+  }
+
+  async function handleLogoSelected(file: File) {
+    if (!LOGO_MIME_TYPES.includes(file.type)) { setError('Please choose a PNG, JPEG, or WebP image.'); return; }
+    if (file.size > MAX_LOGO_BYTES) { setError('Logo is too large (max 512 KB).'); return; }
+    setSaving('logo'); setError(null);
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      await api.updateBusinessBranding({ logoDataUrl: dataUrl });
+      await auth.refresh();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to upload logo.');
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function handleRemoveLogo() {
+    setSaving('logo'); setError(null);
+    try { await api.updateBusinessBranding({ logoDataUrl: null }); await auth.refresh(); }
+    catch (err) { setError(err instanceof ApiError ? err.message : 'Failed to remove logo.'); }
+    finally { setSaving(null); }
+  }
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      <h2 className="text-body font-semibold text-fg">Branding</h2>
+      <p className="mt-1 text-caption text-fg-muted">
+        Your accent color and logo - shown across the whole dashboard for everyone on your team, and on invoices your customers receive.
+      </p>
+
+      <div className="mt-4 flex flex-wrap items-end gap-6">
+        {/* Accent color */}
+        <div>
+          <label className="text-meta font-medium text-fg-muted" htmlFor="brand-color">Accent color</label>
+          <div className="mt-1 flex items-center gap-2">
+            <input
+              id="brand-color"
+              type="color"
+              value={brandColor}
+              disabled={!canEdit}
+              onChange={(e) => setBrandColor(e.target.value)}
+              className="h-9 w-9 cursor-pointer rounded-lg border border-border-subtle bg-surface-1 p-1 disabled:cursor-not-allowed disabled:opacity-50"
+            />
+            <input
+              value={brandColor}
+              disabled={!canEdit}
+              onChange={(e) => setBrandColor(e.target.value)}
+              placeholder="#4f46e5"
+              maxLength={7}
+              className="field w-24 border border-border-subtle bg-surface-1 text-caption text-fg outline-none focus:border-accent disabled:opacity-50"
+            />
+            {canEdit && (
+              <button type="button" onClick={() => void handleSaveColor()} disabled={saving !== null || !/^#[0-9A-Fa-f]{6}$/.test(brandColor)}
+                className="control-sm bg-accent font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+                {saving === 'color' ? 'Saving…' : 'Save'}
+              </button>
+            )}
+            {canEdit && auth.business?.brandColor && (
+              <button type="button" onClick={() => void handleResetColor()} disabled={saving !== null}
+                className="text-meta text-fg-muted hover:text-fg disabled:opacity-50">
+                Reset
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Logo */}
+        <div>
+          <label className="text-meta font-medium text-fg-muted">Logo</label>
+          <div className="mt-1 flex items-center gap-2">
+            <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-lg border border-border-subtle bg-surface-1">
+              {logoDataUrl ? <img src={logoDataUrl} alt="" className="h-full w-full object-contain" /> : <Building2 size={15} className="text-fg-muted" aria-hidden />}
+            </div>
+            {canEdit && (
+              <>
+                <button type="button" onClick={() => fileInputRef.current?.click()} disabled={saving !== null}
+                  className="control-sm border border-border-subtle font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50">
+                  {saving === 'logo' ? 'Uploading…' : logoDataUrl ? 'Replace' : 'Upload'}
+                </button>
+                {logoDataUrl && (
+                  <button type="button" onClick={() => void handleRemoveLogo()} disabled={saving !== null}
+                    className="text-meta text-fg-muted hover:text-fg disabled:opacity-50">
+                    Remove
+                  </button>
+                )}
+                <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void handleLogoSelected(f); }} />
+              </>
+            )}
+          </div>
+          <p className="mt-1 text-meta text-fg-muted">PNG, JPEG, or WebP - max 512 KB</p>
+        </div>
+      </div>
+
+      {error && <p className="mt-3 text-caption text-error">{error}</p>}
+      {!canEdit && <p className="mt-3 text-caption text-fg-muted">Only owners and managers can change branding.</p>}
     </div>
   );
 }
@@ -1641,6 +1792,7 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
               <ProfileCard connection={connection} />
               <TimeLocationCard />
             </div>
+            <BrandingCard />
           </div>
         )}
 

@@ -46,4 +46,52 @@ describe('workspaceService business profile (real businesses row, Settings page 
     const reread = await workspaceService.getBusinessProfile(businessId);
     expect(reread.timezone).toBe('UTC'); // unchanged - a rejected update must not partially apply
   });
+
+  const TINY_PNG_DATA_URL =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+  it('defaults to no brand color or logo, persists both, and lets either be cleared back to null independently', async () => {
+    const initial = await workspaceService.getBusinessProfile(businessId);
+    expect(initial.brandColor).toBeNull();
+    expect(initial.logoDataUrl).toBeNull();
+
+    const withColor = await workspaceService.updateBusinessBranding(businessId, { brandColor: '#4f46e5' });
+    expect(withColor.brandColor).toBe('#4f46e5');
+    expect(withColor.logoDataUrl).toBeNull(); // untouched by a brandColor-only patch
+
+    const withLogo = await workspaceService.updateBusinessBranding(businessId, { logoDataUrl: TINY_PNG_DATA_URL });
+    expect(withLogo.brandColor).toBe('#4f46e5'); // untouched by a logoDataUrl-only patch
+    expect(withLogo.logoDataUrl).toBe(TINY_PNG_DATA_URL);
+
+    const cleared = await workspaceService.updateBusinessBranding(businessId, { brandColor: null, logoDataUrl: null });
+    expect(cleared.brandColor).toBeNull();
+    expect(cleared.logoDataUrl).toBeNull();
+  });
+
+  it('rejects a malformed hex color and leaves the stored value untouched', async () => {
+    await expect(workspaceService.updateBusinessBranding(businessId, { brandColor: 'blue' })).rejects.toThrow(
+      /hex color/,
+    );
+    await expect(workspaceService.updateBusinessBranding(businessId, { brandColor: '#fff' })).rejects.toThrow(
+      /hex color/,
+    );
+
+    const reread = await workspaceService.getBusinessProfile(businessId);
+    expect(reread.brandColor).toBeNull();
+  });
+
+  it('rejects a non-image-data-URL logo and a logo over the size cap', async () => {
+    await expect(
+      workspaceService.updateBusinessBranding(businessId, { logoDataUrl: 'not a data url' }),
+    ).rejects.toThrow(/PNG, JPEG, or WebP/);
+
+    // A real 600KB-decoded payload disguised as a data URL - over the 512KB cap.
+    const oversized = `data:image/png;base64,${'A'.repeat(800_000)}`;
+    await expect(workspaceService.updateBusinessBranding(businessId, { logoDataUrl: oversized })).rejects.toThrow(
+      /exceeds/,
+    );
+
+    const reread = await workspaceService.getBusinessProfile(businessId);
+    expect(reread.logoDataUrl).toBeNull();
+  });
 });

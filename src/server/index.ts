@@ -2003,6 +2003,31 @@ app.patch(
   },
 );
 
+const updateBusinessBrandingSchema = z.object({
+  brandColor: z.string().trim().nullable().optional(),
+  logoDataUrl: z.string().nullable().optional(),
+});
+
+app.patch(
+  '/api/workspace/business/branding',
+  requireWorkspaceContext,
+  requirePermission('settings.manage'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const parsed = updateBusinessBrandingSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_BRANDING' });
+    try {
+      const business = await workspaceService.updateBusinessBranding(businessId, parsed.data);
+      return res.status(200).json({ business });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('INVALID:')) {
+        return res.status(400).json({ error: 'INVALID_BRANDING', message: error.message.replace('INVALID:', '').trim() });
+      }
+      throw error;
+    }
+  },
+);
+
 app.get('/api/workspace/time-status', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const timeContext = await timeService.buildBusinessTimeContext(businessId);

@@ -39,6 +39,11 @@ import type {
 } from '../domain/whatsapp/types.js';
 import type { AgentStatus, LeadStatus, SubscriptionStatus } from '../domain/platform/types.js';
 
+const HEX_COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/;
+const LOGO_DATA_URL_PATTERN = /^data:image\/(?:png|jpeg|webp);base64,([A-Za-z0-9+/]+=*)$/;
+// A logo icon, not a photo - generous enough for a real crisp PNG/WebP mark, small enough to store inline on every businesses row read.
+const MAX_LOGO_BYTES = 512 * 1024;
+
 export interface WorkspaceChatSummary {
   id: string;
   chatJid: string;
@@ -897,6 +902,41 @@ export class WorkspaceService {
     const updated = await this.businessRepository.updateTimezone(businessId, timezone);
     if (!updated) throw new Error(`Business ${businessId} not found`);
     return updated;
+  }
+
+  /**
+   * `undefined` on a field leaves it untouched; `null` clears it back to the
+   * app default. A logo is stored inline as a data: URI (see migration 941)
+   * rather than through the encrypted WhatsApp media pipeline - it's small,
+   * not customer PII, and needs to render instantly with no authenticated
+   * fetch on either the dashboard or a generated invoice.
+   */
+  async updateBusinessBranding(
+    businessId: string,
+    patch: { brandColor?: string | null | undefined; logoDataUrl?: string | null | undefined },
+  ): Promise<BusinessRecord> {
+    let updated: BusinessRecord | null = null;
+
+    if (patch.brandColor !== undefined) {
+      if (patch.brandColor !== null && !HEX_COLOR_PATTERN.test(patch.brandColor)) {
+        throw new Error('INVALID: brandColor must be a hex color like "#0a84ff"');
+      }
+      updated = await this.businessRepository.updateBrandColor(businessId, patch.brandColor);
+      if (!updated) throw new Error(`Business ${businessId} not found`);
+    }
+
+    if (patch.logoDataUrl !== undefined) {
+      if (patch.logoDataUrl !== null) {
+        const match = LOGO_DATA_URL_PATTERN.exec(patch.logoDataUrl);
+        if (!match) throw new Error('INVALID: logo must be a PNG, JPEG, or WebP image data URL');
+        const decodedBytes = Buffer.from(match[1]!, 'base64').length;
+        if (decodedBytes > MAX_LOGO_BYTES) throw new Error(`INVALID: logo image exceeds ${MAX_LOGO_BYTES / 1024}KB`);
+      }
+      updated = await this.businessRepository.updateLogo(businessId, patch.logoDataUrl);
+      if (!updated) throw new Error(`Business ${businessId} not found`);
+    }
+
+    return updated ?? (await this.getBusinessProfile(businessId));
   }
 
   /**

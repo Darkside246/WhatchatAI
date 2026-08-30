@@ -243,6 +243,8 @@ export interface WorkspaceBusiness {
   manualOverrideSetAt: string | null;
   productKey: string | null;
   isDeveloper: boolean;
+  brandColor: string | null;
+  logoDataUrl: string | null;
 }
 
 export type TimeSyncStatus = 'SYNCED' | 'DEGRADED' | 'STALE' | 'MANUAL_OVERRIDE';
@@ -983,6 +985,12 @@ export const api = {
     request<{ business: WorkspaceBusiness }>('/workspace/business/timezone', {
       method: 'PATCH',
       body: JSON.stringify({ timezone }),
+    }),
+  /** Either field may be omitted (leave untouched) or sent as `null` (clear back to the app default). */
+  updateBusinessBranding: (patch: { brandColor?: string | null; logoDataUrl?: string | null }) =>
+    request<{ business: WorkspaceBusiness }>('/workspace/business/branding', {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
     }),
   getTimeStatus: () => request<TimeStatusResponse>('/workspace/time-status'),
   /** `targetLocalDateTime` is a "YYYY-MM-DDTHH:mm" wall-clock string (no timezone suffix) - interpreted server-side against the business's own timezone. */

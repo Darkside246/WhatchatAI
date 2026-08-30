@@ -15,6 +15,8 @@ export interface AuthState {
   register: (input: { email: string; password: string; displayName: string }) => Promise<void>;
   logout: () => Promise<void>;
   clearError: () => void;
+  /** Re-fetches `user`/`business`/`role` from /api/auth/me - e.g. after a settings change (branding, name) that other parts of the UI (nav rail logo, brand accent color) need to pick up without a full page reload. */
+  refresh: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -95,8 +97,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const clearError = useCallback(() => setError(null), []);
 
   const value = useMemo<AuthState>(
-    () => ({ status, user, business, role, registrationOpen, error, login, register, logout, clearError }),
-    [status, user, business, role, registrationOpen, error, login, register, logout, clearError],
+    () => ({ status, user, business, role, registrationOpen, error, login, register, logout, clearError, refresh }),
+    [status, user, business, role, registrationOpen, error, login, register, logout, clearError, refresh],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

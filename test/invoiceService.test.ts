@@ -120,3 +120,35 @@ describe('InvoiceService status transitions (real Postgres) - delete vs void vs 
     expect(await svc.remove(businessId, invoice.id)).toBe(false);
   });
 });
+
+describe('InvoiceService.renderHtml - real business branding, never a raw id', () => {
+  it('renders the real business name, brand color, and logo into the document', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    const invoice = await draftInvoice(businessId);
+    const { invoice: full, lineItems } = (await svc.get(businessId, invoice.id))!;
+
+    const html = svc.renderHtml(full, lineItems, {
+      name: 'Acme Plumbing',
+      brandColor: '#ff6600',
+      logoDataUrl: 'data:image/png;base64,AAAA',
+    });
+
+    expect(html).toContain('Acme Plumbing');
+    expect(html).not.toContain(businessId); // the pre-fix bug: the raw business UUID leaking in as the "name"
+    expect(html).toContain('color:#ff6600');
+    expect(html).toContain('data:image/png;base64,AAAA');
+  });
+
+  it('falls back to the default blue and renders no logo tag when branding is unset', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    const invoice = await draftInvoice(businessId);
+    const { invoice: full, lineItems } = (await svc.get(businessId, invoice.id))!;
+
+    const html = svc.renderHtml(full, lineItems, { name: 'Plain Co', brandColor: null, logoDataUrl: null });
+
+    expect(html).toContain('color:#0a84ff');
+    expect(html).not.toContain('<img');
+  });
+});

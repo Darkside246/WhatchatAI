@@ -2,10 +2,12 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { pool } from '../db/pool.js';
 import { InvoiceService } from '../services/invoice/invoiceService.js';
+import { BusinessRepository } from '../repositories/businessRepository.js';
 import { requireAuth, type AuthContext } from './authMiddleware.js';
 
 const router = Router();
 const svc = new InvoiceService(pool);
+const businessRepository = new BusinessRepository(pool);
 router.use(requireAuth);
 
 const LineItemSchema = z.object({
@@ -98,7 +100,12 @@ router.get('/:id/html', async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
   const result = await svc.get(auth.businessId, req.params['id']!);
   if (!result) return res.status(404).json({ error: 'NOT_FOUND' });
-  const html = svc.renderHtml(result.invoice, result.lineItems, auth.businessId);
+  const business = await businessRepository.findById(auth.businessId);
+  const html = svc.renderHtml(result.invoice, result.lineItems, {
+    name: business?.name ?? 'Invoice',
+    brandColor: business?.brandColor ?? null,
+    logoDataUrl: business?.logoDataUrl ?? null,
+  });
   return res.type('html').send(html);
 });
 
