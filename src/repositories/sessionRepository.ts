@@ -108,4 +108,29 @@ export class SessionRepository {
     );
     return rowCount ?? 0;
   }
+
+  /**
+   * Revokes this user's other active sessions that match the exact same
+   * (ipAddress, userAgent) pair as the session just created - a real
+   * re-login from the same browser/device, not a genuinely new one. Never
+   * touches sessions from a different IP or user agent (a teammate, or the
+   * same user on a different device/location), so multi-location use stays
+   * intact. Exact-match only, never IS NOT DISTINCT FROM null-matching -
+   * two sessions with an unknown IP or user agent are never treated as the
+   * same device on that basis alone.
+   */
+  async revokeMatchingDeviceForUser(
+    userId: string,
+    ipAddress: string,
+    userAgent: string,
+    exceptSessionId: string,
+  ): Promise<number> {
+    const { rowCount } = await this.db.query(
+      `UPDATE sessions SET revoked_at = now()
+       WHERE user_id = $1 AND revoked_at IS NULL AND id != $2
+         AND ip_address = $3 AND user_agent = $4`,
+      [userId, exceptSessionId, ipAddress, userAgent],
+    );
+    return rowCount ?? 0;
+  }
 }

@@ -131,8 +131,11 @@ describe('authService session management (list/revoke - real device-level contro
   });
 
   it('revoking one session does not affect the others, and a foreign session id is rejected', async () => {
-    const first = await login('owner@example.com', 'correcthorsebatterystaple', device);
-    const second = await login('owner@example.com', 'correcthorsebatterystaple', device);
+    // Genuinely distinct devices - same-device re-logins are now
+    // auto-deduped (see the dedicated describe block below), so two
+    // sessions meant to coexist for this test need different fingerprints.
+    const first = await login('owner@example.com', 'correcthorsebatterystaple', { ipAddress: '10.0.0.1', userAgent: 'device-a' });
+    const second = await login('owner@example.com', 'correcthorsebatterystaple', { ipAddress: '10.0.0.2', userAgent: 'device-b' });
     const validated = await validateSession(first.token);
 
     await revokeSession(validated!.user.id, second.session.id);
@@ -164,10 +167,13 @@ describe('authService session management (list/revoke - real device-level contro
 
   it('revoke-others revokes every session except the current one', async () => {
     // Plus the session beforeEach's register() call already created - three
-    // "other" sessions in total once first/second/third are added.
-    const first = await login('owner@example.com', 'correcthorsebatterystaple', device);
-    const second = await login('owner@example.com', 'correcthorsebatterystaple', device);
-    const third = await login('owner@example.com', 'correcthorsebatterystaple', device);
+    // "other" sessions in total once first/second/third are added. Each
+    // uses a distinct device fingerprint - same-device re-logins are now
+    // auto-deduped, so a real four-concurrent-session fixture needs four
+    // genuinely different devices, not four logins from the same one.
+    const first = await login('owner@example.com', 'correcthorsebatterystaple', { ipAddress: '10.0.0.1', userAgent: 'device-a' });
+    const second = await login('owner@example.com', 'correcthorsebatterystaple', { ipAddress: '10.0.0.2', userAgent: 'device-b' });
+    const third = await login('owner@example.com', 'correcthorsebatterystaple', { ipAddress: '10.0.0.3', userAgent: 'device-c' });
     const validated = await validateSession(first.token);
 
     const revokedCount = await revokeOtherSessions(validated!.user.id, first.session.id);
@@ -175,5 +181,41 @@ describe('authService session management (list/revoke - real device-level contro
     expect(await validateSession(first.token)).not.toBeNull();
     expect(await validateSession(second.token)).toBeNull();
     expect(await validateSession(third.token)).toBeNull();
+  });
+});
+
+describe('authService same-device session dedup (real re-login from the same browser)', () => {
+  beforeEach(async () => {
+    await resetDatabase();
+    await register({ email: 'owner@example.com', password: 'correcthorsebatterystaple', displayName: 'Owner' }, device);
+  });
+
+  it('revokes the previous session for an exact (ipAddress, userAgent) match on a new login', async () => {
+    const first = await login('owner@example.com', 'correcthorsebatterystaple', device);
+    expect(await validateSession(first.token)).not.toBeNull();
+
+    const second = await login('owner@example.com', 'correcthorsebatterystaple', device);
+
+    expect(await validateSession(first.token)).toBeNull(); // real re-login from the same device revoked the stale one
+    expect(await validateSession(second.token)).not.toBeNull();
+  });
+
+  it('never revokes a session from a different IP or user agent - distinct devices/locations coexist', async () => {
+    const laptop = await login('owner@example.com', 'correcthorsebatterystaple', { ipAddress: '10.0.0.1', userAgent: 'laptop-ua' });
+    const phone = await login('owner@example.com', 'correcthorsebatterystaple', { ipAddress: '10.0.0.2', userAgent: 'phone-ua' });
+    // Same IP as laptop, different user agent - a teammate on the same office network, not the same device.
+    const teammateLaptop = await login('owner@example.com', 'correcthorsebatterystaple', { ipAddress: '10.0.0.1', userAgent: 'other-laptop-ua' });
+
+    expect(await validateSession(laptop.token)).not.toBeNull();
+    expect(await validateSession(phone.token)).not.toBeNull();
+    expect(await validateSession(teammateLaptop.token)).not.toBeNull();
+  });
+
+  it('never dedupes when ipAddress or userAgent is unknown (null) - no guessing from partial information', async () => {
+    const first = await login('owner@example.com', 'correcthorsebatterystaple', { ipAddress: null, userAgent: null });
+    const second = await login('owner@example.com', 'correcthorsebatterystaple', { ipAddress: null, userAgent: null });
+
+    expect(await validateSession(first.token)).not.toBeNull();
+    expect(await validateSession(second.token)).not.toBeNull();
   });
 });

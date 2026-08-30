@@ -82,6 +82,18 @@ async function createSession(userId: string, businessId: string, device: DeviceC
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
   const { browser, os } = parseUserAgent(device.userAgent);
   const session = await sessionRepository.create({ userId, businessId, tokenHash, expiresAt, ipAddress: device.ipAddress, userAgent: device.userAgent, deviceName: `${browser} on ${os}`, authMethod });
+
+  // Awaited (not fire-and-forget): the caller's very next listSessions() call
+  // - or, in this codebase's tests, the next assertion - must reliably see
+  // the cleanup already applied, not a race against a background write. A
+  // failure here still never fails the login itself, though - a transient
+  // DB error cleaning up stale rows is not a reason to lock someone out.
+  if (device.ipAddress && device.userAgent) {
+    await sessionRepository.revokeMatchingDeviceForUser(userId, device.ipAddress, device.userAgent, session.id).catch((error: unknown) => {
+      console.error('[Auth] Failed to revoke stale same-device sessions:', error);
+    });
+  }
+
   return { token, session };
 }
 
