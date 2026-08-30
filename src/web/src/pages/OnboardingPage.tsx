@@ -4,6 +4,8 @@ import { api, type WhatsAppConnectionSnapshot } from '../lib/api.js';
 
 interface Props {
   connection: WhatsAppConnectionSnapshot | null;
+  /** True once several consecutive status polls have failed - see useAppGate's own doc comment. Whatever QR is still on screen is stale, not necessarily invalid; the backend just isn't answering right now. */
+  serverUnreachable?: boolean;
 }
 
 type Status = WhatsAppConnectionSnapshot['status'];
@@ -38,7 +40,17 @@ function refreshedAgo(iso: string | null, now: number): string | null {
   return `refreshed ${minutes}m ago`;
 }
 
-function QrPanel({ connection, onRetry, retrying }: { connection: WhatsAppConnectionSnapshot | null; onRetry: () => void; retrying: boolean }) {
+function QrPanel({
+  connection,
+  serverUnreachable,
+  onRetry,
+  retrying,
+}: {
+  connection: WhatsAppConnectionSnapshot | null;
+  serverUnreachable: boolean;
+  onRetry: () => void;
+  retrying: boolean;
+}) {
   const status: Status = connection?.status ?? 'CONNECTING';
   const qrDataUrl = connection?.qrDataUrl ?? null;
   const copy = STATUS_COPY[status];
@@ -62,12 +74,16 @@ function QrPanel({ connection, onRetry, retrying }: { connection: WhatsAppConnec
         so the placeholder gets its own tinted, dashed surface instead.
       */}
       <div
-        className={`mx-auto flex aspect-square w-full max-w-[17rem] items-center justify-center rounded-xl p-3 ${
+        className={`relative mx-auto flex aspect-square w-full max-w-[17rem] items-center justify-center rounded-xl p-3 ${
           qrDataUrl ? 'bg-white' : 'border border-dashed border-border-subtle bg-surface-2'
         }`}
       >
         {qrDataUrl ? (
-          <img src={qrDataUrl} alt="WhatsApp pairing QR code" className="h-full w-full object-contain" />
+          <img
+            src={qrDataUrl}
+            alt="WhatsApp pairing QR code"
+            className={`h-full w-full object-contain transition-opacity ${serverUnreachable ? 'opacity-30' : ''}`}
+          />
         ) : (
           <div className="flex flex-col items-center justify-center gap-3 text-fg-muted">
             {failed ? (
@@ -78,13 +94,28 @@ function QrPanel({ connection, onRetry, retrying }: { connection: WhatsAppConnec
             <span className="text-caption">{failed ? 'No code' : 'Generating code'}</span>
           </div>
         )}
+        {/*
+          A stale QR left frozen on screen with no explanation used to look
+          exactly like "this code is broken" - the code itself was often
+          genuinely fine, the backend was just unreachable (a crash, a
+          restart, a network blip) and had stopped rotating it. This makes
+          that honest instead of silent.
+        */}
+        {qrDataUrl && serverUnreachable && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-xl bg-surface-1/80">
+            <Loader2 size={22} className="animate-spin text-fg-muted" aria-hidden />
+            <span className="max-w-[80%] text-center text-caption font-medium text-fg-secondary">Reconnecting to the server…</span>
+          </div>
+        )}
       </div>
 
       <div className="mt-5 text-center">
-        <p className="text-body font-semibold text-fg">{copy.title}</p>
-        <p className="mt-1 text-caption text-fg-secondary">{copy.detail}</p>
+        <p className="text-body font-semibold text-fg">{serverUnreachable ? 'Reconnecting…' : copy.title}</p>
+        <p className="mt-1 text-caption text-fg-secondary">
+          {serverUnreachable ? 'Lost contact with the server - this code will resume rotating once it\'s back.' : copy.detail}
+        </p>
 
-        {status === 'QR_READY' && ago && (
+        {status === 'QR_READY' && ago && !serverUnreachable && (
           <p className="mt-2 flex items-center justify-center gap-1.5 text-meta text-fg-muted">
             <RefreshCw size={11} aria-hidden />
             This code {ago} — it rotates on its own, no need to reload.
@@ -130,7 +161,7 @@ function QrPanel({ connection, onRetry, retrying }: { connection: WhatsAppConnec
   );
 }
 
-export function OnboardingPage({ connection }: Props) {
+export function OnboardingPage({ connection, serverUnreachable = false }: Props) {
   const triggered = useRef(false);
   const [retrying, setRetrying] = useState(false);
 
@@ -228,7 +259,7 @@ export function OnboardingPage({ connection }: Props) {
       </section>
 
       <section className="order-1 flex flex-1 items-center justify-center border-b border-border-subtle bg-surface-2 px-6 py-10 sm:px-10 lg:order-2 lg:border-b-0 lg:border-l">
-        <QrPanel connection={connection} onRetry={() => void handleRetry()} retrying={retrying} />
+        <QrPanel connection={connection} serverUnreachable={serverUnreachable} onRetry={() => void handleRetry()} retrying={retrying} />
       </section>
     </div>
   );

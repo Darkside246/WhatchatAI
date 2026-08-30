@@ -33,7 +33,7 @@ function AuthenticatedApp() {
     return <div className="flex h-full items-center justify-center bg-surface-0 text-body text-gray-400">Connecting to WhatchatAI backend…</div>;
   }
   if (gate.phase === 'onboarding') {
-    return <OnboardingPage connection={gate.connection} />;
+    return <OnboardingPage connection={gate.connection} serverUnreachable={gate.serverUnreachable} />;
   }
   if (gate.phase === 'syncing') {
     return <SyncingPage connection={gate.connection} sync={gate.sync} onContinueAnyway={gate.continueAnyway} />;
