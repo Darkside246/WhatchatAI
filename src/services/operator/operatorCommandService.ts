@@ -3,6 +3,7 @@ import { OperatorModeRepository } from '../../repositories/operatorModeRepositor
 import { PropertyOperationsRepository } from '../../repositories/propertyOperationsRepository.js';
 import { hasEntitlement } from '../platform/entitlementService.js';
 import { handleAssistantMessage } from './assistantModeService.js';
+import { getControlPlaneStats } from '../productAccountService.js';
 import type { Queryable } from '../../repositories/types.js';
 
 const ASSISTANT_ENTITLEMENT_KEY = 'ai_personal_assistant';
@@ -56,7 +57,8 @@ export type OperatorCommandType =
   | 'PROPERTY_NOTE'
   | 'INVOICE_STATUS'
   | 'INCIDENT_LOG'
-  | 'SET_ASSISTANT_NAME';
+  | 'SET_ASSISTANT_NAME'
+  | 'PLATFORM_STATUS';
 
 type ParsedCommand =
   | { type: 'HELP' }
@@ -67,6 +69,7 @@ type ParsedCommand =
   | { type: 'INVOICE_STATUS'; invoiceNumber: string; newStatus: 'PAID' | 'CANCELLED' }
   | { type: 'INCIDENT_LOG'; title: string; description: string; severity: 'low' | 'medium' | 'high' }
   | { type: 'SET_ASSISTANT_NAME'; name: string }
+  | { type: 'PLATFORM_STATUS' }
   | { type: 'UNKNOWN'; original: string };
 
 // ── Simple rule-based parser ──────────────────────────────────────────────────
@@ -79,6 +82,15 @@ function parse(text: string): ParsedCommand {
 
   if (/^(help|\?|commands|what can you do)/.test(t)) return { type: 'HELP' };
   if (/^(logout|exit|bye|done|end session)/.test(t)) return { type: 'LOGOUT' };
+
+  // Checked before the generic stats/report patterns below, which would
+  // otherwise swallow this - deliberately a distinct phrase from the
+  // regular "stats"/"summary"/"report" commands every operator can use, so
+  // it never appears in HELP_TEXT/OPERATOR_SETUP_CONFIRMATION and stays
+  // undiscoverable to a regular business owner who has no reason to know
+  // it exists (see handlePlatformStatus's own authorization check - this
+  // pattern match alone grants nothing).
+  if (/^platform\s+status$/.test(t)) return { type: 'PLATFORM_STATUS' };
 
   if (/\b(daily\s+report|full\s+report|day\s+report|report\s+today)\b/.test(t)) return { type: 'DAILY_REPORT' };
 
@@ -384,6 +396,9 @@ export class OperatorCommandService {
       case 'SET_ASSISTANT_NAME':
         return this.handleSetAssistantName(businessId, command.name);
 
+      case 'PLATFORM_STATUS':
+        return this.handlePlatformStatus(businessId);
+
       case 'UNKNOWN':
         return {
           reply: `🤔 I didn't understand: _"${command.original.slice(0, 100)}"_\n\nSend *help* for a list of commands.`,
@@ -582,6 +597,48 @@ _Report for today's activity only. Send *stats week* or *stats month* for broade
       };
     } catch {
       return { reply: '⚠️ Could not save the assistant name. Try again shortly.' };
+    }
+  }
+
+  /**
+   * Platform-wide (cross-business) status, gated to the platform developer
+   * only - checks whether ANY member of THIS operator session's business
+   * has users.platform_role = 'DEVELOPER' (the same real, existing
+   * platform-level role requireDeveloper checks on the web side; there is
+   * no separate "developer" concept invented here). A regular business
+   * owner sending this exact phrase gets the same generic "didn't
+   * understand" reply UNKNOWN commands get - never a "you're not
+   * authorized" message, which would confirm a privileged command exists
+   * at all. Real numbers only (getControlPlaneStats(), also used by the
+   * web control-plane dashboard) - never fabricated or estimated.
+   */
+  private async handlePlatformStatus(businessId: string): Promise<OperatorResult> {
+    const { rows } = await this.db.query<{ is_developer: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM business_memberships bm
+         JOIN users u ON u.id = bm.user_id
+         WHERE bm.business_id = $1 AND u.platform_role = 'DEVELOPER'
+       ) AS is_developer`,
+      [businessId],
+    );
+    if (!rows[0]?.is_developer) {
+      return { reply: `🤔 I didn't understand: _"platform status"_\n\nSend *help* for a list of commands.` };
+    }
+
+    try {
+      const stats = await getControlPlaneStats();
+      const uptimeHours = (stats.serverUptimeSeconds / 3600).toFixed(1);
+      return {
+        reply: `🖥️ *Platform Status*\n\n` +
+          `• Businesses: ${stats.totalBusinesses}\n` +
+          `• WhatsApp connections: ${stats.activeWaConnections} active, ${stats.inactiveWaConnections} inactive\n` +
+          `• AI agents: ${stats.totalAiAgents}\n` +
+          `• Active trials: ${stats.activeTrials}\n` +
+          `• Security events (24h): ${stats.recentSecurityEvents}\n` +
+          `• Server uptime: ${uptimeHours}h`,
+      };
+    } catch {
+      return { reply: '⚠️ Could not fetch platform status. Try again shortly.' };
     }
   }
 }

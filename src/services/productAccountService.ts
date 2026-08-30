@@ -133,16 +133,21 @@ export const productEntitlements = PRODUCT_ENTITLEMENTS;
 export interface ControlPlaneStats {
   totalBusinesses: number;
   activeWaConnections: number;
+  /** Real, non-deleted WhatsApp accounts whose connection_status isn't CONNECTED - paired at some point but not live right now. */
+  inactiveWaConnections: number;
   totalAiAgents: number;
   activeTrials: number;
   recentSecurityEvents: number;
+  /** This process's own uptime, in whole seconds - Node's own process.uptime(), never a fabricated/cached value. */
+  serverUptimeSeconds: number;
 }
 
-/** Top-line counts for the developer control plane dashboard. */
+/** Top-line counts for the developer control plane dashboard and the operator-mode "platform status" command. */
 export async function getControlPlaneStats(): Promise<ControlPlaneStats> {
   const { rows } = await pool.query<{
     total_businesses: string;
     active_wa_connections: string;
+    inactive_wa_connections: string;
     total_ai_agents: string;
     active_trials: string;
     recent_security_events: string;
@@ -150,6 +155,7 @@ export async function getControlPlaneStats(): Promise<ControlPlaneStats> {
     SELECT
       (SELECT COUNT(*) FROM businesses) AS total_businesses,
       (SELECT COUNT(*) FROM whatsapp_accounts WHERE connection_status = 'CONNECTED' AND deleted_at IS NULL) AS active_wa_connections,
+      (SELECT COUNT(*) FROM whatsapp_accounts WHERE connection_status != 'CONNECTED' AND deleted_at IS NULL) AS inactive_wa_connections,
       (SELECT COUNT(*) FROM ai_agents WHERE deleted_at IS NULL) AS total_ai_agents,
       (SELECT COUNT(*) FROM product_trials WHERE state IN ('ACTIVE', 'EXPIRING')) AS active_trials,
       (SELECT COUNT(*) FROM security_audit_logs WHERE created_at > NOW() - INTERVAL '24 hours') AS recent_security_events
@@ -158,9 +164,11 @@ export async function getControlPlaneStats(): Promise<ControlPlaneStats> {
   return {
     totalBusinesses: Number(row?.total_businesses ?? 0),
     activeWaConnections: Number(row?.active_wa_connections ?? 0),
+    inactiveWaConnections: Number(row?.inactive_wa_connections ?? 0),
     totalAiAgents: Number(row?.total_ai_agents ?? 0),
     activeTrials: Number(row?.active_trials ?? 0),
     recentSecurityEvents: Number(row?.recent_security_events ?? 0),
+    serverUptimeSeconds: Math.floor(process.uptime()),
   };
 }
 
