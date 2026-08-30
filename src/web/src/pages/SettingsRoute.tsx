@@ -22,7 +22,7 @@ import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
 import { triggerLockNow } from '../lib/lockEvents.js';
 import { LOCK_TIMEOUT_KEY } from '../components/ScreenLock.js';
-import { ALERT_POSITION_KEY, ALERT_SCALE_KEY, ALERT_SCALE_MIN, ALERT_SCALE_MAX, type AlertBannerPosition } from '../components/AlertNotifier.js';
+import { ALERT_SCALE_KEY, ALERT_SCALE_MIN, ALERT_SCALE_MAX } from '../components/AlertNotifier.js';
 import { DEFAULT_ARGON2_PARAMS, generateSalt, hashPin } from '../lib/pinCrypto.js';
 import { useAuth } from '../hooks/useAuth.js';
 
@@ -863,14 +863,6 @@ function ThemeCard() {
   );
 }
 
-function getAlertPositionSetting(): AlertBannerPosition {
-  try {
-    const v = localStorage.getItem(ALERT_POSITION_KEY);
-    if (v === 'left' || v === 'right') return v;
-  } catch {}
-  return 'right';
-}
-
 function getAlertScaleSetting(): number {
   try {
     const n = parseFloat(localStorage.getItem(ALERT_SCALE_KEY) ?? '');
@@ -880,22 +872,17 @@ function getAlertScaleSetting(): number {
 }
 
 /**
- * Controls where the pulsing "Urgent Lead Handover" banners sit and how big
- * they render - including on the lock screen, where they render above the
- * PIN prompt by design (background handoffs must stay visible even while
- * locked). Saved to this browser via the same localStorage + 'storage'
- * event pattern as the lock-timeout setting above, so AlertNotifier picks
- * up a change live, with no reload.
+ * Controls how big the urgent lead-handover panel renders - including on
+ * the lock screen, where it stays visible above the PIN prompt by design
+ * (background handoffs must stay visible even while locked). Saved to this
+ * browser via the same localStorage + 'storage' event pattern as the
+ * lock-timeout setting above, so AlertNotifier picks up a change live,
+ * with no reload. Position is no longer a user setting - the panel always
+ * renders top-center, contained, so it can never overlap or bleed past
+ * other UI the way independently-floating pills could.
  */
 function AlertBannerCard() {
-  const [position, setPosition] = useState<AlertBannerPosition>(getAlertPositionSetting);
   const [scale, setScale] = useState<number>(getAlertScaleSetting);
-
-  function updatePosition(next: AlertBannerPosition) {
-    setPosition(next);
-    try { localStorage.setItem(ALERT_POSITION_KEY, next); } catch {}
-    window.dispatchEvent(new StorageEvent('storage', { key: ALERT_POSITION_KEY, newValue: next }));
-  }
 
   function updateScale(next: number) {
     setScale(next);
@@ -907,26 +894,8 @@ function AlertBannerCard() {
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
       <h2 className="text-body font-semibold text-fg">Alerts</h2>
       <p className="mt-1 text-caption text-fg-muted">
-        Where the urgent lead-handover banners sit and how big they render - including on the lock screen, where they always stay visible.
+        How big the urgent lead-handover panel renders at the top of the screen - including on the lock screen, where it always stays visible.
       </p>
-
-      <div className="mt-4 space-y-1">
-        <label className="text-caption font-medium text-fg-secondary">Position</label>
-        <div className="inline-flex rounded-lg border border-border-subtle p-0.5">
-          {(['left', 'right'] as const).map((option) => (
-            <button
-              key={option}
-              type="button"
-              onClick={() => updatePosition(option)}
-              className={`rounded-md px-3 py-1 text-caption font-medium capitalize transition ${
-                position === option ? 'bg-accent text-white' : 'text-fg-secondary hover:bg-surface-3'
-              }`}
-            >
-              {option}
-            </button>
-          ))}
-        </div>
-      </div>
 
       <div className="mt-4 space-y-1">
         <div className="flex items-center justify-between">

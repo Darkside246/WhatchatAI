@@ -13,23 +13,38 @@ import { TermsPage } from './pages/TermsPage.js';
 import { PrivacyPage } from './pages/PrivacyPage.js';
 import { ConsentConfirmPage } from './pages/ConsentConfirmPage.js';
 
+/**
+ * ScreenLock (and the AlertNotifier it mounts) wraps ONLY the final,
+ * fully-ready workspace - never onboarding/syncing/operator-setup. Those
+ * earlier phases are still real pre-workspace screens (QR pairing, initial
+ * sync progress) even though the human dashboard user is already
+ * authenticated - alert banners naming the business's WhatsApp line and
+ * urgency of unresolved handoffs have no business appearing on a screen
+ * whose entire purpose is "connect WhatsApp," and a screen left open on
+ * that step (a disconnected/re-pairing account, mid-onboarding) must never
+ * surface live operational data to whoever can see the monitor.
+ */
 function AuthenticatedApp() {
   const gate = useAppGate();
 
-  let content;
   if (gate.phase === 'loading') {
-    content = <div className="flex h-full items-center justify-center bg-surface-0 text-body text-gray-400">Connecting to WhatchatAI backend…</div>;
-  } else if (gate.phase === 'onboarding') {
-    content = <OnboardingPage connection={gate.connection} />;
-  } else if (gate.phase === 'syncing') {
-    content = <SyncingPage connection={gate.connection} sync={gate.sync} onContinueAnyway={gate.continueAnyway} />;
-  } else if (gate.phase === 'operator-setup') {
-    content = <OperatorSetupPage onDone={gate.skipOperatorSetup} onSkip={gate.skipOperatorSetup} />;
-  } else {
-    content = <WorkspaceShell connection={gate.connection} sync={gate.sync} />;
+    return <div className="flex h-full items-center justify-center bg-surface-0 text-body text-gray-400">Connecting to WhatchatAI backend…</div>;
+  }
+  if (gate.phase === 'onboarding') {
+    return <OnboardingPage connection={gate.connection} />;
+  }
+  if (gate.phase === 'syncing') {
+    return <SyncingPage connection={gate.connection} sync={gate.sync} onContinueAnyway={gate.continueAnyway} />;
+  }
+  if (gate.phase === 'operator-setup') {
+    return <OperatorSetupPage onDone={gate.skipOperatorSetup} onSkip={gate.skipOperatorSetup} />;
   }
 
-  return <ScreenLock>{content}</ScreenLock>;
+  return (
+    <ScreenLock>
+      <WorkspaceShell connection={gate.connection} sync={gate.sync} />
+    </ScreenLock>
+  );
 }
 
 export default function App() {
