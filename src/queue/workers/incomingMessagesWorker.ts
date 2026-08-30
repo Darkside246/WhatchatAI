@@ -47,6 +47,7 @@ import { mediaFallbackText } from '../../services/ai/mediaContext.js';
 import { sweepStaleFunnelInstances } from '../../services/funnelService.js';
 import { runSecurityScan } from '../../services/securityScanService.js';
 import { runSecurityWatcher } from '../../services/openclawSecurityWatcherService.js';
+import { sweepDueAccountDeletions } from '../../services/accountDeletionService.js';
 import type { WhatsAppMessageRecord } from '../../repositories/whatsappMessageRepository.js';
 import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaRepository.js';
 import type { MediaDownloadErrorCategory } from '../../domain/whatsapp/types.js';
@@ -1164,6 +1165,11 @@ const SECURITY_SCAN_INTERVAL_MS = 3_600_000;
 // many distinct versions are ever actually deployed.
 const OPENCLAW_SECURITY_WATCHER_INTERVAL_MS = 21_600_000;
 
+// accountDeletionService.ts's 30-day grace period doesn't need finer
+// granularity than this - hourly matches SECURITY_SCAN_INTERVAL_MS's own
+// "not time-critical" cadence.
+const ACCOUNT_DELETION_PURGE_SWEEP_INTERVAL_MS = 3_600_000;
+
 export async function sweepStaleEmails(): Promise<void> {
   const stale = await emailMessageRepository.findStalePending(EMAIL_STALE_SECONDS);
   for (const email of stale) {
@@ -1228,6 +1234,8 @@ async function processRealtimeEventJob(
     await runSecurityScan();
   } else if (job.name === 'openclaw-security-watcher') {
     await runSecurityWatcher();
+  } else if (job.name === 'account-deletion-purge-sweep') {
+    await sweepDueAccountDeletions();
   } else if (job.name === 'media-download') {
     await processMediaDownload(job.data as MediaDownloadJobData);
   } else if (job.name === 'message-reaction') {
@@ -1392,3 +1400,14 @@ void realtimeEventsQueue
     console.log(`[RealtimeEventsWorker] Scheduled openclaw-security-watcher every ${OPENCLAW_SECURITY_WATCHER_INTERVAL_MS}ms`),
   )
   .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule openclaw-security-watcher:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler(
+    'account-deletion-purge-sweep',
+    { every: ACCOUNT_DELETION_PURGE_SWEEP_INTERVAL_MS },
+    { name: 'account-deletion-purge-sweep' },
+  )
+  .then(() =>
+    console.log(`[RealtimeEventsWorker] Scheduled account-deletion-purge-sweep every ${ACCOUNT_DELETION_PURGE_SWEEP_INTERVAL_MS}ms`),
+  )
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule account-deletion-purge-sweep:', error.message));

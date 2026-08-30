@@ -9,6 +9,9 @@ export interface BusinessRecord {
   timeSource: BusinessTimeSource;
   manualOverrideTargetUtc: Date | null;
   manualOverrideSetAt: Date | null;
+  /** Set the moment account deletion is requested (accountDeletionService.ts) - null means no deletion is pending. */
+  deletionRequestedAt: Date | null;
+  scheduledPurgeAt: Date | null;
 }
 
 interface BusinessRow {
@@ -18,10 +21,12 @@ interface BusinessRow {
   time_source: BusinessTimeSource;
   manual_override_target_utc: Date | null;
   manual_override_set_at: Date | null;
+  deletion_requested_at: Date | null;
+  scheduled_purge_at: Date | null;
 }
 
 const BUSINESS_COLUMNS =
-  'id, name, timezone, time_source, manual_override_target_utc, manual_override_set_at';
+  'id, name, timezone, time_source, manual_override_target_utc, manual_override_set_at, deletion_requested_at, scheduled_purge_at';
 
 function toRecord(row: BusinessRow): BusinessRecord {
   return {
@@ -31,6 +36,8 @@ function toRecord(row: BusinessRow): BusinessRecord {
     timeSource: row.time_source,
     manualOverrideTargetUtc: row.manual_override_target_utc,
     manualOverrideSetAt: row.manual_override_set_at,
+    deletionRequestedAt: row.deletion_requested_at,
+    scheduledPurgeAt: row.scheduled_purge_at,
   };
 }
 

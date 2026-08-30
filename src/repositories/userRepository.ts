@@ -1,5 +1,6 @@
 import type { Queryable } from './types.js';
 import type { PasswordParams } from '../services/passwordHashService.js';
+import { getEncryptionService } from '../security/encryption/index.js';
 
 export type PlatformRole = 'CLIENT' | 'DEVELOPER';
 
@@ -14,6 +15,7 @@ export interface UserRecord {
   firstName: string | null;
   lastName: string | null;
   avatarUrl: string | null;
+  /** Opaque at-rest value - a serialized EncryptedEnvelope (or, for a legacy pre-encryption row, raw plaintext). Never expose this directly; use getDecryptedPhoneNumber(). */
   phoneNumber: string | null;
   locale: string;
   timezone: string;
@@ -24,7 +26,7 @@ export interface UserRecord {
   updatedAt: string;
 }
 
-export type PublicUser = Omit<UserRecord, 'passwordHash' | 'passwordSalt' | 'passwordParams'>;
+export type PublicUser = Omit<UserRecord, 'passwordHash' | 'passwordSalt' | 'passwordParams' | 'phoneNumber'>;
 
 interface UserRow {
   id: string;
@@ -71,7 +73,7 @@ function toRecord(row: UserRow): UserRecord {
 }
 
 export function toPublicUser(user: UserRecord): PublicUser {
-  const { passwordHash: _h, passwordSalt: _s, passwordParams: _p, ...rest } = user;
+  const { passwordHash: _h, passwordSalt: _s, passwordParams: _p, phoneNumber: _ph, ...rest } = user;
   return rest;
 }
 
@@ -116,5 +118,26 @@ export class UserRepository {
   async countAll(): Promise<number> {
     const { rows } = await this.db.query<{ count: string }>('SELECT COUNT(*)::text AS count FROM users WHERE deleted_at IS NULL');
     return Number(rows[0]?.count ?? '0');
+  }
+
+  /** The one legitimate read path for a user's real phone number (Settings display) - decrypts on read, same tryParse-fallback pattern as writingTwinRepository.ts for a pre-encryption legacy row. */
+  async getDecryptedPhoneNumber(businessId: string, userId: string): Promise<string | null> {
+    const { rows } = await this.db.query<{ phone_number: string | null }>(
+      'SELECT phone_number FROM users WHERE id = $1 AND deleted_at IS NULL', [userId],
+    );
+    const stored = rows[0]?.phone_number ?? null;
+    if (!stored) return null;
+    const envelope = getEncryptionService().tryParse(stored);
+    if (!envelope) return stored; // legacy/unencrypted row
+    return getEncryptionService().decryptField(businessId, envelope);
+  }
+
+  /** Encrypts and hashes a new phone number in place - see phoneNumberChangeService.ts for the password-verification/collision-check callers must do first. */
+  async updatePhoneNumber(businessId: string, userId: string, e164Phone: string, phoneHash: string): Promise<void> {
+    const envelope = await getEncryptionService().encryptField(businessId, e164Phone);
+    await this.db.query(
+      'UPDATE users SET phone_number = $2, phone_number_hash = $3, updated_at = now() WHERE id = $1',
+      [userId, getEncryptionService().serialize(envelope), phoneHash],
+    );
   }
 }

@@ -140,6 +140,14 @@ import {
   isSessionNotFoundError,
 } from '../services/authService.js';
 import {
+  requestBusinessDeletion,
+  cancelBusinessDeletion,
+  BusinessDeletionAlreadyPendingError,
+  BusinessDeletionNotPendingError,
+} from '../services/accountDeletionService.js';
+import { changePhoneNumber, PhoneNumberAlreadyInUseError } from '../services/phoneNumberChangeService.js';
+import { InvalidPhoneNumberError } from '../services/phoneNormalizationService.js';
+import {
   listMembers,
   createMember,
   updateMemberRole,
@@ -484,6 +492,53 @@ app.post('/api/auth/sessions/revoke-others', requireAuth, async (_req, res) => {
   const auth = res.locals.auth as AuthContext;
   const revokedCount = await revokeOtherSessions(auth.userId, auth.sessionId);
   return res.status(200).json({ revokedCount });
+});
+
+// Deletes the whole business, not just this login - see
+// accountDeletionService.ts's own doc comment for why. Self-scoped by
+// auth.businessId, same posture as the /api/auth/sessions/* routes above
+// - not /api/workspace/*-namespaced, so outside routeAuthorization.test.ts's
+// scan scope.
+app.post('/api/auth/account/delete', requireAuth, async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  if (auth.role !== 'OWNER') return res.status(403).json({ error: 'OWNER_REQUIRED' });
+  try {
+    const result = await requestBusinessDeletion(auth.businessId, auth.userId);
+    clearSessionCookie(req, res); // every session for this business (including the caller's own) was just revoked
+    return res.status(200).json({ status: 'deletion_scheduled', scheduledPurgeAt: result.scheduledPurgeAt });
+  } catch (error) {
+    if (error instanceof BusinessDeletionAlreadyPendingError) return res.status(409).json({ error: 'DELETION_ALREADY_PENDING' });
+    throw error;
+  }
+});
+
+app.post('/api/auth/account/delete/cancel', requireAuth, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  if (auth.role !== 'OWNER') return res.status(403).json({ error: 'OWNER_REQUIRED' });
+  try {
+    await cancelBusinessDeletion(auth.businessId);
+    return res.status(200).json({ status: 'deletion_cancelled' });
+  } catch (error) {
+    if (error instanceof BusinessDeletionNotPendingError) return res.status(409).json({ error: 'NO_PENDING_DELETION' });
+    throw error;
+  }
+});
+
+const changePhoneSchema = z.object({ password: z.string().min(1), phone: z.string().trim().min(3).max(50) });
+
+app.patch('/api/auth/account/phone', requireAuth, async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = changePhoneSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PHONE_CHANGE_PAYLOAD', details: parsed.error.flatten() });
+  try {
+    await changePhoneNumber(auth.businessId, auth.userId, parsed.data.password, parsed.data.phone);
+    return res.status(200).json({ status: 'phone_updated' });
+  } catch (error) {
+    if (isInvalidCredentialsError(error)) return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
+    if (error instanceof InvalidPhoneNumberError) return res.status(400).json({ error: 'INVALID_PHONE_NUMBER', message: error.message });
+    if (error instanceof PhoneNumberAlreadyInUseError) return res.status(409).json({ error: 'PHONE_ALREADY_IN_USE' });
+    throw error;
+  }
 });
 
 app.get('/api/auth/preferences', requireAuth, async (_req, res) => {

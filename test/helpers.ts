@@ -6,6 +6,10 @@ import { SubscriptionRepository } from '../src/repositories/subscriptionReposito
 import { UserRepository } from '../src/repositories/userRepository.js';
 
 const TABLES = [
+  // No FK to anything by design (see migration 936) - a real
+  // TRUNCATE ... CASCADE from any other table in this list never reaches
+  // it, so it needs its own explicit entry to be cleared between tests.
+  'trial_phone_fingerprints',
   'business_document_versions',
   'business_documents',
   'openclaw_tool_executions',

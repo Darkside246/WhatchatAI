@@ -54,7 +54,10 @@ export type SecurityEventType =
   | 'writing_twin_profile_reset'
   | 'writing_twin_example_removed'
   | 'contact_privacy_updated'
-  | 'handover_auto_reverted';
+  | 'handover_auto_reverted'
+  | 'account_deletion_requested'
+  | 'account_deletion_cancelled'
+  | 'phone_number_changed';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 

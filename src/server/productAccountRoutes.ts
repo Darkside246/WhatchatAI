@@ -1,7 +1,13 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { listAvailableProducts, listUserProductAccounts, provisionProductAccount, listAllProductAccounts, assignVertical, getControlPlaneStats } from '../services/productAccountService.js';
-import { registerTrial, TrialAlreadyUsedOnboardingError, TrialProductUnavailableOnboardingError } from '../services/trialOnboardingService.js';
+import {
+  registerTrial,
+  TrialAlreadyUsedOnboardingError,
+  TrialPhoneAlreadyUsedOnboardingError,
+  TrialProductUnavailableOnboardingError,
+  InvalidPhoneNumberError,
+} from '../services/trialOnboardingService.js';
 import { hasUsedTrial } from '../services/trialService.js';
 import { TrialRepository } from '../repositories/trialRepository.js';
 import { ProductKeySchema } from '../domain/platform/productAccounts.js';
@@ -31,6 +37,8 @@ router.post('/trials/register', async (req, res) => {
     return res.status(201).json({ user: result.user, productAccountId: result.productAccountId, productKey: result.productKey, trial: { id: result.trialId, startsAt: result.startsAt, endsAt: result.endsAt, state: 'ACTIVE' } });
   } catch (error) {
     if (error instanceof TrialAlreadyUsedOnboardingError) return res.status(409).json({ error: 'TRIAL_ALREADY_USED', message: error.message });
+    if (error instanceof TrialPhoneAlreadyUsedOnboardingError) return res.status(409).json({ error: 'TRIAL_ALREADY_USED', message: error.message });
+    if (error instanceof InvalidPhoneNumberError) return res.status(400).json({ error: 'INVALID_PHONE_NUMBER', message: error.message });
     if (error instanceof TrialProductUnavailableOnboardingError) return res.status(404).json({ error: 'PRODUCT_UNAVAILABLE', message: error.message });
     throw error;
   }

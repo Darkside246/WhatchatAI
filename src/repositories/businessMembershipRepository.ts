@@ -134,4 +134,21 @@ export class BusinessMembershipRepository {
   async remove(id: string): Promise<void> {
     await this.db.query('DELETE FROM business_memberships WHERE id = $1', [id]);
   }
+
+  /** Immediate effect of requesting account deletion (accountDeletionService.ts) - membership rows are kept, not removed, so cancelling deletion within the grace period is a simple status flip back. */
+  async suspendAllForBusiness(businessId: string): Promise<number> {
+    const { rowCount } = await this.db.query(
+      `UPDATE business_memberships SET status = 'suspended', updated_at = now() WHERE business_id = $1 AND status = 'active'`,
+      [businessId],
+    );
+    return rowCount ?? 0;
+  }
+
+  async reactivateAllForBusiness(businessId: string): Promise<number> {
+    const { rowCount } = await this.db.query(
+      `UPDATE business_memberships SET status = 'active', updated_at = now() WHERE business_id = $1 AND status = 'suspended'`,
+      [businessId],
+    );
+    return rowCount ?? 0;
+  }
 }

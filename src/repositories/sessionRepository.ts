@@ -100,6 +100,15 @@ export class SessionRepository {
     await this.db.query('UPDATE sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL', [id]);
   }
 
+  /** Immediate effect of requesting account deletion (accountDeletionService.ts) - every member of the business is logged out, not just the requester. */
+  async revokeAllForBusiness(businessId: string): Promise<number> {
+    const { rowCount } = await this.db.query(
+      `UPDATE sessions SET revoked_at = now() WHERE business_id = $1 AND revoked_at IS NULL`,
+      [businessId],
+    );
+    return rowCount ?? 0;
+  }
+
   async revokeAllForUserExcept(userId: string, exceptSessionId: string | null): Promise<number> {
     const { rowCount } = await this.db.query(
       `UPDATE sessions SET revoked_at = now()
