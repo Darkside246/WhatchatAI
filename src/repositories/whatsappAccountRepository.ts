@@ -192,4 +192,42 @@ export class WhatsAppAccountRepository {
       [id, error],
     );
   }
+
+  /**
+   * The account requireWorkspaceContext resolves a business's session
+   * against - independent of any live socket state, since chat history
+   * lives in Postgres regardless of whether this process currently holds a
+   * connection for this tenant. Not filtered by connection_status: a
+   * business mid-reconnect (or simply not connected in THIS process, e.g.
+   * before boot-time reconnection completes) must still be able to browse
+   * its own already-synced data.
+   */
+  async findActiveByBusiness(businessId: string): Promise<WhatsAppAccountRecord | null> {
+    const { rows } = await this.db.query<AccountRow>(
+      `SELECT * FROM whatsapp_accounts
+       WHERE business_id = $1 AND deleted_at IS NULL AND whatsapp_jid IS NOT NULL
+       ORDER BY connected_at DESC NULLS LAST
+       LIMIT 1`,
+      [businessId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
+   * Every business with a real, previously-paired account that has never
+   * been explicitly logged out - the boot-time reconnection list for
+   * WhatsAppConnectionManager.reconnectAllPersisted(). DISTINCT ON picks
+   * the most-recently-connected account per business (a known limitation:
+   * a business with genuinely multiple simultaneous numbers only gets its
+   * newest one reconnected automatically here).
+   */
+  async listReconnectableBusinesses(): Promise<string[]> {
+    const { rows } = await this.db.query<{ business_id: string }>(
+      `SELECT DISTINCT ON (business_id) business_id
+       FROM whatsapp_accounts
+       WHERE deleted_at IS NULL AND whatsapp_jid IS NOT NULL AND connection_status <> 'LOGGED_OUT'
+       ORDER BY business_id, connected_at DESC NULLS LAST`,
+    );
+    return rows.map((row) => row.business_id);
+  }
 }

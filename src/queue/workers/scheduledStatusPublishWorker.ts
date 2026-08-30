@@ -1,7 +1,7 @@
 import { Worker, type Job } from 'bullmq';
 import { queueConnection } from '../connection.js';
 import { SCHEDULED_STATUSES_QUEUE, type ScheduledStatusJobData } from '../queues/scheduledStatusesQueue.js';
-import { whatsappConnectionService } from '../../services/whatsappConnectionService.js';
+import { whatsappConnectionManager } from '../../services/whatsappConnectionManager.js';
 import { retrieveMedia } from '../../media/localEncryptedMediaStorage.js';
 import { pool } from '../../db/pool.js';
 import { ScheduledStatusRepository, type ScheduledStatusRecord } from '../../repositories/scheduledStatusRepository.js';
@@ -46,10 +46,10 @@ async function processScheduledStatus(job: Job<ScheduledStatusJobData>): Promise
   }
   if (record.status === 'PUBLISHED' || record.status === 'CANCELLED') return;
 
-  if (!whatsappConnectionService.isReady()) {
+  if (!whatsappConnectionManager.isReady(record.businessId)) {
     throw new Error('WhatsApp is not connected - cannot publish this status right now');
   }
-  const socket = whatsappConnectionService.getSocket();
+  const socket = whatsappConnectionManager.getSocket(record.businessId);
   if (!socket) throw new Error('WhatsApp socket unavailable');
 
   await scheduledStatusRepository.updateStatus(record.id, 'PUBLISHING');

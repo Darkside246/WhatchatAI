@@ -22,7 +22,7 @@ import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutbo
 import type { WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { describeMessageType } from '../domain/whatsapp/messagePreview.js';
-import { whatsappConnectionService } from './whatsappConnectionService.js';
+import { whatsappConnectionManager } from './whatsappConnectionManager.js';
 import { enqueueContactProfilePictureSync, storeAndAttachAccountProfilePicture } from './profilePictureSyncService.js';
 import { notifyBusiness, notifyUser } from './notificationService.js';
 import { BusinessMembershipRepository } from '../repositories/businessMembershipRepository.js';
@@ -530,7 +530,7 @@ export class WorkspaceService {
     const localMapping = await this.jidMappingRepository.findByLid(businessId, whatsappAccountId, lidJid);
     if (localMapping?.phoneNumber) return localMapping.phoneNumber;
 
-    const livePn = await whatsappConnectionService.resolvePhoneNumberForLid(lidJid);
+    const livePn = await whatsappConnectionManager.resolvePhoneNumberForLid(businessId, lidJid);
     if (!livePn) return null;
 
     const phoneNumber = derivePhoneNumber(livePn, classifyJid(livePn), null);
@@ -756,7 +756,8 @@ export class WorkspaceService {
     const chat = await this.chatRepository.findByIdForBusiness(message.chatId, businessId);
     if (!chat) throw this.notFound();
 
-    await whatsappConnectionService.sendReaction(
+    await whatsappConnectionManager.sendReaction(
+      businessId,
       {
         remoteJid: message.remoteJid,
         id: message.whatsappMessageId,
@@ -909,7 +910,7 @@ export class WorkspaceService {
     const account = await this.accountRepository.findById(whatsappAccountId);
     if (!account || account.businessId !== businessId) throw this.notFound();
 
-    await whatsappConnectionService.updateOwnProfilePicture(imageBuffer);
+    await whatsappConnectionManager.updateOwnProfilePicture(businessId, imageBuffer);
     await storeAndAttachAccountProfilePicture(businessId, whatsappAccountId, imageBuffer, mimeType);
   }
 

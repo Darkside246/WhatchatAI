@@ -9,8 +9,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { attachWebSocketServer } from '../realtime/wsServer.js';
 import { publishRealtimeEvent } from '../realtime/pubsub.js';
-import { whatsappConnectionService } from '../services/whatsappConnectionService.js';
-import { whatsappMessageIngestionService } from '../services/whatsappMessageIngestionService.js';
+import { whatsappConnectionManager } from '../services/whatsappConnectionManager.js';
 import * as gooseService from '../services/gooseService.js';
 import { globalSearch } from '../services/globalSearchService.js';
 import { isInlineSafeMime } from '../domain/whatsapp/mediaCompatibility.js';
@@ -30,6 +29,7 @@ import { openclawMcpRouter } from './openclawMcpRouter.js';
 import { mountPlatformRoutes } from './platformRoutes.js';
 import { initializePlatformFoundation } from '../services/platform/platformBootstrap.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
+import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
 import { CrmContactRepository } from '../repositories/crmContactRepository.js';
 import { UserPreferenceRepository } from '../repositories/userPreferenceRepository.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
@@ -151,9 +151,9 @@ import {
 import { requireAuth, requirePermission, setSessionCookie, clearSessionCookie, readSessionToken, type AuthContext } from './authMiddleware.js';
 import { BUSINESS_ROLES, isBusinessRole } from '../domain/auth/permissions.js';
 // Runs the real outbound-send BullMQ worker in this process, not the
-// separate incomingMessagesWorker.ts process - the live Baileys socket
-// only exists here, wherever whatsappConnectionService.connect() actually
-// runs. Importing this starts it as a side effect (see the file itself).
+// separate incomingMessagesWorker.ts process - every tenant's live Baileys
+// socket only exists here, wherever whatsappConnectionManager.connect()
+// actually runs. Importing this starts it as a side effect (see the file itself).
 import { outboundMessagesWorker } from '../queue/workers/outboundDispatchWorker.js';
 // Same reasoning as outboundMessagesWorker above - real status@broadcast
 // publishing needs the live socket that only exists in this process.
@@ -370,9 +370,17 @@ app.get('/api/health/redis', async (_req, res) => {
   });
 });
 
+// Public diagnostics only, never a single tenant's snapshot - a real
+// per-business status lives at the authenticated /api/whatsapp/status
+// instead. With many tenants now possible in one process, "is WhatsApp
+// connected" no longer has one honest yes/no answer.
 app.get('/api/health/whatsapp', (_req, res) => {
-  const snapshot = whatsappConnectionService.getSnapshot();
-  res.status(snapshot.connected ? 200 : 503).json(snapshot);
+  const connectedTenantCount = whatsappConnectionManager.connectedTenantCount();
+  res.status(200).json({
+    status: connectedTenantCount > 0 ? 'CONNECTED' : 'NO_ACTIVE_TENANTS',
+    connectedTenantCount,
+    totalManagedTenantCount: whatsappConnectionManager.activeTenantCount(),
+  });
 });
 
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
@@ -667,11 +675,13 @@ app.patch('/api/workspace/capacity/me', requireAuth, async (req, res) => {
 app.use('/api/whatsapp', requireAuth);
 
 app.get('/api/whatsapp/status', (_req, res) => {
-  res.status(200).json(whatsappConnectionService.getSnapshot());
+  const { businessId } = res.locals.auth as AuthContext;
+  res.status(200).json(whatsappConnectionManager.getSnapshot(businessId));
 });
 
 app.get('/api/whatsapp/qr', (_req, res) => {
-  const snapshot = whatsappConnectionService.getSnapshot();
+  const { businessId } = res.locals.auth as AuthContext;
+  const snapshot = whatsappConnectionManager.getSnapshot(businessId);
   if (!snapshot.qrDataUrl) {
     return res.status(404).json({
       available: false,
@@ -688,8 +698,15 @@ app.get('/api/whatsapp/qr', (_req, res) => {
 });
 
 app.post('/api/whatsapp/connect', async (_req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  if (!whatsappConnectionManager.canProvisionNewTenant(businessId)) {
+    return res.status(503).json({
+      error: 'AT_CAPACITY',
+      message: 'This server is at its concurrent WhatsApp connection limit. Try again shortly.',
+    });
+  }
   try {
-    const snapshot = await whatsappConnectionService.connect();
+    const snapshot = await whatsappConnectionManager.connect(businessId);
     return res.status(202).json(snapshot);
   } catch (error) {
     return res.status(500).json({
@@ -701,49 +718,56 @@ app.post('/api/whatsapp/connect', async (_req, res) => {
 });
 
 app.post('/api/whatsapp/disconnect', async (_req, res) => {
-  await whatsappConnectionService.disconnect();
-  return res.status(200).json(whatsappConnectionService.getSnapshot());
+  const { businessId } = res.locals.auth as AuthContext;
+  await whatsappConnectionManager.disconnect(businessId);
+  return res.status(200).json(whatsappConnectionManager.getSnapshot(businessId));
 });
 
 app.post('/api/whatsapp/logout', async (_req, res) => {
-  await whatsappConnectionService.logout();
-  return res.status(200).json(whatsappConnectionService.getSnapshot());
+  const { businessId } = res.locals.auth as AuthContext;
+  await whatsappConnectionManager.logout(businessId);
+  return res.status(200).json(whatsappConnectionManager.getSnapshot(businessId));
 });
 
 app.get('/api/whatsapp/messages/recent', (req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
   const limitParam = Number(req.query.limit);
   const limit = Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 50;
 
   return res.status(200).json({
     note: 'In-memory ingestion buffer used for fast inspection. Durable storage is the whatsapp_messages table (Phase 2C) - see /api/health/database for DB status.',
-    messages: whatsappMessageIngestionService.getRecent(limit),
+    messages: whatsappConnectionManager.getRecentMessages(businessId, limit),
   });
 });
 
 app.get('/api/whatsapp/messages/stats', (_req, res) => {
-  return res.status(200).json(whatsappMessageIngestionService.getStats());
+  const { businessId } = res.locals.auth as AuthContext;
+  return res.status(200).json(whatsappConnectionManager.getIngestionStats(businessId));
 });
 
-function requireWorkspaceContext(_req: Request, res: Response, next: NextFunction): void {
-  const context = whatsappConnectionService.getPersistedContext();
-  if (!context) {
+/**
+ * Rewritten for multi-tenancy: businessId now comes from the session
+ * (res.locals.auth, already populated by requireAuth, which always runs
+ * first) rather than from whichever tenant happens to have a live socket
+ * right now. This also fixes a real pre-existing bug: a business whose
+ * socket is mid-reconnect could not browse its own chat history before,
+ * even though that data lives in Postgres independent of live socket
+ * state - the mismatch check this replaced is now structurally
+ * impossible, not just unlikely.
+ */
+const whatsappAccountRepository = new WhatsAppAccountRepository(pool);
+
+async function requireWorkspaceContext(_req: Request, res: Response, next: NextFunction): Promise<void> {
+  const auth = res.locals.auth as AuthContext;
+  const account = await whatsappAccountRepository.findActiveByBusiness(auth.businessId);
+  if (!account || !account.whatsappJid) {
     res.status(409).json({
       error: 'WHATSAPP_NOT_CONNECTED',
       message: 'No WhatsApp account is connected and persisted yet.',
     });
     return;
   }
-  // This process holds exactly one live Baileys socket, so it can only ever
-  // serve the one business it's connected to. An authenticated session for
-  // a different business (schema-valid, since a user can belong to more
-  // than one business) is refused here rather than silently served against
-  // the wrong tenant's WhatsApp account.
-  const auth = res.locals.auth as AuthContext | undefined;
-  if (auth && auth.businessId !== context.businessId) {
-    res.status(403).json({ error: 'BUSINESS_MISMATCH', message: 'This session belongs to a different business than the one currently connected.' });
-    return;
-  }
-  res.locals.workspaceContext = context;
+  res.locals.workspaceContext = { businessId: auth.businessId, whatsappAccountId: account.id };
   next();
 }
 
@@ -806,7 +830,7 @@ app.get('/api/workspace/chats/:chatId', requireWorkspaceContext, async (req, res
     // presence and status updates. Best-effort: never blocks or fails the
     // response over it.
     if (detail.chat.chatType === 'individual') {
-      void whatsappConnectionService.subscribePresence(detail.chat.chatJid);
+      void whatsappConnectionManager.subscribePresence(businessId, detail.chat.chatJid);
       if (detail.contact) {
         void syncContactProfilePicture(businessId, whatsappAccountId, detail.contact.id, detail.chat.chatJid);
       }
@@ -2788,8 +2812,8 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
 // keyStabilityCheck.ts.
 await verifyMasterKeyStability();
 
-void whatsappConnectionService.connect().catch((error) => {
-  console.error('[WhatsApp] Initial connection failed:', error);
+void whatsappConnectionManager.reconnectAllPersisted().catch((error) => {
+  console.error('[WhatsApp] Boot-time reconnection failed:', error);
 });
 
 // Fire-and-forget background calibration - never blocks server startup, and

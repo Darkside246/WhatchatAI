@@ -10,7 +10,7 @@ import { WhatsAppGroupRepository } from '../repositories/whatsappGroupRepository
 import { WhatsAppGroupMemberRepository } from '../repositories/whatsappGroupMemberRepository.js';
 import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMappingRepository.js';
 import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobRepository.js';
-import { whatsappMessageIngestionService } from './whatsappMessageIngestionService.js';
+import type { WhatsAppMessageIngestionService } from './whatsappMessageIngestionService.js';
 import { whatsappMessagePersistenceService } from './whatsappMessagePersistenceService.js';
 import { persistStatusUpdate } from './whatsappStatusPersistenceService.js';
 import { whatsappReconciliationService } from './whatsappReconciliationService.js';
@@ -231,12 +231,16 @@ export class WhatsAppSyncService {
     whatsappAccountId: string,
     accountJid: string,
     messages: WAMessage[],
+    ingestionService: WhatsAppMessageIngestionService,
   ): Promise<{ processed: number; failed: number }> {
     // Historical messages are never 'notify' (live) - reuses the same, already-tested
-    // classification/dedup pipeline as the live messages.upsert path.
-    const ingested = whatsappMessageIngestionService.ingestUpsert({ messages, type: 'append' });
+    // classification/dedup pipeline as the live messages.upsert path. Takes the
+    // caller's own tenant-scoped ingestion instance (WhatsAppTenantConnection's,
+    // not a shared module singleton) so historical-sync ingestion can never write
+    // into, or be confused with, another tenant's in-memory buffer.
+    const ingested = ingestionService.ingestUpsert({ messages, type: 'append' });
     // Same split the live messages.upsert handler already applies
-    // (whatsappConnectionService.ts) - status@broadcast is WhatsApp's
+    // (whatsappTenantConnection.ts) - status@broadcast is WhatsApp's
     // fixed JID for Status updates, never a real conversation, and must
     // never reach whatsapp_messages/whatsapp_chats. Historical statuses
     // (a business's already-active Statuses at pairing time, delivered
@@ -284,6 +288,7 @@ export class WhatsAppSyncService {
     whatsappAccountId: string,
     accountJid: string,
     payload: HistorySetPayload,
+    ingestionService: WhatsAppMessageIngestionService,
   ): Promise<void> {
     await this.startInitialSync(businessId, whatsappAccountId);
     const jobId = this.activeSyncJobs.get(whatsappAccountId);
@@ -299,6 +304,7 @@ export class WhatsAppSyncService {
         whatsappAccountId,
         accountJid,
         payload.messages ?? [],
+        ingestionService,
       );
 
       if (jobId) {

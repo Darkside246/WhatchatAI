@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { pool } from '../db/pool.js';
-import { whatsappConnectionService } from './whatsappConnectionService.js';
+import { whatsappConnectionManager } from './whatsappConnectionManager.js';
 import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
 import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
@@ -95,7 +95,7 @@ export async function syncContactProfilePicture(
     const contact = await contactRepository.findById(contactId);
     if (!contact || contact.profilePictureMediaId) return;
 
-    const url = await whatsappConnectionService.fetchProfilePictureUrl(jid);
+    const url = await whatsappConnectionManager.fetchProfilePictureUrl(businessId, jid);
     if (!url) return;
 
     const downloaded = await downloadAndStore(businessId, url);
@@ -176,7 +176,7 @@ export async function syncAccountProfilePicture(
     const account = await accountRepository.findById(whatsappAccountId);
     if (!account || account.profilePictureMediaId) return;
 
-    const url = await whatsappConnectionService.fetchProfilePictureUrl(jid);
+    const url = await whatsappConnectionManager.fetchProfilePictureUrl(businessId, jid);
     if (!url) return;
 
     const downloaded = await downloadAndStore(businessId, url);

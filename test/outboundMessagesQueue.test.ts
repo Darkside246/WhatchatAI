@@ -13,10 +13,10 @@ const isReadyMock = vi.fn<() => boolean>();
 const sendMessageMock = vi.fn<(jid: string, content: unknown) => Promise<{ key: { id: string } }>>();
 const getSocketMock = vi.fn(() => ({ sendMessage: sendMessageMock }));
 
-vi.mock('../src/services/whatsappConnectionService.js', () => ({
-  whatsappConnectionService: {
-    isReady: () => isReadyMock(),
-    getSocket: () => getSocketMock(),
+vi.mock('../src/services/whatsappConnectionManager.js', () => ({
+  whatsappConnectionManager: {
+    isReady: (_businessId: string) => isReadyMock(),
+    getSocket: (_businessId: string) => getSocketMock(),
   },
 }));
 

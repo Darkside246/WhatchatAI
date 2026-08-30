@@ -18,23 +18,25 @@ vi.mock('node:fs/promises', async () => {
 });
 
 const { DisconnectReason } = await import('@whiskeysockets/baileys');
-const { WhatsAppConnectionService, stripDeviceSuffix } = await import('../src/services/whatsappConnectionService.js');
+const { WhatsAppTenantConnection } = await import('../src/services/whatsappTenantConnection.js');
+
+const TEST_BUSINESS_ID = '4b6c1e2a-8f3d-4a1b-9c2e-7d5f6a0b1c3e';
 
 /**
  * A fake Baileys socket carrying a real EventEmitter for `.ev` - Baileys'
- * own BaileysEventEmitter has the same on()/emit() surface this service
+ * own BaileysEventEmitter has the same on()/emit() surface this class
  * actually uses (socket.ev.on(...) for every event it listens to).
  * `open`/`close`/other 'open'-path fields (socket.user, etc.) are
  * deliberately omitted from these tests - the conflict-handling scenarios
  * under test never reach the 'open' branch, so recordDisconnectEvent's own
- * businessId/persistedAccountId guard means no real Postgres/DB repository
- * call happens in any of them.
+ * persistedAccountId guard means no real Postgres/DB repository call
+ * happens in any of them.
  */
 function fakeSocket() {
   return { ev: new EventEmitter(), end: vi.fn(), user: undefined };
 }
 
-describe('WhatsAppConnectionService - DisconnectReason.connectionReplaced handling', () => {
+describe('WhatsAppTenantConnection - DisconnectReason.connectionReplaced handling', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     makeWASocketMock.mockReset();
@@ -47,9 +49,9 @@ describe('WhatsAppConnectionService - DisconnectReason.connectionReplaced handli
   it('stops automatic reconnect and marks status CONFLICT_REPLACED on a real connectionReplaced disconnect', async () => {
     const socket = fakeSocket();
     makeWASocketMock.mockReturnValue(socket);
-    const service = new WhatsAppConnectionService();
+    const connection = new WhatsAppTenantConnection(TEST_BUSINESS_ID);
 
-    await service.connect();
+    await connection.connect();
     expect(makeWASocketMock).toHaveBeenCalledTimes(1);
 
     socket.ev.emit('connection.update', {
@@ -57,11 +59,11 @@ describe('WhatsAppConnectionService - DisconnectReason.connectionReplaced handli
       lastDisconnect: { error: { output: { statusCode: DisconnectReason.connectionReplaced } } },
     });
     await vi.waitFor(() => {
-      expect(service.getSnapshot().status).toBe('CONFLICT_REPLACED');
+      expect(connection.getSnapshot().status).toBe('CONFLICT_REPLACED');
     });
 
-    expect(service.getSnapshot().connected).toBe(false);
-    expect(service.getSnapshot().lastError).toContain('another active connection');
+    expect(connection.getSnapshot().connected).toBe(false);
+    expect(connection.getSnapshot().lastError).toContain('another active connection');
 
     // Advance well past any possible backoff delay - a second socket must
     // never be created for this disconnect reason.
@@ -73,9 +75,9 @@ describe('WhatsAppConnectionService - DisconnectReason.connectionReplaced handli
     const firstSocket = fakeSocket();
     const secondSocket = fakeSocket();
     makeWASocketMock.mockReturnValueOnce(firstSocket).mockReturnValueOnce(secondSocket);
-    const service = new WhatsAppConnectionService();
+    const connection = new WhatsAppTenantConnection(TEST_BUSINESS_ID);
 
-    await service.connect();
+    await connection.connect();
     expect(makeWASocketMock).toHaveBeenCalledTimes(1);
 
     // restartRequired (515) - a real, ordinary, retryable Baileys disconnect code.
@@ -84,7 +86,7 @@ describe('WhatsAppConnectionService - DisconnectReason.connectionReplaced handli
       lastDisconnect: { error: { output: { statusCode: DisconnectReason.restartRequired } } },
     });
     await vi.waitFor(() => {
-      expect(service.getSnapshot().status).toBe('RECONNECTING');
+      expect(connection.getSnapshot().status).toBe('RECONNECTING');
     });
 
     await vi.advanceTimersByTimeAsync(60_000);
@@ -97,9 +99,9 @@ describe('WhatsAppConnectionService - DisconnectReason.connectionReplaced handli
     const firstSocket = fakeSocket();
     const secondSocket = fakeSocket();
     makeWASocketMock.mockReturnValueOnce(firstSocket).mockReturnValueOnce(secondSocket);
-    const service = new WhatsAppConnectionService();
+    const connection = new WhatsAppTenantConnection(TEST_BUSINESS_ID);
 
-    await service.connect();
+    await connection.connect();
     firstSocket.ev.emit('connection.update', {
       connection: 'close',
       lastDisconnect: { error: { output: { statusCode: DisconnectReason.loggedOut } } },
@@ -108,34 +110,5 @@ describe('WhatsAppConnectionService - DisconnectReason.connectionReplaced handli
     await vi.waitFor(() => {
       expect(makeWASocketMock).toHaveBeenCalledTimes(2);
     });
-  });
-});
-
-describe('stripDeviceSuffix', () => {
-  it('removes the ":<deviceId>" suffix from an individual JID', () => {
-    expect(stripDeviceSuffix('12462451422:20@s.whatsapp.net')).toBe('12462451422@s.whatsapp.net');
-  });
-
-  it('is stable across different device slots for the same account - the real bug this fixes', () => {
-    // Before this fix, whatsapp_accounts.upsertConnected() matched on the
-    // raw JID, so a fresh re-pairing (device slot changing after a
-    // conflict/logout) silently created a second account row and orphaned
-    // every previously-synced chat/message from it.
-    const beforePairing = stripDeviceSuffix('12462451422:19@s.whatsapp.net');
-    const afterRePairing = stripDeviceSuffix('12462451422:20@s.whatsapp.net');
-    expect(afterRePairing).toBe(beforePairing);
-  });
-
-  it('leaves a JID with no device suffix unchanged', () => {
-    expect(stripDeviceSuffix('12462451422@s.whatsapp.net')).toBe('12462451422@s.whatsapp.net');
-  });
-
-  it('leaves non-individual JID kinds (group, lid) unaffected in shape - only strips a colon-suffixed user part', () => {
-    expect(stripDeviceSuffix('120363000000000000@g.us')).toBe('120363000000000000@g.us');
-    expect(stripDeviceSuffix('1048156573714:20@lid')).toBe('1048156573714@lid');
-  });
-
-  it('returns a malformed JID (no "@") unchanged rather than throwing', () => {
-    expect(stripDeviceSuffix('not-a-jid')).toBe('not-a-jid');
   });
 });

@@ -7,8 +7,8 @@ import {
 } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import path from 'node:path';
-import { rm } from 'node:fs/promises';
-import { whatsappMessageIngestionService } from './whatsappMessageIngestionService.js';
+import { lstat, realpath, rm } from 'node:fs/promises';
+import { WhatsAppMessageIngestionService } from './whatsappMessageIngestionService.js';
 import { whatsappSyncService } from './whatsappSyncService.js';
 import { enqueueIncomingMessage } from '../queue/queues/incomingMessagesQueue.js';
 import {
@@ -20,10 +20,9 @@ import {
 } from '../queue/queues/realtimeEventsQueue.js';
 
 import { mapBaileysMessageStatus } from '../domain/whatsapp/messageStatus.js';
-import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
+import { classifyJid, derivePhoneNumber, stripDeviceSuffix } from '../domain/whatsapp/jid.js';
 import { STATUS_BROADCAST_JID } from '../domain/whatsapp/types.js';
 import { pool } from '../db/pool.js';
-import { ensureDefaultBusinessProvisioned } from './businessBootstrapService.js';
 import { syncAccountProfilePicture } from './profilePictureSyncService.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
 import { WhatsAppConnectionEventRepository } from '../repositories/whatsappConnectionEventRepository.js';
@@ -64,42 +63,121 @@ export interface WhatsAppConnectionSnapshot {
   avatarMediaId: string | null;
 }
 
-const DEFAULT_SESSION_DIR = path.resolve(
-  process.env.WHATSAPP_SESSION_DIR ?? '.data/whatsapp/primary',
-);
-
-/**
- * Baileys' own `socket.user.id` for a QR-paired session includes a
- * ":<deviceId>" suffix (e.g. "12462451422:20@s.whatsapp.net") - that
- * device slot number changes on every fresh pairing (logged out and
- * re-scanned), even though the underlying WhatsApp account/phone number
- * does not. whatsapp_accounts.upsertConnected() matches/creates a row by
- * this exact JID string - passing the raw, device-suffixed value through
- * would silently mint a brand-new account row (orphaning every previously
- * synced chat/message/contact from the one the live connection now uses)
- * every time this account gets re-paired, instead of reconnecting the
- * existing one. derivePhoneNumber() already strips this same suffix when
- * computing the phone number; this applies the identical strip to the JID
- * itself, once, at the single point it is captured from the socket, so
- * every downstream consumer (the account upsert, message persistence's
- * accountJid, sync context) sees the device-independent form.
- */
-export function stripDeviceSuffix(jid: string): string {
-  const atIndex = jid.indexOf('@');
-  if (atIndex === -1) return jid;
-  const userPart = (jid.slice(0, atIndex).split(':')[0]) ?? '';
-  return `${userPart}${jid.slice(atIndex)}`;
+function sessionRootDir(): string {
+  return path.resolve(process.env.WHATSAPP_SESSION_DIR ?? '.data/whatsapp/primary');
 }
 
-export class WhatsAppConnectionService {
+/**
+ * businessId is a real UUID (see BusinessRepository) - this mirrors
+ * localEncryptedMediaStorage.ts's own UUID_PATTERN convention for the same
+ * reason: only a value shaped like a real UUID is ever allowed to become a
+ * filesystem path segment.
+ */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export class SessionDirError extends Error {}
+
+/**
+ * Resolves and fully validates the on-disk session directory for one
+ * tenant's WhatsApp credentials before anything is allowed to read from or
+ * delete it. Deliberately mirrors (not imports) dockerCellRuntime.ts's
+ * resolveContainedCellStateDir() - this codebase's existing convention is
+ * to duplicate this kind of security guard per subsystem rather than share
+ * it across unrelated ones. Every check here is required, not
+ * defense-in-depth padding: `../` traversal, an absolute-path or
+ * separator-bearing businessId, and a symlink planted at the target are
+ * all real cases a multi-tenant session root must reject.
+ */
+export async function resolveContainedSessionDir(businessId: string): Promise<string> {
+  if (typeof businessId !== 'string' || businessId.length === 0) {
+    throw new SessionDirError('businessId must be a non-empty string');
+  }
+  if (businessId.includes('/') || businessId.includes('\\') || businessId.includes('\0')) {
+    throw new SessionDirError(`businessId must not contain path separators or null bytes: ${JSON.stringify(businessId)}`);
+  }
+  if (path.isAbsolute(businessId)) {
+    throw new SessionDirError(`businessId must not be an absolute path: ${JSON.stringify(businessId)}`);
+  }
+  if (!UUID_PATTERN.test(businessId)) {
+    throw new SessionDirError(`businessId does not match the expected shape, refusing to derive a session path from it: ${JSON.stringify(businessId)}`);
+  }
+
+  const root = path.resolve(sessionRootDir());
+  const target = path.resolve(root, businessId);
+
+  // Containment: the resolved target must be exactly one direct child of
+  // the resolved root - never the root itself, never nested, never
+  // outside it. path.relative() surfaces any escape as a leading `..` or
+  // an absolute path (a different-drive case on Windows).
+  const relative = path.relative(root, target);
+  const isDirectChild = relative.length > 0 && relative === businessId && !relative.startsWith('..') && !path.isAbsolute(relative);
+  if (!isDirectChild) {
+    throw new SessionDirError(`resolved session path is not a direct child of the session root (root=${root}, target=${target})`);
+  }
+  if (target === root) {
+    throw new SessionDirError('refusing to target the session root itself');
+  }
+
+  return target;
+}
+
+/**
+ * Deletes exactly one tenant's session directory, after `lstat`-based
+ * containment checks - never `stat`, which would follow a symlink and
+ * defeat the whole point of checking. A target that doesn't exist at all
+ * is treated as an idempotent success, not an error.
+ */
+export async function purgeSessionDir(businessId: string): Promise<void> {
+  const target = await resolveContainedSessionDir(businessId);
+
+  let stats;
+  try {
+    stats = await lstat(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; // nothing to purge - idempotent
+    throw new SessionDirError(`could not inspect session path before deletion: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (stats.isSymbolicLink()) {
+    throw new SessionDirError(`refusing to delete a symlink at the session path (${target}) - real target ownership cannot be trusted`);
+  }
+  if (!stats.isDirectory()) {
+    throw new SessionDirError(`refusing to delete: session path (${target}) is not a directory`);
+  }
+
+  const real = await realpath(target);
+  const root = path.resolve(sessionRootDir());
+  if (real !== path.resolve(root, businessId)) {
+    throw new SessionDirError(`session path's real location does not match its expected location (root=${root}, expected=${path.resolve(root, businessId)}, real=${real}) - refusing to delete`);
+  }
+
+  await rm(target, { recursive: true });
+}
+
+/**
+ * One tenant's Baileys connection: own socket, own session directory, own
+ * message-ingestion buffer. Extracted unchanged from the former
+ * WhatsAppConnectionService singleton - every field here was always
+ * correctly instance state (`this.X`); the only bug was that the class was
+ * only ever instantiated once for the whole process. businessId is now
+ * known up front (constructor), not discovered post-pairing.
+ */
+export class WhatsAppTenantConnection {
   private socket: WASocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempt = 0;
   private listenersAttached = false;
-  private businessId: string | null = null;
   private persistedAccountId: string | null = null;
+  private sessionDirPromise: Promise<string> | null = null;
   private readonly accountRepository = new WhatsAppAccountRepository(pool);
   private readonly connectionEventRepository = new WhatsAppConnectionEventRepository(pool);
+  /**
+   * Owned by this tenant alone - closes the cross-tenant leak the shared
+   * whatsappMessageIngestionService module singleton used to have (its
+   * un-tenant-tagged in-memory buffer was readable by any authenticated
+   * user of any business via /api/whatsapp/messages/recent).
+   */
+  private readonly ingestionService = new WhatsAppMessageIngestionService();
   private snapshot: WhatsAppConnectionSnapshot = {
     status: 'DISCONNECTED',
     connected: false,
@@ -116,6 +194,12 @@ export class WhatsAppConnectionService {
     avatarMediaId: null,
   };
 
+  constructor(private readonly businessId: string) {}
+
+  getIngestionService(): WhatsAppMessageIngestionService {
+    return this.ingestionService;
+  }
+
   getSnapshot(): WhatsAppConnectionSnapshot {
     return { ...this.snapshot };
   }
@@ -126,7 +210,7 @@ export class WhatsAppConnectionService {
 
   /** The persisted tenant/account this live session is writing to, once the account is connected. */
   getPersistedContext(): { businessId: string; whatsappAccountId: string } | null {
-    if (!this.businessId || !this.persistedAccountId) return null;
+    if (!this.persistedAccountId) return null;
     return { businessId: this.businessId, whatsappAccountId: this.persistedAccountId };
   }
 
@@ -155,7 +239,7 @@ export class WhatsAppConnectionService {
     try {
       await this.socket.presenceSubscribe(jid);
     } catch (error) {
-      console.error(`[WhatsApp] Failed to subscribe to presence for ${jid}:`, error);
+      console.error(`[WhatsApp] Failed to subscribe to presence for ${jid} (business ${this.businessId}):`, error);
     }
   }
 
@@ -226,6 +310,13 @@ export class WhatsAppConnectionService {
     await this.socket.sendMessage(key.remoteJid ?? '', { react: { text: emoji, key } });
   }
 
+  private async resolveSessionDir(): Promise<string> {
+    if (!this.sessionDirPromise) {
+      this.sessionDirPromise = resolveContainedSessionDir(this.businessId);
+    }
+    return this.sessionDirPromise;
+  }
+
   async connect(): Promise<WhatsAppConnectionSnapshot> {
     if (this.isReady()) return this.getSnapshot();
 
@@ -247,7 +338,8 @@ export class WhatsAppConnectionService {
       reconnectAttempt: this.reconnectAttempt,
     };
 
-    const { state, saveCreds } = await useMultiFileAuthState(DEFAULT_SESSION_DIR);
+    const sessionDir = await this.resolveSessionDir();
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
     this.socket = makeWASocket({
       auth: state,
@@ -330,9 +422,9 @@ export class WhatsAppConnectionService {
    */
   private async clearSessionState(): Promise<void> {
     try {
-      await rm(DEFAULT_SESSION_DIR, { recursive: true, force: true });
+      await purgeSessionDir(this.businessId);
     } catch (error) {
-      console.error('[WhatsApp] Failed to clear stale session state:', error);
+      console.error(`[WhatsApp] Failed to clear stale session state for business ${this.businessId}:`, error);
     }
   }
 
@@ -344,7 +436,7 @@ export class WhatsAppConnectionService {
       // Speed layer: classify in-memory only (sync, no I/O) and hand off to
       // the incoming_messages queue. No synchronous DB write happens on this
       // event-loop turn - a dedicated worker process persists the message.
-      const ingested = whatsappMessageIngestionService.ingestUpsert(payload);
+      const ingested = this.ingestionService.ingestUpsert(payload);
       // status@broadcast is WhatsApp's fixed JID for Status updates, not a
       // real conversation - these get their own table (whatsapp_statuses),
       // never whatsapp_messages/whatsapp_chats.
@@ -391,9 +483,11 @@ export class WhatsAppConnectionService {
 
     socket.ev.on('messaging-history.set', (payload) => {
       this.withSyncContext((businessId, accountId, accountJid) => {
-        void whatsappSyncService.ingestHistorySet(businessId, accountId, accountJid, payload).catch((error) => {
-          console.error('[Sync] Failed to ingest messaging-history.set:', error);
-        });
+        void whatsappSyncService
+          .ingestHistorySet(businessId, accountId, accountJid, payload, this.ingestionService)
+          .catch((error) => {
+            console.error('[Sync] Failed to ingest messaging-history.set:', error);
+          });
       });
     });
 
@@ -558,7 +652,7 @@ export class WhatsAppConnectionService {
               'This WhatsApp session was taken over by another active connection (same account connected elsewhere). Automatic reconnect has been stopped to avoid a reconnect loop - check for a duplicate running instance before reconnecting manually.',
           };
           console.error(
-            '[WhatsApp] Connection replaced by another session (DisconnectReason.connectionReplaced) - stopping automatic reconnect. ' +
+            `[WhatsApp] Connection replaced by another session for business ${this.businessId} (DisconnectReason.connectionReplaced) - stopping automatic reconnect. ` +
               'Check for a duplicate backend process/deployment using the same WhatsApp credentials before reconnecting manually.',
           );
           this.recordDisconnectEvent('conflict_replaced', 'CONFLICT_REPLACED');
@@ -597,7 +691,8 @@ export class WhatsAppConnectionService {
    * row to attach contacts, chats, and messages to. A DB outage here must not
    * be reported as a WhatsApp problem - the Baileys connection is still real
    * and open even if this write fails; it's just logged and retried on the
-   * next connection event.
+   * next connection event. businessId is already known (constructor) - no
+   * post-pairing discovery via ensureDefaultBusinessProvisioned() any more.
    */
   private async persistConnectedAccount(
     jid: string,
@@ -606,16 +701,14 @@ export class WhatsAppConnectionService {
     pushName: string | null,
   ): Promise<void> {
     try {
-      const business = await ensureDefaultBusinessProvisioned();
       const account = await this.accountRepository.upsertConnected({
-        businessId: business.id,
+        businessId: this.businessId,
         whatsappJid: jid,
         jidKind,
         phoneNumber,
         pushName,
         connectionStatus: 'CONNECTED',
       });
-      this.businessId = business.id;
       this.persistedAccountId = account.id;
       // Reflects whatever's already real in the DB (a prior sync from an
       // earlier connection) - never fabricated, and correctly still null
@@ -623,7 +716,7 @@ export class WhatsAppConnectionService {
       this.snapshot = { ...this.snapshot, avatarMediaId: account.profilePictureMediaId };
 
       await this.connectionEventRepository.record({
-        businessId: business.id,
+        businessId: this.businessId,
         whatsappAccountId: account.id,
         eventType: 'connected',
         status: 'CONNECTED',
@@ -637,7 +730,7 @@ export class WhatsAppConnectionService {
       // slow network) without that being a connection problem. Once it
       // actually succeeds, reflect the real result in the live snapshot too
       // - but only if this is still the same connected account.
-      void syncAccountProfilePicture(business.id, account.id, jid).then(async () => {
+      void syncAccountProfilePicture(this.businessId, account.id, jid).then(async () => {
         if (this.persistedAccountId !== account.id) return;
         const refreshed = await this.accountRepository.findById(account.id);
         if (refreshed?.profilePictureMediaId) {
@@ -651,12 +744,12 @@ export class WhatsAppConnectionService {
       // 'failed' by the stale-sync-job sweep, not left silently 'in_progress'
       // forever - so retrying it here on the next real reconnect is correct.
       if (account.syncStatus === 'not_started' || account.syncStatus === 'failed') {
-        await whatsappSyncService.startInitialSync(business.id, account.id);
+        await whatsappSyncService.startInitialSync(this.businessId, account.id);
       }
 
-      await this.syncParticipatingGroups(business.id, account.id);
+      await this.syncParticipatingGroups(this.businessId, account.id);
     } catch (error) {
-      console.error('[WhatsApp] Failed to persist connected account:', error);
+      console.error(`[WhatsApp] Failed to persist connected account for business ${this.businessId}:`, error);
     }
   }
 
@@ -706,12 +799,12 @@ export class WhatsAppConnectionService {
 
   /** Runs fn only once the account is actually persisted, so sync events never write against a nonexistent tenant. */
   private withSyncContext(fn: (businessId: string, accountId: string, accountJid: string) => void): void {
-    if (!this.businessId || !this.persistedAccountId || !this.snapshot.jid) return;
+    if (!this.persistedAccountId || !this.snapshot.jid) return;
     fn(this.businessId, this.persistedAccountId, this.snapshot.jid);
   }
 
   private recordDisconnectEvent(eventType: 'disconnected' | 'logged_out' | 'conflict_replaced', status: string): void {
-    if (!this.businessId || !this.persistedAccountId) return;
+    if (!this.persistedAccountId) return;
     const businessId = this.businessId;
     const accountId = this.persistedAccountId;
 
@@ -725,8 +818,8 @@ export class WhatsAppConnectionService {
       });
   }
 
-  private enqueueIngestedMessages(ingested: ReturnType<typeof whatsappMessageIngestionService.ingestUpsert>): void {
-    if (!this.businessId || !this.persistedAccountId || !this.snapshot.jid) return;
+  private enqueueIngestedMessages(ingested: ReturnType<WhatsAppMessageIngestionService['ingestUpsert']>): void {
+    if (!this.persistedAccountId || !this.snapshot.jid) return;
     const businessId = this.businessId;
     const whatsappAccountId = this.persistedAccountId;
     const accountJid = this.snapshot.jid;
@@ -738,9 +831,9 @@ export class WhatsAppConnectionService {
     }
   }
 
-  private enqueueStatusUpdates(ingested: ReturnType<typeof whatsappMessageIngestionService.ingestUpsert>): void {
+  private enqueueStatusUpdates(ingested: ReturnType<WhatsAppMessageIngestionService['ingestUpsert']>): void {
     if (ingested.length === 0) return;
-    if (!this.businessId || !this.persistedAccountId) return;
+    if (!this.persistedAccountId) return;
     const businessId = this.businessId;
     const whatsappAccountId = this.persistedAccountId;
 
@@ -790,5 +883,3 @@ export class WhatsAppConnectionService {
     return value?.error?.output?.statusCode ?? null;
   }
 }
-
-export const whatsappConnectionService = new WhatsAppConnectionService();

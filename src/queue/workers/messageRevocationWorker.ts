@@ -6,7 +6,7 @@ import {
   type RevocationJobData,
   type StatusRevocationJobData,
 } from '../queues/messageRevocationsQueue.js';
-import { whatsappConnectionService } from '../../services/whatsappConnectionService.js';
+import { whatsappConnectionManager } from '../../services/whatsappConnectionManager.js';
 import { publishRealtimeEvent } from '../../realtime/pubsub.js';
 import { pool } from '../../db/pool.js';
 import { WhatsAppMessageRepository } from '../../repositories/whatsappMessageRepository.js';
@@ -53,7 +53,7 @@ async function revokeMessage(job: Job<RevocationJobData>, data: MessageRevocatio
     return;
   }
 
-  const socket = whatsappConnectionService.getSocket();
+  const socket = whatsappConnectionManager.getSocket(businessId);
   if (!socket) throw new Error('WhatsApp socket unavailable'); // retried by BullMQ
 
   try {
@@ -105,7 +105,7 @@ async function revokeStatus(job: Job<RevocationJobData>, data: StatusRevocationJ
     return;
   }
 
-  const socket = whatsappConnectionService.getSocket();
+  const socket = whatsappConnectionManager.getSocket(record.businessId);
   if (!socket) throw new Error('WhatsApp socket unavailable');
 
   try {

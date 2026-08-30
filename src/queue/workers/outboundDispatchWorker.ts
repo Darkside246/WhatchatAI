@@ -2,7 +2,7 @@ import { Worker, type Job } from 'bullmq';
 import type { AnyMessageContent } from '@whiskeysockets/baileys';
 import { queueConnection } from '../connection.js';
 import { OUTBOUND_MESSAGES_QUEUE, type OutboundMessageJobData } from '../queues/outboundMessagesQueue.js';
-import { whatsappConnectionService } from '../../services/whatsappConnectionService.js';
+import { whatsappConnectionManager } from '../../services/whatsappConnectionManager.js';
 import { retrieveMedia } from '../../media/localEncryptedMediaStorage.js';
 import { publishRealtimeEvent } from '../../realtime/pubsub.js';
 import { notifyBusiness } from '../../services/notificationService.js';
@@ -15,11 +15,11 @@ import {
 /**
  * Deliberately run in the same process as the API server (imported from
  * server/index.ts), never the separate incomingMessagesWorker.ts process.
- * The live Baileys WebSocket only exists in whichever process actually
- * called whatsappConnectionService.connect() - that's the server process.
- * A BullMQ worker in the other process would only ever see a permanently
- * disconnected whatsappConnectionService singleton and could never
- * genuinely send anything, no matter how the job itself is structured.
+ * Every tenant's live Baileys WebSocket only exists in whichever process
+ * actually called whatsappConnectionManager.connect(businessId) - that's
+ * the server process. A BullMQ worker in the other process would only ever
+ * see an empty, permanently-disconnected manager and could never genuinely
+ * send anything, no matter how the job itself is structured.
  */
 const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
 
@@ -122,10 +122,10 @@ async function processOutboundMessage(job: Job<OutboundMessageJobData>): Promise
     return;
   }
 
-  if (!whatsappConnectionService.isReady()) {
+  if (!whatsappConnectionManager.isReady(record.businessId)) {
     throw new Error('WhatsApp is not connected - cannot send right now');
   }
-  const socket = whatsappConnectionService.getSocket();
+  const socket = whatsappConnectionManager.getSocket(record.businessId);
   if (!socket) throw new Error('WhatsApp socket unavailable');
 
   await outboundMessageRepository.markSending(record.id);

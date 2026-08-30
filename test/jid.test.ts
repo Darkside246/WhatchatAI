@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyJid, derivePhoneNumber } from '../src/domain/whatsapp/jid.js';
+import { classifyJid, derivePhoneNumber, stripDeviceSuffix } from '../src/domain/whatsapp/jid.js';
 
 describe('JID classification and phone derivation', () => {
   it('classifies a phone-based individual JID', () => {
@@ -38,5 +38,27 @@ describe('JID classification and phone derivation', () => {
   it('strips a ":device" suffix instead of folding its digits into the phone number (regression: signal-store lookups return user:device@s.whatsapp.net)', () => {
     expect(derivePhoneNumber('15550001111:0@s.whatsapp.net', 'individual', null)).toBe('+15550001111');
     expect(derivePhoneNumber('234471341175024@lid', 'lid', '12462451422:5@s.whatsapp.net')).toBe('+12462451422');
+  });
+});
+
+describe('stripDeviceSuffix', () => {
+  it('strips a ":device" suffix from a phone-based JID', () => {
+    expect(stripDeviceSuffix('12462451422:20@s.whatsapp.net')).toBe('12462451422@s.whatsapp.net');
+  });
+
+  it('strips a ":device" suffix from a @lid JID', () => {
+    expect(stripDeviceSuffix('234471341175024:3@lid')).toBe('234471341175024@lid');
+  });
+
+  it('leaves an already-suffix-free JID unchanged', () => {
+    expect(stripDeviceSuffix('12462451422@s.whatsapp.net')).toBe('12462451422@s.whatsapp.net');
+  });
+
+  it('leaves a JID with no "@" unchanged rather than throwing', () => {
+    expect(stripDeviceSuffix('status@broadcast')).toBe('status@broadcast');
+  });
+
+  it('only strips the first colon-delimited segment of the user part, never touching anything after "@"', () => {
+    expect(stripDeviceSuffix('123:45:67@s.whatsapp.net')).toBe('123@s.whatsapp.net');
   });
 });

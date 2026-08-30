@@ -30,8 +30,19 @@ function redisDatabaseIndex(url: string): number {
  */
 const TEST_MEDIA_STORAGE_DIR = './data/media-storage-test';
 
+/**
+ * Same reasoning as MEDIA_STORAGE_DIR above: WHATSAPP_SESSION_DIR from
+ * .env points at this machine's real, live-paired WhatsApp session
+ * credentials (or, post-migration, the real per-tenant session root). A
+ * test run touching that directory - even just to exercise the session-dir
+ * containment guard's adversarial cases - must never risk writing into or
+ * deleting from it.
+ */
+const TEST_WHATSAPP_SESSION_DIR = './data/whatsapp-session-test';
+
 export default async function globalSetup(): Promise<void> {
   process.env.MEDIA_STORAGE_DIR = TEST_MEDIA_STORAGE_DIR;
+  process.env.WHATSAPP_SESSION_DIR = TEST_WHATSAPP_SESSION_DIR;
 
   const configured = process.env.REDIS_URL;
   if (!configured || redisDatabaseIndex(configured) === 0) {

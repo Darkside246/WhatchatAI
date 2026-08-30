@@ -40,7 +40,7 @@ import { WhatsAppAccountRepository } from '../../repositories/whatsappAccountRep
 import { WhatsAppOutboundMessageRepository } from '../../repositories/whatsappOutboundMessageRepository.js';
 import { EmailMessageRepository } from '../../repositories/emailMessageRepository.js';
 import { mapBaileysCallStatus, callTypeFromEvent, isTerminalCallStatus } from '../../domain/whatsapp/callStatus.js';
-import { classifyJid, derivePhoneNumber } from '../../domain/whatsapp/jid.js';
+import { classifyJid, derivePhoneNumber, stripDeviceSuffix } from '../../domain/whatsapp/jid.js';
 import { decodeBuffersFromQueue } from '../../domain/whatsapp/binaryCodec.js';
 import { storeMedia } from '../../media/localEncryptedMediaStorage.js';
 import { mediaFallbackText } from '../../services/ai/mediaContext.js';
@@ -56,7 +56,6 @@ import { OperatorCommandService } from '../../services/operator/operatorCommandS
 import { ReminderRepository } from '../../repositories/reminderRepository.js';
 import { initializePlatformFoundation } from '../../services/platform/platformBootstrap.js';
 import { runPropertyMaintenanceHandoff } from '../../services/property/propertyMaintenanceOrchestrator.js';
-import { stripDeviceSuffix } from '../../services/whatsappConnectionService.js';
 // Runs here, not in server/index.ts: that process owns the live Baileys
 // socket AND sends every outbound message, so it is exactly the event loop
 // that must never stall. documentParseWorker has no live-socket dependency
