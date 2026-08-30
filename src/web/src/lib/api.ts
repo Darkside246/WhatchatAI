@@ -830,6 +830,8 @@ export interface HumanTakeoverAlertDto {
   lineLabel: string;
   urgency: 'HIGH' | 'MEDIUM' | 'LOW';
   triggeredAt: string;
+  customerName: string | null;
+  customerPhoneNumber: string | null;
 }
 
 export interface WorkspaceCallSummary {
@@ -1078,7 +1080,8 @@ export const api = {
     }
     throw new ApiError(response.status, body.error ?? 'UNKNOWN_ERROR', body.message ?? response.statusText);
   },
-  listHumanTakeoverAlerts: () => request<{ alerts: HumanTakeoverAlertDto[] }>('/security/alerts/human-takeover'),
+  listHumanTakeoverAlerts: (includeIdentity = false) =>
+    request<{ alerts: HumanTakeoverAlertDto[] }>(`/security/alerts/human-takeover${includeIdentity ? '?includeIdentity=true' : ''}`),
 
   getPreferences: () => request<{ preferences: UserPreferencesDto }>('/auth/preferences'),
   updatePreferences: (body: { country?: string | null; navigationOrder?: string[] | null; timezone?: string; language?: string }) =>

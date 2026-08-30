@@ -2771,9 +2771,9 @@ app.post('/api/security/lock/change-pin', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/security/alerts/human-takeover', requireAuth, async (_req, res) => {
+app.get('/api/security/alerts/human-takeover', requireAuth, async (req, res) => {
   const { businessId } = res.locals.auth as AuthContext;
-  const alerts = await listHumanTakeoverAlerts(businessId);
+  const alerts = await listHumanTakeoverAlerts(businessId, req.query.includeIdentity === 'true');
   return res.status(200).json({ alerts });
 });
 

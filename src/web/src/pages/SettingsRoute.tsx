@@ -22,7 +22,15 @@ import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
 import { triggerLockNow } from '../lib/lockEvents.js';
 import { LOCK_TIMEOUT_KEY } from '../components/ScreenLock.js';
-import { ALERT_SCALE_KEY, ALERT_SCALE_MIN, ALERT_SCALE_MAX } from '../components/AlertNotifier.js';
+import {
+  ALERT_SCALE_KEY,
+  ALERT_SCALE_MIN,
+  ALERT_SCALE_MAX,
+  ALERT_POSITION_KEY,
+  ALERT_SHOW_IDENTITY_KEY,
+  getAlertShowIdentity,
+  type AlertBannerPosition,
+} from '../components/AlertNotifier.js';
 import { DEFAULT_ARGON2_PARAMS, generateSalt, hashPin } from '../lib/pinCrypto.js';
 import { useAuth } from '../hooks/useAuth.js';
 
@@ -863,6 +871,14 @@ function ThemeCard() {
   );
 }
 
+function getAlertPositionSetting(): AlertBannerPosition {
+  try {
+    const v = localStorage.getItem(ALERT_POSITION_KEY);
+    if (v === 'left' || v === 'center' || v === 'right') return v;
+  } catch {}
+  return 'center';
+}
+
 function getAlertScaleSetting(): number {
   try {
     const n = parseFloat(localStorage.getItem(ALERT_SCALE_KEY) ?? '');
@@ -872,17 +888,23 @@ function getAlertScaleSetting(): number {
 }
 
 /**
- * Controls how big the urgent lead-handover panel renders - including on
- * the lock screen, where it stays visible above the PIN prompt by design
- * (background handoffs must stay visible even while locked). Saved to this
- * browser via the same localStorage + 'storage' event pattern as the
- * lock-timeout setting above, so AlertNotifier picks up a change live,
- * with no reload. Position is no longer a user setting - the panel always
- * renders top-center, contained, so it can never overlap or bleed past
- * other UI the way independently-floating pills could.
+ * Controls where and how big the urgent lead-handover panel renders -
+ * including on the lock screen, where it stays visible above the PIN
+ * prompt by design (background handoffs must stay visible even while
+ * locked). Saved to this browser via the same localStorage + 'storage'
+ * event pattern as the lock-timeout setting above, so AlertNotifier picks
+ * up a change live, with no reload.
  */
 function AlertBannerCard() {
+  const [position, setPosition] = useState<AlertBannerPosition>(getAlertPositionSetting);
   const [scale, setScale] = useState<number>(getAlertScaleSetting);
+  const [showIdentity, setShowIdentity] = useState<boolean>(getAlertShowIdentity);
+
+  function updatePosition(next: AlertBannerPosition) {
+    setPosition(next);
+    try { localStorage.setItem(ALERT_POSITION_KEY, next); } catch {}
+    window.dispatchEvent(new StorageEvent('storage', { key: ALERT_POSITION_KEY, newValue: next }));
+  }
 
   function updateScale(next: number) {
     setScale(next);
@@ -890,12 +912,36 @@ function AlertBannerCard() {
     window.dispatchEvent(new StorageEvent('storage', { key: ALERT_SCALE_KEY, newValue: String(next) }));
   }
 
+  function updateShowIdentity(next: boolean) {
+    setShowIdentity(next);
+    try { localStorage.setItem(ALERT_SHOW_IDENTITY_KEY, String(next)); } catch {}
+    window.dispatchEvent(new StorageEvent('storage', { key: ALERT_SHOW_IDENTITY_KEY, newValue: String(next) }));
+  }
+
   return (
     <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
       <h2 className="text-body font-semibold text-fg">Alerts</h2>
       <p className="mt-1 text-caption text-fg-muted">
-        How big the urgent lead-handover panel renders at the top of the screen - including on the lock screen, where it always stays visible.
+        Where the urgent lead-handover panel sits and how big it renders - including on the lock screen, where it always stays visible.
       </p>
+
+      <div className="mt-4 space-y-1">
+        <label className="text-caption font-medium text-fg-secondary">Position</label>
+        <div className="inline-flex rounded-lg border border-border-subtle p-0.5">
+          {(['left', 'center', 'right'] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => updatePosition(option)}
+              className={`rounded-md px-3 py-1 text-caption font-medium capitalize transition ${
+                position === option ? 'bg-accent text-white' : 'text-fg-secondary hover:bg-surface-3'
+              }`}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <div className="mt-4 space-y-1">
         <div className="flex items-center justify-between">
@@ -913,6 +959,23 @@ function AlertBannerCard() {
           className="w-full accent-accent"
         />
       </div>
+
+      <label className="mt-4 flex items-start gap-2.5 rounded-lg border border-border-subtle p-3">
+        <input
+          type="checkbox"
+          checked={showIdentity}
+          onChange={(e) => updateShowIdentity(e.target.checked)}
+          className="mt-0.5 accent-accent"
+        />
+        <span>
+          <span className="block text-caption font-medium text-fg-secondary">Show customer name/number in alerts</span>
+          <span className="block text-caption text-fg-muted">
+            Off by default: alerts only ever name your WhatsApp line and a count ("3 urgent lead handovers"), never who's waiting - not
+            even to the server. Turning this on shows each customer's name or number instead, including on the lock screen where anyone
+            near the device can see it before entering the PIN.
+          </span>
+        </span>
+      </label>
     </div>
   );
 }

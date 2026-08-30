@@ -38,9 +38,36 @@ describe('securityAlertService (Zero-Leak Rule: no *customer* message text, cont
     // this is the business's own connected line, never the customer's number.
     expect(alerts[0]?.lineLabel).toBe('+15550003333');
     expect(alerts[0]?.urgency).toBe('HIGH'); // unreadCount 7 >= 5
+    // customerName/customerPhoneNumber are real, present keys - just null by
+    // default (includeIdentity not requested), never omitted/undefined.
+    expect(alerts[0]?.customerName).toBeNull();
+    expect(alerts[0]?.customerPhoneNumber).toBeNull();
 
     const keys = Object.keys(alerts[0] ?? {});
-    expect(keys.sort()).toEqual(['chatId', 'lineLabel', 'triggeredAt', 'urgency']);
+    expect(keys.sort()).toEqual(['chatId', 'customerName', 'customerPhoneNumber', 'lineLabel', 'triggeredAt', 'urgency']);
+  });
+
+  it('never returns customer identity unless includeIdentity is explicitly true, even when the chat has a real name/number', async () => {
+    const chatRepository = new WhatsAppChatRepository(pool);
+    const chat = await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550004444@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+      name: 'Real Customer Name',
+      phoneNumber: '+15550004444',
+      unreadCount: 7,
+    });
+    await chatRepository.setAiMode(chat.id, 'HUMAN_TAKEOVER');
+
+    const withoutIdentity = await listHumanTakeoverAlerts(businessId);
+    expect(withoutIdentity[0]?.customerName).toBeNull();
+    expect(withoutIdentity[0]?.customerPhoneNumber).toBeNull();
+
+    const withIdentity = await listHumanTakeoverAlerts(businessId, true);
+    expect(withIdentity[0]?.customerName).toBe('Real Customer Name');
+    expect(withIdentity[0]?.customerPhoneNumber).toBe('+15550004444');
   });
 
   it('falls back to the ordinal Line N label when the account has neither a name nor a phone number', async () => {

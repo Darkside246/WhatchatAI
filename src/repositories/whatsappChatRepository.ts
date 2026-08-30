@@ -443,7 +443,8 @@ export class WhatsAppChatRepository {
          FROM whatsapp_accounts
          WHERE business_id = $1
        )
-       SELECT c.id AS chat_id, c.unread_count, c.updated_at, na.line_number, na.account_name, na.phone_number
+       SELECT c.id AS chat_id, c.unread_count, c.updated_at, na.line_number, na.account_name, na.phone_number,
+              c.name AS customer_name, c.phone_number AS customer_phone_number
        FROM whatsapp_chats c
        JOIN numbered_accounts na ON na.id = c.whatsapp_account_id
        WHERE c.business_id = $1 AND c.ai_mode = 'HUMAN_TAKEOVER' AND c.deleted_at IS NULL
@@ -461,4 +462,7 @@ export interface HumanTakeoverAlertRow {
   line_number: string;
   account_name: string | null;
   phone_number: string | null;
+  /** The customer's own chat name/number - only ever read by listHumanTakeoverAlerts() when the caller has explicitly opted in to including it (see securityAlertService.ts's Zero-Leak Rule doc comment). */
+  customer_name: string | null;
+  customer_phone_number: string | null;
 }
