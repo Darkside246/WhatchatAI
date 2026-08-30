@@ -4,6 +4,7 @@ import path from 'node:path';
 import { readdir, rm } from 'node:fs/promises';
 import { pool } from '../src/db/pool.js';
 import { WhatsAppSyncService } from '../src/services/whatsappSyncService.js';
+import { WhatsAppMessageIngestionService } from '../src/services/whatsappMessageIngestionService.js';
 import { WhatsAppStatusRepository } from '../src/repositories/whatsappStatusRepository.js';
 import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
@@ -27,6 +28,7 @@ describe('WhatsAppSyncService.ingestHistoryMessages - status@broadcast routing (
   let businessId: string;
   let accountId: string;
   let sync: WhatsAppSyncService;
+  let ingestionService: WhatsAppMessageIngestionService;
   const accountJid = '15550001111@s.whatsapp.net';
 
   beforeEach(async () => {
@@ -34,6 +36,7 @@ describe('WhatsAppSyncService.ingestHistoryMessages - status@broadcast routing (
     businessId = await createTestBusiness();
     accountId = await createTestAccount(businessId, accountJid);
     sync = new WhatsAppSyncService();
+    ingestionService = new WhatsAppMessageIngestionService();
   });
 
   afterAll(async () => {
@@ -60,7 +63,7 @@ describe('WhatsAppSyncService.ingestHistoryMessages - status@broadcast routing (
       ],
       progress: 100,
       isLatest: true,
-    });
+    }, ingestionService);
 
     const statusRepository = new WhatsAppStatusRepository(pool);
     const statuses = await statusRepository.listByAccount(businessId, accountId);
@@ -86,7 +89,7 @@ describe('WhatsAppSyncService.ingestHistoryMessages - status@broadcast routing (
       ],
       progress: 100,
       isLatest: true,
-    });
+    }, ingestionService);
 
     const messageRepository = new WhatsAppMessageRepository(pool);
     const asMessage = await messageRepository.findByWhatsAppId(businessId, accountId, statusId);
@@ -113,8 +116,8 @@ describe('WhatsAppSyncService.ingestHistoryMessages - status@broadcast routing (
       isLatest: true,
     };
 
-    const first = await sync.ingestHistoryMessages(businessId, accountId, accountJid, batch.messages);
-    const second = await sync.ingestHistoryMessages(businessId, accountId, accountJid, batch.messages);
+    const first = await sync.ingestHistoryMessages(businessId, accountId, accountJid, batch.messages, ingestionService);
+    const second = await sync.ingestHistoryMessages(businessId, accountId, accountJid, batch.messages, ingestionService);
     expect(first.processed).toBe(1);
     expect(first.failed).toBe(0);
     // The second call still "processes" the status (persistStatusUpdate
@@ -165,7 +168,7 @@ describe('WhatsAppSyncService.ingestHistoryMessages - status@broadcast routing (
       ],
       progress: 100,
       isLatest: true,
-    });
+    }, ingestionService);
 
     await completion;
 
@@ -199,7 +202,7 @@ describe('WhatsAppSyncService.ingestHistoryMessages - status@broadcast routing (
       ],
       progress: 100,
       isLatest: true,
-    });
+    }, ingestionService);
 
     const statusRepository = new WhatsAppStatusRepository(pool);
     const businessAStatuses = await statusRepository.listByAccount(businessId, accountId);

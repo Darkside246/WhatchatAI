@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { Chat, Contact, GroupMetadata } from '@whiskeysockets/baileys';
 import { pool } from '../src/db/pool.js';
 import { WhatsAppSyncService } from '../src/services/whatsappSyncService.js';
+import { WhatsAppMessageIngestionService } from '../src/services/whatsappMessageIngestionService.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 import { WhatsAppContactRepository } from '../src/repositories/whatsappContactRepository.js';
 import { WhatsAppGroupMemberRepository } from '../src/repositories/whatsappGroupMemberRepository.js';
@@ -13,6 +14,7 @@ describe('WhatsAppSyncService (real Phase 3 sync, real Postgres)', () => {
   let businessId: string;
   let accountId: string;
   let sync: WhatsAppSyncService;
+  let ingestionService: WhatsAppMessageIngestionService;
   const accountJid = '15550001111@s.whatsapp.net';
 
   beforeEach(async () => {
@@ -20,6 +22,7 @@ describe('WhatsAppSyncService (real Phase 3 sync, real Postgres)', () => {
     businessId = await createTestBusiness();
     accountId = await createTestAccount(businessId, accountJid);
     sync = new WhatsAppSyncService();
+    ingestionService = new WhatsAppMessageIngestionService();
   });
 
   it('ingests real contacts, including @lid contacts with a genuine Baileys-supplied phone mapping', async () => {
@@ -124,7 +127,7 @@ describe('WhatsAppSyncService (real Phase 3 sync, real Postgres)', () => {
       ],
       progress: 50,
       isLatest: false,
-    });
+    }, ingestionService);
 
     const accountRepo = new WhatsAppAccountRepository(pool);
     const midway = await accountRepo.findById(accountId);
@@ -137,7 +140,7 @@ describe('WhatsAppSyncService (real Phase 3 sync, real Postgres)', () => {
       messages: [],
       progress: 100,
       isLatest: true,
-    });
+    }, ingestionService);
 
     const complete = await accountRepo.findById(accountId);
     expect(complete?.syncStatus).toBe('completed');
