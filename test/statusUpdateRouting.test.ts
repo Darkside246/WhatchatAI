@@ -37,6 +37,8 @@ describe('status@broadcast routing (real Postgres, real BullMQ worker)', () => {
       jidKind: 'broadcast',
       phoneNumber: null,
       participant: publisherJid,
+      remoteJidAlt: null,
+      participantAlt: null,
       fromMe: false,
       pushName: 'A Friend',
       isLive: true,
@@ -47,6 +49,7 @@ describe('status@broadcast routing (real Postgres, real BullMQ worker)', () => {
       mimetype: null,
       fileName: null,
       textPreview: 'On vacation this week!',
+      fullText: 'On vacation this week!',
       ingestedAt: postedAt.toISOString(),
       mediaDescriptor: null,
     };
@@ -92,6 +95,8 @@ describe('status@broadcast routing (real Postgres, real BullMQ worker)', () => {
         jidKind: 'broadcast',
         phoneNumber: null,
         participant: '15550008888@s.whatsapp.net',
+        remoteJidAlt: null,
+        participantAlt: null,
         fromMe: false,
         pushName: null,
         isLive: true,
@@ -102,6 +107,7 @@ describe('status@broadcast routing (real Postgres, real BullMQ worker)', () => {
         mimetype: contentType === 'image' ? 'image/jpeg' : null,
         fileName: null,
         textPreview: null,
+        fullText: null,
         ingestedAt: new Date().toISOString(),
         mediaDescriptor: null,
       };

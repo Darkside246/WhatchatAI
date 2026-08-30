@@ -32,6 +32,8 @@ describe('incoming_messages BullMQ pipeline (real Redis queue + real worker + re
       jidKind: 'individual',
       phoneNumber: '+15550002222',
       participant: null,
+      remoteJidAlt: null,
+      participantAlt: null,
       fromMe: false,
       pushName: 'Queue Test Contact',
       isLive: true,
@@ -42,6 +44,7 @@ describe('incoming_messages BullMQ pipeline (real Redis queue + real worker + re
       mimetype: null,
       fileName: null,
       textPreview: 'Message delivered through the real BullMQ pipeline',
+      fullText: 'Message delivered through the real BullMQ pipeline',
       mediaDescriptor: null,
       ingestedAt: new Date().toISOString(),
     };
@@ -68,7 +71,9 @@ describe('incoming_messages BullMQ pipeline (real Redis queue + real worker + re
     const messageRepository = new WhatsAppMessageRepository(pool);
     const persisted = await messageRepository.findByWhatsAppId(businessId, accountId, messageId);
     expect(persisted).not.toBeNull();
-    expect(persisted?.textContent).toBe(ingested.textPreview);
+    // The real, untruncated text (fullText) is what's persisted, never the
+    // truncated preview - see whatsappMessagePersistenceService.ts.
+    expect(persisted?.textContent).toBe(ingested.fullText);
 
     const chatRepository = new WhatsAppChatRepository(pool);
     const chat = await chatRepository.findByJid(businessId, accountId, ingested.remoteJid);

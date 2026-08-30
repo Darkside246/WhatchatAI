@@ -493,6 +493,8 @@ describe('AI debounce - bursts, ordering, duplicate/stale jobs, crash safety, cr
       jidKind: 'individual',
       phoneNumber: '+15550003333',
       participant: null,
+      remoteJidAlt: null,
+      participantAlt: null,
       fromMe: false,
       pushName: 'Debounce Test Contact',
       isLive: true,
@@ -503,6 +505,15 @@ describe('AI debounce - bursts, ordering, duplicate/stale jobs, crash safety, cr
       mimetype: null,
       fileName: null,
       textPreview: text,
+      // The real, untruncated text - this is what actually gets persisted as
+      // textContent (see whatsappMessagePersistenceService.ts) and what
+      // needsAiHandoff checks in incomingMessagesWorker.ts. Without this,
+      // result.message.textContent is empty after persistence, so
+      // needsAiHandoff is silently false and scheduleAiDebounce is never
+      // called - the real cause of this whole describe block's "Timed out
+      // waiting for AI debounce round" failures (a stale fixture predating
+      // fullText's introduction, not a timing issue).
+      fullText: text,
       mediaDescriptor: null,
       ingestedAt: new Date().toISOString(),
     };

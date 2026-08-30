@@ -78,6 +78,7 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
       mimetype: null,
       fileName: null,
       textPreview: 'anything',
+      fullText: 'anything',
       mediaDescriptor: null,
       ingestedAt: new Date().toISOString(),
     };
@@ -144,6 +145,7 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
       mimetype: null,
       fileName: null,
       textPreview: 'anything',
+      fullText: 'anything',
       mediaDescriptor: null,
       ingestedAt: new Date().toISOString(),
     };
@@ -191,6 +193,7 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
       mimetype: null,
       fileName: null,
       textPreview: 'sure, see you at 3pm',
+      fullText: 'sure, see you at 3pm',
       mediaDescriptor: null,
       ingestedAt: new Date().toISOString(),
     };
@@ -253,6 +256,7 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
       mimetype: null,
       fileName: null,
       textPreview: spammyCommand,
+      fullText: spammyCommand,
       mediaDescriptor: null,
       ingestedAt: new Date().toISOString(),
     };
@@ -309,6 +313,7 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
       mimetype: null,
       fileName: null,
       textPreview: spammyCommand,
+      fullText: spammyCommand,
       mediaDescriptor: null,
       ingestedAt: new Date().toISOString(),
     };

@@ -62,6 +62,8 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
       jidKind: 'individual',
       phoneNumber: '+15550003333',
       participant: null,
+      remoteJidAlt: null,
+      participantAlt: null,
       fromMe: false,
       pushName: 'AI Reply Test Contact',
       isLive: true,
@@ -72,6 +74,13 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
       mimetype: null,
       fileName: null,
       textPreview,
+      // The real, untruncated text - what actually gets persisted as
+      // textContent (see whatsappMessagePersistenceService.ts). Without
+      // this, needsAiHandoff in incomingMessagesWorker.ts is silently
+      // false and scheduleAiDebounce never fires - the real cause of the
+      // "Timed out waiting for AI debounce round" failures below (a stale
+      // fixture predating fullText's introduction, not a timing issue).
+      fullText: textPreview,
       mediaDescriptor: null,
       ingestedAt: new Date().toISOString(),
     };
