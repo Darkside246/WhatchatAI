@@ -167,6 +167,22 @@ export class WhatsAppTenantConnection {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempt = 0;
   private listenersAttached = false;
+  /**
+   * Re-entrancy guard for connect()'s own async setup window, deliberately
+   * separate from snapshot.status - status's 'RECONNECTING' value is set by
+   * scheduleReconnect() the moment a reconnect is scheduled, and stays that
+   * way for the whole backoff delay before connect() is ever called again,
+   * so status alone cannot distinguish "a reconnect is scheduled for
+   * later" from "connect()'s setup is running right now." This flag is set
+   * synchronously at the very top of connect(), before either of its two
+   * awaits (resolveSessionDir, useMultiFileAuthState) - the only window
+   * during which this.socket is still null and a second concurrent
+   * connect() call for this same tenant could otherwise slip past every
+   * other guard and create a duplicate socket against the same on-disk
+   * session directory (the real cause of a live ENOENT crash on
+   * creds.json - see connect()'s own comment).
+   */
+  private connectInFlight = false;
   private persistedAccountId: string | null = null;
   private sessionDirPromise: Promise<string> | null = null;
   private readonly accountRepository = new WhatsAppAccountRepository(pool);
@@ -320,6 +336,8 @@ export class WhatsAppTenantConnection {
   async connect(): Promise<WhatsAppConnectionSnapshot> {
     if (this.isReady()) return this.getSnapshot();
 
+    if (this.connectInFlight) return this.getSnapshot();
+
     if (
       this.socket &&
       ['CONNECTING', 'QR_READY', 'RECONNECTING'].includes(this.snapshot.status)
@@ -327,30 +345,61 @@ export class WhatsAppTenantConnection {
       return this.getSnapshot();
     }
 
-    this.clearReconnectTimer();
-    this.snapshot = {
-      ...this.snapshot,
-      status: this.reconnectAttempt > 0 ? 'RECONNECTING' : 'CONNECTING',
-      connected: false,
-      qrAvailable: false,
-      qrDataUrl: null,
-      lastError: null,
-      reconnectAttempt: this.reconnectAttempt,
-    };
+    this.connectInFlight = true;
+    try {
+      this.clearReconnectTimer();
+      this.snapshot = {
+        ...this.snapshot,
+        status: this.reconnectAttempt > 0 ? 'RECONNECTING' : 'CONNECTING',
+        connected: false,
+        qrAvailable: false,
+        qrDataUrl: null,
+        lastError: null,
+        reconnectAttempt: this.reconnectAttempt,
+      };
 
-    const sessionDir = await this.resolveSessionDir();
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+      const sessionDir = await this.resolveSessionDir();
+      const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
-    this.socket = makeWASocket({
-      auth: state,
-      browser: ['WhatchatAI', 'Chrome', '1.0.0'],
-      markOnlineOnConnect: false,
-      syncFullHistory: true,
-      generateHighQualityLinkPreview: false,
-    });
+      this.socket = makeWASocket({
+        auth: state,
+        browser: ['WhatchatAI', 'Chrome', '1.0.0'],
+        markOnlineOnConnect: false,
+        syncFullHistory: true,
+        generateHighQualityLinkPreview: false,
+      });
 
-    this.socket.ev.on('creds.update', saveCreds);
-    this.attachEventHandlers(this.socket);
+      // saveCreds() is async, but EventEmitter.emit() never awaits its
+      // listeners - passing it directly here turned any rejection (a
+      // transient fs error, a directory briefly missing mid-race) into an
+      // unhandled promise rejection that crashed this entire multi-tenant
+      // server process, not just this one tenant's connection. This is the
+      // real fix for the FATAL "ENOENT ... creds.json" crash: one tenant's
+      // credential-save failure must never be allowed to take every other
+      // business's live connection down with it.
+      this.socket.ev.on('creds.update', () => {
+        saveCreds().catch((error) => {
+          console.error(`[WhatsApp] Failed to persist credentials for business ${this.businessId}:`, error);
+        });
+      });
+      this.attachEventHandlers(this.socket);
+    } catch (error) {
+      // Without this, a setup failure here (e.g. resolveContainedSessionDir
+      // or useMultiFileAuthState throwing) left status stuck at CONNECTING
+      // forever - not just a failed attempt, but the re-entrancy guard
+      // above would then refuse every future connect() call for this
+      // tenant too, permanently wedging it until a process restart.
+      this.socket = null;
+      this.snapshot = {
+        ...this.snapshot,
+        status: 'ERROR',
+        connected: false,
+        lastError: error instanceof Error ? error.message : String(error),
+      };
+      throw error;
+    } finally {
+      this.connectInFlight = false;
+    }
 
     return this.getSnapshot();
   }

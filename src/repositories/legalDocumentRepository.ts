@@ -61,10 +61,13 @@ export class LegalDocumentRepository {
       version: row['version'] as string,
       title: row['title'] as string,
       contentHtml: row['content_html'] as string,
-      effectiveAt: (row['effective_at'] as Date).toISOString(),
+      // The pool's global timestamp type parser (src/db/pool.ts) already
+      // converts timestamp/timestamptz columns to ISO strings - these are
+      // never real Date objects, so calling .toISOString() on them threw.
+      effectiveAt: row['effective_at'] as string,
       isActive: row['is_active'] as boolean,
       createdBy: row['created_by'] as string | null,
-      createdAt: (row['created_at'] as Date).toISOString(),
+      createdAt: row['created_at'] as string,
     };
   }
 }

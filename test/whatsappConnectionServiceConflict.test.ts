@@ -111,4 +111,49 @@ describe('WhatsAppTenantConnection - DisconnectReason.connectionReplaced handlin
       expect(makeWASocketMock).toHaveBeenCalledTimes(2);
     });
   });
+
+  it('never creates two sockets for the same tenant when connect() is called concurrently - the real ENOENT-crash race', async () => {
+    // useMultiFileAuthState is mocked to resolve on a real microtask queue
+    // (mockResolvedValue), so both connect() calls genuinely reach their
+    // first await before either finishes setup - the exact window that used
+    // to let a second call slip past the old this.socket-based guard, since
+    // this.socket is only ever assigned after that await.
+    const socket = fakeSocket();
+    makeWASocketMock.mockReturnValue(socket);
+    const connection = new WhatsAppTenantConnection(TEST_BUSINESS_ID);
+
+    await Promise.all([connection.connect(), connection.connect(), connection.connect()]);
+
+    expect(makeWASocketMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never crashes the process when saveCreds() rejects - a tenant credential-save failure stays isolated', async () => {
+    const { useMultiFileAuthState } = await import('@whiskeysockets/baileys');
+    const rejectingSaveCreds = vi.fn().mockRejectedValue(new Error('ENOENT: session dir missing'));
+    vi.mocked(useMultiFileAuthState).mockResolvedValueOnce({ state: {} as never, saveCreds: rejectingSaveCreds });
+
+    const socket = fakeSocket();
+    makeWASocketMock.mockReturnValueOnce(socket);
+    const connection = new WhatsAppTenantConnection(TEST_BUSINESS_ID);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await connection.connect();
+    // creds.update is emitted synchronously (EventEmitter.emit never awaits
+    // listeners) - the old code passed saveCreds directly as the listener,
+    // so its rejection became an unhandled promise rejection that this
+    // app's own top-level handler treats as FATAL and kills the whole
+    // multi-tenant server. Asserting this call itself doesn't throw, and
+    // that the rejection was actually caught and logged instead, is the
+    // real regression check.
+    expect(() => socket.ev.emit('creds.update', {})).not.toThrow();
+    await vi.waitFor(() => {
+      expect(rejectingSaveCreds).toHaveBeenCalledTimes(1);
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to persist credentials'),
+        expect.any(Error),
+      );
+    });
+
+    consoleError.mockRestore();
+  });
 });
