@@ -1,0 +1,80 @@
+# Starting point, not a blind final config - run `fly launch --no-deploy`
+# first (it detects the Dockerfile and asks for an app name/region), then
+# replace whatever it generates with this file, filling in your own `app`
+# and `primary_region` below. See docs/FLY_DEPLOY.md for the full,
+# step-by-step provisioning sequence (volume, Tigris bucket, Postgres,
+# Redis, secrets) this config assumes already exists.
+#
+# Two process groups, mirroring docker-compose.yml's app-server/app-worker
+# split:
+#   - app_server owns the live Baileys/WhatsApp connections (via
+#     whatsappConnectionManager) and the HTTP API. It is a stateful
+#     singleton - the WhatsApp session credentials live on ONE Fly volume
+#     tied to ONE machine, so this process group must never scale beyond
+#     min=max=1 machine.
+#   - app_worker runs incomingMessagesWorker (message persistence,
+#     media download, document parsing). It holds no local state (media
+#     goes to the Tigris/S3 bucket via MEDIA_STORAGE_BACKEND=s3, not a
+#     local volume) and can scale to more than one machine if needed.
+
+app = "whatchatai"            # fly launch will ask for/generate a real name - replace this
+primary_region = "iad"        # replace with your chosen region
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+  WHATSAPP_SESSION_DIR = "/app/data/whatsapp"
+  MEDIA_STORAGE_BACKEND = "s3"
+  # DATABASE_URL, REDIS_URL, MASTER_ENCRYPTION_KEY, MEDIA_STORAGE_S3_BUCKET,
+  # and the AWS_* Tigris credentials are secrets, not plain env vars - set
+  # via `fly secrets set`, never committed here. See docs/FLY_DEPLOY.md.
+
+[processes]
+  app_server = "sh -c 'node dist/db/migrate.js && node dist/server/index.js'"
+  app_worker = "node dist/queue/workers/incomingMessagesWorker.js"
+
+# The one piece of real persistent state left after the Tigris migration -
+# WhatsApp pairing credentials, one Fly volume per business under
+# /app/data/whatsapp/<businessId>/ (see whatsappTenantConnection.ts). Create
+# with: fly volumes create whatsapp_session --region <primary_region> --size 1
+[[mounts]]
+  source = "whatsapp_session"
+  destination = "/app/data/whatsapp"
+  processes = ["app_server"]
+
+[[services]]
+  processes = ["app_server"]
+  internal_port = 3000
+  protocol = "tcp"
+  auto_stop_machines = false   # never auto-stop the one machine holding live WhatsApp sockets
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [[services.http_checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "get"
+    path = "/api/health"
+    protocol = "http"
+
+[[vm]]
+  processes = ["app_server"]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+
+[[vm]]
+  processes = ["app_worker"]
+  size = "shared-cpu-1x"
+  memory = "512mb"

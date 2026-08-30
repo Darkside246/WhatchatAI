@@ -8,7 +8,7 @@ import {
 import { ConversationEventRepository } from '../repositories/conversationEventRepository.js';
 import { enqueueOutboundMessage } from '../queue/queues/outboundMessagesQueue.js';
 import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
-import { storeMedia } from '../media/localEncryptedMediaStorage.js';
+import { storeMedia } from '../media/mediaStorage.js';
 import { transcodeToVoiceNote } from '../media/audioTranscodeService.js';
 import type { OutboundMessageType } from '../domain/whatsapp/types.js';
 

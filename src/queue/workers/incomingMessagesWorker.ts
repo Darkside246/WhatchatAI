@@ -42,7 +42,7 @@ import { EmailMessageRepository } from '../../repositories/emailMessageRepositor
 import { mapBaileysCallStatus, callTypeFromEvent, isTerminalCallStatus } from '../../domain/whatsapp/callStatus.js';
 import { classifyJid, derivePhoneNumber, stripDeviceSuffix } from '../../domain/whatsapp/jid.js';
 import { decodeBuffersFromQueue } from '../../domain/whatsapp/binaryCodec.js';
-import { storeMedia } from '../../media/localEncryptedMediaStorage.js';
+import { storeMedia } from '../../media/mediaStorage.js';
 import { mediaFallbackText } from '../../services/ai/mediaContext.js';
 import { sweepStaleFunnelInstances } from '../../services/funnelService.js';
 import { runSecurityScan } from '../../services/securityScanService.js';

@@ -40,7 +40,7 @@ import { verifyMasterKeyStability } from '../security/encryption/keyStabilityChe
 import { installCrashSafetyHandlers } from '../process/crashSafety.js';
 import { syncContactProfilePicture } from '../services/profilePictureSyncService.js';
 import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
-import { retrieveMedia } from '../media/localEncryptedMediaStorage.js';
+import { retrieveMedia } from '../media/mediaStorage.js';
 import { enqueueManualMediaRetry } from '../queue/queues/realtimeEventsQueue.js';
 import {
   getLockStatus,

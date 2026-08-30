@@ -4,7 +4,7 @@ import { whatsappConnectionManager } from './whatsappConnectionManager.js';
 import { WhatsAppMediaRepository } from '../repositories/whatsappMediaRepository.js';
 import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
-import { storeMedia } from '../media/localEncryptedMediaStorage.js';
+import { storeMedia } from '../media/mediaStorage.js';
 
 // WhatsApp's own profile pictures are small (well under 1MB in practice) -
 // this is a generous ceiling, never a reason to trust an unbounded download

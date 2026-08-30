@@ -5,7 +5,7 @@ import { DOCUMENT_PARSE_QUEUE, type DocumentParseJobData } from '../queues/docum
 import { pool } from '../../db/pool.js';
 import { BusinessDocumentRepository } from '../../repositories/businessDocumentRepository.js';
 import { SecurityAuditLogRepository } from '../../repositories/securityAuditLogRepository.js';
-import { retrieveMedia } from '../../media/localEncryptedMediaStorage.js';
+import { retrieveMedia } from '../../media/mediaStorage.js';
 import { parseDocument, type DocumentParseFailureReason } from '../../services/documents/documentParsers.js';
 import { chunkText } from '../../services/documents/documentChunker.js';
 import type { DocumentMimeFamily } from '../../domain/documents/documentMime.js';

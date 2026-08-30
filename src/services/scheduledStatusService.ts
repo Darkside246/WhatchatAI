@@ -3,7 +3,7 @@ import { pool } from '../db/pool.js';
 import { ScheduledStatusRepository, type ScheduledStatusRecord, type ScheduledStatusType } from '../repositories/scheduledStatusRepository.js';
 import { enqueueScheduledStatus } from '../queue/queues/scheduledStatusesQueue.js';
 import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
-import { storeMedia } from '../media/localEncryptedMediaStorage.js';
+import { storeMedia } from '../media/mediaStorage.js';
 
 const scheduledStatusRepository = new ScheduledStatusRepository(pool);
 

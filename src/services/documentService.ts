@@ -9,7 +9,7 @@ import {
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { EntitlementService } from './entitlementService.js';
 import type { EntitlementDeniedError } from './workspaceService.js';
-import { storeMedia, retrieveMedia } from '../media/localEncryptedMediaStorage.js';
+import { storeMedia, retrieveMedia } from '../media/mediaStorage.js';
 import { isAllowedDocumentMime, classifyDocumentMimeFamily } from '../domain/documents/documentMime.js';
 import { checkExecutablePayload } from '../security/sentinel/heuristicShield.js';
 import { enqueueDocumentParse } from '../queue/queues/documentParseQueue.js';

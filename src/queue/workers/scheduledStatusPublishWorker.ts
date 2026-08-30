@@ -2,7 +2,7 @@ import { Worker, type Job } from 'bullmq';
 import { queueConnection } from '../connection.js';
 import { SCHEDULED_STATUSES_QUEUE, type ScheduledStatusJobData } from '../queues/scheduledStatusesQueue.js';
 import { whatsappConnectionManager } from '../../services/whatsappConnectionManager.js';
-import { retrieveMedia } from '../../media/localEncryptedMediaStorage.js';
+import { retrieveMedia } from '../../media/mediaStorage.js';
 import { pool } from '../../db/pool.js';
 import { ScheduledStatusRepository, type ScheduledStatusRecord } from '../../repositories/scheduledStatusRepository.js';
 import { WhatsAppContactRepository } from '../../repositories/whatsappContactRepository.js';

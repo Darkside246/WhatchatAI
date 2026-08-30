@@ -4,7 +4,9 @@
   "private": true,
   "description": "Production-first AI WhatsApp agent SaaS platform",
   "type": "module",
-  "workspaces": ["src/web"],
+  "workspaces": [
+    "src/web"
+  ],
   "scripts": {
     "predev": "npm run db:migrate",
     "dev": "concurrently -n backend,worker,frontend,goose -c blue,magenta,green,yellow \"npm:dev:server\" \"npm:dev:worker\" \"npm:dev:web\" \"npm:dev:goose\"",
@@ -23,8 +25,11 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "test": "vitest run"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1121.0",
     "@google/genai": "latest",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@whiskeysockets/baileys": "latest",
@@ -47,12 +52,14 @@
     "zod": "latest"
   },
   "devDependencies": {
+    "@smithy/util-stream": "^4.8.2",
     "@types/express": "latest",
     "@types/node": "latest",
     "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.21.0",
     "@types/qrcode": "latest",
     "@types/ws": "^8.18.1",
+    "aws-sdk-client-mock": "^4.1.0",
     "tsx": "latest",
     "typescript": "latest",
     "vitest": "^4.1.10"

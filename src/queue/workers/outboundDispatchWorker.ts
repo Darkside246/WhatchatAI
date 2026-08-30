@@ -3,7 +3,7 @@ import type { AnyMessageContent } from '@whiskeysockets/baileys';
 import { queueConnection } from '../connection.js';
 import { OUTBOUND_MESSAGES_QUEUE, type OutboundMessageJobData } from '../queues/outboundMessagesQueue.js';
 import { whatsappConnectionManager } from '../../services/whatsappConnectionManager.js';
-import { retrieveMedia } from '../../media/localEncryptedMediaStorage.js';
+import { retrieveMedia } from '../../media/mediaStorage.js';
 import { publishRealtimeEvent } from '../../realtime/pubsub.js';
 import { notifyBusiness } from '../../services/notificationService.js';
 import { pool } from '../../db/pool.js';

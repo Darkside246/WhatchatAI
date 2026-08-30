@@ -1,6 +1,6 @@
 import { pool } from '../../db/pool.js';
 import { WhatsAppMediaRepository } from '../../repositories/whatsappMediaRepository.js';
-import { retrieveMedia } from '../../media/localEncryptedMediaStorage.js';
+import { retrieveMedia } from '../../media/mediaStorage.js';
 import { normalizeMimeType } from '../../domain/whatsapp/mimeType.js';
 import type { MessageType } from '../../domain/whatsapp/types.js';
 
