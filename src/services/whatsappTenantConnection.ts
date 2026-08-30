@@ -358,6 +358,29 @@ export class WhatsAppTenantConnection {
         reconnectAttempt: this.reconnectAttempt,
       };
 
+      // A business that has never successfully paired (no persisted
+      // whatsapp_accounts row - that row is only ever created on a real
+      // 'open' connection event, see persistConnectedAccount below) has no
+      // legitimate reason to have anything on disk under its session
+      // directory. If a prior pairing attempt for this same business was
+      // interrupted mid-write (a crash, a killed process - see the real
+      // ENOENT crash this exact class of bug produced, fixed elsewhere in
+      // this file), whatever partial/inconsistent key material got left
+      // behind would otherwise be silently reused here, producing a QR
+      // code that looks structurally fine but that WhatsApp's own servers
+      // reject as invalid when scanned - real key material generated
+      // against a state the server never actually completed a handshake
+      // for. Purging first guarantees every first-ever pairing attempt
+      // starts from a genuinely clean slate. Never runs for a business
+      // that has already paired before (countByBusiness > 0) - that path
+      // must keep resuming its real, working session, not get wiped on
+      // every ordinary reconnect after a restart.
+      if ((await this.accountRepository.countByBusiness(this.businessId)) === 0) {
+        await purgeSessionDir(this.businessId).catch((error) => {
+          console.error(`[WhatsApp] Failed to purge stale pre-pairing session state for business ${this.businessId}:`, error);
+        });
+      }
+
       const sessionDir = await this.resolveSessionDir();
       const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
