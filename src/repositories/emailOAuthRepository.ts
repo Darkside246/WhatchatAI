@@ -226,6 +226,11 @@ export class EmailOAuthRepository {
     return result.rows.map((r) => this.mapMessage(r as Record<string, unknown>));
   }
 
+  // Timestamp columns come back as plain ISO strings, not Date objects - the
+  // pool's global TIMESTAMPTZ type parser (src/db/pool.ts) already converts
+  // them, specifically so no repository ever needs (or should call)
+  // .toISOString() on one. Same class of bug already documented in
+  // productAccountRepository.ts, legalDocumentRepository.ts and userConsentRepository.ts.
   private mapAccount(row: Record<string, unknown>): EmailOAuthAccountRecord {
     return {
       id: row['id'] as string,
@@ -233,13 +238,13 @@ export class EmailOAuthRepository {
       provider: row['provider'] as OAuthProvider,
       emailAddress: row['email_address'] as string,
       displayName: row['display_name'] as string | null,
-      tokenExpiresAt: row['token_expires_at'] ? (row['token_expires_at'] as Date).toISOString() : null,
+      tokenExpiresAt: row['token_expires_at'] as string | null,
       scopes: row['scopes'] as string | null,
       syncCursor: row['sync_cursor'] as string | null,
-      lastSyncedAt: row['last_synced_at'] ? (row['last_synced_at'] as Date).toISOString() : null,
+      lastSyncedAt: row['last_synced_at'] as string | null,
       syncEnabled: row['sync_enabled'] as boolean,
-      createdAt: (row['created_at'] as Date).toISOString(),
-      updatedAt: (row['updated_at'] as Date).toISOString(),
+      createdAt: row['created_at'] as string,
+      updatedAt: row['updated_at'] as string,
     };
   }
 
@@ -260,8 +265,8 @@ export class EmailOAuthRepository {
       isRead: row['is_read'] as boolean,
       isStarred: row['is_starred'] as boolean,
       labels: row['labels'] as string[],
-      receivedAt: row['received_at'] ? (row['received_at'] as Date).toISOString() : null,
-      syncedAt: (row['synced_at'] as Date).toISOString(),
+      receivedAt: row['received_at'] as string | null,
+      syncedAt: row['synced_at'] as string,
     };
   }
 }

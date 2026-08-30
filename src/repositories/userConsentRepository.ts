@@ -90,6 +90,11 @@ export class UserConsentRepository {
     );
   }
 
+  // created_at/confirmed_at/used_at/expires_at come back as plain ISO
+  // strings, not Date objects - the pool's global TIMESTAMPTZ type parser
+  // (src/db/pool.ts) already converts them, specifically so no repository
+  // ever needs (or should call) .toISOString() on one. Same class of bug
+  // already documented in productAccountRepository.ts and legalDocumentRepository.ts.
   private mapConsent(row: Record<string, unknown>): ConsentRecord {
     return {
       id: row['id'] as string,
@@ -102,8 +107,8 @@ export class UserConsentRepository {
       userAgent: row['user_agent'] as string | null,
       marketingOptIn: row['marketing_opt_in'] as boolean,
       confirmationMethod: row['confirmation_method'] as 'email' | 'qr' | null,
-      confirmedAt: row['confirmed_at'] ? (row['confirmed_at'] as Date).toISOString() : null,
-      createdAt: (row['created_at'] as Date).toISOString(),
+      confirmedAt: row['confirmed_at'] as string | null,
+      createdAt: row['created_at'] as string,
     };
   }
 
@@ -113,9 +118,9 @@ export class UserConsentRepository {
       consentId: row['consent_id'] as string,
       token: row['token'] as string,
       method: row['method'] as 'email' | 'qr',
-      usedAt: row['used_at'] ? (row['used_at'] as Date).toISOString() : null,
-      expiresAt: (row['expires_at'] as Date).toISOString(),
-      createdAt: (row['created_at'] as Date).toISOString(),
+      usedAt: row['used_at'] as string | null,
+      expiresAt: row['expires_at'] as string,
+      createdAt: row['created_at'] as string,
     };
   }
 }
