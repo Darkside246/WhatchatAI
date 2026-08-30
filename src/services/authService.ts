@@ -119,10 +119,31 @@ export async function validateSession(token: string): Promise<ValidatedSession |
 
 export async function logout(token: string): Promise<void> { const session = await sessionRepository.findByTokenHash(hashSessionToken(token)); if (session) await sessionRepository.revoke(session.id); }
 
-export interface SessionSummary { id: string; createdAt: string; lastSeenAt: string; expiresAt: string; ipAddress: string | null; browser: string; os: string; isCurrent: boolean; }
-export async function listSessions(userId: string, currentSessionId: string): Promise<SessionSummary[]> { const sessions = await sessionRepository.listActiveForUser(userId); return sessions.map((session) => { const { browser, os } = parseUserAgent(session.userAgent); return { id: session.id, createdAt: session.createdAt, lastSeenAt: session.lastSeenAt, expiresAt: session.expiresAt, ipAddress: session.ipAddress, browser, os, isCurrent: session.id === currentSessionId }; }); }
+export interface SessionSummary { id: string; createdAt: string; lastSeenAt: string; expiresAt: string; ipAddress: string | null; browser: string; os: string; deviceName: string | null; isCurrent: boolean; }
+export async function listSessions(userId: string, currentSessionId: string): Promise<SessionSummary[]> { const sessions = await sessionRepository.listActiveForUser(userId); return sessions.map((session) => { const { browser, os } = parseUserAgent(session.userAgent); return { id: session.id, createdAt: session.createdAt, lastSeenAt: session.lastSeenAt, expiresAt: session.expiresAt, ipAddress: session.ipAddress, browser, os, deviceName: session.deviceName, isCurrent: session.id === currentSessionId }; }); }
 export async function revokeSession(userId: string, sessionId: string): Promise<void> { const session = await sessionRepository.findById(sessionId); if (!session || session.userId !== userId) throw new SessionNotFoundError('Session not found.'); await sessionRepository.revoke(sessionId); }
 export async function revokeOtherSessions(userId: string, currentSessionId: string): Promise<number> { return sessionRepository.revokeAllForUserExcept(userId, currentSessionId); }
+
+const MAX_DEVICE_NAME_LENGTH = 60;
+
+/**
+ * Replaces the auto-generated "<browser> on <os>" label with the user's own
+ * name for this one session - see sessionRepository.renameDevice's own doc
+ * comment for why this exists. Void, not the updated SessionSummary -
+ * `isCurrent` can only be answered relative to the caller's own current
+ * session, which this function has no reliable way to know is or isn't the
+ * one just renamed; the route/frontend re-lists via listSessions() after,
+ * same as revokeSession/revokeOtherSessions already do, rather than this
+ * function fabricating that field.
+ */
+export async function renameSession(userId: string, sessionId: string, deviceName: string): Promise<void> {
+  const trimmed = deviceName.trim();
+  if (!trimmed) throw new Error('INVALID: Device name cannot be empty.');
+  if (trimmed.length > MAX_DEVICE_NAME_LENGTH) throw new Error(`INVALID: Device name must be ${MAX_DEVICE_NAME_LENGTH} characters or fewer.`);
+
+  const updated = await sessionRepository.renameDevice(sessionId, userId, trimmed);
+  if (!updated) throw new SessionNotFoundError('Session not found.');
+}
 export function isEmailAlreadyRegisteredError(error: unknown): error is EmailAlreadyRegisteredError { return error instanceof EmailAlreadyRegisteredError; }
 export function isRegistrationClosedError(error: unknown): error is RegistrationClosedError { return error instanceof RegistrationClosedError; }
 export function isInvalidCredentialsError(error: unknown): error is InvalidCredentialsError { return error instanceof InvalidCredentialsError; }

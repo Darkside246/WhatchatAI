@@ -294,6 +294,8 @@ export interface AuthSessionDto {
   ipAddress: string | null;
   browser: string;
   os: string;
+  /** The user's own label for this session (e.g. "My Laptop"), replacing "<browser> on <os>" once set - see sessionTokenService.ts's parseUserAgent for why the auto-generated label alone can't always tell two sessions apart. */
+  deviceName: string | null;
   isCurrent: boolean;
 }
 
@@ -1122,6 +1124,8 @@ export const api = {
   listSessions: () => request<{ sessions: AuthSessionDto[] }>('/auth/sessions'),
   revokeSession: (id: string) => request<{ status: string }>(`/auth/sessions/${id}`, { method: 'DELETE' }),
   revokeOtherSessions: () => request<{ revokedCount: number }>('/auth/sessions/revoke-others', { method: 'POST' }),
+  renameSession: (id: string, deviceName: string) =>
+    request<{ sessions: AuthSessionDto[] }>(`/auth/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ deviceName }) }),
 
   listMembers: () => request<{ members: MemberDto[] }>('/workspace/members'),
   createMember: (body: { email: string; displayName: string; role: BusinessRole }) =>

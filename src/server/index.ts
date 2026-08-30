@@ -132,6 +132,7 @@ import {
   validateSession,
   listSessions,
   revokeSession,
+  renameSession,
   revokeOtherSessions,
   isEmailAlreadyRegisteredError,
   isRegistrationClosedError,
@@ -493,6 +494,22 @@ app.post('/api/auth/sessions/revoke-others', requireAuth, async (_req, res) => {
   const auth = res.locals.auth as AuthContext;
   const revokedCount = await revokeOtherSessions(auth.userId, auth.sessionId);
   return res.status(200).json({ revokedCount });
+});
+
+const renameSessionSchema = z.object({ deviceName: z.string().trim().min(1).max(60) });
+
+app.patch('/api/auth/sessions/:sessionId', requireAuth, async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = renameSessionSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_DEVICE_NAME' });
+  try {
+    await renameSession(auth.userId, String(req.params.sessionId ?? ''), parsed.data.deviceName);
+    const sessions = await listSessions(auth.userId, auth.sessionId);
+    return res.status(200).json({ sessions });
+  } catch (error) {
+    if (isSessionNotFoundError(error)) return res.status(404).json({ error: 'SESSION_NOT_FOUND' });
+    throw error;
+  }
 });
 
 // Deletes the whole business, not just this login - see

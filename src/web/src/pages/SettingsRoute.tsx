@@ -1,5 +1,5 @@
 import { type ComponentType, type ReactNode, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Bot, Building2, Camera, ChevronDown, ChevronRight, Clipboard, Clock, KeyRound, Lock, LogOut, Mail, Monitor, Palette, PanelLeft, PanelLeftClose, RefreshCw, ShieldCheck, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
+import { Bot, Building2, Camera, Check, ChevronDown, ChevronRight, Clipboard, Clock, KeyRound, Lock, LogOut, Mail, Monitor, Palette, PanelLeft, PanelLeftClose, Pencil, RefreshCw, ShieldCheck, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
 import {
   api,
   mediaUrl,
@@ -1166,6 +1166,8 @@ function SessionsCard() {
   const [sessions, setSessions] = useState<AuthSessionDto[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
 
   async function load() {
     try {
@@ -1187,6 +1189,27 @@ function SessionsCard() {
       await load();
     } catch {
       setError('Could not sign out that device.');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  function startEditing(session: AuthSessionDto) {
+    setEditingId(session.id);
+    setEditValue(session.deviceName ?? `${session.browser} on ${session.os}`);
+    setError(null);
+  }
+
+  async function handleRename(id: string) {
+    const trimmed = editValue.trim();
+    if (!trimmed) return;
+    setBusyId(id);
+    try {
+      const result = await api.renameSession(id, trimmed);
+      setSessions(result.sessions);
+      setEditingId(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not rename that device.');
     } finally {
       setBusyId(null);
     }
@@ -1231,18 +1254,45 @@ function SessionsCard() {
           <div key={session.id} className="flex items-center justify-between gap-3 rounded-lg border border-border-subtle px-3 py-2">
             <div className="flex items-center gap-2.5 min-w-0">
               <Monitor size={15} className="shrink-0 text-fg-muted" aria-hidden />
-              <div className="min-w-0">
-                <p className="truncate text-caption font-medium text-fg">
-                  {session.browser} on {session.os}
-                  {session.isCurrent && <span className="ml-1.5 rounded-full bg-success/15 px-1.5 py-0.5 text-meta font-semibold text-success">Current device</span>}
-                </p>
+              <div className="min-w-0 flex-1">
+                {editingId === session.id ? (
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      autoFocus
+                      value={editValue}
+                      onChange={(e) => setEditValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') void handleRename(session.id);
+                        if (e.key === 'Escape') setEditingId(null);
+                      }}
+                      maxLength={60}
+                      placeholder={`${session.browser} on ${session.os}`}
+                      className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-1 px-2 py-1 text-caption font-medium text-fg outline-none focus:border-accent"
+                    />
+                    <button type="button" onClick={() => void handleRename(session.id)} disabled={busyId === session.id || !editValue.trim()}
+                      className="shrink-0 text-fg-muted hover:text-success disabled:opacity-50" title="Save">
+                      <Check size={14} aria-hidden />
+                    </button>
+                    <button type="button" onClick={() => setEditingId(null)} className="shrink-0 text-fg-muted hover:text-fg" title="Cancel">
+                      <X size={14} aria-hidden />
+                    </button>
+                  </div>
+                ) : (
+                  <p className="flex items-center gap-1.5 truncate text-caption font-medium text-fg">
+                    <span className="truncate">{session.deviceName ?? `${session.browser} on ${session.os}`}</span>
+                    {session.isCurrent && <span className="shrink-0 rounded-full bg-success/15 px-1.5 py-0.5 text-meta font-semibold text-success">Current device</span>}
+                    <button type="button" onClick={() => startEditing(session)} title="Rename this device" className="shrink-0 text-fg-muted hover:text-fg">
+                      <Pencil size={11} aria-hidden />
+                    </button>
+                  </p>
+                )}
                 <p className="truncate text-meta text-fg-muted">
                   Signed in {formatSessionTimestamp(session.createdAt)} · last active {formatSessionTimestamp(session.lastSeenAt)}
                   {session.ipAddress ? ` · ${session.ipAddress}` : ''}
                 </p>
               </div>
             </div>
-            {!session.isCurrent && (
+            {!session.isCurrent && editingId !== session.id && (
               <button
                 type="button"
                 disabled={busyId === session.id}

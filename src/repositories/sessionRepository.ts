@@ -100,6 +100,24 @@ export class SessionRepository {
     await this.db.query('UPDATE sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL', [id]);
   }
 
+  /**
+   * Lets a user replace the auto-generated "<browser> on <os>" label with
+   * their own name (e.g. "My Laptop") - the real fix for two sessions from
+   * different browsers that happen to report an identical User-Agent (see
+   * parseUserAgent's own doc comment on why that can't be told apart any
+   * other way). Scoped to `userId` in the WHERE clause, not just `id` -
+   * the route layer already checks ownership too, but this repository
+   * method must never itself be a path to renaming a session that isn't
+   * the caller's own, regardless of what any future caller passes it.
+   */
+  async renameDevice(id: string, userId: string, deviceName: string): Promise<SessionRecord | null> {
+    const { rows } = await this.db.query<SessionRow>(
+      `UPDATE sessions SET device_name = $3 WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL RETURNING *`,
+      [id, userId, deviceName],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
   /** Immediate effect of requesting account deletion (accountDeletionService.ts) - every member of the business is logged out, not just the requester. */
   async revokeAllForBusiness(businessId: string): Promise<number> {
     const { rowCount } = await this.db.query(

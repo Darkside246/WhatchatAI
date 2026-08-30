@@ -7,6 +7,7 @@ import {
   validateSession,
   listSessions,
   revokeSession,
+  renameSession,
   revokeOtherSessions,
   isRegistrationClosedError,
   isInvalidCredentialsError,
@@ -181,6 +182,45 @@ describe('authService session management (list/revoke - real device-level contro
     expect(await validateSession(first.token)).not.toBeNull();
     expect(await validateSession(second.token)).toBeNull();
     expect(await validateSession(third.token)).toBeNull();
+  });
+
+  it('renames a real session, replacing the auto-generated "<browser> on <os>" label', async () => {
+    const first = await login('owner@example.com', 'correcthorsebatterystaple', { ipAddress: '10.0.0.1', userAgent: 'device-a' });
+    const validated = await validateSession(first.token);
+
+    await renameSession(validated!.user.id, first.session.id, 'My Laptop');
+
+    const sessions = await listSessions(validated!.user.id, first.session.id);
+    expect(sessions.find((s) => s.id === first.session.id)?.deviceName).toBe('My Laptop');
+  });
+
+  it('rejects an empty or overlong device name without touching the stored value', async () => {
+    const first = await login('owner@example.com', 'correcthorsebatterystaple', { ipAddress: '10.0.0.1', userAgent: 'device-a' });
+    const validated = await validateSession(first.token);
+    const before = (await listSessions(validated!.user.id, first.session.id)).find((s) => s.id === first.session.id)?.deviceName;
+
+    await expect(renameSession(validated!.user.id, first.session.id, '   ')).rejects.toThrow(/cannot be empty/);
+    await expect(renameSession(validated!.user.id, first.session.id, 'x'.repeat(61))).rejects.toThrow(/60 characters/);
+
+    const after = (await listSessions(validated!.user.id, first.session.id)).find((s) => s.id === first.session.id)?.deviceName;
+    expect(after).toBe(before); // untouched by either rejected attempt
+  });
+
+  it('cannot rename a different user\'s session - real per-user ownership check', async () => {
+    const ownerLogin = await login('owner@example.com', 'correcthorsebatterystaple', device);
+    const ownerSession = await validateSession(ownerLogin.token);
+
+    const created = await createMember(ownerSession!.membership.businessId, ownerSession!.user.id, {
+      email: 'teammate2@example.com',
+      displayName: 'Teammate Two',
+      role: 'AGENT',
+    });
+    const teammateLogin = await login('teammate2@example.com', created.temporaryPassword, device);
+
+    await expect(renameSession(ownerSession!.user.id, teammateLogin.session.id, 'Hijacked Name')).rejects.toThrow();
+
+    const teammateSessions = await listSessions(teammateLogin.user.id, teammateLogin.session.id);
+    expect(teammateSessions.find((s) => s.id === teammateLogin.session.id)?.deviceName).not.toBe('Hijacked Name');
   });
 });
 
