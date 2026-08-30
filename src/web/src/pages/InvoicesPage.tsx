@@ -229,7 +229,7 @@ function InvoiceDetailPanel({ invoice, lineItems, onUpdate, onDeleted, onClose }
   }
 
   async function handleDelete() {
-    if (!window.confirm(`Permanently delete draft ${invoice.invoiceNumber}? This cannot be undone.`)) return;
+    if (!window.confirm(`Permanently delete ${invoice.invoiceNumber}? This cannot be undone.`)) return;
     setBusy('Delete');
     setErr(null);
     try {
@@ -252,10 +252,10 @@ function InvoiceDetailPanel({ invoice, lineItems, onUpdate, onDeleted, onClose }
   // cancelling, and never deleting) is the only real option.
   const canCancel = ['DRAFT', 'PENDING_APPROVAL', 'APPROVED'].includes(invoice.status);
   const canVoid = ['SENT', 'OVERDUE'].includes(invoice.status);
-  // Real, permanent deletion - DRAFT only. Nothing has ever left the
-  // system for a draft, unlike every later status (see invoiceService.ts's
-  // remove()).
-  const canDelete = invoice.status === 'DRAFT';
+  // Real, permanent deletion - DRAFT or CANCELLED. Neither ever left the
+  // system to reach a customer (cancel() is pre-send only), unlike
+  // SENT/OVERDUE/VOID - see invoiceService.ts's remove().
+  const canDelete = ['DRAFT', 'CANCELLED'].includes(invoice.status);
 
   return (
     <div className="flex h-full flex-col">

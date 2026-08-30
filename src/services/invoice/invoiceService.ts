@@ -77,15 +77,17 @@ export class InvoiceService {
   }
 
   /**
-   * Real, permanent deletion - DRAFT only. Nothing has ever left this
-   * system for a draft (no customer has seen it, no invoice-number gap is
-   * created by removing it - see invoice_number_sequences), so there is no
-   * accounting-integrity reason to keep it around, unlike every later
-   * status.
+   * Real, permanent deletion - DRAFT or CANCELLED only. Nothing has ever
+   * left this system for either: cancel() only ever applies to
+   * DRAFT/PENDING_APPROVAL/APPROVED, all pre-send statuses, so a CANCELLED
+   * invoice was never seen by a customer any more than a DRAFT one was -
+   * same reasoning, same rule. SENT/OVERDUE (and their VOID counterpart)
+   * are the real line: a customer has already seen a document with this
+   * invoice number, so those must stay forever, deleted or not.
    */
   async remove(businessId: string, invoiceId: string): Promise<boolean> {
     const existing = await this.repo.findById(businessId, invoiceId);
-    if (!existing || existing.status !== 'DRAFT') return false;
+    if (!existing || !['DRAFT', 'CANCELLED'].includes(existing.status)) return false;
     return this.repo.delete(businessId, invoiceId);
   }
 

@@ -49,6 +49,19 @@ describe('InvoiceService status transitions (real Postgres) - delete vs void vs 
     expect(cancelled?.status).toBe('CANCELLED');
   });
 
+  it('deletes a real CANCELLED invoice - never sent to a customer, same reasoning as DRAFT', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    const invoice = await draftInvoice(businessId);
+    await svc.submitForApproval(businessId, invoice.id);
+    await svc.approve(businessId, invoice.id);
+    await svc.cancel(businessId, invoice.id);
+
+    const deleted = await svc.remove(businessId, invoice.id);
+    expect(deleted).toBe(true);
+    expect(await svc.get(businessId, invoice.id)).toBeNull();
+  });
+
   it('refuses to cancel a SENT invoice - it must be voided instead', async () => {
     await resetDatabase();
     const businessId = await createTestBusiness();
