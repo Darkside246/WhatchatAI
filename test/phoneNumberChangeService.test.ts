@@ -39,8 +39,12 @@ describe('phoneNumberChangeService.changePhoneNumber (real Postgres)', () => {
 
   it('rejects a number already claimed by a different active account', async () => {
     await resetDatabase();
-    const trial = await registerTrial({ name: 'Existing', email: 'existing@example.com', phone: '+14155552671', productKey: 'property', device });
+    // register() first - it claims the single "default" business via
+    // ensureDefaultBusinessProvisioned() while none exists yet.
+    // registerTrial() always creates its own separate business directly,
+    // so it's safe to call afterward without colliding with that default.
     const owner = await register({ email: 'owner@example.com', password: PASSWORD, displayName: 'Owner' }, device);
+    const trial = await registerTrial({ name: 'Existing', email: 'existing@example.com', phone: '+14155552671', productKey: 'property', device });
 
     await expect(
       changePhoneNumber(owner.business.id, owner.user.id, PASSWORD, '+14155552671'),

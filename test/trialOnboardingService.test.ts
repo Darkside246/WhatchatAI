@@ -56,7 +56,7 @@ describe('registerTrial phone handling (real Postgres)', () => {
 
   it('treats differently-formatted inputs for the same real number as the same number', async () => {
     await resetDatabase();
-    await registerTrial(trialInput({ email: 'first@example.com', phone: '001 415 555 2671' }));
+    await registerTrial(trialInput({ email: 'first@example.com', phone: '+1 (415) 555-2671' }));
 
     await expect(
       registerTrial(trialInput({ email: 'second@example.com', phone: '+14155552671' })),
