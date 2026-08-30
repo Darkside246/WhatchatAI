@@ -12,6 +12,30 @@ const AI_MODE_DOT: Record<WorkspaceChatSummary['aiMode'], string> = {
   HUMAN_TAKEOVER: 'bg-info',
 };
 
+/**
+ * The exact same HIGH/MEDIUM unread-count thresholds
+ * securityAlertService.ts's urgencyFromUnreadCount() uses for the alert
+ * panel, so a chat's border color and its alert-panel entry are always the
+ * same color for the same reason - AlertNotifier.tsx uses border-error/
+ * bg-error for HIGH and border-warning/bg-warning for MEDIUM, matched here.
+ * Derived from the chat's own live aiMode/unreadCount, not any local
+ * "alert dismissed" state, so the marker genuinely tracks the real
+ * condition - it clears the moment the chat leaves HUMAN_TAKEOVER or its
+ * unread count drops, not because a notification happened to be dismissed
+ * in this browser tab.
+ */
+function chatUrgency(chat: WorkspaceChatSummary): 'HIGH' | 'MEDIUM' | null {
+  if (chat.aiMode !== 'HUMAN_TAKEOVER') return null;
+  if (chat.unreadCount >= 5) return 'HIGH';
+  if (chat.unreadCount >= 2) return 'MEDIUM';
+  return null;
+}
+
+const URGENCY_ROW_CLASS: Record<'HIGH' | 'MEDIUM', string> = {
+  HIGH: 'border-l-4 border-l-error bg-error/5',
+  MEDIUM: 'border-l-4 border-l-warning bg-warning/5',
+};
+
 // "success" is reserved for live/online/connected signals - kept distinct
 // from "accent" (the brand/interactive color used for buttons and selection).
 
@@ -69,13 +93,15 @@ function ChatRow({
   onOpenPhoto: (url: string) => void;
 }) {
   const MediaIcon = chat.lastMessageType ? LAST_MESSAGE_ICON[chat.lastMessageType] : undefined;
+  const urgency = chatUrgency(chat);
 
   return (
     <NavLink
       to={`/chats/${chat.id}`}
+      title={urgency === 'HIGH' ? 'Urgent - needs human attention' : urgency === 'MEDIUM' ? 'Needs attention' : undefined}
       className={({ isActive }) =>
         `flex w-full items-center gap-3 border-b border-r-4 border-border-subtle/60 px-4 py-3 text-left transition-colors ${
-          isActive ? 'border-r-accent bg-accent-soft' : 'border-r-transparent hover:bg-surface-2'
+          isActive ? 'border-r-accent bg-accent-soft' : `border-r-transparent hover:bg-surface-2 ${urgency ? URGENCY_ROW_CLASS[urgency] : ''}`
         }`
       }
     >
