@@ -17,7 +17,7 @@
 #     goes to the Tigris/S3 bucket via MEDIA_STORAGE_BACKEND=s3, not a
 #     local volume) and can scale to more than one machine if needed.
 
-app = "whatchatai"            # fly launch will ask for/generate a real name - replace this
+app = "aegis"                 # try this first in `fly launch`; if it's taken, a variant like "aegis-app" works fine - just match whatever name you actually pick here
 primary_region = "iad"        # replace with your chosen region
 
 [build]
