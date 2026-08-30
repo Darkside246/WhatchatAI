@@ -48,6 +48,7 @@ interface AgentForm {
   humanTakeoverPolicy: string;
   triggerKeywords: string;
   blockedKeywords: string;
+  protectedFacts: string;
   responseDelaySeconds: number;
   priority: number;
   parentAgentId: string;
@@ -69,6 +70,7 @@ const EMPTY_FORM: AgentForm = {
   humanTakeoverPolicy: '',
   triggerKeywords: '',
   blockedKeywords: '',
+  protectedFacts: '',
   responseDelaySeconds: 0,
   priority: 0,
   parentAgentId: '',
@@ -91,6 +93,7 @@ function toForm(agent: AiAgentSummary): AgentForm {
     humanTakeoverPolicy: agent.humanTakeoverPolicy ?? '',
     triggerKeywords: agent.triggerKeywords.join(', '),
     blockedKeywords: agent.blockedKeywords.join(', '),
+    protectedFacts: agent.protectedFacts.join(', '),
     responseDelaySeconds: agent.responseDelaySeconds,
     priority: agent.priority,
     parentAgentId: agent.parentAgentId ?? '',
@@ -122,6 +125,7 @@ function toBody(form: AgentForm): CreateAgentBody {
     humanTakeoverPolicy: text(form.humanTakeoverPolicy),
     triggerKeywords: parseKeywords(form.triggerKeywords),
     blockedKeywords: parseKeywords(form.blockedKeywords),
+    protectedFacts: parseKeywords(form.protectedFacts),
     responseDelaySeconds: form.responseDelaySeconds,
     priority: form.priority,
     parentAgentId: form.parentAgentId || null,
@@ -249,6 +253,17 @@ function AgentEditor({
             rows={4}
             value={form.systemInstruction}
             onChange={(e) => setForm({ ...form, systemInstruction: e.target.value })}
+            className={FIELD}
+          />
+        </Field>
+        <Field
+          label="Protected facts (never disclosed)"
+          hint="Comma separated - real names, school, address, or anything else this agent must never say. Unlike the fields above, this is checked automatically before every reply is sent, not just asked of the AI as an instruction."
+        >
+          <input
+            value={form.protectedFacts}
+            onChange={(e) => setForm({ ...form, protectedFacts: e.target.value })}
+            placeholder="Hasani, Hachiko, The Lodge School"
             className={FIELD}
           />
         </Field>

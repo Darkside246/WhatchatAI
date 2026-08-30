@@ -57,7 +57,9 @@ export type SecurityEventType =
   | 'handover_auto_reverted'
   | 'account_deletion_requested'
   | 'account_deletion_cancelled'
-  | 'phone_number_changed';
+  | 'phone_number_changed'
+  | 'ai_output_leak_blocked'
+  | 'ai_output_leak_check_unavailable';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 

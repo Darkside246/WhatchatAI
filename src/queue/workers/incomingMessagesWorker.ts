@@ -424,6 +424,46 @@ async function runAiHandoff(params: {
     return;
   }
 
+  // The Outbound Leak Guard (aiOrchestrator.ts) already generated a real
+  // reply and blocked it before returning here - the leaked text itself
+  // never reaches this worker, only outcome.reason. Same hard-stop shape
+  // as the branches above (hand off to a human, notify the business,
+  // audit event already written by the guard itself), plus one thing they
+  // don't do: this one still sends the customer a short, fixed,
+  // non-AI-generated message instead of leaving the conversation silent -
+  // a static string, never model output, so there is nothing left for it
+  // to leak. A real "smarter" reply here is a v2 conversation.
+  if (outcome.kind === 'blocked_leak') {
+    console.warn(`[IncomingMessagesWorker] AI reply blocked for chat ${chatId} (Outbound Leak Guard): ${outcome.reason}`);
+    await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER', 'output_leak_blocked');
+    await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
+    await notifyBusiness({
+      businessId,
+      type: 'SECURITY_ALERT',
+      severity: 'critical',
+      title: 'AI reply blocked - would have disclosed a protected fact',
+      body: outcome.reason,
+      targetType: 'chat',
+      targetId: chatId,
+    }).catch((error) => {
+      console.error('[IncomingMessagesWorker] Failed to dispatch SECURITY_ALERT notification:', error);
+    });
+    try {
+      await whatsappOutboundMessageService.send({
+        businessId,
+        whatsappAccountId,
+        chatId,
+        idempotencyKey: `ai-reply-blocked-fallback:${messageId}`,
+        messageType: 'text',
+        text: 'Let me get someone from the team to help with that.',
+        requestedBy: 'system',
+      });
+    } catch (error) {
+      console.error(`[IncomingMessagesWorker] Fallback message failed to send for chat ${chatId}:`, error instanceof Error ? error.message : error);
+    }
+    return;
+  }
+
   const agent = outcome.agent;
 
   // Idempotency key derived from the inbound message's own id: if this job

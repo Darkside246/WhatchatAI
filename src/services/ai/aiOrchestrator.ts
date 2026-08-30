@@ -1,7 +1,12 @@
 import { routeInboundMessage, resolveEscalationAgent } from '../agentRoutingService.js';
 import { gatherAiHandoffContext } from '../aiContextGathererService.js';
 import { generateAiReply } from '../aiReplyService.js';
+import { runOutboundLeakGuard } from '../../security/sentinel/outboundLeakGuard.js';
+import { SecurityAuditLogRepository } from '../../repositories/securityAuditLogRepository.js';
+import { pool } from '../../db/pool.js';
 import type { AiAgentRecord } from '../../repositories/aiAgentRepository.js';
+
+const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
 
 export interface OrchestrateAiReplyInput {
   businessId: string;
@@ -16,7 +21,63 @@ export type OrchestratedAiOutcome =
   | { kind: 'no_agent'; reason: string }
   | { kind: 'escalate_to_human'; reason: string; matchedKeyword: string }
   | { kind: 'reply'; agent: AiAgentRecord; text: string }
-  | { kind: 'unavailable'; agent: AiAgentRecord; reason: string };
+  | { kind: 'unavailable'; agent: AiAgentRecord; reason: string }
+  /**
+   * A real reply was generated but the Outbound Leak Guard blocked it
+   * before it ever left this process - the (leaked) text is deliberately
+   * not carried on this outcome, only the reason, so it can never
+   * accidentally be logged or displayed downstream.
+   */
+  | { kind: 'blocked_leak'; agent: AiAgentRecord; reason: string };
+
+/**
+ * Runs every generated reply through the Outbound Leak Guard before it is
+ * trusted - the one place this check happens, so it can never be bypassed
+ * by a future caller of orchestrateAiReply. A block writes a real
+ * security_audit_logs row (mirrors the shape agentGuard.ts already uses
+ * for AI tool denials) before the caller ever sees it.
+ */
+/** Exported for direct testing (test/aiOrchestratorOutboundGuard.test.ts) - exercising the full orchestrateAiReply path needs a real Gemini call to reach 'generated', which this environment has no key for; this is the one real seam that lets the audit-log-writing/outcome-shape wiring be tested honestly without faking a model response. */
+export async function guardGeneratedText(
+  businessId: string,
+  agent: AiAgentRecord,
+  text: string,
+): Promise<{ kind: 'reply'; agent: AiAgentRecord; text: string } | { kind: 'blocked_leak'; agent: AiAgentRecord; reason: string }> {
+  const verdict = await runOutboundLeakGuard(text, agent.protectedFacts);
+
+  if (!verdict.allowed) {
+    await securityAuditLogRepository
+      .record({
+        businessId,
+        whatsappAccountId: null,
+        eventType: verdict.eventType,
+        severity: 'critical',
+        reason: verdict.reason,
+        rawMetadata: { agentId: agent.id },
+      })
+      .catch((error) => {
+        console.error('[Outbound Leak Guard] Failed to write ai_output_leak_blocked audit event:', error);
+      });
+    return { kind: 'blocked_leak', agent, reason: verdict.reason ?? 'Blocked: would have disclosed a protected fact' };
+  }
+
+  if (verdict.eventType === 'ai_output_leak_check_unavailable') {
+    await securityAuditLogRepository
+      .record({
+        businessId,
+        whatsappAccountId: null,
+        eventType: verdict.eventType,
+        severity: 'warning',
+        reason: verdict.reason,
+        rawMetadata: { agentId: agent.id },
+      })
+      .catch((error) => {
+        console.error('[Outbound Leak Guard] Failed to write ai_output_leak_check_unavailable audit event:', error);
+      });
+  }
+
+  return { kind: 'reply', agent, text };
+}
 
 /**
  * The single entry point that centralizes "which agent, given what
@@ -54,7 +115,7 @@ export async function orchestrateAiReply(input: OrchestrateAiReplyInput): Promis
   const reply = await generateAiReply(agent, context);
 
   if (reply.status === 'generated') {
-    return { kind: 'reply', agent, text: reply.text };
+    return guardGeneratedText(input.businessId, agent, reply.text);
   }
 
   // A real escalation hop: if the selected agent could not produce a
@@ -72,7 +133,7 @@ export async function orchestrateAiReply(input: OrchestrateAiReplyInput): Promis
     if (escalationAgent) {
       const escalatedReply = await generateAiReply(escalationAgent, context);
       if (escalatedReply.status === 'generated') {
-        return { kind: 'reply', agent: escalationAgent, text: escalatedReply.text };
+        return guardGeneratedText(input.businessId, escalationAgent, escalatedReply.text);
       }
       return { kind: 'unavailable', agent: escalationAgent, reason: escalatedReply.reason };
     }

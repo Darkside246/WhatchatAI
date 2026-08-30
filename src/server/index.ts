@@ -2161,6 +2161,7 @@ const createAgentSchema = z.object({
   specialization: z.string().trim().min(1).nullish(),
   triggerKeywords: z.array(z.string().trim().min(1)).max(50).optional(),
   blockedKeywords: z.array(z.string().trim().min(1)).max(50).optional(),
+  protectedFacts: z.array(z.string().trim().min(1)).max(50).optional(),
   responseDelaySeconds: z.number().int().min(0).max(300).optional(),
   parentAgentId: z.string().uuid().nullish(),
   escalateToAgentId: z.string().uuid().nullish(),

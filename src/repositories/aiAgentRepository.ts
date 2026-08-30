@@ -36,6 +36,8 @@ export interface AiAgentRecord {
   specialization: string | null;
   triggerKeywords: string[];
   blockedKeywords: string[];
+  /** Real facts (names, school, address, etc.) that must never appear in an AI-generated reply - enforced by outboundLeakGuard.ts, not just a prompt instruction. */
+  protectedFacts: string[];
   responseDelaySeconds: number;
   parentAgentId: string | null;
   escalateToAgentId: string | null;
@@ -66,6 +68,7 @@ interface AiAgentRow {
   specialization: string | null;
   trigger_keywords: string[];
   blocked_keywords: string[];
+  protected_facts: string[];
   response_delay_seconds: number;
   parent_agent_id: string | null;
   escalate_to_agent_id: string | null;
@@ -96,6 +99,7 @@ function toRecord(row: AiAgentRow): AiAgentRecord {
     specialization: row.specialization,
     triggerKeywords: row.trigger_keywords ?? [],
     blockedKeywords: row.blocked_keywords ?? [],
+    protectedFacts: row.protected_facts ?? [],
     responseDelaySeconds: row.response_delay_seconds,
     parentAgentId: row.parent_agent_id,
     escalateToAgentId: row.escalate_to_agent_id,
@@ -125,6 +129,7 @@ export interface CreateAiAgentInput {
   specialization?: string | null | undefined;
   triggerKeywords?: string[] | undefined;
   blockedKeywords?: string[] | undefined;
+  protectedFacts?: string[] | undefined;
   responseDelaySeconds?: number | undefined;
   parentAgentId?: string | null | undefined;
   escalateToAgentId?: string | null | undefined;
@@ -142,9 +147,9 @@ export class AiAgentRepository {
       `INSERT INTO ai_agents
          (business_id, name, description, persona, tone, language, system_instruction,
           greeting, business_context, response_style, human_takeover_policy,
-          category, specialization, trigger_keywords, blocked_keywords,
+          category, specialization, trigger_keywords, blocked_keywords, protected_facts,
           response_delay_seconds, parent_agent_id, escalate_to_agent_id, priority)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        RETURNING *`,
       [
         input.businessId,
@@ -162,6 +167,7 @@ export class AiAgentRepository {
         input.specialization ?? null,
         JSON.stringify(input.triggerKeywords ?? []),
         JSON.stringify(input.blockedKeywords ?? []),
+        JSON.stringify(input.protectedFacts ?? []),
         input.responseDelaySeconds ?? 0,
         input.parentAgentId ?? null,
         input.escalateToAgentId ?? null,
@@ -185,8 +191,8 @@ export class AiAgentRepository {
          system_instruction = $7, greeting = $8, business_context = $9,
          response_style = $10, human_takeover_policy = $11, category = $12,
          specialization = $13, trigger_keywords = $14, blocked_keywords = $15,
-         response_delay_seconds = $16, parent_agent_id = $17,
-         escalate_to_agent_id = $18, priority = $19, updated_at = now()
+         protected_facts = $16, response_delay_seconds = $17, parent_agent_id = $18,
+         escalate_to_agent_id = $19, priority = $20, updated_at = now()
        WHERE id = $1 AND deleted_at IS NULL
        RETURNING *`,
       [
@@ -205,6 +211,7 @@ export class AiAgentRepository {
         input.specialization ?? null,
         JSON.stringify(input.triggerKeywords ?? []),
         JSON.stringify(input.blockedKeywords ?? []),
+        JSON.stringify(input.protectedFacts ?? []),
         input.responseDelaySeconds ?? 0,
         input.parentAgentId ?? null,
         input.escalateToAgentId ?? null,

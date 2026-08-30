@@ -700,6 +700,8 @@ export interface AiAgentSummary {
   specialization: string | null;
   triggerKeywords: string[];
   blockedKeywords: string[];
+  /** Real facts that must never appear in an AI-generated reply - enforced automatically, not just a prompt instruction. */
+  protectedFacts: string[];
   responseDelaySeconds: number;
   parentAgentId: string | null;
   escalateToAgentId: string | null;
@@ -731,6 +733,7 @@ export interface CreateAgentBody {
   specialization?: string | null;
   triggerKeywords?: string[];
   blockedKeywords?: string[];
+  protectedFacts?: string[];
   responseDelaySeconds?: number;
   parentAgentId?: string | null;
   escalateToAgentId?: string | null;
