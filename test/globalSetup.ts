@@ -17,7 +17,22 @@ function redisDatabaseIndex(url: string): number {
   return Number(new URL(url).pathname.replace('/', '')) || 0;
 }
 
+/**
+ * Media-storage isolation, same reasoning as the Redis isolation below: a
+ * test run must never write real files into MEDIA_STORAGE_DIR from .env -
+ * that now points at one folder shared between this machine's two
+ * checkouts specifically so real dev media is never orphaned from its DB
+ * row (see .env's own doc comment). A test run sharing that folder would
+ * pollute it with disposable test debris, which is exactly the problem
+ * that shared path was introduced to stop happening to *real* media.
+ * Unconditionally redirected to a dedicated, checkout-local directory -
+ * there is no legitimate reason a test run would want anything else.
+ */
+const TEST_MEDIA_STORAGE_DIR = './data/media-storage-test';
+
 export default async function globalSetup(): Promise<void> {
+  process.env.MEDIA_STORAGE_DIR = TEST_MEDIA_STORAGE_DIR;
+
   const configured = process.env.REDIS_URL;
   if (!configured || redisDatabaseIndex(configured) === 0) {
     process.env.REDIS_URL = DEFAULT_TEST_REDIS_URL;
