@@ -268,6 +268,10 @@ async function tryHandleOperatorMessage(params: {
   return false;
 }
 
+// Used when an agent's own blockedReplyMessage is unset - a business-neutral
+// line, never AI-generated, so it can never itself leak anything.
+const DEFAULT_BLOCKED_REPLY_MESSAGE = 'Let me get someone from the team to help with that.';
+
 /**
  * Centralized "which agent, given what context, says what" decision - see
  * src/services/ai/aiOrchestrator.ts - plus every real side effect that
@@ -455,7 +459,7 @@ async function runAiHandoff(params: {
         chatId,
         idempotencyKey: `ai-reply-blocked-fallback:${messageId}`,
         messageType: 'text',
-        text: 'Let me get someone from the team to help with that.',
+        text: outcome.agent.blockedReplyMessage?.trim() || DEFAULT_BLOCKED_REPLY_MESSAGE,
         requestedBy: 'system',
       });
     } catch (error) {

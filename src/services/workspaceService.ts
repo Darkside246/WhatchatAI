@@ -295,6 +295,8 @@ export interface CreateAgentInput {
   specialization?: string | null | undefined;
   triggerKeywords?: string[] | undefined;
   blockedKeywords?: string[] | undefined;
+  protectedFacts?: string[] | undefined;
+  blockedReplyMessage?: string | null | undefined;
   responseDelaySeconds?: number | undefined;
   parentAgentId?: string | null | undefined;
   escalateToAgentId?: string | null | undefined;

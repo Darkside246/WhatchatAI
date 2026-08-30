@@ -702,6 +702,8 @@ export interface AiAgentSummary {
   blockedKeywords: string[];
   /** Real facts that must never appear in an AI-generated reply - enforced automatically, not just a prompt instruction. */
   protectedFacts: string[];
+  /** Sent to the customer when a reply is blocked. Null means the app's built-in default message is used. */
+  blockedReplyMessage: string | null;
   responseDelaySeconds: number;
   parentAgentId: string | null;
   escalateToAgentId: string | null;
@@ -716,6 +718,12 @@ export interface RoutingPreviewResult {
   reason: string;
   agentId: string | null;
   matchedKeyword: string | null;
+}
+
+export interface ProtectedFactsTestResult {
+  allowed: boolean;
+  eventType: 'ai_output_leak_blocked' | 'ai_output_leak_check_unavailable' | 'ai_output_leak_pass';
+  reason: string | null;
 }
 
 export interface CreateAgentBody {
@@ -734,6 +742,7 @@ export interface CreateAgentBody {
   triggerKeywords?: string[];
   blockedKeywords?: string[];
   protectedFacts?: string[];
+  blockedReplyMessage?: string | null;
   responseDelaySeconds?: number;
   parentAgentId?: string | null;
   escalateToAgentId?: string | null;
@@ -1022,6 +1031,12 @@ export const api = {
     request<void>(`/workspace/agents/${id}/position`, { method: 'PATCH', body: JSON.stringify({ x, y }) }),
   previewAgentRouting: (text: string) =>
     request<RoutingPreviewResult>('/workspace/agents/routing-preview', { method: 'POST', body: JSON.stringify({ text }) }),
+  /** Tests a (possibly unsaved) draft Protected Facts list against a sample reply - never persists anything. */
+  testProtectedFacts: (protectedFacts: string[], sampleReply: string) =>
+    request<ProtectedFactsTestResult>('/workspace/agents/protected-facts/test', {
+      method: 'POST',
+      body: JSON.stringify({ protectedFacts, sampleReply }),
+    }),
   updateAgentStatus: (id: string, status: AiAgentSummary['status']) =>
     request<{ agent: AiAgentSummary }>(`/workspace/agents/${id}/status`, {
       method: 'PATCH',

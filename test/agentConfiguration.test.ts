@@ -22,6 +22,8 @@ describe('AI agent configuration (real persisted config, real tenant isolation)'
     const created = await workspaceService.createAgent(businessId, { name: 'Front desk' });
     expect(created.category).toBe('general');
     expect(created.triggerKeywords).toEqual([]);
+    expect(created.protectedFacts).toEqual([]);
+    expect(created.blockedReplyMessage).toBeNull();
     expect(created.responseDelaySeconds).toBe(0);
 
     const updated = await workspaceService.updateAgent(businessId, created.id, {
@@ -32,6 +34,8 @@ describe('AI agent configuration (real persisted config, real tenant isolation)'
       tone: 'reassuring',
       triggerKeywords: ['leak', 'burst', 'flood'],
       blockedKeywords: ['refund', 'legal'],
+      protectedFacts: ['Hasani', 'Hachiko'],
+      blockedReplyMessage: 'One of our plumbers will call you back shortly.',
       responseDelaySeconds: 12,
       priority: 50,
     });
@@ -41,6 +45,8 @@ describe('AI agent configuration (real persisted config, real tenant isolation)'
     expect(updated.specialization).toBe('emergency callouts only');
     expect(updated.triggerKeywords).toEqual(['leak', 'burst', 'flood']);
     expect(updated.blockedKeywords).toEqual(['refund', 'legal']);
+    expect(updated.protectedFacts).toEqual(['Hasani', 'Hachiko']);
+    expect(updated.blockedReplyMessage).toBe('One of our plumbers will call you back shortly.');
     expect(updated.responseDelaySeconds).toBe(12);
     expect(updated.priority).toBe(50);
 
@@ -48,6 +54,8 @@ describe('AI agent configuration (real persisted config, real tenant isolation)'
     const reloaded = (await workspaceService.listAgents(businessId)).find((agent) => agent.id === created.id);
     expect(reloaded?.category).toBe('plumbing');
     expect(reloaded?.triggerKeywords).toEqual(['leak', 'burst', 'flood']);
+    expect(reloaded?.protectedFacts).toEqual(['Hasani', 'Hachiko']);
+    expect(reloaded?.blockedReplyMessage).toBe('One of our plumbers will call you back shortly.');
   });
 
   it('refuses to update an agent belonging to a different business', async () => {

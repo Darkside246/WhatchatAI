@@ -38,6 +38,8 @@ export interface AiAgentRecord {
   blockedKeywords: string[];
   /** Real facts (names, school, address, etc.) that must never appear in an AI-generated reply - enforced by outboundLeakGuard.ts, not just a prompt instruction. */
   protectedFacts: string[];
+  /** Sent to the customer when the Outbound Leak Guard blocks a reply. Null means "use the built-in default" (see incomingMessagesWorker.ts). */
+  blockedReplyMessage: string | null;
   responseDelaySeconds: number;
   parentAgentId: string | null;
   escalateToAgentId: string | null;
@@ -69,6 +71,7 @@ interface AiAgentRow {
   trigger_keywords: string[];
   blocked_keywords: string[];
   protected_facts: string[];
+  blocked_reply_message: string | null;
   response_delay_seconds: number;
   parent_agent_id: string | null;
   escalate_to_agent_id: string | null;
@@ -100,6 +103,7 @@ function toRecord(row: AiAgentRow): AiAgentRecord {
     triggerKeywords: row.trigger_keywords ?? [],
     blockedKeywords: row.blocked_keywords ?? [],
     protectedFacts: row.protected_facts ?? [],
+    blockedReplyMessage: row.blocked_reply_message,
     responseDelaySeconds: row.response_delay_seconds,
     parentAgentId: row.parent_agent_id,
     escalateToAgentId: row.escalate_to_agent_id,
@@ -130,6 +134,7 @@ export interface CreateAiAgentInput {
   triggerKeywords?: string[] | undefined;
   blockedKeywords?: string[] | undefined;
   protectedFacts?: string[] | undefined;
+  blockedReplyMessage?: string | null | undefined;
   responseDelaySeconds?: number | undefined;
   parentAgentId?: string | null | undefined;
   escalateToAgentId?: string | null | undefined;
@@ -148,8 +153,8 @@ export class AiAgentRepository {
          (business_id, name, description, persona, tone, language, system_instruction,
           greeting, business_context, response_style, human_takeover_policy,
           category, specialization, trigger_keywords, blocked_keywords, protected_facts,
-          response_delay_seconds, parent_agent_id, escalate_to_agent_id, priority)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+          blocked_reply_message, response_delay_seconds, parent_agent_id, escalate_to_agent_id, priority)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
        RETURNING *`,
       [
         input.businessId,
@@ -168,6 +173,7 @@ export class AiAgentRepository {
         JSON.stringify(input.triggerKeywords ?? []),
         JSON.stringify(input.blockedKeywords ?? []),
         JSON.stringify(input.protectedFacts ?? []),
+        input.blockedReplyMessage ?? null,
         input.responseDelaySeconds ?? 0,
         input.parentAgentId ?? null,
         input.escalateToAgentId ?? null,
@@ -191,8 +197,8 @@ export class AiAgentRepository {
          system_instruction = $7, greeting = $8, business_context = $9,
          response_style = $10, human_takeover_policy = $11, category = $12,
          specialization = $13, trigger_keywords = $14, blocked_keywords = $15,
-         protected_facts = $16, response_delay_seconds = $17, parent_agent_id = $18,
-         escalate_to_agent_id = $19, priority = $20, updated_at = now()
+         protected_facts = $16, blocked_reply_message = $17, response_delay_seconds = $18,
+         parent_agent_id = $19, escalate_to_agent_id = $20, priority = $21, updated_at = now()
        WHERE id = $1 AND deleted_at IS NULL
        RETURNING *`,
       [
@@ -212,6 +218,7 @@ export class AiAgentRepository {
         JSON.stringify(input.triggerKeywords ?? []),
         JSON.stringify(input.blockedKeywords ?? []),
         JSON.stringify(input.protectedFacts ?? []),
+        input.blockedReplyMessage ?? null,
         input.responseDelaySeconds ?? 0,
         input.parentAgentId ?? null,
         input.escalateToAgentId ?? null,

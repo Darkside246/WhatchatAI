@@ -107,6 +107,7 @@ import {
   isInvalidPromptOptimizationError,
   isPromptOptimizationAlreadyDecidedError,
 } from '../services/ai/promptOptimizationService.js';
+import { runOutboundLeakGuard } from '../security/sentinel/outboundLeakGuard.js';
 import {
   createCampaign,
   listCampaigns,
@@ -2162,6 +2163,7 @@ const createAgentSchema = z.object({
   triggerKeywords: z.array(z.string().trim().min(1)).max(50).optional(),
   blockedKeywords: z.array(z.string().trim().min(1)).max(50).optional(),
   protectedFacts: z.array(z.string().trim().min(1)).max(50).optional(),
+  blockedReplyMessage: z.string().trim().min(1).max(500).nullish(),
   responseDelaySeconds: z.number().int().min(0).max(300).optional(),
   parentAgentId: z.string().uuid().nullish(),
   escalateToAgentId: z.string().uuid().nullish(),
@@ -2258,6 +2260,36 @@ app.post('/api/workspace/agents/routing-preview', requireWorkspaceContext, requi
     matchedKeyword: decision.outcome === 'no_agent' ? null : decision.matchedKeyword,
   });
 });
+
+const testProtectedFactsSchema = z.object({
+  protectedFacts: z.array(z.string().trim().min(1)).max(50),
+  sampleReply: z.string().trim().min(1).max(2000),
+});
+
+/**
+ * Lets an operator check a draft (possibly unsaved) Protected Facts list
+ * against a sample reply before hitting Save - calls the exact same
+ * runOutboundLeakGuard the real Outbound Leak Guard uses
+ * (src/security/sentinel/outboundLeakGuard.ts), so the preview can never
+ * drift from real behavior. Deliberately un-scoped to any saved agent
+ * (no :agentId, nothing read from or written to the database, no
+ * security_audit_logs row) - a test call must never look like a real
+ * blocked-reply incident. Layered under expensiveActionLimiter like every
+ * other real-Gemini-call test route (gemini/test, email/test,
+ * integrations/goose/test) since Stage 2 is a real API call.
+ */
+app.post(
+  '/api/workspace/agents/protected-facts/test',
+  expensiveActionLimiter,
+  requireWorkspaceContext,
+  requirePermission('ai.edit'),
+  async (req, res) => {
+    const parsed = testProtectedFactsSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_TEST_INPUT', details: parsed.error.flatten() });
+    const verdict = await runOutboundLeakGuard(parsed.data.sampleReply, parsed.data.protectedFacts);
+    return res.status(200).json(verdict);
+  },
+);
 
 const updateAgentStatusSchema = z.object({
   status: z.enum(['ACTIVE', 'PAUSED', 'ARCHIVED']),

@@ -49,6 +49,7 @@ interface AgentForm {
   triggerKeywords: string;
   blockedKeywords: string;
   protectedFacts: string;
+  blockedReplyMessage: string;
   responseDelaySeconds: number;
   priority: number;
   parentAgentId: string;
@@ -71,6 +72,7 @@ const EMPTY_FORM: AgentForm = {
   triggerKeywords: '',
   blockedKeywords: '',
   protectedFacts: '',
+  blockedReplyMessage: '',
   responseDelaySeconds: 0,
   priority: 0,
   parentAgentId: '',
@@ -94,6 +96,7 @@ function toForm(agent: AiAgentSummary): AgentForm {
     triggerKeywords: agent.triggerKeywords.join(', '),
     blockedKeywords: agent.blockedKeywords.join(', '),
     protectedFacts: agent.protectedFacts.join(', '),
+    blockedReplyMessage: agent.blockedReplyMessage ?? '',
     responseDelaySeconds: agent.responseDelaySeconds,
     priority: agent.priority,
     parentAgentId: agent.parentAgentId ?? '',
@@ -126,6 +129,7 @@ function toBody(form: AgentForm): CreateAgentBody {
     triggerKeywords: parseKeywords(form.triggerKeywords),
     blockedKeywords: parseKeywords(form.blockedKeywords),
     protectedFacts: parseKeywords(form.protectedFacts),
+    blockedReplyMessage: text(form.blockedReplyMessage),
     responseDelaySeconds: form.responseDelaySeconds,
     priority: form.priority,
     parentAgentId: form.parentAgentId || null,
@@ -173,6 +177,28 @@ function AgentEditor({
   onCancel: () => void;
 }) {
   const restricted = ADVICE_RESTRICTED_CATEGORIES.includes(form.category);
+
+  const [testReply, setTestReply] = useState('');
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+
+  async function handleTestReply() {
+    if (!testReply.trim()) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await api.testProtectedFacts(parseKeywords(form.protectedFacts), testReply.trim());
+      setTestResult(
+        result.allowed
+          ? { kind: 'ok', text: result.eventType === 'ai_output_leak_check_unavailable' ? `Would be allowed through (${result.reason ?? 'check unavailable'}).` : 'Would be allowed through - no protected fact detected.' }
+          : { kind: 'error', text: `Would be blocked: ${result.reason ?? 'matches a protected fact'}` },
+      );
+    } catch (err) {
+      setTestResult({ kind: 'error', text: err instanceof ApiError ? err.message : 'The test failed.' });
+    } finally {
+      setTesting(false);
+    }
+  }
 
   return (
     <form onSubmit={onSubmit} className="mx-auto max-w-3xl space-y-6">
@@ -267,6 +293,43 @@ function AgentEditor({
             className={FIELD}
           />
         </Field>
+        <Field
+          label="Message when a reply is blocked"
+          hint="Sent to the customer instead of a blocked reply, so the conversation doesn't just go silent. Leave blank to use the default below."
+        >
+          <input
+            value={form.blockedReplyMessage}
+            onChange={(e) => setForm({ ...form, blockedReplyMessage: e.target.value })}
+            placeholder="Let me get someone from the team to help with that."
+            maxLength={500}
+            className={FIELD}
+          />
+        </Field>
+        <div className="rounded-lg border border-border-subtle bg-surface-2 p-3">
+          <p className="text-caption font-medium text-fg-secondary">Test a reply</p>
+          <p className="mt-0.5 text-meta text-fg-muted">
+            Paste a sample reply to check it against the Protected Facts list above - before saving, and before a real customer sees it.
+          </p>
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+            <input
+              value={testReply}
+              onChange={(e) => setTestReply(e.target.value)}
+              placeholder="e.g. Nah that was Hasani on your phone!"
+              className={`${FIELD} flex-1`}
+            />
+            <button
+              type="button"
+              onClick={() => void handleTestReply()}
+              disabled={testing || !testReply.trim()}
+              className="control-sm shrink-0 border border-border-subtle font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
+            >
+              {testing ? 'Checking…' : 'Check'}
+            </button>
+          </div>
+          {testResult && (
+            <p className={`mt-2 text-caption ${testResult.kind === 'ok' ? 'text-success' : 'text-error'}`}>{testResult.text}</p>
+          )}
+        </div>
       </section>
 
       <section className="space-y-4 rounded-xl border border-border-subtle bg-surface-1 p-5">
