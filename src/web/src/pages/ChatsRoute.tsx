@@ -8,10 +8,37 @@ import { InboxNavRail, type InboxView } from '../components/InboxNavRail.js';
 import { CallHistoryPanel } from '../components/CallHistoryPanel.js';
 import { StatusesPanel } from '../components/StatusesPanel.js';
 
+const DETAIL_PANEL_OPEN_KEY = 'contact_detail_panel_open';
+
+/** Hidden by default - the panel takes real horizontal space every chat had to share before, for information most messages never need. Persisted per-browser so a deliberate "keep it open" choice survives a reload. */
+function getDetailPanelOpenDefault(): boolean {
+  try {
+    return localStorage.getItem(DETAIL_PANEL_OPEN_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
 export function ChatsRoute() {
   const { chatId } = useParams<{ chatId: string }>();
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const [desktopDetailOpen, setDesktopDetailOpen] = useState(getDetailPanelOpenDefault);
   const [view, setView] = useState<InboxView>('chats');
+
+  function toggleDetailPanel() {
+    // Whichever of the two renderings (inline desktop panel vs mobile
+    // overlay) is actually visible for the current viewport is the one
+    // this has a real effect on - the other's state change is inert since
+    // its own container is hidden by the lg: breakpoint classes below.
+    setDesktopDetailOpen((open) => {
+      const next = !open;
+      try {
+        localStorage.setItem(DETAIL_PANEL_OPEN_KEY, String(next));
+      } catch {}
+      return next;
+    });
+    setMobileDetailOpen(true);
+  }
 
   return (
     <div className="flex h-full flex-1 overflow-hidden">
@@ -24,10 +51,10 @@ export function ChatsRoute() {
           />
 
           <div className={`min-w-0 flex-1 md:flex ${chatId ? 'flex' : 'hidden'}`}>
-            <ChatThread onOpenDetail={() => setMobileDetailOpen(true)} />
+            <ChatThread onOpenDetail={toggleDetailPanel} detailPanelOpen={desktopDetailOpen} />
           </div>
 
-          {chatId && (
+          {chatId && desktopDetailOpen && (
             <div className="hidden border-l border-border-subtle lg:block">
               <ContactDetailPanel />
             </div>

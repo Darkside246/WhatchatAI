@@ -398,9 +398,11 @@ function revokeLabel(message: WorkspaceMessage): string {
 
 interface Props {
   onOpenDetail?: () => void;
+  /** Desktop-only - whether the inline detail panel (ChatsRoute) is currently open, purely to label this button correctly. The mobile overlay always opens fresh via onOpenDetail regardless of this value. */
+  detailPanelOpen?: boolean;
 }
 
-export function ChatThread({ onOpenDetail }: Props) {
+export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   const { theme } = useTheme();
   const doodleClass = THEMES.find((t) => t.id === theme)?.doodleClass ?? 'chat-sleek-bg';
   const { chatId } = useParams<{ chatId: string }>();
@@ -849,9 +851,11 @@ export function ChatThread({ onOpenDetail }: Props) {
         <button
           type="button"
           onClick={onOpenDetail}
-          className="rounded-md px-2 py-1 text-caption text-fg-muted hover:bg-surface-2 hover:text-fg lg:hidden"
+          className={`rounded-md px-2 py-1 text-caption font-medium hover:bg-surface-2 ${
+            detailPanelOpen ? 'text-accent hover:text-accent' : 'text-fg-muted hover:text-fg'
+          }`}
         >
-          Details
+          {detailPanelOpen ? 'Hide details' : 'Details'}
         </button>
       </div>
 
