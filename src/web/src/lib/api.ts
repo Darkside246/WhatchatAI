@@ -1333,6 +1333,8 @@ export const api = {
   sendInvoice: (id: string) => request<{ invoice: InvoiceDto }>(`/invoices/${id}/send`, { method: 'POST' }),
   markInvoicePaid: (id: string) => request<{ invoice: InvoiceDto }>(`/invoices/${id}/pay`, { method: 'POST' }),
   cancelInvoice: (id: string) => request<{ invoice: InvoiceDto }>(`/invoices/${id}/cancel`, { method: 'POST' }),
+  voidInvoice: (id: string) => request<{ invoice: InvoiceDto }>(`/invoices/${id}/void`, { method: 'POST' }),
+  deleteInvoice: (id: string) => request<Record<string, never>>(`/invoices/${id}`, { method: 'DELETE' }),
   invoiceHtmlUrl: (id: string) => `/api/invoices/${id}/html`,
 
   // ── Email OAuth ────────────────────────────────────────────────────────────

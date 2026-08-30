@@ -47,10 +47,46 @@ export class InvoiceService {
     return this.repo.updateStatus(businessId, invoiceId, 'PAID');
   }
 
+  /**
+   * Pre-send cancellation only (DRAFT/PENDING_APPROVAL/APPROVED) - matches
+   * how real invoicing software (QuickBooks, Zoho) draws this line:
+   * nothing has reached the customer yet, so cancelling is an honest "this
+   * never happened." Once SENT/OVERDUE, use voidInvoice() instead - the
+   * customer has already seen a real document with this invoice number, so
+   * silently cancelling it would misrepresent what actually occurred.
+   */
   async cancel(businessId: string, invoiceId: string): Promise<InvoiceRecord | null> {
     const existing = await this.repo.findById(businessId, invoiceId);
-    if (!existing || ['PAID', 'VOID', 'CANCELLED'].includes(existing.status)) return null;
+    if (!existing || !['DRAFT', 'PENDING_APPROVAL', 'APPROVED'].includes(existing.status)) return null;
     return this.repo.updateStatus(businessId, invoiceId, 'CANCELLED');
+  }
+
+  /**
+   * Post-send nullification (SENT/OVERDUE only) - the invoice number and
+   * record stay visible in history (never deleted), just marked void, the
+   * same distinction QuickBooks/Zoho make between an unsent draft and an
+   * already-issued document. A PAID invoice can never be voided here - a
+   * real payment needs a credit note / refund process, which this app does
+   * not yet have, not a status flip that would misrepresent real money
+   * that already moved.
+   */
+  async voidInvoice(businessId: string, invoiceId: string): Promise<InvoiceRecord | null> {
+    const existing = await this.repo.findById(businessId, invoiceId);
+    if (!existing || !['SENT', 'OVERDUE'].includes(existing.status)) return null;
+    return this.repo.updateStatus(businessId, invoiceId, 'VOID');
+  }
+
+  /**
+   * Real, permanent deletion - DRAFT only. Nothing has ever left this
+   * system for a draft (no customer has seen it, no invoice-number gap is
+   * created by removing it - see invoice_number_sequences), so there is no
+   * accounting-integrity reason to keep it around, unlike every later
+   * status.
+   */
+  async remove(businessId: string, invoiceId: string): Promise<boolean> {
+    const existing = await this.repo.findById(businessId, invoiceId);
+    if (!existing || existing.status !== 'DRAFT') return false;
+    return this.repo.delete(businessId, invoiceId);
   }
 
   async updateDetails(

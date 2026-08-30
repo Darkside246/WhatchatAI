@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Plus, Receipt, FileText, CheckSquare, Send, DollarSign, X, Eye } from 'lucide-react';
+import { Plus, Receipt, FileText, CheckSquare, Send, DollarSign, X, Eye, Trash2, Ban } from 'lucide-react';
 import { api, ApiError, type InvoiceDto, type InvoiceLineItemDto, type CreateInvoiceInput } from '../lib/api.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -205,10 +205,11 @@ function CreateInvoiceModal({ onClose, onCreated }: { onClose: () => void; onCre
 
 // ── Detail panel ──────────────────────────────────────────────────────────────
 
-function InvoiceDetailPanel({ invoice, lineItems, onUpdate, onClose }: {
+function InvoiceDetailPanel({ invoice, lineItems, onUpdate, onDeleted, onClose }: {
   invoice: InvoiceDto;
   lineItems: InvoiceLineItemDto[];
   onUpdate: (inv: InvoiceDto) => void;
+  onDeleted: (id: string) => void;
   onClose: () => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
@@ -227,13 +228,34 @@ function InvoiceDetailPanel({ invoice, lineItems, onUpdate, onClose }: {
     }
   }
 
+  async function handleDelete() {
+    if (!window.confirm(`Permanently delete draft ${invoice.invoiceNumber}? This cannot be undone.`)) return;
+    setBusy('Delete');
+    setErr(null);
+    try {
+      await api.deleteInvoice(invoice.id);
+      onDeleted(invoice.id);
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Failed to delete.');
+      setBusy(null);
+    }
+  }
+
   const Icon = DOC_ICON[invoice.documentType] ?? Receipt;
 
   const canSubmit = invoice.status === 'DRAFT';
   const canApprove = invoice.status === 'PENDING_APPROVAL';
   const canSend = invoice.status === 'APPROVED';
   const canMarkPaid = ['SENT', 'OVERDUE', 'APPROVED'].includes(invoice.status);
-  const canCancel = !['PAID', 'CANCELLED', 'VOID'].includes(invoice.status);
+  // Pre-send only - matches invoiceService.ts's cancel(). Once SENT/OVERDUE
+  // the document has already reached the customer, so voiding (not
+  // cancelling, and never deleting) is the only real option.
+  const canCancel = ['DRAFT', 'PENDING_APPROVAL', 'APPROVED'].includes(invoice.status);
+  const canVoid = ['SENT', 'OVERDUE'].includes(invoice.status);
+  // Real, permanent deletion - DRAFT only. Nothing has ever left the
+  // system for a draft, unlike every later status (see invoiceService.ts's
+  // remove()).
+  const canDelete = invoice.status === 'DRAFT';
 
   return (
     <div className="flex h-full flex-col">
@@ -339,6 +361,16 @@ function InvoiceDetailPanel({ invoice, lineItems, onUpdate, onClose }: {
               {busy === 'Cancel' ? '…' : 'Cancel'}
             </button>
           )}
+          {canVoid && (
+            <button type="button" disabled={!!busy} onClick={() => void action(() => api.voidInvoice(invoice.id), 'Void')} title="This document already reached the customer - voiding keeps the record and its number, just marks it void." className="flex items-center gap-1.5 rounded-lg border border-error/30 px-3 py-2 text-caption font-medium text-error disabled:opacity-50 hover:bg-error/10 transition-colors">
+              <Ban size={12} />{busy === 'Void' ? 'Voiding…' : 'Void'}
+            </button>
+          )}
+          {canDelete && (
+            <button type="button" disabled={!!busy} onClick={() => void handleDelete()} title="Permanently delete this draft - never sent, nothing to preserve." className="flex items-center gap-1.5 rounded-lg border border-error/30 px-3 py-2 text-caption font-medium text-error disabled:opacity-50 hover:bg-error/10 transition-colors">
+              <Trash2 size={12} />{busy === 'Delete' ? 'Deleting…' : 'Delete'}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -396,6 +428,11 @@ export function InvoicesPage() {
   function handleUpdated(inv: InvoiceDto) {
     setInvoices((prev) => prev.map((i) => (i.id === inv.id ? inv : i)));
     setSelected((prev) => (prev ? { ...prev, invoice: inv } : null));
+  }
+
+  function handleDeleted(id: string) {
+    setInvoices((prev) => prev.filter((i) => i.id !== id));
+    setSelected((prev) => (prev?.invoice.id === id ? null : prev));
   }
 
   const totals = {
@@ -517,6 +554,7 @@ export function InvoicesPage() {
                 invoice={selected.invoice}
                 lineItems={selected.lineItems}
                 onUpdate={handleUpdated}
+                onDeleted={handleDeleted}
                 onClose={() => setSelected(null)}
               />
             )}

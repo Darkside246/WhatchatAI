@@ -152,12 +152,28 @@ router.post('/:id/pay', async (req, res) => {
   return res.json({ invoice: result });
 });
 
-// POST /api/invoices/:id/cancel
+// POST /api/invoices/:id/cancel — DRAFT/PENDING_APPROVAL/APPROVED -> CANCELLED (pre-send only)
 router.post('/:id/cancel', async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
   const result = await svc.cancel(auth.businessId, req.params['id']!);
   if (!result) return res.status(404).json({ error: 'NOT_FOUND_OR_IMMUTABLE' });
   return res.json({ invoice: result });
+});
+
+// POST /api/invoices/:id/void — SENT/OVERDUE -> VOID (already reached the customer, never deleted)
+router.post('/:id/void', async (req, res) => {
+  const auth = res.locals['auth'] as AuthContext;
+  const result = await svc.voidInvoice(auth.businessId, req.params['id']!);
+  if (!result) return res.status(404).json({ error: 'NOT_FOUND_OR_IMMUTABLE' });
+  return res.json({ invoice: result });
+});
+
+// DELETE /api/invoices/:id — real, permanent deletion, DRAFT only
+router.delete('/:id', async (req, res) => {
+  const auth = res.locals['auth'] as AuthContext;
+  const deleted = await svc.remove(auth.businessId, req.params['id']!);
+  if (!deleted) return res.status(404).json({ error: 'NOT_FOUND_OR_IMMUTABLE' });
+  return res.status(204).send();
 });
 
 export { router as invoiceRouter };

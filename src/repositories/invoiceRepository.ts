@@ -206,6 +206,12 @@ export class InvoiceRepository {
     return rows[0] ?? null;
   }
 
+  /** Hard delete - line items cascade via their own ON DELETE CASCADE FK. Caller (InvoiceService.remove) is the one that enforces "DRAFT only", not this method - mirrors this repository's existing convention of raw DB ops with business rules kept at the service layer. */
+  async delete(businessId: string, invoiceId: string): Promise<boolean> {
+    const { rowCount } = await this.db.query('DELETE FROM invoices WHERE business_id = $1 AND id = $2', [businessId, invoiceId]);
+    return (rowCount ?? 0) > 0;
+  }
+
   async updateDetails(
     businessId: string,
     invoiceId: string,
