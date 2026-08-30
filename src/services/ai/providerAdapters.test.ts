@@ -272,12 +272,46 @@ describe('GeminiProvider config-rejection retry', () => {
     ).rejects.toThrow(ProviderConfigRejectedError);
   });
 
-  it('translates a bare 400 into ProviderConfigRejectedError on the tool-calling path', async () => {
+  it('translates a bare 400 into ProviderConfigRejectedError on the tool-calling path once the internal thinkingConfig-dropped retry also 400s', async () => {
+    // Two calls now, not one: generateWithTools retries once internally
+    // with thinkingConfig dropped (tools/temperature preserved - see the
+    // test below) before ever reaching asConfigRejection. Both must fail
+    // here to prove the ultimate ProviderConfigRejectedError fallback still
+    // works once that internal retry is also exhausted.
+    generateContentMock.mockRejectedValueOnce(new ApiError({ message: 'Bad Request', status: 400 }));
     generateContentMock.mockRejectedValueOnce(new ApiError({ message: 'Bad Request', status: 400 }));
     const provider = new GeminiProvider();
     await expect(
       provider.generate({ tenantId: 'tenant-1', operation: 'reply.generate', messages: [{ role: 'user', content: 'Are you open?' }], tools: [timeTool], temperature: 0.6 }),
     ).rejects.toThrow(ProviderConfigRejectedError);
+    expect(generateContentMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries once with thinkingConfig dropped (tools and temperature preserved) on a 400, and succeeds without ever reaching ProviderConfigRejectedError', async () => {
+    // The real fix: assistantModeService.ts's action tools (create_reminder)
+    // can never safely drop `tools` on a fallback retry (AiGateway itself
+    // refuses to - see aiGateway.ts), but dropping only thinkingConfig
+    // carries no such risk, and this codebase has already isolated it as
+    // (part of) the trigger for this exact class of vague Gemini 400 twice
+    // before (aiReplyService.ts's own retry).
+    generateContentMock.mockRejectedValueOnce(new ApiError({ message: 'Bad Request', status: 400 }));
+    generateContentMock.mockResolvedValueOnce({ text: 'Sure, I can do that.', functionCalls: [] });
+    const provider = new GeminiProvider();
+
+    const result = await provider.generate({
+      tenantId: 'tenant-1',
+      operation: 'assistant.chat',
+      messages: [{ role: 'user', content: 'Remind me in an hour to call John.' }],
+      tools: [timeTool],
+      temperature: 0.6,
+    });
+
+    expect(result.text).toBe('Sure, I can do that.');
+    expect(generateContentMock).toHaveBeenCalledTimes(2);
+    const secondCallConfig = generateContentMock.mock.calls[1]?.[0]?.config;
+    expect(secondCallConfig).not.toHaveProperty('thinkingConfig');
+    expect(secondCallConfig.tools).toEqual([{ functionDeclarations: [timeTool] }]); // tool contract preserved
+    expect(secondCallConfig.temperature).toBe(0.6);
   });
 
   it('does not convert an unrelated failure (503, generic error) into a config rejection', async () => {

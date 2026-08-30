@@ -91,6 +91,16 @@ interface ClassifiedContent {
 const MAX_BUFFER_SIZE = 500;
 const TEXT_PREVIEW_MAX_LENGTH = 200;
 
+/**
+ * proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE - a real,
+ * numbered enum member confirmed in Baileys' own WAProto/index.d.ts. Used
+ * as a raw numeric literal rather than importing the `proto` namespace as
+ * a runtime value: this file already imports `proto` as a type only, and
+ * nothing else in this codebase imports it as a value, so a literal here
+ * is the more surgical change.
+ */
+const PROTOCOL_MESSAGE_TYPE_GROUP_MEMBER_LABEL_CHANGE = 30;
+
 function classifyDocument(
   mimetype: string | null | undefined,
   fileName: string | null | undefined,
@@ -250,6 +260,21 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
     return { ...empty, contentType: 'interactive', textPreview: interactiveText ? truncatePreview(interactiveText) : null, fullText: interactiveText };
   }
   if (message.protocolMessage) {
+    // WhatsApp's real "member tag" feature - a group member assigns
+    // another member a short label/nickname. Was previously
+    // indistinguishable from every other protocolMessage subtype (message
+    // edits, ephemeral-setting changes, history-sync notifications, etc.),
+    // all silently collapsed into a contentless 'system' bucket - the
+    // chat UI's own generic "System message" fallback (messageBody() in
+    // ChatThread.tsx) was the only thing a user ever saw, with the real
+    // label text discarded. Populating textPreview/fullText here surfaces
+    // it through that exact same fallback path with no frontend change
+    // needed - messageBody() already prefers real text content over the
+    // generic label whenever it's present.
+    if (message.protocolMessage.type === PROTOCOL_MESSAGE_TYPE_GROUP_MEMBER_LABEL_CHANGE && message.protocolMessage.memberLabel?.label) {
+      const label = message.protocolMessage.memberLabel.label;
+      return { ...empty, contentType: 'system', textPreview: truncatePreview(`Member tag: ${label}`), fullText: `Member tag: ${label}` };
+    }
     return { ...empty, contentType: 'system' };
   }
 

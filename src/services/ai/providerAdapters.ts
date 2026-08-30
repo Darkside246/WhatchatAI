@@ -172,9 +172,24 @@ export class GeminiProvider implements RegisteredAiProvider {
       tools: [{ functionDeclarations: input.tools! }],
     };
     if (input.temperature !== undefined) config.temperature = input.temperature;
-    const response = await client.models
-      .generateContent({ model: this.model, contents, config })
-      .catch(asConfigRejection);
+    let response;
+    try {
+      response = await client.models.generateContent({ model: this.model, contents, config });
+    } catch (error) {
+      // A vague 400 with no field-level detail is a real, recurring Gemini
+      // quirk this codebase has already hit twice (see aiReplyService.ts's
+      // own retry) - both prior cases isolated thinkingConfig as (part of)
+      // the trigger. AiGateway deliberately refuses to drop `tools` on
+      // retry here (a caller requiring tool-calling must never silently
+      // get a plain-text answer that looks like it honoured the tool
+      // contract when it didn't - see aiGateway.ts's own comment), but
+      // dropping only thinkingConfig carries no such risk: it's a
+      // reasoning-budget hint, not part of what the model is being asked
+      // to do. One retry, tools/temperature/systemInstruction unchanged.
+      if (!(error instanceof ApiError) || error.status !== 400) throw error;
+      const { thinkingConfig: _unused, ...configWithoutThinking } = config;
+      response = await client.models.generateContent({ model: this.model, contents, config: configWithoutThinking }).catch(asConfigRejection);
+    }
     const toolCalls: GatewayToolCall[] | undefined = response.functionCalls?.length
       ? response.functionCalls.map((call) => ({ name: call.name ?? '', args: (call.args ?? {}) as Record<string, unknown> }))
       : undefined;
