@@ -1237,7 +1237,7 @@ function SessionsCard() {
                   {session.isCurrent && <span className="ml-1.5 rounded-full bg-success/15 px-1.5 py-0.5 text-meta font-semibold text-success">Current device</span>}
                 </p>
                 <p className="truncate text-meta text-fg-muted">
-                  Last active {formatSessionTimestamp(session.lastSeenAt)}
+                  Signed in {formatSessionTimestamp(session.createdAt)} · last active {formatSessionTimestamp(session.lastSeenAt)}
                   {session.ipAddress ? ` · ${session.ipAddress}` : ''}
                 </p>
               </div>

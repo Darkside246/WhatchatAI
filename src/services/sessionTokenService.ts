@@ -14,9 +14,23 @@ export function hashSessionToken(token: string): string {
 export function parseUserAgent(userAgent: string | null | undefined): { browser: string; os: string } {
   if (!userAgent) return { browser: 'Unknown browser', os: 'Unknown device' };
 
+  // Deliberately in this order: several Chromium-based browsers (Edge, Opera,
+  // Samsung Internet) carry "Chrome/" in their own User-Agent string for
+  // site-compatibility, so their own, more specific token must be checked
+  // first or every one of them would be misreported as plain Chrome.
+  //
+  // Real, disclosed limit this can never fully close: a growing number of
+  // browsers (Brave being the most common) deliberately send a User-Agent
+  // string byte-for-byte identical to Chrome's, specifically so a server can
+  // never tell them apart this way - it's a documented privacy feature of
+  // those browsers, not a gap in this parser. Two sessions that both say
+  // "Chrome on Windows" may genuinely be two different browsers; the
+  // creation timestamp shown alongside this label is what actually lets an
+  // operator tell such sessions apart, not the label itself.
   let browser = 'Unknown browser';
   if (/Edg\//.test(userAgent)) browser = 'Edge';
   else if (/OPR\//.test(userAgent)) browser = 'Opera';
+  else if (/SamsungBrowser\//.test(userAgent)) browser = 'Samsung Internet';
   else if (/Chrome\//.test(userAgent) && !/Chromium/.test(userAgent)) browser = 'Chrome';
   else if (/CriOS\//.test(userAgent)) browser = 'Chrome (iOS)';
   else if (/Firefox\//.test(userAgent)) browser = 'Firefox';
