@@ -22,6 +22,7 @@ import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
 import { triggerLockNow } from '../lib/lockEvents.js';
 import { LOCK_TIMEOUT_KEY } from '../components/ScreenLock.js';
+import { ALERT_POSITION_KEY, ALERT_SCALE_KEY, ALERT_SCALE_MIN, ALERT_SCALE_MAX, type AlertBannerPosition } from '../components/AlertNotifier.js';
 import { DEFAULT_ARGON2_PARAMS, generateSalt, hashPin } from '../lib/pinCrypto.js';
 import { useAuth } from '../hooks/useAuth.js';
 
@@ -862,6 +863,91 @@ function ThemeCard() {
   );
 }
 
+function getAlertPositionSetting(): AlertBannerPosition {
+  try {
+    const v = localStorage.getItem(ALERT_POSITION_KEY);
+    if (v === 'left' || v === 'right') return v;
+  } catch {}
+  return 'right';
+}
+
+function getAlertScaleSetting(): number {
+  try {
+    const n = parseFloat(localStorage.getItem(ALERT_SCALE_KEY) ?? '');
+    if (!isNaN(n) && n >= ALERT_SCALE_MIN && n <= ALERT_SCALE_MAX) return n;
+  } catch {}
+  return 1;
+}
+
+/**
+ * Controls where the pulsing "Urgent Lead Handover" banners sit and how big
+ * they render - including on the lock screen, where they render above the
+ * PIN prompt by design (background handoffs must stay visible even while
+ * locked). Saved to this browser via the same localStorage + 'storage'
+ * event pattern as the lock-timeout setting above, so AlertNotifier picks
+ * up a change live, with no reload.
+ */
+function AlertBannerCard() {
+  const [position, setPosition] = useState<AlertBannerPosition>(getAlertPositionSetting);
+  const [scale, setScale] = useState<number>(getAlertScaleSetting);
+
+  function updatePosition(next: AlertBannerPosition) {
+    setPosition(next);
+    try { localStorage.setItem(ALERT_POSITION_KEY, next); } catch {}
+    window.dispatchEvent(new StorageEvent('storage', { key: ALERT_POSITION_KEY, newValue: next }));
+  }
+
+  function updateScale(next: number) {
+    setScale(next);
+    try { localStorage.setItem(ALERT_SCALE_KEY, String(next)); } catch {}
+    window.dispatchEvent(new StorageEvent('storage', { key: ALERT_SCALE_KEY, newValue: String(next) }));
+  }
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      <h2 className="text-body font-semibold text-fg">Alerts</h2>
+      <p className="mt-1 text-caption text-fg-muted">
+        Where the urgent lead-handover banners sit and how big they render - including on the lock screen, where they always stay visible.
+      </p>
+
+      <div className="mt-4 space-y-1">
+        <label className="text-caption font-medium text-fg-secondary">Position</label>
+        <div className="inline-flex rounded-lg border border-border-subtle p-0.5">
+          {(['left', 'right'] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => updatePosition(option)}
+              className={`rounded-md px-3 py-1 text-caption font-medium capitalize transition ${
+                position === option ? 'bg-accent text-white' : 'text-fg-secondary hover:bg-surface-3'
+              }`}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-1">
+        <div className="flex items-center justify-between">
+          <label className="text-caption font-medium text-fg-secondary" htmlFor="alert-scale">Size</label>
+          <span className="text-caption text-fg-muted">{Math.round(scale * 100)}%</span>
+        </div>
+        <input
+          id="alert-scale"
+          type="range"
+          min={ALERT_SCALE_MIN}
+          max={ALERT_SCALE_MAX}
+          step={0.05}
+          value={scale}
+          onChange={(e) => updateScale(parseFloat(e.target.value))}
+          className="w-full accent-accent"
+        />
+      </div>
+    </div>
+  );
+}
+
 function AccountCard() {
   const auth = useAuth();
   const [busy, setBusy] = useState(false);
@@ -1537,8 +1623,9 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
         {view === 'appearance' && (
           <div className="space-y-4">
             <SectionTitle title="Appearance" desc="Theme is saved in this browser — applies instantly everywhere in the app." />
-            <div className="max-w-lg">
+            <div className="max-w-lg space-y-4">
               <ThemeCard />
+              <AlertBannerCard />
             </div>
           </div>
         )}

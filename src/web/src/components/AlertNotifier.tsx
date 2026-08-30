@@ -4,6 +4,30 @@ import { api, type HumanTakeoverAlertDto } from '../lib/api.js';
 
 const POLL_MS = 5000;
 
+export const ALERT_POSITION_KEY = 'alert_banner_position';
+export const ALERT_SCALE_KEY = 'alert_banner_scale';
+export type AlertBannerPosition = 'left' | 'right';
+const DEFAULT_ALERT_POSITION: AlertBannerPosition = 'right';
+const DEFAULT_ALERT_SCALE = 1;
+export const ALERT_SCALE_MIN = 0.75;
+export const ALERT_SCALE_MAX = 1.5;
+
+function getAlertPosition(): AlertBannerPosition {
+  try {
+    const v = localStorage.getItem(ALERT_POSITION_KEY);
+    if (v === 'left' || v === 'right') return v;
+  } catch {}
+  return DEFAULT_ALERT_POSITION;
+}
+
+function getAlertScale(): number {
+  try {
+    const n = parseFloat(localStorage.getItem(ALERT_SCALE_KEY) ?? '');
+    if (!isNaN(n) && n >= ALERT_SCALE_MIN && n <= ALERT_SCALE_MAX) return n;
+  } catch {}
+  return DEFAULT_ALERT_SCALE;
+}
+
 /** A short, in-browser tone via Web Audio - no external audio file or third-party fetch involved. */
 function playChime(): void {
   try {
@@ -44,7 +68,22 @@ function playChime(): void {
 export function AlertNotifier() {
   const [alerts, setAlerts] = useState<HumanTakeoverAlertDto[]>([]);
   const [dismissed, setDismissed] = useState<Record<string, string>>({});
+  const [position, setPosition] = useState<AlertBannerPosition>(getAlertPosition);
+  const [scale, setScale] = useState<number>(getAlertScale);
   const seenChatIds = useRef<Set<string>>(new Set());
+
+  // Appearance -> Alerts writes these same keys and dispatches this same
+  // event (see SettingsRoute.tsx's AlertBannerCard) - the exact pattern
+  // ScreenLock.tsx already uses for LOCK_TIMEOUT_KEY, so a change applies
+  // live without a reload.
+  useEffect(() => {
+    function onStorage(e: StorageEvent) {
+      if (e.key === ALERT_POSITION_KEY) setPosition(getAlertPosition());
+      if (e.key === ALERT_SCALE_KEY) setScale(getAlertScale());
+    }
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,12 +111,21 @@ export function AlertNotifier() {
     };
   }, []);
 
-  const visibleAlerts = alerts.filter((alert) => dismissed[alert.chatId] !== alert.triggeredAt);
+  // HIGH-urgency alerts always lead the stack, regardless of arrival order -
+  // the most urgent handoff should never be scrolled past a pile of lower ones.
+  const visibleAlerts = alerts
+    .filter((alert) => dismissed[alert.chatId] !== alert.triggeredAt)
+    .sort((a, b) => (a.urgency === b.urgency ? 0 : a.urgency === 'HIGH' ? -1 : 1));
 
   if (visibleAlerts.length === 0) return null;
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 top-0 z-[60] flex flex-col items-center gap-2 p-3">
+    <div
+      className={`pointer-events-none fixed top-4 z-[60] flex flex-col gap-2 p-3 ${
+        position === 'left' ? 'left-4 items-start' : 'right-4 items-end'
+      }`}
+      style={{ transform: `scale(${scale})`, transformOrigin: position === 'left' ? 'top left' : 'top right' }}
+    >
       {visibleAlerts.map((alert) => (
         <Link
           key={alert.chatId}
