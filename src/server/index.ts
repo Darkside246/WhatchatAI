@@ -26,6 +26,7 @@ import {
 import { whatsappOutboundMessageService, isChatNotFoundError as isOutboundChatNotFoundError } from '../services/whatsappOutboundMessageService.js';
 import { openclawAdapterRouter } from './openclawAdapterRouter.js';
 import { openclawMcpRouter } from './openclawMcpRouter.js';
+import { productAccountRouter } from './productAccountRoutes.js';
 import { mountPlatformRoutes } from './platformRoutes.js';
 import { initializePlatformFoundation } from '../services/platform/platformBootstrap.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
@@ -35,7 +36,6 @@ import { UserPreferenceRepository } from '../repositories/userPreferenceReposito
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
 import { checkRedisHealth } from '../redis/client.js';
-import { ensureDefaultBusinessProvisioned } from '../services/businessBootstrapService.js';
 import { verifyMasterKeyStability } from '../security/encryption/keyStabilityCheck.js';
 import { installCrashSafetyHandlers } from '../process/crashSafety.js';
 import { syncContactProfilePicture } from '../services/profilePictureSyncService.js';
@@ -316,6 +316,11 @@ initializePlatformFoundation();
 // Platform routes are mounted explicitly here. Existing WhatsApp and OpenClaw routes remain separate.
 mountPlatformRoutes(app);
 
+// Real multi-tenant trial signup (POST /api/trials/register + product
+// account routes) - creates a genuinely new business per signup, unlike
+// the bootstrap-only /api/auth/register below. See productAccountRoutes.ts.
+app.use('/api', productAccountRouter);
+
 
 // OpenClaw's own tool-call adapter - authenticates via a per-cell
 // callback token (Bearer), never the session-cookie `requireAuth` below.
@@ -460,7 +465,8 @@ app.post('/api/auth/logout', async (req, res) => {
 
 app.get('/api/auth/me', requireAuth, async (_req, res) => {
   const auth = res.locals.auth as AuthContext;
-  const business = await ensureDefaultBusinessProvisioned();
+  const business = await new BusinessRepository(pool).findById(auth.businessId);
+  if (!business) return res.status(404).json({ error: 'BUSINESS_NOT_FOUND' });
   const paResult = await pool.query<{ product_key: string }>(
     `SELECT pc.product_key FROM product_accounts pa
        JOIN product_catalog pc ON pa.product_id = pc.id

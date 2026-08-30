@@ -7,13 +7,14 @@ import { BusinessMembershipRepository, type BusinessMembershipRecord } from '../
 import { SessionRepository, type SessionRecord } from '../repositories/sessionRepository.js';
 import { UserPreferenceRepository } from '../repositories/userPreferenceRepository.js';
 import { AuthLoginAttemptRepository } from '../repositories/authLoginAttemptRepository.js';
-import type { BusinessRecord } from '../repositories/businessRepository.js';
+import { BusinessRepository, type BusinessRecord } from '../repositories/businessRepository.js';
 
 const userRepository = new UserRepository(pool);
 const membershipRepository = new BusinessMembershipRepository(pool);
 const sessionRepository = new SessionRepository(pool);
 const preferenceRepository = new UserPreferenceRepository(pool);
 const loginAttemptRepository = new AuthLoginAttemptRepository(pool);
+const businessRepository = new BusinessRepository(pool);
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const LAST_SEEN_TOUCH_THRESHOLD_MS = 60 * 1000;
@@ -70,7 +71,8 @@ export async function login(email: string, password: string, device: DeviceConte
   await loginAttemptRepository.record(normalizedEmail, device.ipAddress, true);
   const membership = await membershipRepository.findFirstActiveForUser(user.id);
   if (!membership) throw new InvalidCredentialsError('This account has no active business membership.');
-  const business = await ensureDefaultBusinessProvisioned();
+  const business = await businessRepository.findById(membership.businessId);
+  if (!business) throw new InvalidCredentialsError('This account has no active business membership.');
   await userRepository.updateLastLogin(user.id);
   const session = await createSession(user.id, membership.businessId, device, 'password');
   return { user: toPublicUser(user), business, membership, token: session.token, session: session.session };

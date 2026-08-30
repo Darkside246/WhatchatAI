@@ -286,6 +286,13 @@ export interface BootstrapStatusResponse {
   registrationOpen: boolean;
 }
 
+export interface RegisterTrialResponse {
+  user: AuthUserDto;
+  productAccountId: string;
+  productKey: string;
+  trial: { id: string; startsAt: string; endsAt: string; state: string };
+}
+
 export interface AuthSessionDto {
   id: string;
   createdAt: string;
@@ -1117,6 +1124,8 @@ export const api = {
   getBootstrapStatus: () => request<BootstrapStatusResponse>('/auth/bootstrap-status'),
   registerAccount: (body: { email: string; password: string; displayName: string }) =>
     request<AuthMeResponse>('/auth/register', { method: 'POST', body: JSON.stringify(body) }),
+  registerTrial: (body: { name: string; email: string; phone: string; productKey: string }) =>
+    request<RegisterTrialResponse>('/trials/register', { method: 'POST', body: JSON.stringify(body) }),
   login: (email: string, password: string) =>
     request<AuthMeResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
   logout: () => request<{ status: string }>('/auth/logout', { method: 'POST' }),

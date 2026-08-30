@@ -16,9 +16,30 @@ import {
   isSessionNotFoundError,
 } from '../src/services/authService.js';
 import { createMember } from '../src/services/workspaceMemberService.js';
-import { resetDatabase } from './helpers.js';
+import { hashPassword } from '../src/services/passwordHashService.js';
+import { pool } from '../src/db/pool.js';
+import { resetDatabase, createTestBusiness } from './helpers.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
+
+/**
+ * A second real business with a real, known-password login - createTestUser()
+ * in helpers.ts deliberately uses a fixture (non-verifiable) password hash,
+ * which is fine for tests that never call login(), but useless here.
+ */
+async function createLoginableUser(businessId: string, email: string, password: string): Promise<void> {
+  const credential = await hashPassword(password);
+  await pool.query(
+    `INSERT INTO users (email, display_name, password_hash, password_salt, password_params)
+     VALUES ($1, 'Second Owner', $2, $3, $4)`,
+    [email, credential.hash, credential.salt, JSON.stringify(credential.params)],
+  );
+  const { rows } = await pool.query<{ id: string }>('SELECT id FROM users WHERE email = $1', [email]);
+  await pool.query(`INSERT INTO business_memberships (business_id, user_id, role, status) VALUES ($1, $2, 'OWNER', 'active')`, [
+    businessId,
+    rows[0]!.id,
+  ]);
+}
 
 describe('authService.register (the real one-time first-user bootstrap)', () => {
   beforeEach(async () => {
@@ -57,6 +78,30 @@ describe('authService.register (the real one-time first-user bootstrap)', () => 
       expect(isWeakPasswordError(error)).toBe(true);
     }
     expect(await isRegistrationOpen()).toBe(true);
+  });
+});
+
+describe('authService.login - multi-tenant business resolution', () => {
+  beforeEach(async () => {
+    await resetDatabase();
+  });
+
+  it('resolves the caller\'s OWN business, not whichever business happens to sort first - the real fix for a cross-tenant leak that was invisible with only one business in the system', async () => {
+    // Business A is created first (sorts first by created_at) - the bug
+    // this guards against silently returned Business A's data to a user
+    // who actually belongs to Business B, via ensureDefaultBusinessProvisioned()
+    // ("the first row in the table") instead of the caller's own membership.
+    const businessA = await createTestBusiness('Business A');
+    await createLoginableUser(businessA, 'owner-a@example.com', 'correcthorsebatterystaple');
+
+    const businessB = await createTestBusiness('Business B');
+    await createLoginableUser(businessB, 'owner-b@example.com', 'correcthorsebatterystaple');
+
+    const result = await login('owner-b@example.com', 'correcthorsebatterystaple', device);
+
+    expect(result.business.id).toBe(businessB);
+    expect(result.business.name).toBe('Business B');
+    expect(result.business.id).not.toBe(businessA);
   });
 });
 

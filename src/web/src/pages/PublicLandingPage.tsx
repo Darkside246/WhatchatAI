@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, Check, Loader2, QrCode, Mail, RefreshCw } from 'lucide-react';
+import { ArrowRight, Check, Loader2 } from 'lucide-react';
 import { api, ApiError } from '../lib/api.js';
+import { useAuth } from '../hooks/useAuth.js';
 
 type BusinessId = 'property' | 'food' | 'retail' | 'beauty' | 'auto' | 'health';
 
@@ -49,10 +50,11 @@ type LegalDocs = {
   privacy: { version: string; title: string } | null;
 };
 
-type FormPhase = 'form' | 'submitting' | 'qr';
+type FormPhase = 'form' | 'submitting';
 
 export function PublicLandingPage() {
   const navigate = useNavigate();
+  const auth = useAuth();
   const [selectedId, setSelectedId] = useState<BusinessId | ''>('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -61,9 +63,7 @@ export function PublicLandingPage() {
   const [marketingOptIn, setMarketingOptIn] = useState(false);
   const [legalDocs, setLegalDocs] = useState<LegalDocs>({ terms: null, privacy: null });
   const [phase, setPhase] = useState<FormPhase>('form');
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const qrRef = useRef<HTMLDivElement>(null);
 
   const selected = BUSINESSES.find((b) => b.id === selectedId) ?? null;
 
@@ -77,8 +77,20 @@ export function PublicLandingPage() {
     !!selectedId && name.trim().length > 0 && email.trim().length > 0 &&
     phone.trim().length >= 5 && agreedToTerms && phase === 'form';
 
+  /**
+   * The Terms/Privacy checkbox above is the real, sufficient consent
+   * mechanism - recordConsent() still writes the real compliance record
+   * (who agreed to which version, when, from what IP), it just no longer
+   * gates a separate QR-scanning step before the account exists. That
+   * former "Confirm your agreement" QR was never connected to WhatsApp -
+   * it encoded a link back into this app, not a Baileys pairing session -
+   * so showing it first made the real WhatsApp QR (shown automatically
+   * once registerTrial() below succeeds, via the normal onboarding gate)
+   * look like a second, later, optional step instead of the actual point
+   * of signing up.
+   */
   async function handleStart() {
-    if (!canSubmit) return;
+    if (!canSubmit || !selectedId) return;
     if (!legalDocs.terms || !legalDocs.privacy) {
       setSubmitError('Could not load legal documents. Please refresh and try again.');
       return;
@@ -88,7 +100,7 @@ export function PublicLandingPage() {
     setSubmitError(null);
 
     try {
-      const result = await api.recordConsent({
+      await api.recordConsent({
         fullName: name.trim(),
         email: email.trim(),
         phone: phone.trim(),
@@ -96,15 +108,7 @@ export function PublicLandingPage() {
         privacyVersion: legalDocs.privacy.version,
         marketingOptIn,
       });
-
-      window.localStorage.setItem('whatchat:selected-product', selectedId);
-      window.localStorage.setItem('whatchat:prefill-name', name.trim());
-      window.localStorage.setItem('whatchat:prefill-email', email.trim());
-      window.localStorage.setItem('whatchat:consent-id', result.consentId);
-
-      setQrDataUrl(result.qrCodeDataUrl);
-      setPhase('qr');
-      setTimeout(() => qrRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
+      await auth.registerTrial({ name: name.trim(), email: email.trim(), phone: phone.trim(), productKey: selectedId });
     } catch (err) {
       setPhase('form');
       setSubmitError(err instanceof ApiError ? err.message : 'Something went wrong. Please try again.');
@@ -177,10 +181,8 @@ export function PublicLandingPage() {
           )}
         </div>
 
-        {/* Right — form / QR */}
+        {/* Right — form */}
         <div className="rounded-2xl border border-border-subtle bg-surface-1 p-7 shadow-sm lg:sticky lg:top-8">
-          {phase !== 'qr' ? (
-            <>
               <h2 className="text-xl font-semibold text-fg">Start your free trial</h2>
               <p className="mt-1.5 text-caption text-fg-muted">48 hours, no credit card required.</p>
 
@@ -296,7 +298,7 @@ export function PublicLandingPage() {
                   className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl bg-accent py-3 text-body font-semibold text-white transition-opacity hover:bg-accent-dim disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {phase === 'submitting' ? (
-                    <><Loader2 size={16} className="animate-spin" aria-hidden /> Processing…</>
+                    <><Loader2 size={16} className="animate-spin" aria-hidden /> Setting up your account…</>
                   ) : (
                     <>Get started free <ArrowRight size={16} aria-hidden /></>
                   )}
@@ -309,52 +311,6 @@ export function PublicLandingPage() {
                   </button>
                 </p>
               </div>
-            </>
-          ) : (
-            /* QR confirmation panel */
-            <div ref={qrRef} className="flex flex-col items-center text-center">
-              <div className="mb-3 flex items-center gap-2 text-body font-semibold text-fg">
-                <QrCode size={18} className="text-accent" aria-hidden />
-                Confirm your agreement
-              </div>
-              <p className="mb-5 text-caption leading-5 text-fg-secondary">
-                Scan the QR code to sign your consent, or click the link in the confirmation email we just sent to <strong className="text-fg">{email}</strong>.
-              </p>
-
-              {qrDataUrl && (
-                <img
-                  src={qrDataUrl}
-                  alt="Consent confirmation QR code"
-                  className="h-52 w-52 rounded-xl border border-border-subtle"
-                />
-              )}
-
-              <div className="mt-4 flex w-full items-center gap-2 rounded-xl border border-border-subtle bg-surface-2 px-3 py-2.5 text-caption text-fg-secondary">
-                <Mail size={14} className="shrink-0 text-fg-muted" aria-hidden />
-                Check your email for a confirmation link — valid for 48 hours.
-              </div>
-
-              <div className="mt-5 w-full border-t border-border-subtle pt-5">
-                <p className="mb-3 text-caption text-fg-muted">You can also continue to account setup now. Confirmation can be completed after.</p>
-                <button
-                  type="button"
-                  onClick={() => navigate('/register')}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-accent py-3 text-body font-semibold text-white hover:bg-accent-dim"
-                >
-                  Continue to account setup
-                  <ArrowRight size={16} aria-hidden />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setPhase('form'); setQrDataUrl(null); }}
-                  className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-xl py-2 text-caption text-fg-muted hover:text-fg"
-                >
-                  <RefreshCw size={12} aria-hidden />
-                  Start over
-                </button>
-              </div>
-            </div>
-          )}
         </div>
       </section>
 
@@ -405,7 +361,7 @@ export function TrialStartPage() {
           <button type="button" onClick={() => navigate('/')} className="rounded-lg border border-border-subtle px-4 py-3 text-body font-medium hover:bg-surface-2">
             Choose another product
           </button>
-          <button type="button" onClick={() => navigate('/register')} className="flex-1 rounded-lg bg-accent px-4 py-3 text-body font-semibold text-white hover:bg-accent-dim">
+          <button type="button" onClick={() => navigate('/')} className="flex-1 rounded-lg bg-accent px-4 py-3 text-body font-semibold text-white hover:bg-accent-dim">
             Continue to account setup
           </button>
         </div>

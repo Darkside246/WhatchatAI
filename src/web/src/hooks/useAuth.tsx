@@ -13,6 +13,8 @@ export interface AuthState {
   error: string | null;
   login: (email: string, password: string) => Promise<void>;
   register: (input: { email: string; password: string; displayName: string }) => Promise<void>;
+  /** Real multi-tenant signup (POST /api/trials/register) - creates a genuinely new business, unlike register() above which is the single-install bootstrap path. No local state hand-rolling here: the route already sets a real session cookie, so this just rehydrates user/business/role via the normal refresh(). */
+  registerTrial: (input: { name: string; email: string; phone: string; productKey: string }) => Promise<void>;
   logout: () => Promise<void>;
   clearError: () => void;
   /** Re-fetches `user`/`business`/`role` from /api/auth/me - e.g. after a settings change (branding, name) that other parts of the UI (nav rail logo, brand accent color) need to pick up without a full page reload. */
@@ -82,6 +84,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const registerTrial = useCallback(async (input: { name: string; email: string; phone: string; productKey: string }) => {
+    await api.registerTrial(input);
+    await refresh();
+  }, [refresh]);
+
   const logout = useCallback(async () => {
     try {
       await api.logout();
@@ -97,8 +104,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const clearError = useCallback(() => setError(null), []);
 
   const value = useMemo<AuthState>(
-    () => ({ status, user, business, role, registrationOpen, error, login, register, logout, clearError, refresh }),
-    [status, user, business, role, registrationOpen, error, login, register, logout, clearError, refresh],
+    () => ({ status, user, business, role, registrationOpen, error, login, register, registerTrial, logout, clearError, refresh }),
+    [status, user, business, role, registrationOpen, error, login, register, registerTrial, logout, clearError, refresh],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
