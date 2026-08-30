@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useSearchParams } from 'react-router-dom';
 import { api, mediaUrl, type WorkspaceChatSummary } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
 import { Pin, Mic, Image as ImageIcon, Video, FileText, Sticker, MapPin, UserSquare, Archive } from 'lucide-react';
@@ -39,13 +39,18 @@ const URGENCY_ROW_CLASS: Record<'HIGH' | 'MEDIUM', string> = {
 // "success" is reserved for live/online/connected signals - kept distinct
 // from "accent" (the brand/interactive color used for buttons and selection).
 
-type FilterPill = 'all' | 'unread' | 'groups';
+type FilterPill = 'all' | 'unread' | 'groups' | 'needsHuman';
 
 const FILTER_PILLS: { value: FilterPill; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'unread', label: 'Unread' },
   { value: 'groups', label: 'Groups' },
+  { value: 'needsHuman', label: 'Needs human' },
 ];
+
+function isFilterPill(value: string | null): value is FilterPill {
+  return value === 'all' || value === 'unread' || value === 'groups' || value === 'needsHuman';
+}
 
 /**
  * Maps the real persisted message_type of the last message to its icon.
@@ -149,8 +154,20 @@ export function ChatListPane({ className = '' }: Props) {
   const [chats, setChats] = useState<WorkspaceChatSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState<FilterPill>('all');
+  // Initialized from ?filter=needsHuman (or any other pill value) so a link
+  // from elsewhere in the app - the Dashboard's "needs human" widgets, most
+  // of all - lands directly on the filtered view instead of the unfiltered
+  // full list, which the operator would otherwise have to hunt through by
+  // hand to find the 1-2 chats actually being pointed at.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialFilter = searchParams.get('filter');
+  const [filter, setFilterState] = useState<FilterPill>(isFilterPill(initialFilter) ? initialFilter : 'all');
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+
+  function setFilter(next: FilterPill) {
+    setFilterState(next);
+    setSearchParams(next === 'all' ? {} : { filter: next }, { replace: true });
+  }
 
   async function load() {
     try {
@@ -177,6 +194,7 @@ export function ChatListPane({ className = '' }: Props) {
     .filter((chat) => {
       if (filter === 'unread') return chat.unreadCount > 0;
       if (filter === 'groups') return chat.chatType === 'group';
+      if (filter === 'needsHuman') return chat.aiMode === 'HUMAN_TAKEOVER';
       return true;
     });
 

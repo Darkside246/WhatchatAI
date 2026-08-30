@@ -272,7 +272,7 @@ export function DashboardRoute() {
     { label: 'Total contacts',     value: overview.chats.total,       color: C_MUTED,    tooltip: `All ${overview.chats.total} contacts managed by this workspace`, nav: '/chats' },
     { label: 'Active this period', value: overview.chats.activeSince, color: C_ACCENT,   tooltip: `${overview.chats.activeSince} contacts messaged in the last ${overview.periodDays} days`, nav: '/chats' },
     { label: 'AI autopilot',       value: aiActive,                   color: C_AI_ACTIVE,tooltip: `${aiActive} contacts where AI handles replies automatically`, nav: '/chats' },
-    { label: 'Needs attention',    value: humanTakeover,              color: C_HUMAN,    tooltip: humanTakeover > 0 ? `${humanTakeover} contacts waiting on a human reply — act now` : 'No contacts need human attention', nav: '/chats' },
+    { label: 'Needs attention',    value: humanTakeover,              color: C_HUMAN,    tooltip: humanTakeover > 0 ? `${humanTakeover} contacts waiting on a human reply — act now` : 'No contacts need human attention', nav: '/chats?filter=needsHuman' },
   ];
   const pipelineMax = overview.chats.total || 1;
 
@@ -318,13 +318,17 @@ export function DashboardRoute() {
               </div>
             )}
             {needsHuman.length > 0 && (
-              <div className="flex items-center gap-3 rounded-xl border border-warning/30 bg-warning/8 px-4 py-3">
+              <button
+                type="button"
+                onClick={() => navigate('/chats?filter=needsHuman')}
+                className="flex w-full items-center gap-3 rounded-xl border border-warning/30 bg-warning/8 px-4 py-3 text-left transition-colors hover:bg-warning/15"
+              >
                 <Users size={16} className="shrink-0 text-warning" aria-hidden />
                 <p className="text-body text-fg">
                   <span className="font-semibold">{needsHuman.length} conversation{needsHuman.length !== 1 ? 's' : ''}</span>
                   {' '}the AI couldn't handle — they need a human reply now.
                 </p>
-              </div>
+              </button>
             )}
           </div>
         )}
@@ -371,7 +375,7 @@ export function DashboardRoute() {
             <p className="mb-3 text-meta text-fg-muted">How AI is currently configured across all your contacts</p>
             {chats.length === 0
               ? <p className="text-body text-fg-muted">No chats yet.</p>
-              : <DonutRing segments={donutSegs} onItemClick={() => navigate('/chats')} />
+              : <DonutRing segments={donutSegs} onItemClick={(seg) => navigate(seg.label === 'Needs human' ? '/chats?filter=needsHuman' : '/chats')} />
             }
           </div>
 
@@ -403,7 +407,7 @@ export function DashboardRoute() {
                   ) : (
                     <p className="text-caption text-fg-secondary">
                       {overview.outboundReplies.human} message{overview.outboundReplies.human !== 1 ? 's' : ''} needed a human —{' '}
-                      <button type="button" onClick={() => navigate('/chats')} className="font-medium text-accent underline-offset-2 hover:underline">
+                      <button type="button" onClick={() => navigate('/chats?filter=needsHuman')} className="font-medium text-accent underline-offset-2 hover:underline">
                         review those chats
                       </button>.
                     </p>
@@ -561,7 +565,7 @@ export function DashboardRoute() {
             )}
             {needsHuman.length > 0 && (
               <div className="border-t border-border-subtle px-4 py-2.5">
-                <button type="button" onClick={() => navigate('/chats')} className="w-full text-left">
+                <button type="button" onClick={() => navigate('/chats?filter=needsHuman')} className="w-full text-left">
                   <p className="text-caption font-semibold text-warning hover:underline underline-offset-2">
                     ⚠ {needsHuman.length} contact{needsHuman.length !== 1 ? 's' : ''} waiting on a human reply →
                   </p>

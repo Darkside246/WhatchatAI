@@ -207,10 +207,10 @@ export function AlertNotifier() {
   return (
     <div className={`pointer-events-none fixed inset-x-0 top-0 z-[60] flex p-3 ${POSITION_CONTAINER_CLASS[position]}`}>
       <div
-        className="pointer-events-auto flex w-full max-w-lg flex-col gap-1.5 rounded-2xl border border-border-subtle bg-surface-1/95 p-2 shadow-2xl backdrop-blur"
+        className="pointer-events-auto flex w-full max-w-xl flex-col gap-1.5 rounded-2xl border border-border-subtle bg-surface-1/95 p-2 shadow-2xl backdrop-blur"
         style={{ transform: `scale(${scale})`, transformOrigin: POSITION_ORIGIN[position] }}
       >
-        <div className="flex max-h-64 flex-col gap-1.5 overflow-y-auto">
+        <div className="flex max-h-80 flex-col gap-1.5 overflow-y-auto">
           {groups.map((group) => (
             <div
               key={group.key}
@@ -225,12 +225,12 @@ export function AlertNotifier() {
                 dismissGroup(group);
                 navigate(`/chats/${mostRecent(group).chatId}`);
               }}
-              className={`flex animate-pulse cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-body font-medium transition hover:animate-none ${
+              className={`flex animate-pulse cursor-pointer items-start gap-2 rounded-xl border px-3 py-2 text-body font-medium transition hover:animate-none ${
                 group.urgency === 'HIGH' ? 'border-error/60 bg-error/15 text-error' : 'border-warning/60 bg-warning/15 text-warning'
               }`}
             >
-              <span className="h-2 w-2 shrink-0 rounded-full bg-current" />
-              <span className="min-w-0 flex-1 truncate">{groupLabel(group, showIdentity)}</span>
+              <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-current" />
+              <span className="min-w-0 flex-1 whitespace-normal break-words">{groupLabel(group, showIdentity)}</span>
               <button
                 type="button"
                 title="Dismiss"
