@@ -53,6 +53,19 @@ export interface IngestedWhatsAppMessage {
   mimetype: string | null;
   fileName: string | null;
   textPreview: string | null;
+  /**
+   * The real, untruncated text/caption - what actually gets persisted as a
+   * message/status's permanent textContent (see whatsappMessagePersistenceService.ts,
+   * whatsappStatusPersistenceService.ts) and what the Sentinel screens (see
+   * incomingMessagesWorker.ts). textPreview is a separate, deliberately
+   * truncated field for lightweight UI/diagnostic previews only (the
+   * in-memory ingestion buffer, /api/whatsapp/messages/recent) - using it
+   * for persistence would silently and permanently discard everything past
+   * TEXT_PREVIEW_MAX_LENGTH, and using it for Sentinel screening would let
+   * an attacker evade the check entirely by padding the first 200
+   * characters with benign text.
+   */
+  fullText: string | null;
   ingestedAt: string;
   /**
    * Opaque, base64-encoded raw Baileys {key, message} for a downloadable
@@ -70,6 +83,7 @@ interface ClassifiedContent {
   mimetype: string | null;
   fileName: string | null;
   textPreview: string | null;
+  fullText: string | null;
   /** The fully-unwrapped message content, only set for real downloadable media types. */
   rawMediaMessage: proto.IMessage | null;
 }
@@ -129,6 +143,7 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
     mimetype: null,
     fileName: null,
     textPreview: null,
+    fullText: null,
     rawMediaMessage: null,
   };
 
@@ -140,10 +155,15 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
   const media = (raw: proto.IMessage): proto.IMessage | null => (isViewOnce ? null : raw);
 
   if (message.conversation) {
-    return { ...empty, contentType: 'text', textPreview: truncatePreview(message.conversation) };
+    return { ...empty, contentType: 'text', textPreview: truncatePreview(message.conversation), fullText: message.conversation };
   }
   if (message.extendedTextMessage?.text) {
-    return { ...empty, contentType: 'text', textPreview: truncatePreview(message.extendedTextMessage.text) };
+    return {
+      ...empty,
+      contentType: 'text',
+      textPreview: truncatePreview(message.extendedTextMessage.text),
+      fullText: message.extendedTextMessage.text,
+    };
   }
   if (message.imageMessage) {
     return {
@@ -151,6 +171,7 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
       contentType: 'image',
       mimetype: message.imageMessage.mimetype ?? null,
       textPreview: message.imageMessage.caption ? truncatePreview(message.imageMessage.caption) : null,
+      fullText: message.imageMessage.caption ?? null,
       rawMediaMessage: media(message),
     };
   }
@@ -160,6 +181,7 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
       contentType: 'video',
       mimetype: message.videoMessage.mimetype ?? null,
       textPreview: message.videoMessage.caption ? truncatePreview(message.videoMessage.caption) : null,
+      fullText: message.videoMessage.caption ?? null,
       rawMediaMessage: media(message),
     };
   }
@@ -180,6 +202,7 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
       mimetype,
       fileName,
       textPreview: message.documentMessage.caption ? truncatePreview(message.documentMessage.caption) : null,
+      fullText: message.documentMessage.caption ?? null,
       rawMediaMessage: media(message),
     };
   }
@@ -201,7 +224,7 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
     return { ...empty, contentType: 'contact' };
   }
   if (message.reactionMessage) {
-    return { ...empty, contentType: 'reaction', textPreview: message.reactionMessage.text ?? null };
+    return { ...empty, contentType: 'reaction', textPreview: message.reactionMessage.text ?? null, fullText: message.reactionMessage.text ?? null };
   }
   if (message.pollCreationMessage || message.pollCreationMessageV2 || message.pollCreationMessageV3) {
     return { ...empty, contentType: 'poll' };
@@ -212,7 +235,7 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
   if (message.buttonsMessage || message.buttonsResponseMessage || message.templateButtonReplyMessage) {
     const buttonText =
       message.buttonsResponseMessage?.selectedDisplayText ?? message.templateButtonReplyMessage?.selectedDisplayText ?? null;
-    return { ...empty, contentType: 'button', textPreview: buttonText ? truncatePreview(buttonText) : null };
+    return { ...empty, contentType: 'button', textPreview: buttonText ? truncatePreview(buttonText) : null, fullText: buttonText };
   }
   if (
     message.templateMessage ||
@@ -224,7 +247,7 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
   ) {
     const interactiveText =
       message.listResponseMessage?.title ?? message.groupInviteMessage?.groupName ?? null;
-    return { ...empty, contentType: 'interactive', textPreview: interactiveText ? truncatePreview(interactiveText) : null };
+    return { ...empty, contentType: 'interactive', textPreview: interactiveText ? truncatePreview(interactiveText) : null, fullText: interactiveText };
   }
   if (message.protocolMessage) {
     return { ...empty, contentType: 'system' };

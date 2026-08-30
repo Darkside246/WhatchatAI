@@ -255,7 +255,7 @@ export class WhatsAppMessagePersistenceService {
       senderContactId: !ingested.fromMe ? contactId : null,
       direction: ingested.fromMe ? 'outbound' : 'inbound',
       messageType: mapContentTypeToMessageType(ingested.contentType, ingested.documentSubtype),
-      textContent: ingested.textPreview,
+      textContent: ingested.fullText,
       timestamp,
       fromMe: ingested.fromMe,
       isHistorical: !ingested.isLive,

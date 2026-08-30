@@ -55,7 +55,7 @@ export async function persistStatusUpdate(
     statusId: ingested.messageId,
     publisherJid,
     statusType,
-    textContent: ingested.textPreview,
+    textContent: ingested.fullText,
     expiresAt: new Date(new Date(createdAt).getTime() + STATUS_TTL_MS).toISOString(),
   });
 

@@ -117,7 +117,11 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
       businessId,
       whatsappAccountId,
       senderJid: message.fromMe ? accountJid : (message.participant ?? message.remoteJid),
-      textContent: message.textPreview,
+      // The full, untruncated text - textPreview is capped at 200 chars for
+      // lightweight UI previews only, and screening only a preview would let
+      // an attacker evade Sentinel entirely by padding the first 200
+      // characters with benign text before the real payload.
+      textContent: message.fullText,
       mimetype: message.mimetype,
       fileName: message.fileName,
     });
