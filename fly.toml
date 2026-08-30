@@ -18,7 +18,7 @@
 #     local volume) and can scale to more than one machine if needed.
 
 app = "aegis"                 # try this first in `fly launch`; if it's taken, a variant like "aegis-app" works fine - just match whatever name you actually pick here
-primary_region = "iad"        # replace with your chosen region
+primary_region = "fra"        # Frankfurt, Germany - EU/GDPR jurisdiction, chosen deliberately over a US region for privacy
 
 [build]
 
