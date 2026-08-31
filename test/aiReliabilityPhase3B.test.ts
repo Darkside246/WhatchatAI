@@ -7,7 +7,7 @@ import { WhatsAppChatRepository } from '../src/repositories/whatsappChatReposito
 import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
 import { register } from '../src/services/authService.js';
 import { classifyAiError } from '../src/services/ai/aiErrorClassification.js';
-import { geminiCircuitBreaker, geminiConfigCircuitBreaker } from '../src/services/aiCircuitBreaker.js';
+import { getGeminiCircuitBreaker, getGeminiConfigCircuitBreaker, resetAllGeminiCircuitBreakers } from '../src/services/aiCircuitBreaker.js';
 import { buildTimeContext } from '../src/services/time/timeContext.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 import type { IngestedWhatsAppMessage } from '../src/services/whatsappMessageIngestionService.js';
@@ -233,8 +233,7 @@ describe('generateAiReply - circuit-breaker separation and one-time notification
   beforeEach(() => {
     aiReplyGenerateContentMock.mockReset();
     notifyBusinessMock.mockClear();
-    geminiCircuitBreaker.reset();
-    geminiConfigCircuitBreaker.reset();
+    resetAllGeminiCircuitBreakers();
   });
 
   afterEach(() => {
@@ -248,8 +247,8 @@ describe('generateAiReply - circuit-breaker separation and one-time notification
     await generateAiReply(fakeAgent(), fakeContext());
     await generateAiReply(fakeAgent(), fakeContext());
 
-    expect(geminiCircuitBreaker.getState()).toBe('OPEN');
-    expect(geminiConfigCircuitBreaker.getState()).toBe('CLOSED');
+    expect(getGeminiCircuitBreaker('business-1').getState()).toBe('OPEN');
+    expect(getGeminiConfigCircuitBreaker('business-1').getState()).toBe('CLOSED');
   });
 
   it('2b. a single auth (401) failure opens the config breaker immediately but never touches the capacity breaker', async () => {
@@ -257,8 +256,8 @@ describe('generateAiReply - circuit-breaker separation and one-time notification
 
     const result = await generateAiReply(fakeAgent(), fakeContext());
 
-    expect(geminiConfigCircuitBreaker.getState()).toBe('OPEN');
-    expect(geminiCircuitBreaker.getState()).toBe('CLOSED');
+    expect(getGeminiConfigCircuitBreaker('business-1').getState()).toBe('OPEN');
+    expect(getGeminiCircuitBreaker('business-1').getState()).toBe('CLOSED');
     expect(result.status).toBe('unavailable');
   });
 
@@ -269,7 +268,7 @@ describe('generateAiReply - circuit-breaker separation and one-time notification
     await generateAiReply(fakeAgent(), fakeContext());
     await generateAiReply(fakeAgent(), fakeContext());
 
-    expect(geminiCircuitBreaker.getState()).toBe('CLOSED');
+    expect(getGeminiCircuitBreaker('business-1').getState()).toBe('CLOSED');
   });
 
   it('2d. a provider_config (404) failure also opens the config breaker, not the capacity breaker', async () => {
@@ -277,8 +276,8 @@ describe('generateAiReply - circuit-breaker separation and one-time notification
 
     await generateAiReply(fakeAgent(), fakeContext());
 
-    expect(geminiConfigCircuitBreaker.getState()).toBe('OPEN');
-    expect(geminiCircuitBreaker.getState()).toBe('CLOSED');
+    expect(getGeminiConfigCircuitBreaker('business-1').getState()).toBe('OPEN');
+    expect(getGeminiCircuitBreaker('business-1').getState()).toBe('CLOSED');
   });
 
   it('2e. a malformed_request (400) failure that also fails the bare-request retry touches neither breaker', async () => {
@@ -288,8 +287,8 @@ describe('generateAiReply - circuit-breaker separation and one-time notification
 
     await generateAiReply(fakeAgent(), fakeContext());
 
-    expect(geminiCircuitBreaker.getState()).toBe('CLOSED');
-    expect(geminiConfigCircuitBreaker.getState()).toBe('CLOSED');
+    expect(getGeminiCircuitBreaker('business-1').getState()).toBe('CLOSED');
+    expect(getGeminiConfigCircuitBreaker('business-1').getState()).toBe('CLOSED');
   });
 
   it('3a. a programming-class error (a plain bug, not an ApiError) fails loud, skips Goose/escalation, and touches neither breaker', async () => {
@@ -302,8 +301,8 @@ describe('generateAiReply - circuit-breaker separation and one-time notification
       expect(result.reason).toContain('Internal error, not a provider failure');
       expect(result.skipEscalation).toBe(true);
     }
-    expect(geminiCircuitBreaker.getState()).toBe('CLOSED');
-    expect(geminiConfigCircuitBreaker.getState()).toBe('CLOSED');
+    expect(getGeminiCircuitBreaker('business-1').getState()).toBe('CLOSED');
+    expect(getGeminiConfigCircuitBreaker('business-1').getState()).toBe('CLOSED');
     // Called exactly once - a programming bug never gets a bare-request
     // retry (that mechanism only exists for a real 400 ApiError) and never
     // triggers a second attempt of any kind.
@@ -331,7 +330,7 @@ describe('generateAiReply - circuit-breaker separation and one-time notification
     expect(notifyBusinessMock).toHaveBeenCalledTimes(1);
 
     await generateAiReply(fakeAgent(), fakeContext()); // the real success - closes the config breaker
-    expect(geminiConfigCircuitBreaker.getState()).toBe('CLOSED');
+    expect(getGeminiConfigCircuitBreaker('business-1').getState()).toBe('CLOSED');
 
     await generateAiReply(fakeAgent(), fakeContext());
     expect(notifyBusinessMock).toHaveBeenCalledTimes(2);
@@ -344,7 +343,30 @@ describe('generateAiReply - circuit-breaker separation and one-time notification
     const result = await generateAiReply(fakeAgent(), fakeContext());
 
     expect(result.status).toBe('unavailable'); // the real outcome, unaffected by the notifier throwing
-    expect(geminiConfigCircuitBreaker.getState()).toBe('OPEN'); // the breaker state still recorded correctly
+    expect(getGeminiConfigCircuitBreaker('business-1').getState()).toBe('OPEN'); // the breaker state still recorded correctly
+  });
+
+  /**
+   * Regression coverage for a real reported incident: a single process-wide
+   * breaker used to mean business A's own Gemini failures silently made
+   * business B's very next message skip Gemini too - even though B's call
+   * had nothing to do with A's outage. Reported symptom: "when one company
+   * messages, the other has to wait and gets handed to a human."
+   */
+  it("5a. business A's capacity failures never open business B's circuit breaker, and B's own next call still attempts Gemini", async () => {
+    aiReplyGenerateContentMock.mockRejectedValue(new ApiError({ message: 'unavailable', status: 503 }));
+    await generateAiReply(fakeAgent({ businessId: 'business-A' }), fakeContext({ businessId: 'business-A' }));
+    await generateAiReply(fakeAgent({ businessId: 'business-A' }), fakeContext({ businessId: 'business-A' }));
+    await generateAiReply(fakeAgent({ businessId: 'business-A' }), fakeContext({ businessId: 'business-A' }));
+    expect(getGeminiCircuitBreaker('business-A').getState()).toBe('OPEN');
+
+    aiReplyGenerateContentMock.mockReset();
+    aiReplyGenerateContentMock.mockResolvedValueOnce({ text: 'Business B replies normally.' });
+    const result = await generateAiReply(fakeAgent({ businessId: 'business-B' }), fakeContext({ businessId: 'business-B' }));
+
+    expect(getGeminiCircuitBreaker('business-B').getState()).toBe('CLOSED');
+    expect(aiReplyGenerateContentMock).toHaveBeenCalledTimes(1); // B's own call was actually attempted, not skipped
+    expect(result.status).toBe('generated');
   });
 });
 
@@ -357,9 +379,10 @@ describe('orchestrateAiReply - escalation hop is skipped for a failure class it 
   beforeEach(async () => {
     aiReplyGenerateContentMock.mockReset();
     notifyBusinessMock.mockClear();
-    geminiCircuitBreaker.reset();
-    geminiConfigCircuitBreaker.reset();
-
+    // No explicit breaker reset needed: the breaker is scoped per business
+    // (aiCircuitBreaker.ts), and businessId below is a brand-new business
+    // register() creates fresh every test - its breaker is always a fresh,
+    // never-tripped CLOSED circuit.
     await resetDatabase();
     const owner = await register(
       { email: 'escalation-test@example.com', password: 'correcthorsebatterystaple', displayName: 'Owner' },
@@ -466,8 +489,9 @@ describe('AI debounce - bursts, ordering, duplicate/stale jobs, crash safety, cr
     await resetDatabase();
     aiReplyGenerateContentMock.mockReset();
     notifyBusinessMock.mockClear();
-    geminiCircuitBreaker.reset();
-    geminiConfigCircuitBreaker.reset();
+    // No explicit breaker reset needed here either: setupBusinessWithAgent()
+    // below creates a brand-new business per test, and the breaker is now
+    // scoped per business (aiCircuitBreaker.ts).
   });
 
   afterAll(async () => {

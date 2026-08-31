@@ -72,7 +72,16 @@ export async function generateResponse(input: GooseGenerateInput): Promise<Goose
   if (!url) return { status: 'unavailable', reason: 'No Goose failover service URL is configured' };
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    // The local adapter's own /generate handler allows the underlying
+    // `goose run` subprocess up to 60s (GOOSE_RUN_TIMEOUT_MS in
+    // gooseFallbackSupervisor.ts) before it gives up - a real call to a
+    // "reasoning" model, or two businesses' fallback calls landing on the
+    // provider's free tier at once, can genuinely take longer than a few
+    // seconds. This must stay above that 60s ceiling: aborting here first
+    // would discard an in-flight call the adapter was about to complete
+    // successfully, misreporting a real (if slow) reply as "unavailable"
+    // and sending that chat to human handoff for no real reason.
+    const timeout = setTimeout(() => controller.abort(), 65000);
     let response: Response;
     try {
       response = await fetch(`${url.replace(/\/$/, '')}/generate`, {

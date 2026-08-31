@@ -7,7 +7,7 @@ import type { WhatsAppMessageRecord } from '../src/repositories/whatsappMessageR
 import { buildTimeContext } from '../src/services/time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME } from '../src/services/time/getCurrentTimeTool.js';
 import { UPDATE_CONVERSATION_STATE_TOOL_NAME } from '../src/services/state/updateConversationStateTool.js';
-import { geminiCircuitBreaker } from '../src/services/aiCircuitBreaker.js';
+import { getGeminiCircuitBreaker, resetAllGeminiCircuitBreakers } from '../src/services/aiCircuitBreaker.js';
 import { register } from '../src/services/authService.js';
 import { aiGateway } from '../src/services/ai/aiGateway.js';
 import { resetDatabase } from './helpers.js';
@@ -100,11 +100,11 @@ const { generateAiReply } = await import('../src/services/aiReplyService.js');
 describe('generateAiReply retries with a bare request after a real 400 INVALID_ARGUMENT', () => {
   beforeEach(() => {
     generateContentMock.mockReset();
-    // The circuit breaker is a module-level singleton shared across every
-    // test in this file - without resetting it, a test earlier in the run
-    // that records real failures could trip it and silently short-circuit
-    // an unrelated later test's "real call" assertions.
-    geminiCircuitBreaker.reset();
+    // 'business-1's breaker instance persists across every test in this
+    // file (memoized by businessId) - without resetting it, a test earlier
+    // in the run that records real failures could trip it and silently
+    // short-circuit an unrelated later test's "real call" assertions.
+    getGeminiCircuitBreaker('business-1').reset();
   });
 
   afterEach(() => {
@@ -165,12 +165,11 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
 
   beforeEach(async () => {
     generateContentMock.mockReset();
-    // The circuit breaker is a module-level singleton shared across every
-    // test in this file - without resetting it, a test earlier in the run
-    // that records real failures could trip it and silently short-circuit
-    // an unrelated later test's "real call" assertions.
-    geminiCircuitBreaker.reset();
-
+    // No explicit breaker reset needed here (unlike the describe block
+    // above): the breaker is now scoped per business (see
+    // aiCircuitBreaker.ts), and realBusinessId below is a brand-new
+    // business created fresh by register() on every test - its breaker
+    // instance is always a fresh, never-tripped CLOSED circuit.
     await resetDatabase();
     const owner = await register(
       { email: 'ai-reply-tool-test@example.com', password: 'correcthorsebatterystaple', displayName: 'Owner' },
@@ -339,12 +338,12 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
 describe('generateAiReply respects the Gemini circuit breaker', () => {
   beforeEach(() => {
     generateContentMock.mockReset();
-    geminiCircuitBreaker.reset();
+    getGeminiCircuitBreaker('business-1').reset();
   });
 
   afterEach(() => {
     vi.clearAllMocks();
-    geminiCircuitBreaker.reset();
+    resetAllGeminiCircuitBreakers();
   });
 
   it('after enough consecutive real failures, skips the live Gemini call entirely on the next message', async () => {
@@ -373,7 +372,7 @@ describe('generateAiReply respects the Gemini circuit breaker', () => {
     await generateAiReply(fakeAgent(), fakeContext());
 
     expect(generateContentMock).toHaveBeenCalledTimes(3);
-    expect(geminiCircuitBreaker.getState()).toBe('CLOSED');
+    expect(getGeminiCircuitBreaker('business-1').getState()).toBe('CLOSED');
   });
 
   it('a real 400 that recovers via the bare-request retry counts as success, not a circuit-breaker failure', async () => {
@@ -384,7 +383,40 @@ describe('generateAiReply respects the Gemini circuit breaker', () => {
     const result = await generateAiReply(fakeAgent(), fakeContext());
 
     expect(result.status).toBe('generated');
-    expect(geminiCircuitBreaker.getState()).toBe('CLOSED');
+    expect(getGeminiCircuitBreaker('business-1').getState()).toBe('CLOSED');
+  });
+
+  /**
+   * Regression coverage for a real reported incident: one business's
+   * Gemini failures (a quota exhaustion, a transient outage) used to trip
+   * a single process-wide breaker, silently making every OTHER business's
+   * very next message skip Gemini too - fast-forwarding it straight to the
+   * slower fallback chain (or "unavailable" -> human handoff) for a
+   * failure that had nothing to do with it. The breaker is now scoped per
+   * business (aiCircuitBreaker.ts); this proves that isolation actually
+   * holds, not just that each business's breaker object is technically
+   * "different."
+   */
+  it("one business's Gemini failures never trip a different business's circuit breaker", async () => {
+    generateContentMock.mockRejectedValue(new ApiError({ message: 'The service is currently unavailable.', status: 503 }));
+
+    await generateAiReply(fakeAgent({ businessId: 'business-1' }), fakeContext({ businessId: 'business-1' }));
+    await generateAiReply(fakeAgent({ businessId: 'business-1' }), fakeContext({ businessId: 'business-1' }));
+    await generateAiReply(fakeAgent({ businessId: 'business-1' }), fakeContext({ businessId: 'business-1' }));
+
+    expect(getGeminiCircuitBreaker('business-1').getState()).toBe('OPEN');
+    expect(getGeminiCircuitBreaker('business-2').getState()).toBe('CLOSED');
+    expect(getGeminiCircuitBreaker('business-2').canAttempt()).toBe(true);
+
+    generateContentMock.mockClear();
+    generateContentMock.mockResolvedValueOnce({ text: 'Business 2 is unaffected.' });
+
+    const result = await generateAiReply(fakeAgent({ businessId: 'business-2' }), fakeContext({ businessId: 'business-2' }));
+
+    // A different business's message still attempts a real Gemini call,
+    // rather than being silently skipped by business-1's open circuit.
+    expect(generateContentMock).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('generated');
   });
 });
 
@@ -416,7 +448,7 @@ describe('generateAiReply fallback routes through AiGateway after a genuine Gemi
 
   beforeEach(() => {
     generateContentMock.mockReset();
-    geminiCircuitBreaker.reset();
+    getGeminiCircuitBreaker('business-1').reset();
   });
 
   afterEach(() => {

@@ -102,14 +102,12 @@ export class CircuitBreaker {
   }
 }
 
-export const geminiCircuitBreaker = new CircuitBreaker('gemini');
-
 /**
  * Phase 3B: a second, independent breaker for the "will never recover
  * without a human" failure classes (auth/authz, provider/model-config -
  * see docs/PHASE_3A_AI_RELIABILITY_AUDIT_AND_PROPOSAL.md sections 2-4).
- * Unlike `geminiCircuitBreaker`, nothing ever calls `canAttempt()` on this
- * instance - it does not gate whether a real call is attempted (a
+ * Unlike the per-business breaker below, nothing ever calls `canAttempt()`
+ * on this instance - it does not gate whether a real call is attempted (a
  * misconfigured key must still surface honestly on every real call, never
  * be silently skipped). Its only purpose is to gate a one-time operator
  * notification: `failureThreshold: 1` means the very first classified
@@ -122,4 +120,42 @@ const DEFAULT_CONFIG_BREAKER_CONFIG: CircuitBreakerConfig = {
   failureThreshold: envInt('GEMINI_CONFIG_FAILURE_THRESHOLD', 1),
   cooldownMs: envInt('GEMINI_CONFIG_NOTIFY_COOLDOWN_MS', 3_600_000),
 };
-export const geminiConfigCircuitBreaker = new CircuitBreaker('gemini-config', DEFAULT_CONFIG_BREAKER_CONFIG);
+
+const geminiBreakersByBusiness = new Map<string, CircuitBreaker>();
+const geminiConfigBreakersByBusiness = new Map<string, CircuitBreaker>();
+
+/**
+ * Scoped per business, never shared across the process. This app runs
+ * many businesses' WhatsApp AI replies through one Node process - a single
+ * process-wide breaker used to mean one business's Gemini failures (a
+ * quota exhaustion, a transient outage) silently made every OTHER
+ * business's very next message skip Gemini too, fast-forwarding it
+ * straight to the slower fallback chain (or "unavailable" -> human
+ * handoff) for a failure that had nothing to do with it. Each business
+ * now trips and recovers its own circuit independently, exactly like its
+ * own conversations are otherwise fully isolated from every other
+ * business's.
+ */
+export function getGeminiCircuitBreaker(businessId: string): CircuitBreaker {
+  let breaker = geminiBreakersByBusiness.get(businessId);
+  if (!breaker) {
+    breaker = new CircuitBreaker(`gemini:${businessId}`);
+    geminiBreakersByBusiness.set(businessId, breaker);
+  }
+  return breaker;
+}
+
+export function getGeminiConfigCircuitBreaker(businessId: string): CircuitBreaker {
+  let breaker = geminiConfigBreakersByBusiness.get(businessId);
+  if (!breaker) {
+    breaker = new CircuitBreaker(`gemini-config:${businessId}`, DEFAULT_CONFIG_BREAKER_CONFIG);
+    geminiConfigBreakersByBusiness.set(businessId, breaker);
+  }
+  return breaker;
+}
+
+/** Test-only: drops every per-business breaker instance between test cases. */
+export function resetAllGeminiCircuitBreakers(): void {
+  geminiBreakersByBusiness.clear();
+  geminiConfigBreakersByBusiness.clear();
+}

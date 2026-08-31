@@ -10,7 +10,7 @@ import { describeTimeContext } from './time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME, getCurrentTimeFunctionDeclaration } from './time/getCurrentTimeTool.js';
 import { UPDATE_CONVERSATION_STATE_TOOL_NAME, updateConversationStateFunctionDeclaration, type UpdateConversationStateToolArgs } from './state/updateConversationStateTool.js';
 import { applyConversationStateUpdate } from './state/conversationStateWriter.js';
-import { geminiCircuitBreaker, geminiConfigCircuitBreaker } from './aiCircuitBreaker.js';
+import { getGeminiCircuitBreaker, getGeminiConfigCircuitBreaker } from './aiCircuitBreaker.js';
 import { guardToolInvocation } from './ai/agentGuard.js';
 import { mediaFallbackText, type InlineMediaPart } from './ai/mediaContext.js';
 import { classifyAiError } from './ai/aiErrorClassification.js';
@@ -423,13 +423,18 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
     return { status: 'unavailable', reason: 'No real message text to reply to', skipEscalation: true };
   }
 
+  const geminiCircuitBreaker = getGeminiCircuitBreaker(agent.businessId);
+  const geminiConfigCircuitBreaker = getGeminiConfigCircuitBreaker(agent.businessId);
+
   const genAi = getGeminiClient();
   if (!genAi) return tryFallbackProviders('GEMINI_API_KEY is not configured', agent, context, contents, true);
 
   // Sustained Gemini outages must not cost every queued message a full
   // network timeout before falling back - once several consecutive real
-  // calls have failed, skip straight to Goose (or "unavailable") until the
-  // cooldown elapses and a single probe call is allowed through again.
+  // calls have failed FOR THIS BUSINESS, skip straight to Goose (or
+  // "unavailable") until the cooldown elapses and a single probe call is
+  // allowed through again. Scoped per business (see aiCircuitBreaker.ts) so
+  // a different business's own Gemini failures never gate this one's calls.
   if (!geminiCircuitBreaker.canAttempt()) {
     return tryFallbackProviders(
       `Gemini unavailable (${geminiCircuitBreaker.describeUnavailable()})`,
