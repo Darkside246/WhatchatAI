@@ -6,6 +6,7 @@ import { createWriteStream, existsSync, chmodSync, unlinkSync } from 'node:fs';
 import { tmpdir, homedir, platform } from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { looksLikeRawReasoningTrace } from './ai/reasoningLeakGuard.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -239,7 +240,19 @@ async function runGoosePrompt(systemInstruction: string, conversation: string): 
   if (!lastAssistantMessage) return { kind: 'error', reason: 'Goose returned no assistant message.' };
 
   const textParts = lastAssistantMessage.content.filter((part) => part.type === 'text' && part.text).map((part) => part.text!.trim());
-  if (textParts.length > 0) return { kind: 'text', text: textParts.join('\n').trim() };
+  if (textParts.length > 0) {
+    const text = textParts.join('\n').trim();
+    // A real, confirmed incident: the model completed normally (this is a
+    // real `type: "text"` part, not a truncated `thinking` one) but its own
+    // chosen, intentional answer WAS its internal chain-of-thought narrative
+    // - happened when a customer asked meta-questions about "your thinking
+    // process." A prompt-level instruction not to do this was already in
+    // place and did not reliably hold, so this checks the literal output.
+    if (looksLikeRawReasoningTrace(text)) {
+      return { kind: 'error', reason: 'Goose reply looked like a raw internal reasoning trace, not a real answer - refusing to relay it.' };
+    }
+    return { kind: 'text', text };
+  }
 
   const notification = lastAssistantMessage.content.find((part) => part.type !== 'text' && part.msg);
   return { kind: 'error', reason: notification?.msg ?? `Goose's reply had no real text content (type: ${lastAssistantMessage.content[0]?.type ?? 'unknown'}).` };

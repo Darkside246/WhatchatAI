@@ -6,6 +6,7 @@ import { IntegrationSettingsRepository } from '../../repositories/integrationSet
 import { pool } from '../../db/pool.js';
 import type { RegisteredAiProvider, GatewayMedia, GatewayToolDefinition, GatewayToolCall, GatewayToolResponse } from './aiGateway.js';
 import { aiGateway, ProviderConfigRejectedError } from './aiGateway.js';
+import { looksLikeRawReasoningTrace } from './reasoningLeakGuard.js';
 
 /**
  * Translates a bare Gemini 400 into the gateway's generic
@@ -282,6 +283,16 @@ abstract class OpenAICompatibleProvider implements RegisteredAiProvider {
     }
     const text = choice?.message?.content?.trim() ?? '';
     if (!text) throw new Error(`${this.name} returned an empty response`);
+    // A separate, real incident from the truncation case above: the
+    // generation completed normally (finish_reason: 'stop'), but the
+    // model's own chosen, intentional answer WAS its internal chain-of-
+    // thought narrative - happened when a customer asked meta-questions
+    // about "your thinking process." Checks the literal output rather than
+    // trusting the system prompt's instruction not to do this, which did
+    // not reliably hold under direct questioning.
+    if (looksLikeRawReasoningTrace(text)) {
+      throw new Error(`${this.name} response looked like a raw internal reasoning trace, not a real answer - refusing to relay it`);
+    }
     const result: { provider: string; text: string; usage?: { inputTokens?: number; outputTokens?: number } } = { provider: this.name, text };
     const usage: { inputTokens?: number; outputTokens?: number } = {};
     if (payload.usage?.prompt_tokens !== undefined) usage.inputTokens = payload.usage.prompt_tokens;

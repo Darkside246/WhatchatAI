@@ -453,4 +453,37 @@ describe('OpenAICompatibleProvider rejects a truncated response instead of relay
     const body = JSON.parse(requestInit!.body as string) as { max_tokens: number };
     expect(body.max_tokens).toBeGreaterThanOrEqual(4096);
   });
+
+  /**
+   * Regression coverage for a second, real incident, distinct from the
+   * finish_reason:length case above: the generation completed NORMALLY
+   * (finish_reason: 'stop') but the model's own chosen, intentional answer
+   * WAS its internal reasoning narrative - happened when a customer asked
+   * meta-questions like "what about your thinking process". No amount of
+   * token budget fixes this, since it isn't truncation - it needs its own
+   * check on the literal output.
+   */
+  it('throws when finish_reason is "stop" but the content is a raw reasoning narrative, not a real answer', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              finish_reason: 'stop',
+              message: {
+                content:
+                  "The user is saying that Haji told them I did not send the message, and they want me to send a message to Haji now via kai. I need to be careful here.",
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const provider = new OpenAIProvider();
+    await expect(
+      provider.generate({ tenantId: 'tenant-1', operation: 'reply.fallback', messages: [{ role: 'user', content: 'he told me you did not send him' }] }),
+    ).rejects.toThrow('reasoning trace');
+  });
 });
