@@ -137,6 +137,21 @@ export class BusinessRepository {
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }
+
+  /**
+   * Clears the abandonment-purge deadline once a trial business has proven
+   * a real, successful WhatsApp connection at least once - see
+   * whatsappTenantConnection.ts's persistConnectedAccount(). A no-op
+   * (still returns the record) if no purge was scheduled, so callers never
+   * need to check first.
+   */
+  async clearScheduledPurge(id: string): Promise<BusinessRecord | null> {
+    const { rows } = await this.db.query<BusinessRow>(
+      `UPDATE businesses SET scheduled_purge_at = NULL, updated_at = now() WHERE id = $1 RETURNING ${BUSINESS_COLUMNS}`,
+      [id],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
 }
 
 /** Real validation via the runtime's own IANA tz database - rejects anything Node itself would not recognize, rather than trusting free text. */

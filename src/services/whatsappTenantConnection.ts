@@ -26,6 +26,7 @@ import { pool } from '../db/pool.js';
 import { syncAccountProfilePicture } from './profilePictureSyncService.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
 import { WhatsAppConnectionEventRepository } from '../repositories/whatsappConnectionEventRepository.js';
+import { BusinessRepository } from '../repositories/businessRepository.js';
 import { tryAcquireGroupSyncCooldown } from './whatsappGroupSyncCooldown.js';
 import { reconnectDelayMs } from './whatsappReconnectBackoff.js';
 
@@ -219,6 +220,7 @@ export class WhatsAppTenantConnection {
   private hasPairedThisSession = false;
   private readonly accountRepository = new WhatsAppAccountRepository(pool);
   private readonly connectionEventRepository = new WhatsAppConnectionEventRepository(pool);
+  private readonly businessRepository = new BusinessRepository(pool);
   /**
    * Owned by this tenant alone - closes the cross-tenant leak the shared
    * whatsappMessageIngestionService module singleton used to have (its
@@ -858,6 +860,12 @@ export class WhatsAppTenantConnection {
       // forever - so retrying it here on the next real reconnect is correct.
       if (account.syncStatus === 'not_started' || account.syncStatus === 'failed') {
         await whatsappSyncService.startInitialSync(this.businessId, account.id);
+        // This is a genuine first-ever (or recovered-from-failed) real
+        // connect for this account - the trial abandonment window
+        // (trialOnboardingService.ts's registerTrial) no longer applies
+        // once a real WhatsApp connection has actually happened. A no-op
+        // for a non-trial or already-cleared business.
+        await this.businessRepository.clearScheduledPurge(this.businessId);
       }
 
       await this.syncParticipatingGroups(this.businessId, account.id);

@@ -3,6 +3,16 @@ import type { ProductAccountStatus } from '../domain/platform/productAccounts.js
 export const TRIAL_DURATION_MS = 48 * 60 * 60 * 1000;
 export const TRIAL_EXPIRING_THRESHOLD_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * How long an onboarding trial business can sit with no successful
+ * WhatsApp connection before the abandonment sweep (accountDeletionService.ts's
+ * sweepDueAccountDeletions, reusing businesses.scheduled_purge_at) purges
+ * it. Deliberately separate from TRIAL_DURATION_MS - this is about giving
+ * up on a signup that never got a working WhatsApp connection at all, not
+ * about the trial's own usage period.
+ */
+export const TRIAL_ABANDONMENT_WINDOW_MS = 48 * 60 * 60 * 1000;
+
 export type TrialState = 'CREATED' | 'ACTIVE' | 'EXPIRING' | 'EXPIRED' | 'CONVERTED' | 'CANCELLED';
 
 export interface TrialTiming {

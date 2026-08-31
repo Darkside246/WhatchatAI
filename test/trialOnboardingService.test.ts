@@ -7,7 +7,9 @@ import {
   InvalidPhoneNumberError,
 } from '../src/services/trialOnboardingService.js';
 import { EntitlementService } from '../src/services/entitlementService.js';
-import { resetDatabase } from './helpers.js';
+import { BusinessRepository } from '../src/repositories/businessRepository.js';
+import { WhatsAppConnectionEventRepository } from '../src/repositories/whatsappConnectionEventRepository.js';
+import { resetDatabase, createTestAccount } from './helpers.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
 
@@ -112,5 +114,117 @@ describe('registerTrial phone handling (real Postgres)', () => {
     const entitlements = new EntitlementService(pool);
     const check = await entitlements.canConnectWhatsAppAccount(result.businessId);
     expect(check.allowed).toBe(true);
+  });
+});
+
+/**
+ * Real regression coverage for a reported bug: a customer fills in the
+ * trial form, the WhatsApp QR scan fails, and retrying with the same
+ * email/phone got rejected with "already received a trial" even though
+ * they never got a working account. A trial should only count as
+ * genuinely consumed once the WhatsApp connection actually succeeds at
+ * least once - until then, the same person retrying resumes their
+ * pending signup instead of being blocked by it.
+ */
+describe('registerTrial abandonment window and resume (real Postgres)', () => {
+  it('stamps a real scheduled_purge_at on a fresh trial business', async () => {
+    await resetDatabase();
+    const result = await registerTrial(trialInput());
+
+    const { rows } = await pool.query<{ scheduled_purge_at: string | null }>(
+      'SELECT scheduled_purge_at FROM businesses WHERE id = $1', [result.businessId],
+    );
+    expect(rows[0]?.scheduled_purge_at).not.toBeNull();
+    expect(new Date(rows[0]!.scheduled_purge_at!).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('resumes into the existing business when the identity has never connected WhatsApp, given the same email and phone', async () => {
+    await resetDatabase();
+    const first = await registerTrial(trialInput({ email: 'resume@example.com', phone: '+14155552671' }));
+
+    const second = await registerTrial(trialInput({ email: 'resume@example.com', phone: '+14155552671' }));
+
+    expect(second.businessId).toBe(first.businessId);
+    expect(second.productAccountId).toBe(first.productAccountId);
+    expect(second.trialId).toBe(first.trialId);
+    expect(second.user.id).toBe(first.user.id);
+    // The original trial clock keeps running - resuming is not a new trial.
+    expect(second.startsAt).toBe(first.startsAt);
+    expect(second.endsAt).toBe(first.endsAt);
+    expect(second.token).not.toBe(first.token); // a genuinely new session was minted
+
+    const { rows } = await pool.query<{ count: string }>('SELECT COUNT(*)::text AS count FROM businesses');
+    expect(rows[0]?.count).toBe('1'); // no duplicate business was created
+  });
+
+  it('resume refreshes the abandonment window forward rather than leaving the original deadline', async () => {
+    await resetDatabase();
+    const first = await registerTrial(trialInput({ email: 'resume2@example.com', phone: '+14155552671' }));
+    await pool.query(`UPDATE businesses SET scheduled_purge_at = now() + interval '1 hour' WHERE id = $1`, [first.businessId]);
+    const before = (await pool.query<{ scheduled_purge_at: string }>(
+      'SELECT scheduled_purge_at FROM businesses WHERE id = $1', [first.businessId],
+    )).rows[0]!.scheduled_purge_at;
+
+    await registerTrial(trialInput({ email: 'resume2@example.com', phone: '+14155552671' }));
+
+    const after = (await pool.query<{ scheduled_purge_at: string }>(
+      'SELECT scheduled_purge_at FROM businesses WHERE id = $1', [first.businessId],
+    )).rows[0]!.scheduled_purge_at;
+    expect(new Date(after).getTime()).toBeGreaterThan(new Date(before).getTime());
+  });
+
+  /**
+   * The security-critical case: without the phone check, anyone who
+   * merely knows an email address that recently started a trial but
+   * hasn't paired yet could resubmit this form and receive a fully
+   * authenticated session for that account - a real account-takeover
+   * path, since this flow has no password or email verification step at
+   * all. Same generic error as a genuine repeat trial, deliberately - no
+   * "phone mismatch" hint that would let an attacker confirm a pending
+   * trial exists for a given email.
+   */
+  it('does not resume - and gives no hint why - when the same email is retried with a different phone', async () => {
+    await resetDatabase();
+    await registerTrial(trialInput({ email: 'resume3@example.com', phone: '+14155552671' }));
+
+    await expect(
+      registerTrial(trialInput({ email: 'resume3@example.com', phone: '+442071838750' })),
+    ).rejects.toThrow(TrialAlreadyUsedOnboardingError);
+
+    const { rows } = await pool.query<{ count: string }>('SELECT COUNT(*)::text AS count FROM businesses');
+    expect(rows[0]?.count).toBe('1'); // no new business was created either
+  });
+
+  it('still rejects re-registration once the business has actually connected WhatsApp, even with matching email and phone', async () => {
+    await resetDatabase();
+    const first = await registerTrial(trialInput({ email: 'connected@example.com', phone: '+14155552671' }));
+    const accountId = await createTestAccount(first.businessId);
+    await new WhatsAppConnectionEventRepository(pool).record({
+      businessId: first.businessId,
+      whatsappAccountId: accountId,
+      eventType: 'connected',
+      status: 'CONNECTED',
+    });
+
+    await expect(
+      registerTrial(trialInput({ email: 'connected@example.com', phone: '+14155552671' })),
+    ).rejects.toThrow(TrialAlreadyUsedOnboardingError);
+  });
+
+  it('clearScheduledPurge (the exact call persistConnectedAccount makes on a real first connect) clears the purge deadline', async () => {
+    await resetDatabase();
+    const result = await registerTrial(trialInput());
+    const before = await pool.query<{ scheduled_purge_at: string | null }>(
+      'SELECT scheduled_purge_at FROM businesses WHERE id = $1', [result.businessId],
+    );
+    expect(before.rows[0]?.scheduled_purge_at).not.toBeNull();
+
+    const businesses = new BusinessRepository(pool);
+    await businesses.clearScheduledPurge(result.businessId);
+
+    const after = await pool.query<{ scheduled_purge_at: string | null }>(
+      'SELECT scheduled_purge_at FROM businesses WHERE id = $1', [result.businessId],
+    );
+    expect(after.rows[0]?.scheduled_purge_at).toBeNull();
   });
 });

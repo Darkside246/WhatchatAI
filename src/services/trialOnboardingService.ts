@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
+import type { PoolClient } from 'pg';
 import { pool } from '../db/pool.js';
 import { hashPassword } from './passwordHashService.js';
 import { createAuthenticatedSession, type DeviceContext } from './authService.js';
-import { normalizeTrialEmail, TRIAL_DURATION_MS } from './trialPolicy.js';
+import { normalizeTrialEmail, TRIAL_DURATION_MS, TRIAL_ABANDONMENT_WINDOW_MS } from './trialPolicy.js';
 import { productEntitlements } from './productAccountService.js';
 import type { ProductKey } from '../domain/platform/productAccounts.js';
 import { UserRepository, toPublicUser } from '../repositories/userRepository.js';
@@ -16,6 +17,95 @@ export class TrialAlreadyUsedOnboardingError extends Error {}
 export class TrialPhoneAlreadyUsedOnboardingError extends Error {}
 export class TrialProductUnavailableOnboardingError extends Error {}
 export { InvalidPhoneNumberError };
+
+/**
+ * If `identityId`'s trial has never actually connected WhatsApp (per
+ * whatsapp_connection_events) and the submitted phone matches what's on
+ * file for it - proving this is the same person retrying after a failed
+ * pairing, not merely someone who knows the email address - refreshes the
+ * abandonment window and returns enough to resume the existing account.
+ * Returns null (never throws) when resume isn't possible; the caller
+ * decides what error to surface. Runs entirely inside the caller's own
+ * transaction/client - never commits or rolls back itself.
+ *
+ * Security note: requiring the phone to match (not just the email) is
+ * deliberate, not incidental. Without it, anyone who merely knows an
+ * email address that recently started a trial but hasn't paired yet could
+ * resubmit this form and receive a fully authenticated session for that
+ * account - a real account-takeover path, since this flow has no
+ * password or email verification step at all.
+ */
+async function tryResumeTrial(
+  client: PoolClient,
+  identityId: string,
+  phoneHash: string,
+  productKey: ProductKey,
+): Promise<{
+  userId: string;
+  businessId: string;
+  productAccountId: string;
+  productKey: ProductKey;
+  trialId: string;
+  startsAt: string;
+  endsAt: string;
+} | null> {
+  const pending = await client.query<{
+    business_id: string;
+    user_id: string | null;
+    product_account_id: string;
+    product_key: ProductKey;
+    trial_id: string;
+    starts_at: string;
+    ends_at: string;
+    phone_number_hash: string | null;
+  }>(
+    `SELECT pa.business_id, ti.user_id, pt.product_account_id, pc.product_key,
+            pt.id AS trial_id, pt.starts_at, pt.ends_at, u.phone_number_hash
+       FROM trial_identities ti
+       JOIN product_trials pt ON pt.trial_identity_id = ti.id
+       JOIN product_accounts pa ON pa.id = pt.product_account_id
+       JOIN product_catalog pc ON pc.id = pt.product_id
+       LEFT JOIN users u ON u.id = ti.user_id
+      WHERE ti.id = $1
+      FOR UPDATE OF pa`,
+    [identityId],
+  );
+
+  const row = pending.rows[0];
+  if (!row || !row.user_id) return null;
+  if (row.phone_number_hash !== phoneHash) return null;
+
+  const connected = await client.query(
+    `SELECT 1 FROM whatsapp_connection_events WHERE business_id = $1 AND event_type = 'connected' LIMIT 1`,
+    [row.business_id],
+  );
+  if (connected.rows[0]) return null;
+
+  if (productKey !== row.product_key) {
+    console.warn(
+      `[trialOnboardingService] Resume for identity ${identityId} requested product "${productKey}" but the ` +
+        `original trial is for "${row.product_key}" - resuming into the original product, not switching.`,
+    );
+  }
+
+  // Refreshed forward, not left at its original deadline - a resume near
+  // the tail end of the original window must not still get purged
+  // mid-retry by the next hourly sweep.
+  await client.query(
+    `UPDATE businesses SET scheduled_purge_at = $2, updated_at = now() WHERE id = $1`,
+    [row.business_id, new Date(Date.now() + TRIAL_ABANDONMENT_WINDOW_MS).toISOString()],
+  );
+
+  return {
+    userId: row.user_id,
+    businessId: row.business_id,
+    productAccountId: row.product_account_id,
+    productKey: row.product_key,
+    trialId: row.trial_id,
+    startsAt: row.starts_at,
+    endsAt: row.ends_at,
+  };
+}
 
 /**
  * Landing-page onboarding transaction. It creates the client identity,
@@ -44,7 +134,36 @@ export async function registerTrial(input: {
     await client.query('BEGIN');
 
     const existing = await client.query<{ id: string }>(`SELECT id FROM trial_identities WHERE email = $1 FOR UPDATE`, [email]);
-    if (existing.rows[0]) throw new TrialAlreadyUsedOnboardingError('This email has already received a trial.');
+    if (existing.rows[0]) {
+      const resumed = await tryResumeTrial(client, existing.rows[0].id, phoneHash, input.productKey);
+      if (!resumed) {
+        // Either this identity's business already connected once (a
+        // genuine repeat trial - the dedup table is doing exactly its
+        // job), or the submitted phone doesn't match what's on file for
+        // it. Both cases get the same generic message as before,
+        // deliberately - a more specific "phone mismatch" error would let
+        // an attacker who merely knows an email confirm whether a
+        // pending, resumable trial exists for it.
+        throw new TrialAlreadyUsedOnboardingError('This email has already received a trial.');
+      }
+      await client.query('COMMIT');
+
+      const user = await users.findById(resumed.userId);
+      if (!user) throw new Error('Trial user could not be reloaded');
+      const session = await createAuthenticatedSession(resumed.userId, resumed.businessId, input.device, 'trial');
+
+      return {
+        user: toPublicUser(user),
+        productAccountId: resumed.productAccountId,
+        businessId: resumed.businessId,
+        productKey: resumed.productKey,
+        trialId: resumed.trialId,
+        startsAt: resumed.startsAt,
+        endsAt: resumed.endsAt,
+        token: session.token,
+        session: session.session,
+      };
+    }
 
     const phoneUsed = await client.query<{ id: string }>(`SELECT id FROM trial_phone_fingerprints WHERE phone_hash = $1 FOR UPDATE`, [phoneHash]);
     if (phoneUsed.rows[0]) throw new TrialPhoneAlreadyUsedOnboardingError('This phone number has already received a trial.');
@@ -58,8 +177,17 @@ export async function registerTrial(input: {
     // Inserted before `users` (moved up from its original position after
     // the user insert) so a real businessId already exists to scope the
     // phone number's per-tenant encryption key below.
+    //
+    // scheduled_purge_at is stamped immediately - reusing
+    // accountDeletionService.ts's existing scheduled-purge/sweep machinery
+    // (sweepDueAccountDeletions -> purgeBusiness, already hourly, already
+    // cascades correctly) rather than a new mechanism. A trial that never
+    // gets a real WhatsApp connection is abandoned and eventually cleaned
+    // up; whatsappTenantConnection.ts's persistConnectedAccount() clears
+    // this the moment a real connection actually succeeds.
     const businessResult = await client.query<{ id: string }>(
-      `INSERT INTO businesses (name) VALUES ($1) RETURNING id`, [`${name} - ${productRow.name}`],
+      `INSERT INTO businesses (name, scheduled_purge_at) VALUES ($1, $2) RETURNING id`,
+      [`${name} - ${productRow.name}`, new Date(Date.now() + TRIAL_ABANDONMENT_WINDOW_MS).toISOString()],
     );
     const businessId = businessResult.rows[0]?.id;
     if (!businessId) throw new Error('Trial business creation returned no id');
