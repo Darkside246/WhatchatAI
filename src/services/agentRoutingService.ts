@@ -1,7 +1,11 @@
-import { pool } from '../db/pool.js';
+import { queryAsTenant } from '../db/pool.js';
 import { AiAgentRepository, type AiAgentRecord } from '../repositories/aiAgentRepository.js';
 
-const agentRepository = new AiAgentRepository(pool);
+// Built fresh per call from queryAsTenant(businessId), not a shared
+// module-level singleton bound to the bare pool - ai_agents has Postgres
+// Row-Level Security enabled (migration 944), and RLS only actually binds
+// through the restricted, non-superuser role queryAsTenant switches into.
+// A single shared instance couldn't be scoped per caller's businessId.
 
 export type AgentRoutingDecision =
   /** A real agent was selected and may generate a reply. */
@@ -53,6 +57,7 @@ function firstMatch(text: string, keywords: string[]): string | null {
  * never to silently reinterpret the operator's own keyword scoping.
  */
 export async function routeInboundMessage(businessId: string, messageText: string): Promise<AgentRoutingDecision> {
+  const agentRepository = new AiAgentRepository(queryAsTenant(businessId));
   const agents = (await agentRepository.listByBusiness(businessId)).filter((agent) => agent.status === 'ACTIVE');
   if (agents.length === 0) return { outcome: 'no_agent', reason: 'No active AI agent is configured for this business' };
 
@@ -109,6 +114,7 @@ export async function routeInboundMessage(businessId: string, messageText: strin
  */
 export async function resolveEscalationAgent(agent: AiAgentRecord): Promise<AiAgentRecord | null> {
   if (!agent.escalateToAgentId) return null;
+  const agentRepository = new AiAgentRepository(queryAsTenant(agent.businessId));
   const target = await agentRepository.findByIdForBusiness(agent.escalateToAgentId, agent.businessId);
   if (!target || target.deletedAt || target.status !== 'ACTIVE') return null;
   return target;

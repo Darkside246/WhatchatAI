@@ -1,4 +1,4 @@
-import { pool } from '../db/pool.js';
+import { pool, queryAsTenant } from '../db/pool.js';
 import { BusinessRepository } from '../repositories/businessRepository.js';
 import { CrmContactRepository, type CrmContactRecord } from '../repositories/crmContactRepository.js';
 import { WhatsAppMessageRepository, type WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
@@ -58,8 +58,15 @@ export interface AiHandoffContext {
  * their sum.
  */
 export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput): Promise<AiHandoffContext> {
-  const crmContactRepository = new CrmContactRepository(pool);
-  const messageRepository = new WhatsAppMessageRepository(pool);
+  // crm_contacts and whatsapp_messages have Postgres Row-Level Security
+  // enabled (migration 944) as a database-enforced backstop for the
+  // business_id filter already in every query below - scoped via
+  // queryAsTenant(input.businessId) so RLS actually binds (see
+  // db/pool.ts's own doc comment for why the bare pool can't be used for
+  // this). businesses/conversation_states aren't in that RLS scope yet, so
+  // they stay on the ordinary pool.
+  const crmContactRepository = new CrmContactRepository(queryAsTenant(input.businessId));
+  const messageRepository = new WhatsAppMessageRepository(queryAsTenant(input.businessId));
   const businessRepository = new BusinessRepository(pool);
   const conversationStateRepository = new ConversationStateRepository(pool);
 
