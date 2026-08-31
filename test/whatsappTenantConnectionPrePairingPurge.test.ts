@@ -10,7 +10,7 @@ vi.mock('@whiskeysockets/baileys', async () => {
   return {
     ...actual,
     makeWASocket: (...args: unknown[]) => makeWASocketMock(...args),
-    useMultiFileAuthState: vi.fn().mockResolvedValue({ state: {}, saveCreds: vi.fn() }),
+    useMultiFileAuthState: vi.fn().mockResolvedValue({ state: {}, saveCreds: vi.fn().mockResolvedValue(undefined) }),
   };
 });
 
@@ -75,6 +75,51 @@ describe('WhatsAppTenantConnection.connect() - pre-pairing session purge (real f
 
     const connection = new WhatsAppTenantConnection(businessId);
     await connection.connect();
+
+    await expect(access(realCredsFile)).resolves.toBeUndefined(); // untouched
+  });
+
+  /**
+   * Real regression coverage for the "generates a new QR every time, never
+   * actually links" bug: WhatsApp's own multi-device protocol mandates a
+   * full connection restart the instant pairing succeeds (Baileys logs this
+   * as "pairing configured successfully, expect to restart the
+   * connection..."), and that restart's own connect() call lands here with
+   * the business still genuinely at zero whatsapp_accounts rows - the row
+   * that condition is watching for is only created later, on the 'open'
+   * event this exact restart is working towards. Without hasPairedThisSession,
+   * the purge above fired on that restart too and deleted the credentials
+   * creds.update had just written, so every real pairing attempt destroyed
+   * itself one step before completing.
+   */
+  it('does not purge the session on the restart-required reconnect immediately after a real pairing succeeds, even with no whatsapp_accounts row yet', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+
+    const dir = await resolveContainedSessionDir(businessId);
+    cleanupDirs.push(dir);
+    const realCredsFile = path.join(dir, 'creds.json');
+
+    const connection = new WhatsAppTenantConnection(businessId);
+    await connection.connect(); // nothing on disk yet - this connect()'s own purge is a legitimate no-op
+
+    // Only now does real "pairing just happened" data appear on disk - a
+    // real saveCreds() would write this the instant creds.update fires,
+    // which the mock here doesn't actually do, so it's simulated directly.
+    await mkdir(dir, { recursive: true });
+    await writeFile(realCredsFile, '{"real": "just-paired creds"}');
+
+    const socket = makeWASocketMock.mock.results[0]!.value as { ev: EventEmitter };
+    // The real pairing signal - creds.update firing with `.me` populated -
+    // followed by the mandated restart (an ordinary close, not loggedOut or
+    // connectionReplaced, exactly like WhatsApp's real "restart required").
+    socket.ev.emit('creds.update', { me: { id: 'test-business:1@s.whatsapp.net' } });
+    socket.ev.emit('connection.update', { connection: 'close' });
+    // connection.update's handler is async; let it actually run (reset
+    // this.socket, flip status) before driving the next connect() call.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await connection.connect(); // the restart's own connect() - must NOT purge now
 
     await expect(access(realCredsFile)).resolves.toBeUndefined(); // untouched
   });

@@ -197,6 +197,26 @@ export class WhatsAppTenantConnection {
    * what should be one seamless restart.
    */
   private pendingCredsSave: Promise<void> | null = null;
+  /**
+   * Set the moment this instance's socket sees a real pairing
+   * (creds.update firing with `.me` populated - see configureSuccessfulPairing
+   * in Baileys' socket.ts). WhatsApp's own multi-device protocol mandates a
+   * full connection restart immediately after pairing completes (the
+   * "stream:error code 515 / restart required" Baileys itself logs as
+   * "expect to restart the connection..."), and that restart calls
+   * connect() again while the business genuinely still has zero persisted
+   * whatsapp_accounts rows (that row is only created once, on the LATER
+   * 'open' event this restart is working towards). Without this flag, the
+   * pre-pairing purge below - correctly built to wipe stale leftovers from
+   * a crashed *prior* attempt - fires on that mandated restart too and
+   * deletes the credentials creds.update just wrote, forcing a brand new QR
+   * every single time pairing was actually about to succeed. Deliberately
+   * in-memory only, never persisted - it only needs to survive the restarts
+   * within one continuous pairing sequence, not across a real process
+   * restart, where the purge's original crash-recovery guarantee must still
+   * apply in full.
+   */
+  private hasPairedThisSession = false;
   private readonly accountRepository = new WhatsAppAccountRepository(pool);
   private readonly connectionEventRepository = new WhatsAppConnectionEventRepository(pool);
   /**
@@ -387,7 +407,7 @@ export class WhatsAppTenantConnection {
       // that has already paired before (countByBusiness > 0) - that path
       // must keep resuming its real, working session, not get wiped on
       // every ordinary reconnect after a restart.
-      if ((await this.accountRepository.countByBusiness(this.businessId)) === 0) {
+      if (!this.hasPairedThisSession && (await this.accountRepository.countByBusiness(this.businessId)) === 0) {
         await purgeSessionDir(this.businessId).catch((error) => {
           console.error(`[WhatsApp] Failed to purge stale pre-pairing session state for business ${this.businessId}:`, error);
         });
@@ -420,7 +440,8 @@ export class WhatsAppTenantConnection {
       // real fix for the FATAL "ENOENT ... creds.json" crash: one tenant's
       // credential-save failure must never be allowed to take every other
       // business's live connection down with it.
-      this.socket.ev.on('creds.update', () => {
+      this.socket.ev.on('creds.update', (update: Partial<typeof state.creds>) => {
+        if (update?.me) this.hasPairedThisSession = true;
         this.pendingCredsSave = saveCreds().catch((error) => {
           console.error(`[WhatsApp] Failed to persist credentials for business ${this.businessId}:`, error);
         });
