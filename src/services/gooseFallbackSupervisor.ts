@@ -196,6 +196,23 @@ type GoosePromptResult = { kind: 'text'; text: string } | { kind: 'error'; reaso
  * only a message whose content is genuinely `type: "text"` is ever treated
  * as a real reply - anything else (including no assistant message at all)
  * is a failure, surfaced with the notification's own message when present.
+ *
+ * `--no-profile` is load-bearing, not cosmetic: without it, every call runs
+ * with this machine's real, locally-configured Goose extensions active -
+ * confirmed live via ~/.local/share/goose/sessions/sessions.db, which
+ * showed real fallback replies generated with `developer` (real shell/file
+ * write access), `apps`, `summon`, `skills`, `scheduler`, and `tom`
+ * ("inject custom context into every turn via GOOSE_MOIM_MESSAGE_TEXT/
+ * GOOSE_MOIM_MESSAGE_FILE env vars") all enabled. The adapter's own system
+ * instruction asks the model not to use tools, but that is a prompt-level
+ * request, not an actual capability restriction - the same transcripts
+ * showed this fallback model readily abandoning its assigned business
+ * persona under a customer's own steering, so a prompt asking it not to
+ * touch tools cannot be trusted as the only thing standing between an
+ * untrusted WhatsApp message and this server's real filesystem/shell.
+ * `--no-profile` removes the extensions outright instead of just asking
+ * nicely - combined with never passing --with-extension/--with-builtin,
+ * this call has zero tool access, structurally, not by request.
  */
 async function runGoosePrompt(systemInstruction: string, conversation: string): Promise<GoosePromptResult> {
   if (!resolvedGooseBinary) return { kind: 'error', reason: 'Goose CLI is not available.' };
@@ -203,7 +220,7 @@ async function runGoosePrompt(systemInstruction: string, conversation: string): 
   try {
     const result = await execFileAsync(
       resolvedGooseBinary,
-      ['run', '--no-session', '--quiet', '--output-format', 'json', '--system', systemInstruction, '--text', conversation],
+      ['run', '--no-session', '--no-profile', '--quiet', '--output-format', 'json', '--system', systemInstruction, '--text', conversation],
       { timeout: GOOSE_RUN_TIMEOUT_MS, maxBuffer: GOOSE_RUN_MAX_BUFFER_BYTES },
     );
     stdout = result.stdout;
