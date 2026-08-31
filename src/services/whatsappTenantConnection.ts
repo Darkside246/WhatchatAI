@@ -185,6 +185,18 @@ export class WhatsAppTenantConnection {
   private connectInFlight = false;
   private persistedAccountId: string | null = null;
   private sessionDirPromise: Promise<string> | null = null;
+  /**
+   * Tracks the most recent in-flight saveCreds() write (see creds.update
+   * below) so a reconnect can wait for it to actually reach disk before
+   * calling useMultiFileAuthState() again. WhatsApp's post-pairing
+   * "restart required" (stream:error code 515) fires the reconnect almost
+   * immediately - without this, connect() could re-read the session
+   * directory before the just-paired credentials from creds.update finished
+   * writing, see stale pre-pairing state, and regenerate a brand new QR
+   * instead of resuming - forcing a re-scan, sometimes more than once, for
+   * what should be one seamless restart.
+   */
+  private pendingCredsSave: Promise<void> | null = null;
   private readonly accountRepository = new WhatsAppAccountRepository(pool);
   private readonly connectionEventRepository = new WhatsAppConnectionEventRepository(pool);
   /**
@@ -381,6 +393,14 @@ export class WhatsAppTenantConnection {
         });
       }
 
+      // See pendingCredsSave's own doc comment - a reconnect must never
+      // start reading the session directory while the previous socket's
+      // creds.update write to that same directory is still in flight.
+      if (this.pendingCredsSave) {
+        await this.pendingCredsSave;
+        this.pendingCredsSave = null;
+      }
+
       const sessionDir = await this.resolveSessionDir();
       const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
@@ -401,7 +421,7 @@ export class WhatsAppTenantConnection {
       // credential-save failure must never be allowed to take every other
       // business's live connection down with it.
       this.socket.ev.on('creds.update', () => {
-        saveCreds().catch((error) => {
+        this.pendingCredsSave = saveCreds().catch((error) => {
           console.error(`[WhatsApp] Failed to persist credentials for business ${this.businessId}:`, error);
         });
       });
