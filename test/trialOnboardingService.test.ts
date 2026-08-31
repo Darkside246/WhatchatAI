@@ -6,6 +6,7 @@ import {
   TrialPhoneAlreadyUsedOnboardingError,
   InvalidPhoneNumberError,
 } from '../src/services/trialOnboardingService.js';
+import { EntitlementService } from '../src/services/entitlementService.js';
 import { resetDatabase } from './helpers.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
@@ -87,5 +88,29 @@ describe('registerTrial phone handling (real Postgres)', () => {
     const { rows } = await pool.query<{ phone_hash: string }>('SELECT phone_hash FROM trial_phone_fingerprints');
     expect(rows).toHaveLength(1);
     expect(rows[0]?.phone_hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  /**
+   * Real regression coverage for "This business has no active subscription"
+   * showing up for every trial business: registerTrial() used to create a
+   * real product_accounts/product_entitlements row but never a subscriptions
+   * row, so EntitlementService.checkEntitlement/checkCountLimit - which both
+   * require subscriptionRepository.findLiveByBusiness() to return something
+   * before even looking at entitlements - denied every gated action
+   * unconditionally for every business this flow ever created.
+   */
+  it('provisions a real live TRIALING subscription so entitlement checks actually pass, not just the entitlement rows', async () => {
+    await resetDatabase();
+    const result = await registerTrial(trialInput());
+
+    const { rows } = await pool.query<{ status: string; plan_id: string }>(
+      'SELECT status, plan_id FROM subscriptions WHERE business_id = $1', [result.businessId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe('TRIALING');
+
+    const entitlements = new EntitlementService(pool);
+    const check = await entitlements.canConnectWhatsAppAccount(result.businessId);
+    expect(check.allowed).toBe(true);
   });
 });

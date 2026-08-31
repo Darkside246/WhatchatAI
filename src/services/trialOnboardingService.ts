@@ -64,6 +64,29 @@ export async function registerTrial(input: {
     const businessId = businessResult.rows[0]?.id;
     if (!businessId) throw new Error('Trial business creation returned no id');
 
+    const startsAt = new Date();
+    const endsAt = new Date(startsAt.getTime() + TRIAL_DURATION_MS);
+
+    // Without a real subscriptions row, every entitlement-gated action
+    // (connecting WhatsApp, creating an AI agent, launching a campaign -
+    // see EntitlementService.checkEntitlement/checkCountLimit, both of
+    // which require subscriptionRepository.findLiveByBusiness() to return
+    // something) fails with "This business has no active subscription" for
+    // every trial business, unconditionally - the product_entitlements rows
+    // below are real, but nothing reads them without a live subscription to
+    // resolve a plan through first. Same 'starter' plan and real-transaction
+    // pattern businessBootstrapService.ts's single-tenant bootstrap already
+    // uses, just scoped to this trial's own 48-hour window instead of that
+    // flow's 14-day default.
+    const plan = await client.query<{ id: string }>(`SELECT id FROM plans WHERE plan_key = 'starter'`);
+    const planId = plan.rows[0]?.id;
+    if (!planId) throw new Error('Seed plan "starter" not found - cannot provision a trial subscription. Did migrations run?');
+    await client.query(
+      `INSERT INTO subscriptions (business_id, plan_id, status, current_period_start, current_period_end, trial_ends_at)
+       VALUES ($1, $2, 'TRIALING', $3, $4, $4)`,
+      [businessId, planId, startsAt.toISOString(), endsAt.toISOString()],
+    );
+
     const credential = await hashPassword(randomBytes(32).toString('base64url'));
     const phoneEnvelope = await getEncryptionService().encryptField(businessId, e164Phone);
     const userResult = await client.query<{ id: string }>(
@@ -88,8 +111,6 @@ export async function registerTrial(input: {
     const accountId = accountResult.rows[0]?.id;
     if (!accountId) throw new Error('Trial product account creation returned no id');
 
-    const startsAt = new Date();
-    const endsAt = new Date(startsAt.getTime() + TRIAL_DURATION_MS);
     for (const entitlementKey of productEntitlements[input.productKey]) {
       await client.query(
         `INSERT INTO product_entitlements (product_account_id, entitlement_key, is_enabled, source, expires_at)
