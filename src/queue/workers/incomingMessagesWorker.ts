@@ -204,7 +204,32 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     Boolean(result.message.textContent);
 
   if (needsAiHandoff) {
-    await scheduleAiDebounce({ businessId, whatsappAccountId, chatId: result.chat.id });
+    /**
+     * Confirmed live: with nothing to stop it, two of an operator's own
+     * connected WhatsApp Business numbers texting each other produced an
+     * unbounded AI-to-AI reply loop - each side's agent treated the other's
+     * generated output as a real customer message and kept replying to it,
+     * compounding whatever the two personas had said to each other with no
+     * natural end. A real customer's own number is never also a connected
+     * WhatsApp Business account in this deployment, so this check has no
+     * false-positive path against genuine customer traffic - it only ever
+     * fires when the "customer" on the other end is provably another one of
+     * this operator's own bots.
+     */
+    const counterpartPhone = result.chat.phoneNumber;
+    const counterpartAccount = counterpartPhone
+      ? await accountRepository.findAnyConnectedByPhoneNumber(counterpartPhone, businessId)
+      : null;
+
+    if (counterpartAccount) {
+      await chatRepository.setAiMode(result.chat.id, 'HUMAN_TAKEOVER', 'ai_to_ai_loop_prevented');
+      console.warn(
+        `[IncomingMessagesWorker] Chat ${result.chat.id} counterpart is another connected WhatsApp Business number ` +
+          `(business ${counterpartAccount.businessId}) - handed to a human instead of auto-replying, to prevent an AI-to-AI loop.`,
+      );
+    } else {
+      await scheduleAiDebounce({ businessId, whatsappAccountId, chatId: result.chat.id });
+    }
   }
 }
 

@@ -47,6 +47,75 @@ describe('WhatsAppAccountRepository.findActiveByBusiness (multi-tenant requireWo
   });
 });
 
+/**
+ * Regression coverage for a real incident: with nothing to detect it, two
+ * of an operator's own connected WhatsApp Business numbers texting each
+ * other produced an unbounded AI-to-AI reply loop - each side treated the
+ * other's generated output as real customer input. incomingMessagesWorker.ts
+ * uses this method to detect that case before scheduling an AI reply.
+ */
+describe('WhatsAppAccountRepository.findAnyConnectedByPhoneNumber (AI-to-AI loop detection)', () => {
+  it('finds a phone number connected to a different business', async () => {
+    await resetDatabase();
+    const businessA = await createTestBusiness();
+    const businessB = await createTestBusiness();
+    const repository = new WhatsAppAccountRepository(pool);
+    await repository.upsertConnected({
+      businessId: businessB,
+      whatsappJid: '15550001111@s.whatsapp.net',
+      jidKind: 'individual',
+      phoneNumber: '+15550001111',
+      pushName: 'Other Bot',
+      connectionStatus: 'CONNECTED',
+    });
+
+    const found = await repository.findAnyConnectedByPhoneNumber('+15550001111', businessA);
+    expect(found?.businessId).toBe(businessB);
+  });
+
+  it('never matches the same business excludingBusinessId was given for', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    const repository = new WhatsAppAccountRepository(pool);
+    await repository.upsertConnected({
+      businessId,
+      whatsappJid: '15550002222@s.whatsapp.net',
+      jidKind: 'individual',
+      phoneNumber: '+15550002222',
+      pushName: 'Self',
+      connectionStatus: 'CONNECTED',
+    });
+
+    expect(await repository.findAnyConnectedByPhoneNumber('+15550002222', businessId)).toBeNull();
+  });
+
+  it('never matches a disconnected account - a real customer could later be assigned that same recycled number', async () => {
+    await resetDatabase();
+    const businessA = await createTestBusiness();
+    const businessB = await createTestBusiness();
+    const repository = new WhatsAppAccountRepository(pool);
+    const account = await repository.upsertConnected({
+      businessId: businessB,
+      whatsappJid: '15550003333@s.whatsapp.net',
+      jidKind: 'individual',
+      phoneNumber: '+15550003333',
+      pushName: 'Former Bot',
+      connectionStatus: 'CONNECTED',
+    });
+    await repository.markDisconnected(account.id, 'DISCONNECTED');
+
+    expect(await repository.findAnyConnectedByPhoneNumber('+15550003333', businessA)).toBeNull();
+  });
+
+  it('returns null for an ordinary real customer phone number that owns no connected account anywhere', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    const repository = new WhatsAppAccountRepository(pool);
+
+    expect(await repository.findAnyConnectedByPhoneNumber('+15559998888', businessId)).toBeNull();
+  });
+});
+
 describe('WhatsAppAccountRepository.listReconnectableBusinesses (boot-time reconnection)', () => {
   it('returns nothing when no business has ever connected', async () => {
     await resetDatabase();

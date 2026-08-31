@@ -144,6 +144,26 @@ export class WhatsAppAccountRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /**
+   * Deliberately NOT scoped to one business - this exists solely to answer
+   * "is this phone number a connected WhatsApp Business account anywhere in
+   * this deployment," an anti-loop safety check, not a data read. Confirmed
+   * live: with nothing to stop it, two of an operator's own business
+   * numbers texting each other produced an unbounded AI-to-AI reply loop,
+   * each side treating the other's bot output as real customer input and
+   * compounding it. Returns only existence + which businessId owns it -
+   * never any of that business's private conversation data.
+   */
+  async findAnyConnectedByPhoneNumber(phoneNumber: string, excludingBusinessId: string): Promise<{ businessId: string } | null> {
+    const { rows } = await this.db.query<{ business_id: string }>(
+      `SELECT business_id FROM whatsapp_accounts
+       WHERE phone_number = $1 AND business_id != $2 AND connection_status = 'CONNECTED' AND deleted_at IS NULL
+       LIMIT 1`,
+      [phoneNumber, excludingBusinessId],
+    );
+    return rows[0] ? { businessId: rows[0].business_id } : null;
+  }
+
   /** Points this account at its real, downloaded profile picture - only ever called once a fetch has actually succeeded. */
   async attachProfilePicture(accountId: string, mediaId: string): Promise<void> {
     await this.db.query('UPDATE whatsapp_accounts SET profile_picture_media_id = $2, updated_at = now() WHERE id = $1', [
