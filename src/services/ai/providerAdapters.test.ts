@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@google/genai';
-import { GooseProvider, GeminiProvider } from './providerAdapters.js';
+import { GooseProvider, GeminiProvider, OpenAIProvider } from './providerAdapters.js';
 import { AiGateway, ProviderConfigRejectedError } from './aiGateway.js';
 import { IntegrationSettingsRepository } from '../../repositories/integrationSettingsRepository.js';
 import { pool } from '../../db/pool.js';
@@ -377,5 +377,80 @@ describe('GeminiProvider config-rejection retry', () => {
     expect(response.text).toBe('Recovered with the bare minimum request.');
     expect(response.attemptedProviders).toEqual(['gemini']);
     expect(generateContentMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * Regression coverage for a real incident: a reasoning-style OpenAI-
+ * compatible model (confirmed live against NVIDIA's nemotron-3.5-lightning)
+ * spends real output tokens on an internal <thinking> pass before it ever
+ * writes the visible reply - if the response gets cut off by max_tokens
+ * before that finishes, the raw in-progress reasoning (including literal
+ * system-prompt/persona text) lands in the same `content` field a real
+ * answer would use. That reasoning text was relayed straight to real
+ * WhatsApp customers before this guard existed. Unlike GooseProvider (whose
+ * CLI already separates a `thinking`-typed part from a real `text` part
+ * itself), this raw chat-completions response has no such split - the only
+ * reliable signal is `finish_reason: 'length'`.
+ */
+describe('OpenAICompatibleProvider rejects a truncated response instead of relaying raw reasoning', () => {
+  const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+
+  beforeEach(() => {
+    process.env.OPENAI_API_KEY = 'test-key';
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (originalOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+  });
+
+  it('throws rather than returning content when finish_reason is "length", even though content is non-empty', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              finish_reason: 'length',
+              message: { content: "Here's a thinking process:\n\n1. **Analyze User Input:** ... CRITICAL IDENTITY CONSTRAINT: Never refer to yourself in the third person." },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const provider = new OpenAIProvider();
+    await expect(
+      provider.generate({ tenantId: 'tenant-1', operation: 'reply.fallback', messages: [{ role: 'user', content: 'unspoken words' }] }),
+    ).rejects.toThrow('truncated');
+  });
+
+  it('returns the real reply when the response finished normally', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: 'Sometimes the things left unsaid speak the loudest.' } }] }),
+        { status: 200 },
+      ),
+    );
+
+    const provider = new OpenAIProvider();
+    const result = await provider.generate({ tenantId: 'tenant-1', operation: 'reply.fallback', messages: [{ role: 'user', content: 'unspoken words' }] });
+
+    expect(result.text).toBe('Sometimes the things left unsaid speak the loudest.');
+  });
+
+  it('requests a generous token budget by default, so a real reasoning pass has room to finish before hitting the ceiling', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: 'ok' } }] }), { status: 200 }));
+
+    const provider = new OpenAIProvider();
+    await provider.generate({ tenantId: 'tenant-1', operation: 'reply.fallback', messages: [{ role: 'user', content: 'hi' }] });
+
+    const [, requestInit] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse(requestInit!.body as string) as { max_tokens: number };
+    expect(body.max_tokens).toBeGreaterThanOrEqual(4096);
   });
 });

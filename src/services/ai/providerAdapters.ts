@@ -242,7 +242,15 @@ abstract class OpenAICompatibleProvider implements RegisteredAiProvider {
       body: JSON.stringify({
         model: this.model,
         messages: input.messages,
-        max_tokens: input.maxOutputTokens ?? 1024,
+        // 1024 is enough for an actual short WhatsApp reply, but some
+        // OpenAI-compatible providers (reasoning models in particular) spend
+        // a real chunk of this same budget on an internal <thinking> pass
+        // before ever writing the visible answer - a tight ceiling makes a
+        // truncated-mid-thought response common, not rare. The real reply
+        // still comes out short regardless of this ceiling, since the system
+        // instruction already asks for a concise answer - this just gives
+        // the model room to finish reasoning first.
+        max_tokens: input.maxOutputTokens ?? 4096,
         ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
         ...(input.responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {}),
       }),
@@ -253,10 +261,26 @@ abstract class OpenAICompatibleProvider implements RegisteredAiProvider {
       throw new Error(`${this.name} HTTP ${response.status}${body ? `: ${body.slice(0, 500)}` : ''}`);
     }
     const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string | null } }>;
+      choices?: Array<{ message?: { content?: string | null }; finish_reason?: string | null }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
-    const text = payload.choices?.[0]?.message?.content?.trim() ?? '';
+    const choice = payload.choices?.[0];
+    /**
+     * A reasoning model that gets cut off mid-<thinking> before it ever
+     * reaches a real answer puts that in-progress internal reasoning
+     * straight into this same `content` field - confirmed live (a
+     * generation cut short by the token limit returned the raw chain-of-
+     * thought, including the literal system-prompt/persona text, as if it
+     * were the finished reply). `finish_reason: 'length'` is the one
+     * reliable signal that happened - unlike Goose's CLI path, which
+     * already separates a `thinking`-typed part from a real `text` part
+     * itself, this raw completions response has no such split to lean on,
+     * so a truncated response can never be trusted as a real answer here.
+     */
+    if (choice?.finish_reason === 'length') {
+      throw new Error(`${this.name} response was truncated before finishing (finish_reason: length) - not safe to treat as a real answer, may contain raw internal reasoning`);
+    }
+    const text = choice?.message?.content?.trim() ?? '';
     if (!text) throw new Error(`${this.name} returned an empty response`);
     const result: { provider: string; text: string; usage?: { inputTokens?: number; outputTokens?: number } } = { provider: this.name, text };
     const usage: { inputTokens?: number; outputTokens?: number } = {};
