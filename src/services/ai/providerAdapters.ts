@@ -237,26 +237,48 @@ abstract class OpenAICompatibleProvider implements RegisteredAiProvider {
     if (input.media?.length) throw new Error(`${this.name} adapter currently accepts text only through the safe baseline path`);
     if (input.tools?.length) throw new Error(`${this.name} adapter does not support tool calling`);
 
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}`, ...this.extraHeaders },
-      body: JSON.stringify({
-        model: this.model,
-        messages: input.messages,
-        // 1024 is enough for an actual short WhatsApp reply, but some
-        // OpenAI-compatible providers (reasoning models in particular) spend
-        // a real chunk of this same budget on an internal <thinking> pass
-        // before ever writing the visible answer - a tight ceiling makes a
-        // truncated-mid-thought response common, not rare. The real reply
-        // still comes out short regardless of this ceiling, since the system
-        // instruction already asks for a concise answer - this just gives
-        // the model room to finish reasoning first.
-        max_tokens: input.maxOutputTokens ?? 4096,
-        ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
-        ...(input.responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {}),
-      }),
-      signal: AbortSignal.timeout(90_000),
-    });
+    const doFetch = () =>
+      fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}`, ...this.extraHeaders },
+        body: JSON.stringify({
+          model: this.model,
+          messages: input.messages,
+          // 1024 is enough for an actual short WhatsApp reply, but some
+          // OpenAI-compatible providers (reasoning models in particular) spend
+          // a real chunk of this same budget on an internal <thinking> pass
+          // before ever writing the visible answer - a tight ceiling makes a
+          // truncated-mid-thought response common, not rare. The real reply
+          // still comes out short regardless of this ceiling, since the system
+          // instruction already asks for a concise answer - this just gives
+          // the model room to finish reasoning first.
+          max_tokens: input.maxOutputTokens ?? 4096,
+          ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
+          ...(input.responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {}),
+        }),
+        signal: AbortSignal.timeout(90_000),
+      });
+
+    // One short retry for a genuine network-level failure only (fetch()
+    // itself throwing - DNS/connection-reset/handshake failure, never an
+    // HTTP error response, which a retry usually can't fix anyway).
+    // Confirmed live: this dev environment's own network relay is
+    // intermittently flaky (the same request that failed to connect at all
+    // succeeded cleanly a few seconds later, and a plain request to
+    // google.com failed the exact same way at the exact same moment) - a
+    // blip lasting a couple of seconds, not a real provider outage, so a
+    // short, bounded retry is worth the latency it costs.
+    let response: Response;
+    try {
+      response = await doFetch();
+    } catch (firstError) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        response = await doFetch();
+      } catch {
+        throw firstError;
+      }
+    }
     if (!response.ok) {
       const body = await response.text().catch(() => '');
       throw new Error(`${this.name} HTTP ${response.status}${body ? `: ${body.slice(0, 500)}` : ''}`);

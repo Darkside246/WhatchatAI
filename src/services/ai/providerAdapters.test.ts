@@ -487,3 +487,62 @@ describe('OpenAICompatibleProvider rejects a truncated response instead of relay
     ).rejects.toThrow('reasoning trace');
   });
 });
+
+/**
+ * Regression coverage for a real, confirmed incident: this dev
+ * environment's own network relay is intermittently flaky (a request to
+ * NVIDIA failed to connect at all, then succeeded cleanly a few seconds
+ * later - google.com failed identically at the exact same moment,
+ * confirming it's not the provider). A blip lasting a couple of seconds
+ * shouldn't cost a whole reply attempt.
+ */
+describe('OpenAICompatibleProvider retries once on a genuine network-level failure', () => {
+  const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+
+  beforeEach(() => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    if (originalOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+  });
+
+  it('recovers on the second attempt after the first fetch() call throws (connection failure, not an HTTP error)', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: 'Recovered fine.' } }] }), { status: 200 }));
+
+    const provider = new OpenAIProvider();
+    const resultPromise = provider.generate({ tenantId: 'tenant-1', operation: 'reply.fallback', messages: [{ role: 'user', content: 'hi' }] });
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+
+    expect(result.text).toBe('Recovered fine.');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces the original error when both attempts fail to connect', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('fetch failed'));
+
+    const provider = new OpenAIProvider();
+    const resultPromise = provider.generate({ tenantId: 'tenant-1', operation: 'reply.fallback', messages: [{ role: 'user', content: 'hi' }] });
+    const assertion = expect(resultPromise).rejects.toThrow('fetch failed');
+    await vi.runAllTimersAsync();
+    await assertion;
+  });
+
+  it('never retries a real HTTP error response - only a genuine connection failure', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 401 }));
+
+    const provider = new OpenAIProvider();
+    await expect(
+      provider.generate({ tenantId: 'tenant-1', operation: 'reply.fallback', messages: [{ role: 'user', content: 'hi' }] }),
+    ).rejects.toThrow('HTTP 401');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
