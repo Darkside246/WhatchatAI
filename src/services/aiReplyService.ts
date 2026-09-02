@@ -27,6 +27,8 @@ import { getGeminiCircuitBreaker, getGeminiConfigCircuitBreaker } from './aiCirc
 import { guardToolInvocation } from './ai/agentGuard.js';
 import { getToolPolicy } from './ai/aiToolPolicy.js';
 import { AiUsageRepository, type AiUsageCallKind } from '../repositories/aiUsageRepository.js';
+import { AiCommitmentRepository } from '../repositories/aiCommitmentRepository.js';
+import { detectCommitmentPhrase } from './commitmentDetector.js';
 import { mediaFallbackText, type InlineMediaPart } from './ai/mediaContext.js';
 import { classifyAiError } from './ai/aiErrorClassification.js';
 import { notifyBusiness } from './notificationService.js';
@@ -34,6 +36,23 @@ import { notifyBusiness } from './notificationService.js';
 const conversationStateRepository = new ConversationStateRepository(pool);
 const propertyOperationsRepository = new PropertyOperationsRepository(pool);
 const aiUsageRepository = new AiUsageRepository(pool);
+const aiCommitmentRepository = new AiCommitmentRepository(pool);
+
+/**
+ * Real, deterministic detection (never a second AI call) - see
+ * commitmentDetector.ts's own doc comment. Awaited-but-never-throwing,
+ * the same pattern as recordAiUsage above: this must never be the reason
+ * an otherwise-successful reply fails to reach the customer.
+ */
+async function recordCommitmentIfDetected(replyText: string, context: AiHandoffContext): Promise<void> {
+  const detectedPhrase = detectCommitmentPhrase(replyText);
+  if (!detectedPhrase) return;
+  await aiCommitmentRepository
+    .record({ businessId: context.businessId, chatId: context.chatId, commitmentText: replyText.slice(0, 500), detectedPhrase })
+    .catch((error) => {
+      console.error('[aiReplyService] Failed to record a detected commitment:', error instanceof Error ? error.message : error);
+    });
+}
 const approvalService = new ApprovalService(pool);
 
 /**
@@ -495,7 +514,9 @@ async function tryFallbackProviders(
         })),
       ],
     });
-    return { status: 'generated', text: response.text.slice(0, MAX_REPLY_CHARS) };
+    const fallbackText = response.text.slice(0, MAX_REPLY_CHARS);
+    await recordCommitmentIfDetected(fallbackText, context);
+    return { status: 'generated', text: fallbackText };
   } catch (error) {
     return {
       status: 'unavailable',
@@ -835,7 +856,9 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
       return tryFallbackProviders('Reply model returned an empty response', agent, context, contents, false);
     }
 
-    return { status: 'generated', text: text.slice(0, MAX_REPLY_CHARS) };
+    const finalText = text.slice(0, MAX_REPLY_CHARS);
+    await recordCommitmentIfDetected(finalText, context);
+    return { status: 'generated', text: finalText };
   } catch (error) {
     const classified = classifyAiError(error);
     const reason = `Reply model call failed (${classified.category}): ${classified.message}`;

@@ -2036,6 +2036,12 @@ app.get('/api/workspace/dashboard', requireWorkspaceContext, async (_req, res) =
   return res.status(200).json(dashboard);
 });
 
+app.get('/api/workspace/commitments/open', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const commitments = await workspaceService.getOpenCommitments(businessId);
+  return res.status(200).json({ commitments });
+});
+
 app.get('/api/workspace/business', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const business = await workspaceService.getBusinessProfile(businessId);

@@ -17,6 +17,7 @@ import { register } from '../src/services/authService.js';
 import { aiGateway } from '../src/services/ai/aiGateway.js';
 import { PropertyOperationsRepository } from '../src/repositories/propertyOperationsRepository.js';
 import { AiUsageRepository } from '../src/repositories/aiUsageRepository.js';
+import { AiCommitmentRepository } from '../src/repositories/aiCommitmentRepository.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 import { createTestAccount, resetDatabase } from './helpers.js';
 
@@ -547,6 +548,36 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
     const total = await new AiUsageRepository(pool).getPlatformTotal(24);
     expect(total.totalTokens).toBe(0);
     expect(total.callCount).toBe(0);
+  });
+
+  it('records a real detected commitment when the AI reply promises to follow up', async () => {
+    const accountId = await createTestAccount(realBusinessId);
+    const chat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId: realBusinessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550001234@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+    generateContentMock.mockResolvedValueOnce({ text: "No problem, I'll check with the team and get back to you shortly." });
+
+    await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), fakeContext({ businessId: realBusinessId, chatId: chat.id }));
+
+    const commitmentRepo = new AiCommitmentRepository(pool);
+    await pool.query(`UPDATE ai_commitments SET created_at = now() - interval '10 hours'`);
+    const open = await commitmentRepo.listOpen(realBusinessId, 4);
+    expect(open).toHaveLength(1);
+    expect(open[0]?.chatId).toBe(chat.id);
+  });
+
+  it('never records a commitment for an ordinary reply that makes no follow-up promise', async () => {
+    generateContentMock.mockResolvedValueOnce({ text: 'Our office hours are 9am to 5pm, Monday to Friday.' });
+
+    await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), fakeContext({ businessId: realBusinessId }));
+
+    await pool.query(`UPDATE ai_commitments SET created_at = now() - interval '10 hours'`);
+    const open = await new AiCommitmentRepository(pool).listOpen(realBusinessId, 4);
+    expect(open).toHaveLength(0);
   });
 });
 

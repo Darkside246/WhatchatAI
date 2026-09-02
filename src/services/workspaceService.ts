@@ -10,6 +10,7 @@ import { CrmContactRepository, type UpdateCrmContactInput } from '../repositorie
 import { LeadRepository, type UpdateLeadInput, type LeadRecord } from '../repositories/leadRepository.js';
 import { AiAgentRepository, type AiAgentRecord, type AgentCategory } from '../repositories/aiAgentRepository.js';
 import { AgentTemplateRepository, type AgentTemplateRecord } from '../repositories/agentTemplateRepository.js';
+import { AiCommitmentRepository, type AiCommitmentRecord } from '../repositories/aiCommitmentRepository.js';
 import { EntitlementService, type EntitlementDenialReason } from './entitlementService.js';
 import { SubscriptionRepository } from '../repositories/subscriptionRepository.js';
 import { PlanRepository } from '../repositories/planRepository.js';
@@ -320,6 +321,7 @@ export class WorkspaceService {
   private readonly leadRepository = new LeadRepository(pool);
   private readonly agentRepository = new AiAgentRepository(pool);
   private readonly agentTemplateRepository = new AgentTemplateRepository(pool);
+  private readonly commitmentRepository = new AiCommitmentRepository(pool);
   private readonly entitlementService = new EntitlementService(pool);
   private readonly subscriptionRepository = new SubscriptionRepository(pool);
   private readonly planRepository = new PlanRepository(pool);
@@ -954,6 +956,18 @@ export class WorkspaceService {
     ]);
 
     return { periodDays, messages, chats, calls, outboundReplies };
+  }
+
+  /**
+   * Real, unaddressed follow-up promises an AI reply made and nothing has
+   * followed up on since (see AiCommitmentRepository.listOpen) - never a
+   * guess at what "should" have happened, only chats where no later real
+   * outbound message exists. olderThanHours defaults to 4 - long enough
+   * that a same-conversation reply a few minutes later doesn't flag as
+   * forgotten, short enough to still be useful same-day.
+   */
+  async getOpenCommitments(businessId: string, olderThanHours = 4): Promise<AiCommitmentRecord[]> {
+    return this.commitmentRepository.listOpen(businessId, olderThanHours);
   }
 
   async getBusinessProfile(businessId: string): Promise<BusinessRecord> {

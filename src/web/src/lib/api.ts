@@ -199,6 +199,16 @@ export interface WorkspaceDashboardOverview {
   outboundReplies: { human: number; ai: number };
 }
 
+/** A real follow-up promise an AI reply made (detected deterministically, never a second AI call) that no later outbound message in that chat has addressed yet. */
+export interface AiCommitmentRecord {
+  id: string;
+  businessId: string;
+  chatId: string;
+  commitmentText: string;
+  detectedPhrase: string;
+  createdAt: string;
+}
+
 export interface WorkspaceBillingEntitlement {
   key: string;
   label: string;
@@ -1060,6 +1070,7 @@ export const api = {
   getBilling: () => request<WorkspaceBillingOverview>('/workspace/billing'),
   getPlanCatalogue: () => request<PlanCatalogueDto>('/workspace/billing/plans'),
   getDashboard: () => request<WorkspaceDashboardOverview>('/workspace/dashboard'),
+  getOpenCommitments: () => request<{ commitments: AiCommitmentRecord[] }>('/workspace/commitments/open'),
   getBusiness: () => request<{ business: WorkspaceBusiness }>('/workspace/business'),
   updateBusiness: (name: string) =>
     request<{ business: WorkspaceBusiness }>('/workspace/business', { method: 'PATCH', body: JSON.stringify({ name }) }),

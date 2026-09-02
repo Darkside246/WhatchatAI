@@ -169,3 +169,38 @@ describe('workspaceService.getDashboardOverview (real aggregates, never a separa
     expect(otherDashboard.messages).toEqual({ inbound: 0, outbound: 0 });
   });
 });
+
+describe('workspaceService.getOpenCommitments (composes AiCommitmentRepository.listOpen)', () => {
+  let businessId: string;
+  let accountId: string;
+  let chatId: string;
+  const toJid = '15550009999@s.whatsapp.net';
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId);
+    const chat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: toJid,
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+    chatId = chat.id;
+  });
+
+  it('reports no open commitments when none have been recorded', async () => {
+    expect(await workspaceService.getOpenCommitments(businessId)).toEqual([]);
+  });
+
+  it('surfaces a real, aged, unaddressed commitment', async () => {
+    const { AiCommitmentRepository } = await import('../src/repositories/aiCommitmentRepository.js');
+    await new AiCommitmentRepository(pool).record({ businessId, chatId, commitmentText: "I'll follow up tomorrow.", detectedPhrase: "I'll follow up" });
+    await pool.query(`UPDATE ai_commitments SET created_at = now() - interval '10 hours'`);
+
+    const open = await workspaceService.getOpenCommitments(businessId);
+    expect(open).toHaveLength(1);
+    expect(open[0]?.chatId).toBe(chatId);
+  });
+});
