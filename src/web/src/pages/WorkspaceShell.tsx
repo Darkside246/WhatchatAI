@@ -21,6 +21,7 @@ const FoodOperationsPage = lazy(() => import('./FoodOperationsPage.js').then((m)
 const PlaceholderPage = lazy(() => import('./PlaceholderPage.js').then((m) => ({ default: m.PlaceholderPage })));
 const DeveloperControlPlanePage = lazy(() => import('./DeveloperControlPlanePage.js').then((m) => ({ default: m.DeveloperControlPlanePage })));
 const InvoicesPage = lazy(() => import('./InvoicesPage.js').then((m) => ({ default: m.InvoicesPage })));
+const ActivityLogPage = lazy(() => import('./ActivityLogPage.js').then((m) => ({ default: m.ActivityLogPage })));
 
 function RouteFallback() { return <div className="flex h-full flex-1 items-center justify-center text-caption text-fg-muted">Loading…</div>; }
 interface Props { connection: WhatsAppConnectionSnapshot | null; sync: SyncStatusResponse | null; }
@@ -55,7 +56,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
         <Route path="/logistics" element={<ProductDashboardPage product="logistics" />} />
         <Route path="/logistics/operations" element={<PlaceholderPage title="Deliveries & Routes" description="Delivery tracking, route optimisation and driver dispatch — coming soon." />} />
         <Route path="/developer" element={<DeveloperControlPlanePage />} />
-        <Route path="/chats" element={<ChatsRoute />} /><Route path="/chats/:chatId" element={<ChatsRoute />} /><Route path="/agents" element={<AgentsPage />} /><Route path="/dashboard" element={<DashboardRoute />} /><Route path="/crm" element={<CrmRoute />} /><Route path="/property-operations" element={<PropertyOperationsPage />} /><Route path="/invoices" element={<InvoicesPage />} /><Route path="/automations" element={<FunnelsRoute />} /><Route path="/marketing" element={<MarketingRoute />} /><Route path="/email" element={<EmailRoute />} /><Route path="/billing" element={<BillingRoute />} /><Route path="/settings" element={<SettingsRoute connection={connection} />} /><Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/chats" element={<ChatsRoute />} /><Route path="/chats/:chatId" element={<ChatsRoute />} /><Route path="/agents" element={<AgentsPage />} /><Route path="/dashboard" element={<DashboardRoute />} /><Route path="/crm" element={<CrmRoute />} /><Route path="/property-operations" element={<PropertyOperationsPage />} /><Route path="/invoices" element={<InvoicesPage />} /><Route path="/activity-log" element={<ActivityLogPage />} /><Route path="/automations" element={<FunnelsRoute />} /><Route path="/marketing" element={<MarketingRoute />} /><Route path="/email" element={<EmailRoute />} /><Route path="/billing" element={<BillingRoute />} /><Route path="/settings" element={<SettingsRoute connection={connection} />} /><Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes></Suspense></div>
     </div></div><SaasNavBottomBar />
   </div>;

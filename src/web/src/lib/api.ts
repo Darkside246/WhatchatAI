@@ -216,6 +216,30 @@ export interface ApprovalPatternSuggestion {
   approvedStreak: number;
 }
 
+/** One real, hash-chained entry from platform_audit_events - every real action/approval this business's agents and operators have taken. */
+export interface ActivityLogEvent {
+  id: string;
+  tenantId: string;
+  eventType: string;
+  actor: { kind: 'AGENT' | 'USER' | 'SYSTEM'; id: string };
+  correlationId: string;
+  actionRequestId?: string;
+  payload: Record<string, unknown>;
+  payloadHash: string;
+  previousHash?: string;
+  occurredAt: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ActivityLogFilters {
+  eventType?: string;
+  actorKind?: 'AGENT' | 'USER' | 'SYSTEM';
+  occurredAfter?: string;
+  occurredBefore?: string;
+  beforeSequence?: number;
+  limit?: number;
+}
+
 export interface WorkspaceBillingEntitlement {
   key: string;
   label: string;
@@ -1079,6 +1103,14 @@ export const api = {
   getDashboard: () => request<WorkspaceDashboardOverview>('/workspace/dashboard'),
   getOpenCommitments: () => request<{ commitments: AiCommitmentRecord[] }>('/workspace/commitments/open'),
   getApprovalPatternSuggestions: () => request<{ suggestions: ApprovalPatternSuggestion[] }>('/workspace/agents/approval-suggestions'),
+  getActivityLog: (filters: ActivityLogFilters = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value !== undefined && value !== '') params.set(key, String(value));
+    }
+    const query = params.toString();
+    return request<{ events: ActivityLogEvent[]; nextCursor: number | null }>(`/workspace/activity-log${query ? `?${query}` : ''}`);
+  },
   getBusiness: () => request<{ business: WorkspaceBusiness }>('/workspace/business'),
   updateBusiness: (name: string) =>
     request<{ business: WorkspaceBusiness }>('/workspace/business', { method: 'PATCH', body: JSON.stringify({ name }) }),

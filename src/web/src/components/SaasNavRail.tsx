@@ -2,7 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   MessageCircle, BarChart3, Bot, Contact, Zap, Megaphone, Mail, CreditCard, Settings,
   Building2, CookingPot, Store, Truck, UsersRound, Receipt, ShoppingBag, Scissors,
-  Car, Stethoscope, Scale, Hotel, HardHat, Package, KeyRound, type LucideIcon,
+  Car, Stethoscope, Scale, Hotel, HardHat, Package, KeyRound, History, type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth.js';
 
@@ -24,6 +24,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/marketing',           label: 'Marketing',          icon: Megaphone },
     { to: '/email',               label: 'Email',              icon: Mail },
     { to: '/billing',             label: 'Billing',            icon: CreditCard },
+    { to: '/activity-log',        label: 'Activity Log',       icon: History },
     { to: '/settings',            label: 'Settings',           icon: Settings },
   ],
   property: [
@@ -33,6 +34,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/invoices',            label: 'Invoices',           icon: Receipt },
     { to: '/crm',                 label: 'Tenants',            icon: UsersRound },
     { to: '/agents',              label: 'Property Agent',     icon: Bot },
+    { to: '/activity-log',        label: 'Activity Log',       icon: History },
     { to: '/settings',            label: 'Settings',           icon: Settings },
   ],
   food: [

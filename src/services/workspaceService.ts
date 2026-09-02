@@ -32,6 +32,8 @@ import { TeamRepository } from '../repositories/teamRepository.js';
 import { AgentCapacityRepository } from '../repositories/agentCapacityRepository.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { PlatformActionRepository } from '../repositories/platformActionRepository.js';
+import { PlatformAuditLedgerRepository, type AuditEventSearchFilters } from '../repositories/platformAuditLedgerRepository.js';
+import type { AuditEvent } from '../domain/platform/contracts.js';
 import type {
   CallStatus,
   CallType,
@@ -350,6 +352,7 @@ export class WorkspaceService {
   private readonly capacityRepository = new AgentCapacityRepository(pool);
   private readonly securityAuditLogRepository = new SecurityAuditLogRepository(pool);
   private readonly platformActionRepository = new PlatformActionRepository(pool);
+  private readonly platformAuditLedgerRepository = new PlatformAuditLedgerRepository(pool);
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
@@ -1024,6 +1027,17 @@ export class WorkspaceService {
       }),
     );
     return suggestions.filter((suggestion): suggestion is ApprovalPatternSuggestion => suggestion !== null);
+  }
+
+  /**
+   * Real "Activity Log" - the searchable read side of the real, hash-chained
+   * audit trail actionBusService.ts/propertyMaintenanceOrchestrator.ts
+   * already write on every real action/approval (see
+   * PlatformAuditLedgerRepository.search's own doc comment: this data
+   * existed and accumulated with no way to read it back until now).
+   */
+  async getActivityLog(businessId: string, filters: AuditEventSearchFilters = {}): Promise<{ events: AuditEvent[]; nextCursor: number | null }> {
+    return this.platformAuditLedgerRepository.search(businessId, filters);
   }
 
   async getBusinessProfile(businessId: string): Promise<BusinessRecord> {

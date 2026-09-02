@@ -2049,6 +2049,23 @@ app.get('/api/workspace/agents/approval-suggestions', requireWorkspaceContext, a
   return res.status(200).json({ suggestions });
 });
 
+const activityLogQuerySchema = z.object({
+  eventType: z.string().trim().min(1).optional(),
+  actorKind: z.enum(['AGENT', 'USER', 'SYSTEM']).optional(),
+  occurredAfter: z.string().trim().min(1).optional(),
+  occurredBefore: z.string().trim().min(1).optional(),
+  beforeSequence: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().positive().max(200).optional(),
+});
+
+app.get('/api/workspace/activity-log', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = activityLogQuerySchema.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_ACTIVITY_LOG_QUERY', details: parsed.error.flatten() });
+  const result = await workspaceService.getActivityLog(businessId, parsed.data);
+  return res.status(200).json(result);
+});
+
 app.get('/api/workspace/business', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const business = await workspaceService.getBusinessProfile(businessId);
