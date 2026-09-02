@@ -52,6 +52,60 @@ export function getCapabilities(endpoint?: GooseGenerateInput['endpoint']): { co
   return { configured: Boolean(url), url };
 }
 
+/**
+ * In-memory only, deliberately not persisted - this is "has Goose worked
+ * recently in this running process," not a durable audit trail (that's a
+ * separate, larger piece of work). Reset on every process restart, which
+ * is the honest behavior: a fresh deploy has no history to report yet.
+ */
+let lastSuccessAt: string | null = null;
+let lastFailureAt: string | null = null;
+let lastFailureReason: string | null = null;
+let consecutiveFailureCount = 0;
+
+function recordOutcome(result: GooseGenerateResult): void {
+  if (result.status === 'generated') {
+    lastSuccessAt = new Date().toISOString();
+    consecutiveFailureCount = 0;
+  } else {
+    lastFailureAt = new Date().toISOString();
+    lastFailureReason = result.reason;
+    consecutiveFailureCount += 1;
+  }
+}
+
+/**
+ * Real Goose integration health (AURA Master Engineering Prompt section
+ * 37): whether a fallback URL is configured, whether the adapter is
+ * actually reachable right now, and real usage history from this process
+ * - never a fabricated "healthy" just because credentials exist. Never
+ * includes the API key itself.
+ */
+export async function getHealthSummary(endpoint?: GooseGenerateInput['endpoint']): Promise<{
+  configured: boolean;
+  reachable: boolean;
+  reason?: string;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  lastFailureReason: string | null;
+  consecutiveFailureCount: number;
+}> {
+  const capabilities = getCapabilities(endpoint);
+  if (!capabilities.configured) {
+    return { configured: false, reachable: false, reason: 'GOOSE_SERVICE_URL is not configured', lastSuccessAt, lastFailureAt, lastFailureReason, consecutiveFailureCount };
+  }
+  const health = await healthCheck(endpoint);
+  return {
+    configured: true,
+    reachable: health.status === 'available',
+    ...(health.reason !== undefined ? { reason: health.reason } : {}),
+    lastSuccessAt,
+    lastFailureAt,
+    lastFailureReason,
+    consecutiveFailureCount,
+  };
+}
+
 function buildPrompt(systemInstruction: string, contents: GooseGenerateInput['contents']): string {
   const conversation = contents.map((content) => {
     const text = content.parts.map((part) => part.text).join('\n').trim();
@@ -66,8 +120,20 @@ function buildPrompt(systemInstruction: string, contents: GooseGenerateInput['co
   ].join('\n');
 }
 
-/** Calls the small HTTP failover adapter configured in Settings. */
+/**
+ * Calls the small HTTP failover adapter configured in Settings. A thin
+ * wrapper around doGenerateResponse below whose only job is recording the
+ * real outcome for getHealthSummary - every return path in
+ * doGenerateResponse goes through here exactly once, so there is nowhere
+ * for a new return statement to silently skip recording.
+ */
 export async function generateResponse(input: GooseGenerateInput): Promise<GooseGenerateResult> {
+  const result = await doGenerateResponse(input);
+  recordOutcome(result);
+  return result;
+}
+
+async function doGenerateResponse(input: GooseGenerateInput): Promise<GooseGenerateResult> {
   const url = getServiceUrl(input.endpoint);
   if (!url) return { status: 'unavailable', reason: 'No Goose failover service URL is configured' };
   try {

@@ -360,13 +360,12 @@ app.get('/api/health/ai', (_req, res) => {
 });
 
 app.get('/api/health/goose', async (_req, res) => {
-  const capabilities = gooseService.getCapabilities();
-  if (!capabilities.configured) {
-    res.status(200).json({ status: 'not_configured', reason: 'GOOSE_SERVICE_URL is not configured' });
+  const summary = await gooseService.getHealthSummary();
+  if (!summary.configured) {
+    res.status(200).json({ status: 'not_configured', ...summary });
     return;
   }
-  const health = await gooseService.healthCheck();
-  res.status(health.status === 'available' ? 200 : 503).json(health);
+  res.status(summary.reachable ? 200 : 503).json({ status: summary.reachable ? 'available' : 'unavailable', ...summary });
 });
 
 app.get('/api/health/database', async (_req, res) => {
