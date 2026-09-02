@@ -188,6 +188,58 @@ unconditionally `IMPLEMENTED AND VERIFIED`, not pending anything.
   itself was confirmed) - worth a real end-to-end message test as a
   follow-up, not required to call container *infrastructure* verified.
 
+## Backups
+
+Added ahead of the first real 100-tenant cohort - before this, `postgres-data`
+had **no backup of any kind**: a bad `docker volume rm`, a corrupted volume,
+or a bad migration meant permanent, unrecoverable loss of every tenant's
+data.
+
+The `postgres-backup` service runs `scripts/postgres-backup.sh` in a loop:
+`pg_dump --format=plain | gzip` into the separate `postgres-backups` volume,
+once every `BACKUP_INTERVAL_SECONDS` (default 86400 = daily), pruning files
+older than `BACKUP_RETENTION_DAYS` (default 7). A failed dump cycle logs and
+retries next interval without touching previously-written backups (no
+partial file is ever left in place - written to a `.tmp` path and only
+`mv`'d into place on success).
+
+**Verified by an actual dump/restore round-trip** against a real seeded
+database (not just read for syntax): `pg_dump | gzip` the database, drop into
+a fresh scratch database via `gunzip | psql`, and confirm row counts match
+exactly before and after. They did.
+
+To restore: stop `app-server`/`app-worker` first (a restore replaces data
+while they'd still be writing to it), then run
+`./scripts/restore-backup.sh /path/to/whatchatai-<timestamp>.sql.gz` - it
+requires typing the target database name back to confirm before doing
+anything, since this is a destructive replace, not a merge.
+
+**Known gap, not fixed here:** this is a same-host backup - it protects
+against a volume-level accident, not against losing the Droplet or its disk
+entirely. A real off-host copy (DigitalOcean Spaces or equivalent) needs
+real credentials this repo does not have configured; the backup script is
+structured so adding an upload step after each successful dump is a small,
+isolated change once those credentials exist - deliberately not built now
+rather than wired against a guessed bucket/endpoint.
+
+**Verified**: `docker compose config --quiet` passes and `docker compose
+config --services` lists `postgres-backup` alongside the existing four
+services - real schema validation, not just YAML parsing. A full container
+boot (`docker compose up -d`, confirming the backup loop actually produces
+a file) was not run in this environment - re-verify that before trusting
+this fully in production, the same way the rest of this file's "Real bugs
+found" section required an actual container boot rather than config
+validation alone.
+
+**Operational warning, learned the hard way while verifying this:**
+`docker compose config` (without `--quiet`/`--services`) prints every
+resolved environment variable **including real secrets from `.env`** in
+plaintext - `GEMINI_API_KEY`, `GOOSE_SERVICE_API_KEY`,
+`MASTER_ENCRYPTION_KEY`, etc. Never run the bare form where the output could
+land in a log, a terminal a Claude session captures, or anywhere else
+outside your own local shell. Use `--quiet` (validate only) or `--services`/
+`--images` for anything that needs to be pasted, logged, or shared.
+
 ## Known gaps (not fixed in this phase, listed honestly)
 
 - Secrets go in via `env_file: .env`, not real Docker/Swarm/Kubernetes

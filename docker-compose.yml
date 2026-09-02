@@ -87,6 +87,35 @@ services:
     # "What was verified vs. not"). Re-test with cap_drop: [ALL] applied
     # here before trusting this exception in production.
 
+  # Real, tested (see docs/DOCKER.md) same-host backup of postgres-data.
+  # Protects against a bad `docker volume rm`/corrupted volume/bad
+  # migration - NOT against full Droplet/disk loss, which needs a real
+  # off-host copy (real DO Spaces/S3 credentials this repo does not have
+  # yet - see docs/DOCKER.md's "Known gaps").
+  postgres-backup:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-whatchatai}
+      POSTGRES_DB: ${POSTGRES_DB:-whatchatai_dev}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-whatchatai_dev}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+    volumes:
+      - postgres-backups:/backups
+      - ./scripts/postgres-backup.sh:/usr/local/bin/postgres-backup.sh:ro
+    entrypoint: ["sh", "/usr/local/bin/postgres-backup.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.5
+    networks:
+      - whatchatai-net
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes", "--save", ""]
@@ -185,6 +214,7 @@ networks:
 
 volumes:
   postgres-data:
+  postgres-backups:
   redis-data:
   whatsapp-session:
   media-storage:
