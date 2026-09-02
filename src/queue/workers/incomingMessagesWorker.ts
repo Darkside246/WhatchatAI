@@ -37,6 +37,8 @@ import { WhatsAppMessageReactionRepository } from '../../repositories/whatsappMe
 import { WhatsAppPresenceRepository } from '../../repositories/whatsappPresenceRepository.js';
 import { WhatsAppSyncJobRepository } from '../../repositories/whatsappSyncJobRepository.js';
 import { WhatsAppAccountRepository } from '../../repositories/whatsappAccountRepository.js';
+import { WhatsAppGroupRepository } from '../../repositories/whatsappGroupRepository.js';
+import { WhatsAppJidMappingRepository } from '../../repositories/whatsappJidMappingRepository.js';
 import { WhatsAppOutboundMessageRepository } from '../../repositories/whatsappOutboundMessageRepository.js';
 import { EmailMessageRepository } from '../../repositories/emailMessageRepository.js';
 import { mapBaileysCallStatus, callTypeFromEvent, isTerminalCallStatus } from '../../domain/whatsapp/callStatus.js';
@@ -57,6 +59,7 @@ import { OperatorCommandService } from '../../services/operator/operatorCommandS
 import { ReminderRepository } from '../../repositories/reminderRepository.js';
 import { initializePlatformFoundation } from '../../services/platform/platformBootstrap.js';
 import { runPropertyMaintenanceHandoff } from '../../services/property/propertyMaintenanceOrchestrator.js';
+import { evaluateGroupParticipationGate, type GroupParticipationGateResult } from '../../services/ai/groupParticipationGate.js';
 // Runs here, not in server/index.ts: that process owns the live Baileys
 // socket AND sends every outbound message, so it is exactly the event loop
 // that must never stall. documentParseWorker has no live-socket dependency
@@ -201,7 +204,13 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     message.isLive &&
     result.chat.aiMode === 'AI_ACTIVE' &&
     !result.media &&
-    Boolean(result.message.textContent);
+    Boolean(result.message.textContent) &&
+    // Cheap, binary pre-check only - avoids scheduling debounce work at all
+    // for a group an operator has explicitly turned AI off for. The real
+    // relevance/activity judgment happens inside processAiDebounce, once
+    // the whole coalesced burst is available to reason about - see
+    // groupParticipationGate.ts's own doc comment for why.
+    (!result.chat.isGroup || result.chat.groupParticipationMode !== 'OFF');
 
   if (needsAiHandoff) {
     /**
@@ -314,8 +323,10 @@ async function runAiHandoff(params: {
   messageId: string;
   queryText: string;
   mediaId: string | null;
+  /** Guards the group-specific behavior below (the no_agent takeover exemption, and cooldown stamping) - false for a DM keeps every branch exactly as it was before this parameter existed. */
+  isGroup?: boolean;
 }): Promise<void> {
-  const { businessId, whatsappAccountId, chatId, contactId, messageId, queryText, mediaId } = params;
+  const { businessId, whatsappAccountId, chatId, contactId, messageId, queryText, mediaId, isGroup = false } = params;
   let senderJid: string | undefined;
 
   if (contactId) {
@@ -365,6 +376,7 @@ async function runAiHandoff(params: {
           text: maintenance.replyText ?? fallbackText,
           requestedBy: 'ai',
         });
+        if (isGroup) await chatRepository.markAiGroupReplySent(chatId);
       } catch (err) {
         console.error('[IncomingMessagesWorker] Property maintenance reply failed to send:', err instanceof Error ? err.message : err);
       }
@@ -387,6 +399,15 @@ async function runAiHandoff(params: {
   // message from the same customer) and the business is notified.
   if (outcome.kind === 'no_agent') {
     console.log(`[IncomingMessagesWorker] Chat ${chatId}: ${outcome.reason}`);
+    // Group exemption, deliberately narrow (product decision - see
+    // groupParticipationGate.ts plan): a missed keyword-routed topic is a
+    // per-message miss, not a real problem worth silencing an entire
+    // group's AI over - unlike escalate_to_human/unavailable/blocked_leak
+    // below, which stay unconditional in a group exactly as in a DM,
+    // since those are genuine safety/reliability events. In a group this
+    // is a normal "chose not to speak" outcome: log and return, nothing
+    // else.
+    if (isGroup) return;
     await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER', 'no_agent');
     await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
     await notifyBusiness({
@@ -487,6 +508,7 @@ async function runAiHandoff(params: {
         text: outcome.agent.blockedReplyMessage?.trim() || DEFAULT_BLOCKED_REPLY_MESSAGE,
         requestedBy: 'system',
       });
+      if (isGroup) await chatRepository.markAiGroupReplySent(chatId);
     } catch (error) {
       console.error(`[IncomingMessagesWorker] Fallback message failed to send for chat ${chatId}:`, error instanceof Error ? error.message : error);
     }
@@ -521,6 +543,7 @@ async function runAiHandoff(params: {
       // unnaturally fast. 0 dispatches immediately.
       ...(agent.responseDelaySeconds > 0 ? { delayMs: agent.responseDelaySeconds * 1000 } : {}),
     });
+    if (isGroup) await chatRepository.markAiGroupReplySent(chatId);
     console.log(`[IncomingMessagesWorker] AI reply queued for chat ${chatId} (agent ${agent.id}).`);
   } catch (error) {
     console.error(
@@ -548,6 +571,16 @@ async function maybeTriggerMediaAiHandoff(
   const chat = await chatRepository.findByIdForBusiness(message.chatId, message.businessId);
   if (!chat || chat.aiMode !== 'AI_ACTIVE') return;
 
+  // No debounce/batch here (one media job = one message) - the gate is
+  // evaluated against this single message in isolation. See
+  // groupParticipationGate.ts's own doc comment for why a DM skips this
+  // entirely.
+  if (chat.isGroup) {
+    const gate = await evaluateGroupParticipationGate({ chat, candidateMessages: [message] }, groupParticipationGateDeps);
+    logGateDecision(chat.id, gate);
+    if (!gate.participate) return;
+  }
+
   const mediaAvailable = media.downloadStatus === 'downloaded';
   const queryText = message.textContent ?? mediaFallbackText(message.messageType, mediaAvailable);
 
@@ -559,6 +592,7 @@ async function maybeTriggerMediaAiHandoff(
     messageId: message.id,
     queryText,
     mediaId: mediaAvailable ? media.id : null,
+    isGroup: chat.isGroup,
   });
 }
 
@@ -575,6 +609,18 @@ const chatRepository = new WhatsAppChatRepository(pool);
 const crmContactRepository = new CrmContactRepository(pool);
 const operatorCommandService = new OperatorCommandService(pool);
 const reminderRepository = new ReminderRepository(pool);
+const groupRepository = new WhatsAppGroupRepository(pool);
+const jidMappingRepository = new WhatsAppJidMappingRepository(pool);
+const groupParticipationGateDeps = { messageRepository, accountRepository, groupRepository, jidMappingRepository };
+
+/** Structured, single-line, consistently logged so a future decision-quality pass can replay every gate call - see groupParticipationGate.ts's own doc comment. */
+function logGateDecision(chatId: string, gate: GroupParticipationGateResult): void {
+  console.log(
+    `[IncomingMessagesWorker] Group gate chat=${chatId} participate=${gate.participate} trigger=${gate.trigger} ` +
+      `bucket=${gate.activityBucket} messages=${gate.messageCount} senders=${gate.distinctSenders} ` +
+      `participants=${gate.participantsCount ?? 'n/a'} cooldownRemainingMs=${gate.cooldownRemainingMs ?? 0} reason="${gate.reason}"`,
+  );
+}
 
 // Configurable, not hardcoded: operators can raise/lower this per deployment.
 const MAX_MEDIA_DOWNLOAD_BYTES = Number(process.env.MEDIA_MAX_DOWNLOAD_BYTES ?? 100 * 1024 * 1024);
@@ -836,21 +882,35 @@ async function processAiDebounce(data: AiDebounceJobData): Promise<void> {
     const unanswered = await messageRepository.findUnansweredInboundSince(chatId, claimed.lastAiHandoffMessageId);
     if (unanswered.length === 0) return;
 
+    // The watermark always advances past the whole reviewed burst,
+    // regardless of what the gate below decides - a message the gate
+    // chose not to answer must never be re-considered on the next
+    // debounce fire.
     lastConsideredMessageId = unanswered[unanswered.length - 1]!.id;
-    const combinedText = unanswered
+
+    let triggerMessages = unanswered;
+    if (claimed.isGroup) {
+      const gate = await evaluateGroupParticipationGate({ chat: claimed, candidateMessages: unanswered }, groupParticipationGateDeps);
+      logGateDecision(chatId, gate);
+      if (!gate.participate) return;
+      triggerMessages = gate.triggerMessages;
+    }
+
+    const combinedText = triggerMessages
       .map((message) => message.textContent)
       .filter((text): text is string => Boolean(text && text.trim()))
       .join('\n');
-    if (!combinedText) return; // Nothing with real text among the unanswered batch.
+    if (!combinedText) return; // Nothing with real text among the trigger messages.
 
     await runAiHandoff({
       businessId,
       whatsappAccountId,
       chatId,
       contactId: claimed.contactId,
-      messageId: lastConsideredMessageId,
+      messageId: triggerMessages[triggerMessages.length - 1]!.id,
       queryText: combinedText,
       mediaId: null,
+      isGroup: claimed.isGroup,
     });
   } finally {
     // Always releases, even if runAiHandoff somehow throws (it is designed

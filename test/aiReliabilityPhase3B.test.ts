@@ -60,6 +60,24 @@ const { incomingMessagesWorker, realtimeEventsWorker, sweepStaleAiHandoff } = aw
 );
 const { whatsappOutboundMessageService } = await import('../src/services/whatsappOutboundMessageService.js');
 
+/**
+ * Module-scope (not nested in a describe callback) because it's shared by
+ * both the "AI debounce" and "Group-chat participation gate wiring"
+ * describe blocks below - a nested `function` declaration is scoped to its
+ * enclosing describe callback only, not visible to a sibling describe.
+ */
+function waitForDebounceRound(businessId: string, timeoutMs = 10_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Timed out waiting for AI debounce round')), timeoutMs);
+    realtimeEventsWorker.on('completed', function onCompleted(job) {
+      if (job.name !== 'ai-debounce' || job.data.businessId !== businessId) return;
+      clearTimeout(timeout);
+      realtimeEventsWorker.off('completed', onCompleted);
+      resolve();
+    });
+  });
+}
+
 function fakeAgent(overrides: Partial<AiAgentRecord> = {}): AiAgentRecord {
   return {
     id: 'agent-1',
@@ -494,13 +512,14 @@ describe('AI debounce - bursts, ordering, duplicate/stale jobs, crash safety, cr
     // scoped per business (aiCircuitBreaker.ts).
   });
 
-  afterAll(async () => {
-    await incomingMessagesWorker.close();
-    await realtimeEventsWorker.close();
-    await incomingMessagesQueue.close();
-    await realtimeEventsQueue.close();
-    void createdBusinessIds;
-  });
+  // No afterAll here: incomingMessagesWorker/realtimeEventsWorker/their
+  // queues are module-scoped singletons shared with the sibling
+  // "Group-chat participation gate wiring" describe block below, which
+  // runs after this one in file order - closing them here would pull the
+  // connection out from under that block's tests (the real cause of a
+  // "Connection is closed" ioredis error observed there). Only the last
+  // describe block in the file closes them.
+  void createdBusinessIds;
 
   async function setupBusinessWithAgent(): Promise<{ businessId: string; accountId: string; accountJid: string }> {
     const businessId = await createTestBusiness();
@@ -561,18 +580,6 @@ describe('AI debounce - bursts, ordering, duplicate/stale jobs, crash safety, cr
     });
     await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid, message: buildIngested(messageId, text) });
     await completion;
-  }
-
-  function waitForDebounceRound(businessId: string, timeoutMs = 10_000): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timed out waiting for AI debounce round')), timeoutMs);
-      realtimeEventsWorker.on('completed', function onCompleted(job) {
-        if (job.name !== 'ai-debounce' || job.data.businessId !== businessId) return;
-        clearTimeout(timeout);
-        realtimeEventsWorker.off('completed', onCompleted);
-        resolve();
-      });
-    });
   }
 
   it('5/6. a rapid 3-message burst produces exactly one combined Gemini call, with all three texts in chronological order', async () => {
@@ -771,4 +778,148 @@ describe('AI debounce - bursts, ordering, duplicate/stale jobs, crash safety, cr
 
   void randomBytes;
   void AI_DEBOUNCE_DELAY_MS;
+});
+
+describe('Group-chat participation gate wiring (real BullMQ worker + real Postgres)', () => {
+  beforeEach(async () => {
+    await resetDatabase();
+    aiReplyGenerateContentMock.mockReset();
+    notifyBusinessMock.mockClear();
+  });
+
+  afterAll(async () => {
+    await incomingMessagesWorker.close();
+    await realtimeEventsWorker.close();
+    await incomingMessagesQueue.close();
+    await realtimeEventsQueue.close();
+  });
+
+  async function setupBusinessWithAgent(): Promise<{ businessId: string; accountId: string; accountJid: string }> {
+    const businessId = await createTestBusiness();
+    const accountJid = `1555000${Math.floor(Math.random() * 9000 + 1000)}@s.whatsapp.net`;
+    const accountId = await createTestAccount(businessId, accountJid);
+    await new AiAgentRepository(pool).create({ businessId, name: 'Reception Agent' });
+    return { businessId, accountId, accountJid };
+  }
+
+  function buildGroupIngested(messageId: string, text: string, opts: { participant: string; mentionedJids?: string[] }): IngestedWhatsAppMessage {
+    return {
+      messageId,
+      remoteJid: '120363000000099999@g.us',
+      jidKind: 'group',
+      phoneNumber: null,
+      participant: opts.participant,
+      remoteJidAlt: null,
+      participantAlt: null,
+      fromMe: false,
+      pushName: 'Group Test Member',
+      isLive: true,
+      upsertType: 'notify',
+      messageTimestamp: new Date().toISOString(),
+      contentType: 'text',
+      documentSubtype: null,
+      mimetype: null,
+      fileName: null,
+      textPreview: text,
+      fullText: text,
+      mediaDescriptor: null,
+      ingestedAt: new Date().toISOString(),
+      mentionedJids: opts.mentionedJids ?? [],
+      quotedStanzaId: null,
+    };
+  }
+
+  async function sendGroupAndWaitPersisted(
+    businessId: string,
+    accountId: string,
+    accountJid: string,
+    messageId: string,
+    text: string,
+    opts: { participant: string; mentionedJids?: string[] },
+  ): Promise<void> {
+    const completion = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timed out waiting for group message to persist')), 10_000);
+      incomingMessagesWorker.on('completed', function onCompleted(job) {
+        if (job.data.message.messageId !== messageId) return;
+        clearTimeout(timeout);
+        incomingMessagesWorker.off('completed', onCompleted);
+        resolve();
+      });
+    });
+    await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid, message: buildGroupIngested(messageId, text, opts) });
+    await completion;
+  }
+
+  it('a busy group with no explicit address produces zero outbound sends and never calls Gemini', async () => {
+    const { businessId, accountId, accountJid } = await setupBusinessWithAgent();
+    const senders = Array.from({ length: 6 }, (_, i) => `1555010${1000 + i}@s.whatsapp.net`);
+
+    // Enough messages from enough distinct senders to push real activity
+    // into 'busy' (defaults: >=12 messages or >=5 distinct senders in the
+    // trailing window) - see groupParticipationGate.ts.
+    for (let i = 0; i < 13; i += 1) {
+      await sendGroupAndWaitPersisted(businessId, accountId, accountJid, `GROUPBUSY-${i}-${Date.now()}`, `chatter ${i}`, { participant: senders[i % senders.length]! });
+    }
+    const debounceRound = waitForDebounceRound(businessId, 15_000);
+    await sendGroupAndWaitPersisted(businessId, accountId, accountJid, `GROUPBUSY-FINAL-${Date.now()}`, 'just talking to my friend here', { participant: senders[0]! });
+    await debounceRound;
+
+    expect(aiReplyGenerateContentMock).not.toHaveBeenCalled();
+    const { rows } = await pool.query('SELECT count(*) AS count FROM whatsapp_outbound_messages WHERE business_id = $1', [businessId]);
+    expect(Number(rows[0].count)).toBe(0);
+  }, 30_000);
+
+  it('an explicit @mention in that same busy group still gets a real, single reply, with the mention as the final turn the AI is asked to answer', async () => {
+    aiReplyGenerateContentMock.mockResolvedValueOnce({ text: 'Sure, happy to help!' });
+    const { businessId, accountId, accountJid } = await setupBusinessWithAgent();
+    const senders = Array.from({ length: 6 }, (_, i) => `1555020${1000 + i}@s.whatsapp.net`);
+
+    for (let i = 0; i < 13; i += 1) {
+      await sendGroupAndWaitPersisted(businessId, accountId, accountJid, `GROUPMENTION-${i}-${Date.now()}`, `chatter ${i}`, { participant: senders[i % senders.length]! });
+    }
+    const debounceRound = waitForDebounceRound(businessId, 15_000);
+    await sendGroupAndWaitPersisted(businessId, accountId, accountJid, `GROUPMENTION-FINAL-${Date.now()}`, 'hey what are your hours', {
+      participant: senders[0]!,
+      mentionedJids: [accountJid],
+    });
+    await debounceRound;
+
+    expect(aiReplyGenerateContentMock).toHaveBeenCalledTimes(1);
+    // The prior busy-group chatter legitimately appears as grounding
+    // conversation history (the same way it would in a DM) - the gate only
+    // decides whether/to-what the AI replies, not what history it's shown.
+    // The real guarantee under test is narrower: the mention is the FINAL
+    // turn, i.e. what the AI is actually being asked to respond to right
+    // now - not one of the 13 unrelated messages that happened to precede it.
+    const sentContents = aiReplyGenerateContentMock.mock.calls[0]?.[0]?.contents as Array<{ parts: Array<{ text: string }> }>;
+    expect(sentContents.at(-1)?.parts[0]?.text).toBe('hey what are your hours');
+
+    const { rows } = await pool.query('SELECT count(*) AS count FROM whatsapp_outbound_messages WHERE business_id = $1', [businessId]);
+    expect(Number(rows[0].count)).toBe(1);
+  }, 30_000);
+
+  it('a "no_agent" outcome in a group does NOT flip ai_mode to HUMAN_TAKEOVER and does NOT notify - unlike the same outcome in a DM (see aiReplyWorkerIntegration.test.ts)', async () => {
+    const businessId = await createTestBusiness();
+    const accountJid = `1555003${Math.floor(Math.random() * 9000 + 1000)}@s.whatsapp.net`;
+    const accountId = await createTestAccount(businessId, accountJid);
+    await new AiAgentRepository(pool).create({ businessId, name: 'Bookings', triggerKeywords: ['appointment'] });
+
+    const messageId = `GROUPNOAGENT-${Date.now()}`;
+    const debounceRound = waitForDebounceRound(businessId, 15_000);
+    await sendGroupAndWaitPersisted(businessId, accountId, accountJid, messageId, 'hey are you open weekends', {
+      participant: '15550004040@s.whatsapp.net',
+      mentionedJids: [accountJid],
+    });
+    await debounceRound;
+
+    const messageRepository = new WhatsAppMessageRepository(pool);
+    const persisted = await messageRepository.findByWhatsAppId(businessId, accountId, messageId);
+    expect(persisted).not.toBeNull();
+
+    const chats = new WhatsAppChatRepository(pool);
+    const chat = await chats.findById(persisted!.chatId);
+    expect(chat?.aiMode).toBe('AI_ACTIVE'); // NOT flipped, unlike the DM case
+
+    expect(notifyBusinessMock).not.toHaveBeenCalled();
+  }, 20_000);
 });

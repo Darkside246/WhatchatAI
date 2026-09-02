@@ -75,6 +75,16 @@ export interface IngestedWhatsAppMessage {
    * object by the media-download worker via decodeBuffersFromQueue().
    */
   mediaDescriptor: Record<string, unknown> | null;
+  /**
+   * Real @mentions (WhatsApp's own contextInfo.mentionedJid), used by the
+   * group-participation gate (groupParticipationGate.ts) to detect explicit
+   * address in a group. Empty for a message that mentions no one, which is
+   * the common case - not omitted, so every caller can rely on the field
+   * always being an array.
+   */
+  mentionedJids: string[];
+  /** WhatsApp's own contextInfo.stanzaId when this message is a reply/quote - resolved to our own row id at persist time (see whatsappMessagePersistenceService.ts). Null when this message isn't a reply. */
+  quotedStanzaId: string | null;
 }
 
 interface ClassifiedContent {
@@ -281,6 +291,32 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
   return empty;
 }
 
+/**
+ * Real @mention and reply/quote data - WhatsApp puts both in contextInfo,
+ * a sibling field of whichever content type actually carries the message
+ * (extendedTextMessage for a plain text reply, but any media type can
+ * also carry a caption + reply). Deliberately NOT folded into
+ * classifyContent above: that function's job is "what kind of content is
+ * this," this one's job is "who was this addressed to/in response of" -
+ * two independent questions about the same envelope, only one of which
+ * (contentType) determines the DOWNLOADABLE_MEDIA_TYPES branch above.
+ */
+function extractReplyContext(content: proto.IMessage | null | undefined): { mentionedJids: string[]; quotedStanzaId: string | null } {
+  const { message } = unwrapContent(content);
+  const contextInfo =
+    message?.extendedTextMessage?.contextInfo ??
+    message?.imageMessage?.contextInfo ??
+    message?.videoMessage?.contextInfo ??
+    message?.audioMessage?.contextInfo ??
+    message?.documentMessage?.contextInfo ??
+    message?.stickerMessage?.contextInfo ??
+    null;
+  return {
+    mentionedJids: (contextInfo?.mentionedJid ?? []).filter((jid): jid is string => Boolean(jid)),
+    quotedStanzaId: contextInfo?.stanzaId ?? null,
+  };
+}
+
 function toIsoTimestamp(value: number | Long | null | undefined): string | null {
   if (value === null || value === undefined) return null;
   const seconds = typeof value === 'number' ? value : value.toNumber();
@@ -360,6 +396,7 @@ export class WhatsAppMessageIngestionService {
     const remoteJid = key.remoteJid ?? '';
     const jidKind = classifyJid(remoteJid);
     const { rawMediaMessage, ...classified } = classifyContent(message.message);
+    const replyContext = extractReplyContext(message.message);
 
     const mediaDescriptor =
       rawMediaMessage && DOWNLOADABLE_MEDIA_TYPES.has(classified.contentType)
@@ -382,6 +419,7 @@ export class WhatsAppMessageIngestionService {
       ingestedAt: new Date().toISOString(),
       ...classified,
       mediaDescriptor,
+      ...replyContext,
     };
   }
 }

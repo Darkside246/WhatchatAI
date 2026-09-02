@@ -3,6 +3,7 @@ import type { WhatsAppJidKind } from '../domain/whatsapp/jid.js';
 import type { ChatType } from '../domain/whatsapp/types.js';
 
 export type ChatAiMode = 'AI_ACTIVE' | 'AI_PAUSED' | 'HUMAN_TAKEOVER';
+export type GroupParticipationMode = 'AUTO' | 'MENTIONS_ONLY' | 'ALWAYS_ON' | 'OFF';
 
 export interface WhatsAppChatRecord {
   id: string;
@@ -38,6 +39,12 @@ export interface WhatsAppChatRecord {
   lastAiHandoffMessageId: string | null;
   /** Phase 3B debounce mutex: non-null while a debounce job is actively generating a reply for this chat - guards against duplicate/stale job delivery. */
   aiHandoffClaimedAt: string | null;
+  /** Per-chat override for the group-participation gate (groupParticipationGate.ts). Meaningless for isGroup === false. */
+  groupParticipationMode: GroupParticipationMode;
+  groupParticipationModeSource: string | null;
+  groupParticipationModeSetAt: string | null;
+  /** Cooldown watermark: last time the AI actually SENT a reply into this group - distinct from lastAiHandoffMessageId, which tracks "considered," not "spoke." */
+  lastAiGroupReplyAt: string | null;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -68,6 +75,10 @@ interface ChatRow {
   assignee_team_id: string | null;
   last_ai_handoff_message_id: string | null;
   ai_handoff_claimed_at: string | null;
+  group_participation_mode: GroupParticipationMode;
+  group_participation_mode_source: string | null;
+  group_participation_mode_set_at: string | null;
+  last_ai_group_reply_at: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -99,6 +110,10 @@ function toRecord(row: ChatRow): WhatsAppChatRecord {
     assigneeTeamId: row.assignee_team_id,
     lastAiHandoffMessageId: row.last_ai_handoff_message_id,
     aiHandoffClaimedAt: row.ai_handoff_claimed_at,
+    groupParticipationMode: row.group_participation_mode,
+    groupParticipationModeSource: row.group_participation_mode_source,
+    groupParticipationModeSetAt: row.group_participation_mode_set_at,
+    lastAiGroupReplyAt: row.last_ai_group_reply_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
@@ -286,6 +301,29 @@ export class WhatsAppChatRepository {
       [id, aiMode, source ?? null],
     );
     return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
+   * Per-chat override for the group-participation gate - mirrors setAiMode's
+   * shape/provenance-tracking exactly. Meaningless (never read) for a chat
+   * where isGroup is false.
+   */
+  async setGroupParticipationMode(id: string, mode: GroupParticipationMode, source?: string): Promise<WhatsAppChatRecord | null> {
+    const { rows } = await this.db.query<ChatRow>(
+      'UPDATE whatsapp_chats SET group_participation_mode = $2, group_participation_mode_source = $3, group_participation_mode_set_at = now(), updated_at = now() WHERE id = $1 RETURNING *',
+      [id, mode, source ?? null],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
+   * Cooldown stamp: called only at a real outbound send into a group, never
+   * on a "considered but chose not to reply" outcome - see
+   * WhatsAppChatRecord.lastAiGroupReplyAt's own doc comment for why this is
+   * a distinct column from the debounce watermark.
+   */
+  async markAiGroupReplySent(chatId: string): Promise<void> {
+    await this.db.query('UPDATE whatsapp_chats SET last_ai_group_reply_at = now(), updated_at = now() WHERE id = $1', [chatId]);
   }
 
   /**
