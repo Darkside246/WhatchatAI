@@ -440,6 +440,21 @@ async function main(): Promise<void> {
     console.log('[GooseSupervisor] No local adapter API key configured. Generated an ephemeral localhost-only key.');
   }
 
+  // The `goose serve` binary itself (not this supervisor) refuses to start
+  // without this - real, previously-undiscovered gap: startGoose()'s spawn
+  // already inherits the whole parent env via `...process.env`, but nothing
+  // here ever set this specific variable, so `goose serve` exited
+  // immediately with "GOOSE_SERVER__SECRET_KEY must be set" on every
+  // restart attempt until this codebase's own MAX_RESTARTS gave up. Same
+  // ephemeral-generation treatment as GOOSE_SERVICE_API_KEY just above -
+  // this process is already confirmed loopback-only (see the
+  // isLoopbackHost check above), so there is no real security reason to
+  // require a human to configure this by hand for local/single-host use.
+  if (!process.env.GOOSE_SERVER__SECRET_KEY) {
+    process.env.GOOSE_SERVER__SECRET_KEY = randomBytes(32).toString('hex');
+    console.log('[GooseSupervisor] No Goose server secret key configured. Generated an ephemeral localhost-only key.');
+  }
+
   await startGoose(binary);
 
   healthTimer = setInterval(async () => {
