@@ -121,5 +121,30 @@ export async function createTestUser(businessId: string, email = `test-user-${Ma
   return user.id;
 }
 
+/**
+ * (b)-schema equivalent of createTestSubscription - no such fixture
+ * existed before, every test needing a product_accounts row built one
+ * inline via registerTrial(). product_catalog is real seed data
+ * (migration 926) and, like plans, is deliberately excluded from
+ * resetDatabase()'s truncation list above.
+ */
+/**
+ * product_accounts_owner_or_provisioning_check (migration 909) requires
+ * a non-null owner_user_id for any status other than PROVISIONING, so
+ * this needs a real user id - pass one from createTestUser().
+ */
+export async function createTestProductAccount(businessId: string, ownerUserId: string, productKey = 'property'): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>('SELECT id FROM product_catalog WHERE product_key = $1', [productKey]);
+  const productId = rows[0]?.id;
+  if (!productId) throw new Error(`Seed product_catalog row "${productKey}" not found - did migrations run?`);
+  const account = await pool.query<{ id: string }>(
+    `INSERT INTO product_accounts (business_id, product_id, owner_user_id, status, display_name) VALUES ($1, $2, $3, 'ACTIVE', 'Test Product Account') RETURNING id`,
+    [businessId, productId, ownerUserId],
+  );
+  const row = account.rows[0];
+  if (!row) throw new Error('failed to create test product account');
+  return row.id;
+}
+
 export { pool };
 export { BusinessRepository };

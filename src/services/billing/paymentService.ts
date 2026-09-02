@@ -1,6 +1,8 @@
 import { createHmac, randomBytes } from 'node:crypto';
+import type { PoolClient } from 'pg';
 import { pool } from '../../db/pool.js';
 import { ProductAccountRepository } from '../../repositories/productAccountRepository.js';
+import { SubscriptionRepository } from '../../repositories/subscriptionRepository.js';
 import type { Checkout, PaymentProvider, PaymentVerificationInput } from '../../domain/billing/payment.js';
 
 const accounts = new ProductAccountRepository(pool);
@@ -42,35 +44,102 @@ export async function createCheckout(input: { userId: string; productAccountId: 
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
 
-export async function verifyBiMPayTransfer(input: PaymentVerificationInput): Promise<{ paymentAttemptId: string; subscriptionId: string; productAccountId: string; status: 'ACTIVE' }> {
-  const reference = input.checkoutReference.trim().toUpperCase();
+export type ActivationLookup = { by: 'reference'; checkoutReference: string } | { by: 'attemptId'; paymentAttemptId: string };
+export type ActivationActorType = 'PROVIDER_BRIDGE' | 'DEVELOPER';
+export interface ActivateVerifiedPaymentInput {
+  provider: PaymentProvider;
+  amountMinor: number;
+  currency: string;
+  providerEventId: string;
+  receivedAt?: Date;
+  actorType: ActivationActorType;
+  actorUserId?: string;
+}
+
+/**
+ * Single shared "mark a payment attempt verified and activate the
+ * account" path, used by both the signed-bridge/webhook flow and the
+ * developer proof-review approval flow. Previously each duplicated this
+ * 5-table sequence inline, so a future change to one would not
+ * automatically apply to the other.
+ *
+ * Pass `options.client` when the caller already owns an open transaction
+ * (e.g. the proof-review route, which must commit or roll back the proof
+ * status change atomically with this activation) - in that case this
+ * function issues no BEGIN/COMMIT/ROLLBACK/release of its own and the
+ * caller is responsible for all of that. Otherwise it manages its own
+ * connection and transaction end-to-end.
+ */
+export async function activateVerifiedPayment(
+  lookup: ActivationLookup,
+  input: ActivateVerifiedPaymentInput,
+  options: { client?: PoolClient } = {},
+): Promise<{ paymentAttemptId: string; subscriptionId: string; productAccountId: string; status: 'ACTIVE' }> {
   const currency = normaliseCurrency(input.currency);
-  const client = await pool.connect();
+  const ownsTransaction = !options.client;
+  const client = options.client ?? (await pool.connect());
   try {
-    await client.query('BEGIN');
-    const result = await client.query<{ id: string; product_account_id: string; subscription_id: string | null; amount_minor: string; currency: string; status: string; provider: string; provider_event_id: string | null }>(`SELECT id, product_account_id, subscription_id, amount_minor, currency, status, provider, provider_event_id FROM payment_attempts WHERE checkout_reference = $1 FOR UPDATE`, [reference]);
+    if (ownsTransaction) await client.query('BEGIN');
+    const selectQuery =
+      lookup.by === 'reference'
+        ? { sql: `SELECT id, product_account_id, subscription_id, amount_minor, currency, status, provider, provider_event_id FROM payment_attempts WHERE checkout_reference = $1 FOR UPDATE`, param: lookup.checkoutReference.trim().toUpperCase() }
+        : { sql: `SELECT id, product_account_id, subscription_id, amount_minor, currency, status, provider, provider_event_id FROM payment_attempts WHERE id = $1 FOR UPDATE`, param: lookup.paymentAttemptId };
+    const result = await client.query<{ id: string; product_account_id: string; subscription_id: string | null; amount_minor: string; currency: string; status: string; provider: string; provider_event_id: string | null }>(selectQuery.sql, [selectQuery.param]);
     const attempt = result.rows[0];
-    if (!attempt) throw new PaymentReferenceNotFoundError('Checkout reference was not found.');
+    if (!attempt) throw new PaymentReferenceNotFoundError('Payment attempt was not found.');
     if (attempt.provider !== input.provider) throw new PaymentVerificationError('Payment provider does not match the checkout.');
     if (attempt.status === 'VERIFIED') {
-      if (attempt.provider_event_id === input.providerEventId) { await client.query('ROLLBACK'); return { paymentAttemptId: attempt.id, subscriptionId: attempt.subscription_id ?? '', productAccountId: attempt.product_account_id, status: 'ACTIVE' }; }
+      if (attempt.provider_event_id === input.providerEventId) { if (ownsTransaction) await client.query('ROLLBACK'); return { paymentAttemptId: attempt.id, subscriptionId: attempt.subscription_id ?? '', productAccountId: attempt.product_account_id, status: 'ACTIVE' }; }
       throw new PaymentProviderEventAlreadyProcessedError('Payment attempt is already verified.');
     }
     if (attempt.currency !== currency || Number(attempt.amount_minor) !== input.amountMinor) {
       await client.query(`UPDATE payment_attempts SET status = 'REJECTED', rejected_at = now(), updated_at = now() WHERE id = $1`, [attempt.id]);
-      await client.query(`INSERT INTO payment_audit_events (product_account_id, payment_attempt_id, event_type, actor_type, payload) VALUES ($1, $2, 'PAYMENT_REJECTED_AMOUNT_MISMATCH', 'PROVIDER_BRIDGE', $3)`, [attempt.product_account_id, attempt.id, JSON.stringify({ expectedMinor: attempt.amount_minor, receivedMinor: input.amountMinor, expectedCurrency: attempt.currency, receivedCurrency: currency, providerEventId: input.providerEventId })]);
-      await client.query('COMMIT');
+      await client.query(`INSERT INTO payment_audit_events (product_account_id, payment_attempt_id, event_type, actor_type, payload) VALUES ($1, $2, 'PAYMENT_REJECTED_AMOUNT_MISMATCH', $3, $4)`, [attempt.product_account_id, attempt.id, input.actorType, JSON.stringify({ expectedMinor: attempt.amount_minor, receivedMinor: input.amountMinor, expectedCurrency: attempt.currency, receivedCurrency: currency, providerEventId: input.providerEventId })]);
+      if (ownsTransaction) await client.query('COMMIT');
       throw new PaymentAmountMismatchError('Payment amount or currency does not match the checkout.');
     }
     if (attempt.subscription_id) await client.query(`UPDATE product_account_subscriptions SET status = 'ACTIVE', current_period_start = now(), current_period_end = CASE WHEN billing_interval = 'year' THEN now() + interval '1 year' WHEN billing_interval = 'one_time' THEN NULL ELSE now() + interval '1 month' END, activated_at = now(), updated_at = now() WHERE id = $1`, [attempt.subscription_id]);
-    await client.query(`UPDATE payment_attempts SET status = 'VERIFIED', external_reference = $2, provider_event_id = $3, received_at = COALESCE($4, now()), verified_at = now(), updated_at = now() WHERE id = $1`, [attempt.id, input.checkoutReference.trim(), input.providerEventId, input.receivedAt ?? null]);
+    await client.query(`UPDATE payment_attempts SET status = 'VERIFIED', provider_event_id = $2, received_at = COALESCE($3, now()), verified_at = now(), updated_at = now() WHERE id = $1`, [attempt.id, input.providerEventId, input.receivedAt ?? null]);
     await client.query(`UPDATE product_accounts SET status = 'ACTIVE', updated_at = now() WHERE id = $1`, [attempt.product_account_id]);
     await client.query(`UPDATE product_entitlements SET source = 'PLAN', expires_at = NULL, is_enabled = true WHERE product_account_id = $1 AND source = 'TRIAL'`, [attempt.product_account_id]);
     await client.query(`INSERT INTO product_account_provisioning_events (product_account_id, event_type) VALUES ($1, 'REACTIVATED')`, [attempt.product_account_id]);
-    await client.query(`INSERT INTO payment_audit_events (product_account_id, payment_attempt_id, event_type, actor_type, payload) VALUES ($1, $2, 'PAYMENT_VERIFIED_ACCOUNT_ACTIVATED', 'PROVIDER_BRIDGE', $3)`, [attempt.product_account_id, attempt.id, JSON.stringify({ provider: input.provider, providerEventId: input.providerEventId })]);
-    await client.query('COMMIT');
+    await client.query(`INSERT INTO payment_audit_events (product_account_id, payment_attempt_id, event_type, actor_type, actor_user_id, payload) VALUES ($1, $2, 'PAYMENT_VERIFIED_ACCOUNT_ACTIVATED', $3, $4, $5)`, [attempt.product_account_id, attempt.id, input.actorType, input.actorUserId ?? null, JSON.stringify({ provider: input.provider, providerEventId: input.providerEventId })]);
+
+    // Legacy-schema sync: a verified payment here previously never advanced
+    // the separate plans/subscriptions table's status past TRIALING, even
+    // though that's what BillingRoute.tsx displays and what
+    // EntitlementService gates agents/campaigns/funnels against. Not every
+    // business has a legacy subscription row, so this is best-effort and
+    // never fails the activation.
+    const account = await new ProductAccountRepository(client).findById(attempt.product_account_id);
+    if (account) {
+      const legacySubscriptions = new SubscriptionRepository(client);
+      const liveSubscription = await legacySubscriptions.findLiveByBusiness(account.businessId);
+      if (liveSubscription) await legacySubscriptions.updateStatus(liveSubscription.id, 'ACTIVE');
+    }
+
+    if (ownsTransaction) await client.query('COMMIT');
     return { paymentAttemptId: attempt.id, subscriptionId: attempt.subscription_id ?? '', productAccountId: attempt.product_account_id, status: 'ACTIVE' };
-  } catch (error) { try { await client.query('ROLLBACK'); } catch {} throw error; } finally { client.release(); }
+  } catch (error) {
+    if (ownsTransaction) { try { await client.query('ROLLBACK'); } catch {} }
+    throw error;
+  } finally {
+    if (ownsTransaction) client.release();
+  }
+}
+
+export async function verifyBiMPayTransfer(input: PaymentVerificationInput): Promise<{ paymentAttemptId: string; subscriptionId: string; productAccountId: string; status: 'ACTIVE' }> {
+  return activateVerifiedPayment(
+    { by: 'reference', checkoutReference: input.checkoutReference },
+    {
+      provider: input.provider,
+      amountMinor: input.amountMinor,
+      currency: input.currency,
+      providerEventId: input.providerEventId,
+      ...(input.receivedAt !== undefined ? { receivedAt: input.receivedAt } : {}),
+      actorType: 'PROVIDER_BRIDGE',
+    },
+  );
 }
 
 export async function submitPaymentProof(input: { userId: string; productAccountId: string; paymentAttemptId: string; proofUrl: string; note?: string }) {

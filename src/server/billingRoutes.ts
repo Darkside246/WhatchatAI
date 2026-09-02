@@ -1,14 +1,14 @@
-import { Router } from 'express';
-import { timingSafeEqual } from 'node:crypto';
+import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { requireAuth, requireDeveloper, type AuthContext } from './authMiddleware.js';
-import { buildBiMPaySignature, createCheckout, submitPaymentProof, verifyBiMPayTransfer } from '../services/billing/paymentService.js';
+import { activateVerifiedPayment, createCheckout, submitPaymentProof } from '../services/billing/paymentService.js';
+import { resolveProvider } from '../services/billing/providers/registry.js';
+import type { PaymentProvider } from '../domain/billing/payment.js';
 import { pool } from '../db/pool.js';
 
 const router = Router();
 const checkoutSchema = z.object({ productAccountId: z.string().uuid(), amountMinor: z.number().int().positive(), currency: z.string().trim().length(3).default('BBD'), billingInterval: z.enum(['month', 'year', 'one_time']).default('month') });
 const proofSchema = z.object({ productAccountId: z.string().uuid(), paymentAttemptId: z.string().uuid(), proofUrl: z.string().url().max(2000), note: z.string().trim().max(2000).optional() });
-const bridgeSchema = z.object({ checkoutReference: z.string().trim().min(4).max(64), amountMinor: z.number().int().positive(), currency: z.string().trim().length(3), providerEventId: z.string().trim().min(1).max(200), receivedAt: z.coerce.date().optional() });
 const proofReviewSchema = z.object({ decision: z.enum(['APPROVE', 'REJECT']), note: z.string().trim().max(2000).optional() });
 
 router.post('/checkout', requireAuth, async (req, res) => {
@@ -17,7 +17,9 @@ router.post('/checkout', requireAuth, async (req, res) => {
   const auth = res.locals.auth as AuthContext;
   try {
     const checkout = await createCheckout({ userId: auth.userId, ...parsed.data });
-    return res.status(201).json({ checkout, instructions: checkout.provider === 'BIMPAY' ? { reference: checkout.checkoutReference, currency: checkout.currency, amountMinor: checkout.amountMinor, memoRequired: true, memoInstruction: `Enter ${checkout.checkoutReference} in the BiMPay transfer reference/memo.` } : undefined });
+    const provider = resolveProvider(checkout.provider.toLowerCase());
+    const instructions = provider?.buildCheckoutInstructions(checkout.checkoutReference, { amountMinor: checkout.amountMinor, currency: checkout.currency });
+    return res.status(201).json({ checkout, instructions });
   } catch (error) { return res.status(404).json({ error: 'BILLING_ACCOUNT_NOT_FOUND', message: error instanceof Error ? error.message : String(error) }); }
 });
 
@@ -38,39 +40,61 @@ router.post('/payment-proof', requireAuth, async (req, res) => {
 });
 
 /**
- * BiMPay automation bridge. This endpoint deliberately does not claim a native
- * BiMPay webhook. A bank/email automation bridge calls it after independently
- * receiving and parsing a confirmed transfer notification.
+ * Resolves a provider's own bridge/webhook secret. Only BiMPay exists
+ * today, so this is a small explicit branch rather than a generic lookup
+ * table - appropriate for a single-provider registry, and expected to
+ * grow one branch per provider as they're actually added.
  */
-router.post('/providers/bimpay/bridge', async (req, res) => {
-  const secret = process.env.BIMPAY_BRIDGE_SECRET?.trim();
-  if (!secret) return res.status(503).json({ error: 'BIMPAY_BRIDGE_NOT_CONFIGURED' });
-  const parsed = bridgeSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'INVALID_BIMPAY_EVENT', details: parsed.error.flatten() });
-  const receivedSignature = req.header('x-bimpay-signature') ?? '';
-  const signatureInput: Parameters<typeof verifyBiMPayTransfer>[0] = {
-    provider: 'BIMPAY',
-    checkoutReference: parsed.data.checkoutReference,
-    amountMinor: parsed.data.amountMinor,
-    currency: parsed.data.currency,
-    providerEventId: parsed.data.providerEventId,
-  };
-  if (parsed.data.receivedAt !== undefined) signatureInput.receivedAt = parsed.data.receivedAt;
-  const expectedSignature = buildBiMPaySignature(signatureInput, secret);
-  const expected = Buffer.from(expectedSignature, 'utf8');
-  const received = Buffer.from(receivedSignature, 'utf8');
-  if (expected.length !== received.length || !timingSafeEqual(expected, received)) return res.status(401).json({ error: 'INVALID_BIMPAY_SIGNATURE' });
+function resolveProviderSecret(providerKind: string): string | undefined {
+  if (providerKind === 'bimpay') return process.env.BIMPAY_BRIDGE_SECRET?.trim();
+  return undefined;
+}
+
+/**
+ * Shared handler for both the legacy BiMPay-specific bridge path and the
+ * generalized per-provider webhook path below. A bank/email automation
+ * bridge (or, later, a real processor's own webhook sender) calls this
+ * after independently confirming a payment event; this endpoint
+ * deliberately does not claim to be a native provider webhook receiver
+ * for BiMPay, since none exists.
+ */
+async function handleProviderEvent(providerKind: string, req: Request, res: Response) {
+  const provider = resolveProvider(providerKind);
+  if (!provider) return res.status(404).json({ error: 'UNKNOWN_PAYMENT_PROVIDER' });
+  const secret = resolveProviderSecret(providerKind);
+  if (!secret) return res.status(503).json({ error: 'PAYMENT_PROVIDER_NOT_CONFIGURED' });
+
+  const result = provider.verifyEvent({ body: req.body, headers: req.headers, secret });
+  if (result.outcome === 'rejected') {
+    const status = result.reason === 'INVALID_BIMPAY_SIGNATURE' ? 401 : 400;
+    return res.status(status).json({ error: result.reason });
+  }
+
   try {
-    const result = await verifyBiMPayTransfer(signatureInput);
-    return res.status(200).json({ ok: true, payment: result });
+    const activation = await activateVerifiedPayment(
+      { by: 'reference', checkoutReference: result.checkoutReference },
+      {
+        provider: providerKind.toUpperCase() as PaymentProvider,
+        amountMinor: result.amountMinor,
+        currency: result.currency,
+        providerEventId: result.providerEventId,
+        ...(result.receivedAt !== undefined ? { receivedAt: result.receivedAt } : {}),
+        actorType: 'PROVIDER_BRIDGE',
+      },
+    );
+    return res.status(200).json({ ok: true, payment: activation });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes('not found')) return res.status(404).json({ error: 'PAYMENT_REFERENCE_NOT_FOUND', message });
     if (message.includes('amount') || message.includes('currency')) return res.status(409).json({ error: 'PAYMENT_MISMATCH', message });
     if (message.includes('already verified')) return res.status(409).json({ error: 'PAYMENT_ALREADY_VERIFIED', message });
-    return res.status(500).json({ error: 'BIMPAY_VERIFICATION_FAILED', message });
+    return res.status(500).json({ error: 'PAYMENT_VERIFICATION_FAILED', message });
   }
-});
+}
+
+router.post('/providers/bimpay/bridge', async (req, res) => { await handleProviderEvent('bimpay', req, res); });
+
+router.post('/webhooks/:provider', async (req, res) => { await handleProviderEvent(req.params.provider, req, res); });
 
 router.get('/developer/payment-proofs', requireAuth, requireDeveloper, async (_req, res) => {
   const { rows } = await pool.query(`SELECT id, payment_attempt_id, product_account_id, submitted_by_user_id, status, proof_url, note, reviewed_by_user_id, reviewed_at, created_at FROM payment_proof_submissions ORDER BY created_at DESC LIMIT 500`);
@@ -86,7 +110,7 @@ router.post('/developer/payment-proofs/:proofId/review', requireAuth, requireDev
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const proofResult = await client.query<{ id: string; payment_attempt_id: string; product_account_id: string; status: string; subscription_id: string | null }>(`SELECT p.id, p.payment_attempt_id, p.product_account_id, p.status, pa.subscription_id FROM payment_proof_submissions p JOIN payment_attempts pa ON pa.id = p.payment_attempt_id WHERE p.id = $1 AND p.product_account_id = pa.product_account_id FOR UPDATE`, [proofId.data]);
+    const proofResult = await client.query<{ id: string; payment_attempt_id: string; product_account_id: string; status: string; provider: PaymentProvider; amount_minor: string; currency: string }>(`SELECT p.id, p.payment_attempt_id, p.product_account_id, p.status, pa.provider, pa.amount_minor, pa.currency FROM payment_proof_submissions p JOIN payment_attempts pa ON pa.id = p.payment_attempt_id WHERE p.id = $1 AND p.product_account_id = pa.product_account_id FOR UPDATE`, [proofId.data]);
     const proof = proofResult.rows[0];
     if (!proof) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'PAYMENT_PROOF_NOT_FOUND' }); }
     if (proof.status !== 'PENDING_REVIEW') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'PAYMENT_PROOF_ALREADY_REVIEWED' }); }
@@ -97,12 +121,19 @@ router.post('/developer/payment-proofs/:proofId/review', requireAuth, requireDev
       return res.status(200).json({ status: 'REJECTED' });
     }
     await client.query(`UPDATE payment_proof_submissions SET status = 'APPROVED', note = COALESCE($2, note), reviewed_by_user_id = $3, reviewed_at = now() WHERE id = $1`, [proof.id, parsed.data.note ?? null, auth.userId]);
-    await client.query(`UPDATE payment_attempts SET status = 'VERIFIED', verified_at = now(), received_at = COALESCE(received_at, now()), updated_at = now() WHERE id = $1`, [proof.payment_attempt_id]);
-    if (proof.subscription_id) await client.query(`UPDATE product_account_subscriptions SET status = 'ACTIVE', current_period_start = now(), current_period_end = CASE WHEN billing_interval = 'year' THEN now() + interval '1 year' WHEN billing_interval = 'one_time' THEN NULL ELSE now() + interval '1 month' END, activated_at = now(), updated_at = now() WHERE id = $1`, [proof.subscription_id]);
-    await client.query(`UPDATE product_accounts SET status = 'ACTIVE', updated_at = now() WHERE id = $1`, [proof.product_account_id]);
-    await client.query(`UPDATE product_entitlements SET source = 'PLAN', expires_at = NULL, is_enabled = true WHERE product_account_id = $1 AND source = 'TRIAL'`, [proof.product_account_id]);
-    await client.query(`INSERT INTO product_account_provisioning_events (product_account_id, event_type) VALUES ($1, 'REACTIVATED')`, [proof.product_account_id]);
-    await client.query(`INSERT INTO payment_audit_events (product_account_id, payment_attempt_id, event_type, actor_type, actor_user_id, payload) VALUES ($1, $2, 'PAYMENT_PROOF_APPROVED_ACCOUNT_ACTIVATED', 'DEVELOPER', $3, $4)`, [proof.product_account_id, proof.payment_attempt_id, auth.userId, JSON.stringify({ note: parsed.data.note ?? null })]);
+    // Pass the attempt's own stored amount/currency straight back into
+    // itself - this path is approving a specific already-known attempt
+    // by id, not re-verifying an externally-claimed amount, so the
+    // shared function's mismatch-check becomes a harmless no-op here.
+    // providerEventId is namespaced PROOF:<id> so this activation is
+    // traceable to the proof that caused it (previously left NULL).
+    // activateVerifiedPayment writes its own PAYMENT_VERIFIED_ACCOUNT_ACTIVATED
+    // audit event (actor_type='DEVELOPER' here) - no separate event needed.
+    await activateVerifiedPayment(
+      { by: 'attemptId', paymentAttemptId: proof.payment_attempt_id },
+      { provider: proof.provider, amountMinor: Number(proof.amount_minor), currency: proof.currency, providerEventId: `PROOF:${proof.id}`, actorType: 'DEVELOPER', actorUserId: auth.userId },
+      { client },
+    );
     await client.query('COMMIT');
     return res.status(200).json({ status: 'APPROVED', accountStatus: 'ACTIVE' });
   } catch (error) { try { await client.query('ROLLBACK'); } catch {} throw error; } finally { client.release(); }
