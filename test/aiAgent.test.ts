@@ -54,6 +54,17 @@ describe('AiAgentRepository', () => {
     expect(updated?.forbiddenTools).toEqual(['schedule_zoom_meeting']);
   });
 
+  it('defaults to requiresApprovalForActions: false, and round-trips a real change through create and update', async () => {
+    const defaultAgent = await agents.create({ businessId, name: 'Default Agent' });
+    expect(defaultAgent.requiresApprovalForActions).toBe(false);
+
+    const created = await agents.create({ businessId, name: 'Cautious Agent', requiresApprovalForActions: true });
+    expect(created.requiresApprovalForActions).toBe(true);
+
+    const updated = await agents.update(created.id, { name: 'Cautious Agent', requiresApprovalForActions: false });
+    expect(updated?.requiresApprovalForActions).toBe(false);
+  });
+
   it('only counts ACTIVE/PAUSED agents toward the plan limit, not ARCHIVED ones', async () => {
     const a = await agents.create({ businessId, name: 'Reception Agent' });
     const b = await agents.create({ businessId, name: 'Support Agent' });

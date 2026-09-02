@@ -22,8 +22,10 @@ export const scheduleZoomMeetingFunctionDeclaration: FunctionDeclaration = {
     'Monday") into a real date before calling this. Unlike a calendar invite, Zoom delivers the join link directly ' +
     'in this chat, not by email - only ask for the customer\'s email if they offer one; it is not required. If this ' +
     'business has not connected a Zoom account, this tool returns a not_connected result - tell the customer ' +
-    'honestly that meeting booking is not available right now rather than claiming a meeting was booked. Never tell ' +
-    'the customer a meeting was booked unless this tool actually returned booked: true.',
+    'honestly that meeting booking is not available right now rather than claiming a meeting was booked. If this ' +
+    'tool returns reason: pending_approval, a team member needs to confirm it first - tell the customer you are ' +
+    'checking and will confirm shortly, not that it failed. Never tell the customer a meeting was booked unless ' +
+    'this tool actually returned booked: true.',
   parameters: {
     type: Type.OBJECT,
     properties: {

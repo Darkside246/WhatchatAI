@@ -10,15 +10,15 @@ import { describeTimeContext } from './time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME, getCurrentTimeFunctionDeclaration } from './time/getCurrentTimeTool.js';
 import { UPDATE_CONVERSATION_STATE_TOOL_NAME, updateConversationStateFunctionDeclaration, type UpdateConversationStateToolArgs } from './state/updateConversationStateTool.js';
 import { applyConversationStateUpdate } from './state/conversationStateWriter.js';
+import { randomUUID } from 'node:crypto';
 import { SCHEDULE_MEETING_TOOL_NAME, scheduleMeetingFunctionDeclaration, type ScheduleMeetingToolArgs } from './meeting/scheduleMeetingTool.js';
 import { SCHEDULE_ZOOM_MEETING_TOOL_NAME, scheduleZoomMeetingFunctionDeclaration, type ScheduleZoomMeetingToolArgs } from './meeting/scheduleZoomMeetingTool.js';
-import { getValidAccessToken as getValidGoogleMeetingAccessToken } from './googleMeetingOAuthService.js';
-import { getValidAccessToken as getValidZoomMeetingAccessToken } from './zoomMeetingOAuthService.js';
-import { createMeetingEvent } from './googleCalendarClient.js';
-import { createZoomMeeting } from './zoomMeetingClient.js';
-import { GoogleMeetingRepository } from '../repositories/googleMeetingRepository.js';
-import { ZoomMeetingRepository } from '../repositories/zoomMeetingRepository.js';
-import { ScheduledMeetingsRepository } from '../repositories/scheduledMeetingsRepository.js';
+import { bookGoogleMeeting } from './meeting/bookGoogleMeeting.js';
+import { bookZoomMeeting } from './meeting/bookZoomMeeting.js';
+import { SCHEDULE_GOOGLE_MEET_ACTION_TYPE } from './meeting/googleMeetBookingExecutor.js';
+import { SCHEDULE_ZOOM_MEETING_ACTION_TYPE } from './meeting/zoomMeetBookingExecutor.js';
+import { ApprovalService } from './platform/approvalService.js';
+import type { ActionRequest } from '../domain/platform/contracts.js';
 import type { MeetingProvider } from './meeting/meetingProvider.js';
 import { LIST_PROPERTIES_TOOL_NAME, listPropertiesFunctionDeclaration } from './property/listPropertiesTool.js';
 import { CHECK_PROPERTY_STATUS_TOOL_NAME, checkPropertyStatusFunctionDeclaration, type CheckPropertyStatusToolArgs } from './property/checkPropertyStatusTool.js';
@@ -32,11 +32,43 @@ import { classifyAiError } from './ai/aiErrorClassification.js';
 import { notifyBusiness } from './notificationService.js';
 
 const conversationStateRepository = new ConversationStateRepository(pool);
-const googleMeetingRepository = new GoogleMeetingRepository(pool);
-const zoomMeetingRepository = new ZoomMeetingRepository(pool);
-const scheduledMeetingsRepository = new ScheduledMeetingsRepository(pool);
 const propertyOperationsRepository = new PropertyOperationsRepository(pool);
 const aiUsageRepository = new AiUsageRepository(pool);
+const approvalService = new ApprovalService(pool);
+
+/**
+ * The "ask before acting" path for a SEND-tier tool (agent.
+ * requiresApprovalForActions, migration 955): instead of executing
+ * immediately, persists a real pending action into the same
+ * platform_action_requests/approval queue the property vertical already
+ * uses, dispatched later by GoogleMeetBookingExecutor/
+ * ZoomMeetBookingExecutor once an operator approves it through the same
+ * Approvals UI. Never fabricates a booking - the model is told honestly
+ * that this is pending, not booked.
+ */
+async function createPendingApprovalAction(actionType: string, agent: AiAgentRecord, context: AiHandoffContext, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const id = randomUUID();
+  const action: ActionRequest = {
+    id,
+    tenantId: context.businessId,
+    type: actionType,
+    payload,
+    requestedBy: { kind: 'AGENT', id: agent.id },
+    riskLevel: 'MEDIUM',
+    approval: { required: true, status: 'PENDING' },
+    status: 'PENDING_APPROVAL',
+    idempotencyKey: `agent-tool:${actionType}:${id}`,
+    correlationId: randomUUID(),
+    createdAt: new Date().toISOString(),
+  };
+  try {
+    await approvalService.persistAction(action);
+  } catch (error) {
+    console.error(`[aiReplyService] Failed to persist pending approval for ${actionType} (chat ${context.chatId}):`, error instanceof Error ? error.message : error);
+    return { booked: false, reason: 'approval_queue_error' };
+  }
+  return { booked: false, reason: 'pending_approval' };
+}
 
 /**
  * Real token counts straight from Gemini's own response - never estimated
@@ -544,7 +576,7 @@ async function executeOneToolCall(
   }
 
   if (call.name === SCHEDULE_MEETING_TOOL_NAME) {
-    // Every failure path below returns an honest { booked: false, reason }
+    // Every failure path returns an honest { booked: false, reason }
     // object, never throws and never returns booked: true unless a real
     // Google Calendar event with a real Meet link was actually created -
     // see scheduleMeetingTool.ts's own doc comment for why this must never
@@ -556,67 +588,28 @@ async function executeOneToolCall(
       // honestly rather than send a malformed request to Google or crash.
       return { booked: false, reason: 'missing_required_fields' };
     }
-    const connection = await googleMeetingRepository.getConnectionByBusiness(context.businessId);
-    if (!connection) {
-      return { booked: false, reason: 'not_connected' };
-    }
-
-    const accessToken = await getValidGoogleMeetingAccessToken(context.businessId);
-    if (!accessToken) {
-      return { booked: false, reason: 'token_invalid' };
-    }
-
-    const startAt = new Date(args.startDateTimeIso);
-    if (Number.isNaN(startAt.getTime())) {
-      return { booked: false, reason: 'invalid_start_time' };
-    }
-    const durationMinutes = args.durationMinutes && args.durationMinutes > 0 ? args.durationMinutes : 30;
-    const endAt = new Date(startAt.getTime() + durationMinutes * 60_000);
-
-    const result = await createMeetingEvent({
-      accessToken,
-      title: args.title,
-      startAt,
-      endAt,
-      timezone: context.businessTimezone,
-      attendeeEmail: args.attendeeEmail,
-    });
-
-    if (result.status === 'error') {
-      console.error(`[aiReplyService] schedule_google_meet failed for chat ${context.chatId}:`, result.reason);
-      return { booked: false, reason: 'calendar_api_error', detail: result.reason };
-    }
-
-    try {
-      await scheduledMeetingsRepository.createMeeting({
-        provider: 'google_meet',
-        googleConnectionId: connection.id,
-        businessId: context.businessId,
+    if (agent.requiresApprovalForActions) {
+      return createPendingApprovalAction(SCHEDULE_GOOGLE_MEET_ACTION_TYPE, agent, context, {
         chatId: context.chatId,
         contactId: context.crmContact?.id ?? null,
-        agentId: agent.id,
-        title: args.title,
-        startAt,
-        endAt,
-        timezone: context.businessTimezone,
+        businessTimezone: context.businessTimezone,
         attendeeEmail: args.attendeeEmail,
-        externalEventId: result.externalEventId,
-        meetUrl: result.meetUrl,
-        calendarHtmlLink: result.calendarHtmlLink,
+        title: args.title,
+        startDateTimeIso: args.startDateTimeIso,
+        ...(args.durationMinutes !== undefined ? { durationMinutes: args.durationMinutes } : {}),
       });
-    } catch (error) {
-      // The real Calendar event and invite already went out - a failure to
-      // record it locally must not make the tool claim the booking failed
-      // (that would be dishonest in the other direction: the customer
-      // really does have a real meeting now). Logged loudly since this row
-      // is the only local record of a real external event.
-      console.error(
-        `[aiReplyService] schedule_google_meet: Calendar event ${result.externalEventId} created but failed to persist scheduled_meetings row for chat ${context.chatId}:`,
-        error instanceof Error ? error.message : error,
-      );
     }
-
-    return { booked: true, meetUrl: result.meetUrl, startAt: startAt.toISOString(), title: args.title };
+    return bookGoogleMeeting({
+      businessId: context.businessId,
+      chatId: context.chatId,
+      contactId: context.crmContact?.id ?? null,
+      agentId: agent.id,
+      businessTimezone: context.businessTimezone,
+      attendeeEmail: args.attendeeEmail,
+      title: args.title,
+      startDateTimeIso: args.startDateTimeIso,
+      ...(args.durationMinutes !== undefined ? { durationMinutes: args.durationMinutes } : {}),
+    });
   }
 
   if (call.name === SCHEDULE_ZOOM_MEETING_TOOL_NAME) {
@@ -627,64 +620,28 @@ async function executeOneToolCall(
     if (!args.title || !args.startDateTimeIso) {
       return { booked: false, reason: 'missing_required_fields' };
     }
-    const connection = await zoomMeetingRepository.getConnectionByBusiness(context.businessId);
-    if (!connection) {
-      return { booked: false, reason: 'not_connected' };
-    }
-
-    const accessToken = await getValidZoomMeetingAccessToken(context.businessId);
-    if (!accessToken) {
-      return { booked: false, reason: 'token_invalid' };
-    }
-
-    const startAt = new Date(args.startDateTimeIso);
-    if (Number.isNaN(startAt.getTime())) {
-      return { booked: false, reason: 'invalid_start_time' };
-    }
-    const durationMinutes = args.durationMinutes && args.durationMinutes > 0 ? args.durationMinutes : 30;
-    const endAt = new Date(startAt.getTime() + durationMinutes * 60_000);
-
-    const result = await createZoomMeeting({
-      accessToken,
-      title: args.title,
-      startAt,
-      endAt,
-      timezone: context.businessTimezone,
-    });
-
-    if (result.status === 'error') {
-      console.error(`[aiReplyService] schedule_zoom_meeting failed for chat ${context.chatId}:`, result.reason);
-      return { booked: false, reason: 'zoom_api_error', detail: result.reason };
-    }
-
-    try {
-      await scheduledMeetingsRepository.createMeeting({
-        provider: 'zoom',
-        zoomConnectionId: connection.id,
-        businessId: context.businessId,
+    if (agent.requiresApprovalForActions) {
+      return createPendingApprovalAction(SCHEDULE_ZOOM_MEETING_ACTION_TYPE, agent, context, {
         chatId: context.chatId,
         contactId: context.crmContact?.id ?? null,
-        agentId: agent.id,
-        title: args.title,
-        startAt,
-        endAt,
-        timezone: context.businessTimezone,
+        businessTimezone: context.businessTimezone,
         attendeeEmail: args.attendeeEmail ?? null,
-        externalEventId: result.externalEventId,
-        meetUrl: result.joinUrl,
+        title: args.title,
+        startDateTimeIso: args.startDateTimeIso,
+        ...(args.durationMinutes !== undefined ? { durationMinutes: args.durationMinutes } : {}),
       });
-    } catch (error) {
-      // The real Zoom meeting already exists - a failure to record it
-      // locally must not make the tool claim the booking failed. Logged
-      // loudly since this row is the only local record of a real external
-      // meeting.
-      console.error(
-        `[aiReplyService] schedule_zoom_meeting: Zoom meeting ${result.externalEventId} created but failed to persist scheduled_meetings row for chat ${context.chatId}:`,
-        error instanceof Error ? error.message : error,
-      );
     }
-
-    return { booked: true, joinUrl: result.joinUrl, startAt: startAt.toISOString(), title: args.title };
+    return bookZoomMeeting({
+      businessId: context.businessId,
+      chatId: context.chatId,
+      contactId: context.crmContact?.id ?? null,
+      agentId: agent.id,
+      businessTimezone: context.businessTimezone,
+      attendeeEmail: args.attendeeEmail ?? null,
+      title: args.title,
+      startDateTimeIso: args.startDateTimeIso,
+      ...(args.durationMinutes !== undefined ? { durationMinutes: args.durationMinutes } : {}),
+    });
   }
 
   if (call.name === LIST_PROPERTIES_TOOL_NAME) {

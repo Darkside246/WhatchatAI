@@ -23,7 +23,9 @@ export const scheduleMeetingFunctionDeclaration: FunctionDeclaration = {
     'get_current_time first to resolve any relative date/time ("tomorrow", "next Monday") into a real date before ' +
     'calling this. If this business has not connected a Google account, this tool returns a not_connected result - ' +
     'tell the customer honestly that meeting booking is not available right now rather than claiming a meeting was ' +
-    'booked. Never tell the customer a meeting was booked unless this tool actually returned booked: true.',
+    'booked. If this tool returns reason: pending_approval, a team member needs to confirm it first - tell the ' +
+    'customer you are checking and will confirm shortly, not that it failed. Never tell the customer a meeting was ' +
+    'booked unless this tool actually returned booked: true.',
   parameters: {
     type: Type.OBJECT,
     properties: {

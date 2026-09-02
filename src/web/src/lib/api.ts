@@ -734,6 +734,8 @@ export interface AiAgentSummary {
   /** Always enforced regardless of allowedToolsEnabled - a real hard block. */
   forbiddenTools: string[];
   allowedToolsEnabled: boolean;
+  /** A real, simple "ask before acting" toggle - when true, a SEND-tier tool call (e.g. booking a meeting) creates a pending action in the Approvals queue instead of executing immediately. */
+  requiresApprovalForActions: boolean;
 }
 
 /** A real, system-owned starter template for the "Build My Agent" guided setup flow - see agent_templates (migration 951). */
@@ -785,6 +787,7 @@ export interface CreateAgentBody {
   allowedTools?: string[];
   forbiddenTools?: string[];
   allowedToolsEnabled?: boolean;
+  requiresApprovalForActions?: boolean;
 }
 
 export interface WorkspaceContact {

@@ -280,6 +280,27 @@ describe('schedule_zoom_meeting tool (real Postgres + real guardToolInvocation, 
     });
   }
 
+  it('an agent with requiresApprovalForActions on never books immediately - it creates a real pending action in the approval queue instead', async () => {
+    await connectZoom();
+    generateContentMock
+      .mockResolvedValueOnce({ text: undefined, functionCalls: [{ name: SCHEDULE_ZOOM_MEETING_TOOL_NAME, args: toolCallArgs() }] })
+      .mockResolvedValueOnce({ text: "Let me check with the team and confirm shortly." });
+
+    await generateAiReply(fakeAgent({ id: agentId, businessId, requiresApprovalForActions: true }), fakeContext({ businessId, chatId }));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(lastFunctionResponse()).toEqual({ booked: false, reason: 'pending_approval' });
+
+    const rows = await pool.query('SELECT id FROM scheduled_meetings WHERE business_id = $1', [businessId]);
+    expect(rows.rows).toHaveLength(0);
+
+    const { ApprovalService } = await import('../src/services/platform/approvalService.js');
+    const pending = await new ApprovalService(pool).listPending(businessId);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.type).toBe('meeting.schedule_zoom_meeting');
+    expect(pending[0]?.payload).toMatchObject({ chatId, title: 'Property viewing follow-up' });
+  });
+
   function lastFunctionResponse(): unknown {
     const followUpContents = generateContentMock.mock.calls[1]?.[0]?.contents as Array<{
       role: string;

@@ -59,6 +59,13 @@ export interface AiAgentRecord {
   /** Always enforced, regardless of allowedToolsEnabled - a real hard block. */
   forbiddenTools: string[];
   allowedToolsEnabled: boolean;
+  /**
+   * A real, simple "ask before acting" toggle (migration 955) - not a
+   * graduated autonomy ladder. When true, a SEND-tier tool call creates a
+   * pending action in the real approval queue instead of executing
+   * immediately (see aiReplyService.ts's createPendingMeetingApproval).
+   */
+  requiresApprovalForActions: boolean;
   status: AgentStatus;
   createdAt: string;
   updatedAt: string;
@@ -93,6 +100,7 @@ interface AiAgentRow {
   allowed_tools: string[];
   forbidden_tools: string[];
   allowed_tools_enabled: boolean;
+  requires_approval_for_actions: boolean;
   status: AgentStatus;
   created_at: string;
   updated_at: string;
@@ -128,6 +136,7 @@ function toRecord(row: AiAgentRow): AiAgentRecord {
     allowedTools: row.allowed_tools ?? [],
     forbiddenTools: row.forbidden_tools ?? [],
     allowedToolsEnabled: row.allowed_tools_enabled,
+    requiresApprovalForActions: row.requires_approval_for_actions,
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -160,6 +169,7 @@ export interface CreateAiAgentInput {
   allowedTools?: string[] | undefined;
   forbiddenTools?: string[] | undefined;
   allowedToolsEnabled?: boolean | undefined;
+  requiresApprovalForActions?: boolean | undefined;
 }
 
 /** Every field an agent's owner can actually change after creation. */
@@ -175,8 +185,8 @@ export class AiAgentRepository {
           greeting, business_context, response_style, human_takeover_policy,
           category, specialization, trigger_keywords, blocked_keywords, protected_facts,
           blocked_reply_message, response_delay_seconds, parent_agent_id, escalate_to_agent_id, priority,
-          allowed_tools, forbidden_tools, allowed_tools_enabled)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+          allowed_tools, forbidden_tools, allowed_tools_enabled, requires_approval_for_actions)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
        RETURNING *`,
       [
         input.businessId,
@@ -203,6 +213,7 @@ export class AiAgentRepository {
         JSON.stringify(input.allowedTools ?? []),
         JSON.stringify(input.forbiddenTools ?? []),
         input.allowedToolsEnabled ?? false,
+        input.requiresApprovalForActions ?? false,
       ],
     );
     const row = rows[0];
@@ -224,7 +235,7 @@ export class AiAgentRepository {
          specialization = $13, trigger_keywords = $14, blocked_keywords = $15,
          protected_facts = $16, blocked_reply_message = $17, response_delay_seconds = $18,
          parent_agent_id = $19, escalate_to_agent_id = $20, priority = $21,
-         allowed_tools = $22, forbidden_tools = $23, allowed_tools_enabled = $24, updated_at = now()
+         allowed_tools = $22, forbidden_tools = $23, allowed_tools_enabled = $24, requires_approval_for_actions = $25, updated_at = now()
        WHERE id = $1 AND deleted_at IS NULL
        RETURNING *`,
       [
@@ -252,6 +263,7 @@ export class AiAgentRepository {
         JSON.stringify(input.allowedTools ?? []),
         JSON.stringify(input.forbiddenTools ?? []),
         input.allowedToolsEnabled ?? false,
+        input.requiresApprovalForActions ?? false,
       ],
     );
     return rows[0] ? toRecord(rows[0]) : null;

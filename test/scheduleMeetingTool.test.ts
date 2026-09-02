@@ -281,4 +281,26 @@ describe('schedule_google_meet tool (real Postgres + real guardToolInvocation, m
     }>;
     return followUpContents?.at(-1)?.parts[0]?.functionResponse?.response;
   }
+
+  it('an agent with requiresApprovalForActions on never books immediately - it creates a real pending action in the approval queue instead', async () => {
+    await connectGoogleMeeting();
+    generateContentMock
+      .mockResolvedValueOnce({ text: undefined, functionCalls: [{ name: SCHEDULE_MEETING_TOOL_NAME, args: toolCallArgs() }] })
+      .mockResolvedValueOnce({ text: "Let me check with the team and confirm shortly." });
+
+    await generateAiReply(fakeAgent({ id: agentId, businessId, requiresApprovalForActions: true }), fakeContext({ businessId, chatId }));
+
+    // Never calls the real Calendar API - nothing is booked yet.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(lastFunctionResponse()).toEqual({ booked: false, reason: 'pending_approval' });
+
+    const rows = await pool.query('SELECT id FROM scheduled_meetings WHERE business_id = $1', [businessId]);
+    expect(rows.rows).toHaveLength(0);
+
+    const { ApprovalService } = await import('../src/services/platform/approvalService.js');
+    const pending = await new ApprovalService(pool).listPending(businessId);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.type).toBe('meeting.schedule_google_meet');
+    expect(pending[0]?.payload).toMatchObject({ chatId, attendeeEmail: 'customer@example.com', title: 'Property viewing follow-up' });
+  });
 });

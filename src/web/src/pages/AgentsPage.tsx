@@ -67,6 +67,7 @@ interface AgentForm {
   escalateToAgentId: string;
   allowedToolsEnabled: boolean;
   allowedTools: string[];
+  requiresApprovalForActions: boolean;
 }
 
 const EMPTY_FORM: AgentForm = {
@@ -92,6 +93,7 @@ const EMPTY_FORM: AgentForm = {
   escalateToAgentId: '',
   allowedToolsEnabled: false,
   allowedTools: TOGGLEABLE_TOOLS.map((t) => t.name),
+  requiresApprovalForActions: false,
 };
 
 function toForm(agent: AiAgentSummary): AgentForm {
@@ -118,6 +120,7 @@ function toForm(agent: AiAgentSummary): AgentForm {
     escalateToAgentId: agent.escalateToAgentId ?? '',
     allowedToolsEnabled: agent.allowedToolsEnabled,
     allowedTools: agent.allowedToolsEnabled ? agent.allowedTools : TOGGLEABLE_TOOLS.map((t) => t.name),
+    requiresApprovalForActions: agent.requiresApprovalForActions,
   };
 }
 
@@ -153,6 +156,7 @@ function toBody(form: AgentForm): CreateAgentBody {
     escalateToAgentId: form.escalateToAgentId || null,
     allowedToolsEnabled: form.allowedToolsEnabled,
     allowedTools: form.allowedTools,
+    requiresApprovalForActions: form.requiresApprovalForActions,
   };
 }
 
@@ -440,6 +444,25 @@ function AgentEditor({
         {!form.allowedToolsEnabled && (
           <p className="text-meta text-fg-muted">Off means every capability this business has connected is available - the same as today.</p>
         )}
+      </section>
+
+      <section className="space-y-4 rounded-xl border border-border-subtle bg-surface-1 p-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-body font-semibold text-fg">Autonomy</h2>
+            <p className="text-caption text-fg-muted">Whether this agent can act on its own, or must ask a teammate first.</p>
+          </div>
+          <ToggleSwitch
+            checked={form.requiresApprovalForActions}
+            onChange={() => setForm({ ...form, requiresApprovalForActions: !form.requiresApprovalForActions })}
+            label="Ask before acting"
+          />
+        </div>
+        <p className="text-meta text-fg-muted">
+          {form.requiresApprovalForActions
+            ? 'On: instead of booking a meeting immediately, this agent asks the customer to hold while a teammate confirms in Approvals - the same review queue used elsewhere in AURA.'
+            : 'Off: this agent books meetings and takes other real-world actions immediately, the same as today.'}
+        </p>
       </section>
 
       <section className="space-y-4 rounded-xl border border-border-subtle bg-surface-1 p-5">

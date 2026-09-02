@@ -304,6 +304,7 @@ export interface CreateAgentInput {
   parentAgentId?: string | null | undefined;
   escalateToAgentId?: string | null | undefined;
   priority?: number | undefined;
+  requiresApprovalForActions?: boolean | undefined;
 }
 
 export class WorkspaceService {

@@ -6,6 +6,8 @@ import { actionBusService } from './actionBusService.js';
 import { PlatformActionRepository } from '../../repositories/platformActionRepository.js';
 import { pool } from '../../db/pool.js';
 import { MaintenanceCreateWorkOrderExecutor, MAINTENANCE_CREATE_WORK_ORDER_ACTION_TYPE } from '../property/maintenanceWorkOrderExecutor.js';
+import { GoogleMeetBookingExecutor, SCHEDULE_GOOGLE_MEET_ACTION_TYPE } from '../meeting/googleMeetBookingExecutor.js';
+import { ZoomMeetBookingExecutor, SCHEDULE_ZOOM_MEETING_ACTION_TYPE } from '../meeting/zoomMeetBookingExecutor.js';
 
 let initialized = false;
 
@@ -26,6 +28,15 @@ export function initializePlatformFoundation(): void {
   actionBusService.setRepository(new PlatformActionRepository(pool));
   if (!actionBusService.listExecutors().includes(MAINTENANCE_CREATE_WORK_ORDER_ACTION_TYPE)) {
     actionBusService.register(new MaintenanceCreateWorkOrderExecutor());
+  }
+  // Only reachable for an agent with requiresApprovalForActions on (see
+  // aiReplyService.ts's createPendingMeetingApproval) - an agent without
+  // it still books immediately and never creates one of these actions.
+  if (!actionBusService.listExecutors().includes(SCHEDULE_GOOGLE_MEET_ACTION_TYPE)) {
+    actionBusService.register(new GoogleMeetBookingExecutor());
+  }
+  if (!actionBusService.listExecutors().includes(SCHEDULE_ZOOM_MEETING_ACTION_TYPE)) {
+    actionBusService.register(new ZoomMeetBookingExecutor());
   }
 
   // Property maintenance triage is a real, sellable product capability, not
