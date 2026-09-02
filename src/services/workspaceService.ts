@@ -34,6 +34,7 @@ import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepo
 import { PlatformActionRepository } from '../repositories/platformActionRepository.js';
 import { PlatformAuditLedgerRepository, type AuditEventSearchFilters } from '../repositories/platformAuditLedgerRepository.js';
 import type { AuditEvent } from '../domain/platform/contracts.js';
+import { InvoiceRepository } from '../repositories/invoiceRepository.js';
 import type {
   CallStatus,
   CallType,
@@ -319,6 +320,24 @@ export interface ApprovalPatternSuggestion {
   approvedStreak: number;
 }
 
+export interface NextBestAction {
+  id: string;
+  type: 'chat_needs_human' | 'open_commitment' | 'pending_approval' | 'overdue_invoice' | 'approval_pattern_suggestion';
+  /**
+   * Two tiers, deliberately - never a fabricated numeric priority/confidence
+   * score. 'action_needed' is real, waiting, blocking work (a customer with
+   * no reply, a broken promise, a decision an agent is blocked on, real
+   * money overdue); 'suggestion' is a nice-to-have optimization, never
+   * blocking anything. Within a tier, sorted oldest-first - the thing
+   * that's been waiting longest is the most overdue for attention.
+   */
+  priority: 'action_needed' | 'suggestion';
+  title: string;
+  description: string;
+  link: string;
+  occurredAt: string;
+}
+
 const DEFAULT_APPROVAL_PATTERN_THRESHOLD = 10;
 function getApprovalPatternThreshold(): number {
   const raw = Number(process.env.APPROVAL_PATTERN_THRESHOLD);
@@ -353,6 +372,7 @@ export class WorkspaceService {
   private readonly securityAuditLogRepository = new SecurityAuditLogRepository(pool);
   private readonly platformActionRepository = new PlatformActionRepository(pool);
   private readonly platformAuditLedgerRepository = new PlatformAuditLedgerRepository(pool);
+  private readonly invoiceRepository = new InvoiceRepository(pool);
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
@@ -1038,6 +1058,86 @@ export class WorkspaceService {
    */
   async getActivityLog(businessId: string, filters: AuditEventSearchFilters = {}): Promise<{ events: AuditEvent[]; nextCursor: number | null }> {
     return this.platformAuditLedgerRepository.search(businessId, filters);
+  }
+
+  /**
+   * Real Next-Best-Action engine: aggregates every real "this needs a
+   * decision" signal this codebase already has real data for - chats
+   * waiting on a human, unaddressed AI commitments, pending approvals,
+   * overdue invoices - plus the one real "nice to have" signal (approval
+   * pattern suggestions), into one ranked list. Ranking is two real,
+   * deterministic tiers (see NextBestAction.priority's own doc comment),
+   * never a fabricated AI-generated priority score - this is a real
+   * aggregation of existing structured data, not a new judgment call.
+   */
+  async getNextBestActions(businessId: string, limit = 10): Promise<NextBestAction[]> {
+    const [chatsNeedingHuman, commitments, pendingApprovals, overdueInvoices, approvalSuggestions] = await Promise.all([
+      this.chatRepository.listNeedingHumanTakeover(businessId),
+      this.commitmentRepository.listOpen(businessId, 4),
+      this.platformActionRepository.listPendingApprovals(businessId),
+      this.invoiceRepository.list(businessId, { status: 'OVERDUE' }),
+      this.getApprovalPatternSuggestions(businessId),
+    ]);
+
+    const actions: NextBestAction[] = [
+      ...chatsNeedingHuman.map((chat): NextBestAction => ({
+        id: `chat:${chat.id}`,
+        type: 'chat_needs_human',
+        priority: 'action_needed',
+        title: `Reply to ${chat.displayName}`,
+        description: 'This conversation is waiting on a human reply.',
+        link: `/chats/${chat.id}`,
+        occurredAt: chat.updatedAt,
+      })),
+      ...commitments.map((commitment): NextBestAction => ({
+        id: `commitment:${commitment.id}`,
+        type: 'open_commitment',
+        priority: 'action_needed',
+        title: 'Follow up on a promise made',
+        description: commitment.commitmentText,
+        link: `/chats/${commitment.chatId}`,
+        occurredAt: commitment.createdAt,
+      })),
+      ...pendingApprovals.map((action): NextBestAction => ({
+        id: `approval:${action.id}`,
+        type: 'pending_approval',
+        priority: 'action_needed',
+        title: `Approve or reject: ${action.type}`,
+        description: 'An AI-proposed action is waiting for your decision.',
+        link: '/property-operations',
+        // PlatformActionRow types createdAt as Date, but db/pool.ts's global
+        // TIMESTAMPTZ type parser actually returns a plain string at
+        // runtime - the same pre-existing type/runtime mismatch flagged
+        // elsewhere this session (see checkPropertyStatusTool.ts), worked
+        // around the same way rather than fixed broadly here.
+        occurredAt: action.createdAt as unknown as string,
+      })),
+      ...overdueInvoices.map((invoice): NextBestAction => ({
+        id: `invoice:${invoice.id}`,
+        type: 'overdue_invoice',
+        priority: 'action_needed',
+        title: `Overdue invoice ${invoice.invoiceNumber}`,
+        description: `${(invoice.totalCents / 100).toFixed(2)} ${invoice.currencyCode} overdue${invoice.dueDate ? ` since ${invoice.dueDate}` : ''}.`,
+        link: '/invoices',
+        occurredAt: invoice.dueDate ?? invoice.createdAt,
+      })),
+      ...approvalSuggestions.map((suggestion): NextBestAction => ({
+        id: `suggestion:${suggestion.agentId}`,
+        type: 'approval_pattern_suggestion',
+        priority: 'suggestion',
+        title: `Consider automating ${suggestion.agentName}`,
+        description: `${suggestion.approvedStreak} approvals in a row for this agent, none rejected.`,
+        link: '/agents',
+        occurredAt: new Date().toISOString(),
+      })),
+    ];
+
+    actions.sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority === 'action_needed' ? -1 : 1;
+      return a.occurredAt.localeCompare(b.occurredAt);
+    });
+
+    return actions.slice(0, limit);
   }
 
   async getBusinessProfile(businessId: string): Promise<BusinessRecord> {

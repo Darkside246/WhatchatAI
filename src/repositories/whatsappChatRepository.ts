@@ -469,6 +469,22 @@ export class WhatsAppChatRepository {
   }
 
   /**
+   * The real, named version of listHumanTakeoverAlerts below - for surfaces
+   * the authenticated operator is already viewing their own business's real
+   * data on (e.g. the Next-Best-Action list), where the PII-free ordinal
+   * labeling that method exists for is unnecessary and less useful.
+   */
+  async listNeedingHumanTakeover(businessId: string, limit = 20): Promise<{ id: string; displayName: string; updatedAt: string }[]> {
+    const { rows } = await this.db.query<{ id: string; name: string | null; phone_number: string | null; updated_at: string }>(
+      `SELECT id, name, phone_number, updated_at FROM whatsapp_chats
+       WHERE business_id = $1 AND ai_mode = 'HUMAN_TAKEOVER' AND deleted_at IS NULL
+       ORDER BY updated_at ASC LIMIT $2`,
+      [businessId, limit],
+    );
+    return rows.map((row) => ({ id: row.id, displayName: row.name ?? row.phone_number ?? 'a contact', updatedAt: row.updated_at }));
+  }
+
+  /**
    * Real, PII-free data for the lock-screen AlertNotifier: chats currently
    * awaiting a human, labeled only by a stable per-business line ordinal
    * (never the account's phone number or push name) and an unread-count

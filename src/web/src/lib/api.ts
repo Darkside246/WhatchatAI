@@ -240,6 +240,17 @@ export interface ActivityLogFilters {
   limit?: number;
 }
 
+/** One real, ranked entry from the Next-Best-Action engine - see workspaceService.getNextBestActions's own doc comment for why priority is two real deterministic tiers, never a fabricated score. */
+export interface NextBestAction {
+  id: string;
+  type: 'chat_needs_human' | 'open_commitment' | 'pending_approval' | 'overdue_invoice' | 'approval_pattern_suggestion';
+  priority: 'action_needed' | 'suggestion';
+  title: string;
+  description: string;
+  link: string;
+  occurredAt: string;
+}
+
 export interface WorkspaceBillingEntitlement {
   key: string;
   label: string;
@@ -1103,6 +1114,7 @@ export const api = {
   getDashboard: () => request<WorkspaceDashboardOverview>('/workspace/dashboard'),
   getOpenCommitments: () => request<{ commitments: AiCommitmentRecord[] }>('/workspace/commitments/open'),
   getApprovalPatternSuggestions: () => request<{ suggestions: ApprovalPatternSuggestion[] }>('/workspace/agents/approval-suggestions'),
+  getNextBestActions: () => request<{ actions: NextBestAction[] }>('/workspace/next-best-actions'),
   getActivityLog: (filters: ActivityLogFilters = {}) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(filters)) {

@@ -11,6 +11,7 @@ import {
   type NotificationDto,
   type AiEnginesDto,
   type AiCommitmentRecord,
+  type NextBestAction,
 } from '../lib/api.js';
 import { AiEngineStrip } from '../components/AiEngineStrip.js';
 import { TimeSyncStrip } from '../components/TimeSyncStrip.js';
@@ -214,6 +215,7 @@ export function DashboardRoute() {
   const [notifications,  setNotifications]  = useState<NotificationDto[] | null>(null);
   const [engines,        setEngines]        = useState<AiEnginesDto | null>(null);
   const [commitments,    setCommitments]    = useState<AiCommitmentRecord[] | null>(null);
+  const [nextActions,    setNextActions]    = useState<NextBestAction[] | null>(null);
   const [error,          setError]          = useState<string | null>(null);
 
   useEffect(() => {
@@ -223,11 +225,13 @@ export function DashboardRoute() {
       api.listNotifications(),
       api.getAiEngines().catch(() => null),
       api.getOpenCommitments().catch(() => ({ commitments: [] as AiCommitmentRecord[] })),
+      api.getNextBestActions().catch(() => ({ actions: [] as NextBestAction[] })),
     ])
-      .then(([d, c, n, e, k]) => {
+      .then(([d, c, n, e, k, nba]) => {
         setOverview(d); setChats(c.chats);
         setNotifications(n.notifications); setEngines(e);
         setCommitments(k.commitments);
+        setNextActions(nba.actions);
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load dashboard.'));
   }, []);
@@ -236,9 +240,6 @@ export function DashboardRoute() {
   if (!overview || !chats || !notifications) return null;
 
   const openCommitments = commitments ?? [];
-  function commitmentChatName(chatId: string): string {
-    return chats?.find((c) => c.id === chatId)?.displayName ?? 'a contact';
-  }
 
   // ── Derived metrics ──────────────────────────────────────────────────
   const totalMsgs    = overview.messages.inbound + overview.messages.outbound;
@@ -326,45 +327,37 @@ export function DashboardRoute() {
                 </button>
               </div>
             )}
-            {needsHuman.length > 0 && (
-              <button
-                type="button"
-                onClick={() => navigate('/chats?filter=needsHuman')}
-                className="flex w-full items-center gap-3 rounded-xl border border-warning/30 bg-warning/8 px-4 py-3 text-left transition-colors hover:bg-warning/15"
-              >
-                <Users size={16} className="shrink-0 text-warning" aria-hidden />
-                <p className="text-body text-fg">
-                  <span className="font-semibold">{needsHuman.length} conversation{needsHuman.length !== 1 ? 's' : ''}</span>
-                  {' '}the AI couldn't handle — they need a human reply now.
-                </p>
-              </button>
-            )}
-            {openCommitments.length > 0 && (
-              <div className="rounded-xl border border-warning/30 bg-warning/8 px-4 py-3">
-                <div className="flex items-center gap-3">
-                  <Clock size={16} className="shrink-0 text-warning" aria-hidden />
-                  <p className="text-body text-fg">
-                    <span className="font-semibold">{openCommitments.length} promise{openCommitments.length !== 1 ? 's' : ''} to follow up</span>
-                    {' '}the AI made that nothing has addressed since.
-                  </p>
-                </div>
-                <div className="mt-2 space-y-1 pl-7">
-                  {openCommitments.slice(0, 3).map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => navigate(`/chats/${c.chatId}`)}
-                      className="block w-full text-left text-caption text-fg-secondary hover:text-fg hover:underline underline-offset-2"
-                    >
-                      {commitmentChatName(c.chatId)} — "{c.detectedPhrase}" ({relativeTime(c.createdAt)})
-                    </button>
-                  ))}
-                  {openCommitments.length > 3 && (
-                    <p className="text-caption text-fg-muted">+{openCommitments.length - 3} more</p>
+          </div>
+        )}
+
+        {/* ── Next best actions: one real, ranked "what to do" list ── */}
+        {nextActions && nextActions.length > 0 && (
+          <div className="mt-4 rounded-xl border border-border-subtle bg-surface-1">
+            <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-2.5">
+              <Zap size={14} className="text-accent" aria-hidden />
+              <p className="text-caption font-semibold text-fg">What to do next</p>
+            </div>
+            <div>
+              {nextActions.slice(0, 6).map((action) => (
+                <button
+                  key={action.id}
+                  type="button"
+                  onClick={() => navigate(action.link)}
+                  className="flex w-full items-start gap-3 border-b border-border-subtle px-4 py-2.5 text-left last:border-0 hover:bg-surface-2"
+                >
+                  {action.priority === 'action_needed' ? (
+                    <Clock size={14} className="mt-0.5 shrink-0 text-warning" aria-hidden />
+                  ) : (
+                    <Zap size={14} className="mt-0.5 shrink-0 text-accent" aria-hidden />
                   )}
-                </div>
-              </div>
-            )}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-caption font-medium text-fg">{action.title}</p>
+                    <p className="truncate text-meta text-fg-muted">{action.description}</p>
+                  </div>
+                  <span className="shrink-0 text-meta text-fg-muted">{relativeTime(action.occurredAt)}</span>
+                </button>
+              ))}
+            </div>
           </div>
         )}
 

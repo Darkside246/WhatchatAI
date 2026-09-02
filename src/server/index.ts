@@ -2066,6 +2066,12 @@ app.get('/api/workspace/activity-log', requireWorkspaceContext, async (req, res)
   return res.status(200).json(result);
 });
 
+app.get('/api/workspace/next-best-actions', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const actions = await workspaceService.getNextBestActions(businessId);
+  return res.status(200).json({ actions });
+});
+
 app.get('/api/workspace/business', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const business = await workspaceService.getBusinessProfile(businessId);
