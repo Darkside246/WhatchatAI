@@ -179,6 +179,47 @@ describe('workspaceService.createAgentFromTemplate ("Build My Agent")', () => {
     expect(agent.allowedToolsEnabled).toBe(true);
     expect(agent.allowedTools).toEqual(property.recommendedTools);
     expect(agent.status).toBe('ACTIVE');
+    // Real provenance (migration 956) - lets the UI honestly say "this
+    // template has since been updated" without ever silently changing
+    // an existing agent's own configuration.
+    expect(agent.sourceTemplateKey).toBe('property_operations_assistant');
+    expect(agent.sourceTemplateVersion).toBe(property.version);
+  });
+
+  it('a manually created agent has no source template - provenance is null, never a fabricated template link', async () => {
+    await createTestSubscription(businessId, 'starter');
+    const agent = await workspaceService.createAgent(businessId, { name: 'From scratch' });
+    expect(agent.sourceTemplateKey).toBeNull();
+    expect(agent.sourceTemplateVersion).toBeNull();
+  });
+
+  it('updateAgent preserves an agent\'s own source template provenance when the caller passes it back unchanged, and lets it be reset to a newer version explicitly', async () => {
+    await createTestSubscription(businessId, 'starter');
+    const agent = await workspaceService.createAgentFromTemplate(businessId, 'property_operations_assistant');
+    expect(agent.sourceTemplateVersion).toBe(1);
+
+    // An ordinary edit (e.g. changing the name) must not silently wipe or
+    // alter provenance - the frontend round-trips it unchanged.
+    const edited = await workspaceService.updateAgent(businessId, agent.id, {
+      name: 'Renamed',
+      sourceTemplateKey: agent.sourceTemplateKey,
+      sourceTemplateVersion: agent.sourceTemplateVersion,
+    });
+    expect(edited.name).toBe('Renamed');
+    expect(edited.sourceTemplateKey).toBe('property_operations_assistant');
+    expect(edited.sourceTemplateVersion).toBe(1);
+
+    // A real template content update (mirrors migration 953's own pattern) bumps the version.
+    await pool.query(`UPDATE agent_templates SET version = 2, updated_at = now() WHERE template_key = 'property_operations_assistant'`);
+
+    // An explicit "reset to template defaults" (the only thing that should
+    // ever change sourceTemplateVersion) catches the agent up.
+    const reset = await workspaceService.updateAgent(businessId, agent.id, {
+      name: 'Renamed',
+      sourceTemplateKey: 'property_operations_assistant',
+      sourceTemplateVersion: 2,
+    });
+    expect(reset.sourceTemplateVersion).toBe(2);
   });
 
   it('accepts a real name override instead of the template default', async () => {

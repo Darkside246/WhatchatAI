@@ -8,6 +8,7 @@ import {
   type AiAgentSummary,
   type AgentCategory,
   type CreateAgentBody,
+  type AgentTemplate,
 } from '../lib/api.js';
 import { ToggleSwitch } from '../components/ToggleSwitch.js';
 import { AgentCanvas } from '../components/AgentCanvas.js';
@@ -68,6 +69,8 @@ interface AgentForm {
   allowedToolsEnabled: boolean;
   allowedTools: string[];
   requiresApprovalForActions: boolean;
+  sourceTemplateKey: string | null;
+  sourceTemplateVersion: number | null;
 }
 
 const EMPTY_FORM: AgentForm = {
@@ -94,6 +97,8 @@ const EMPTY_FORM: AgentForm = {
   allowedToolsEnabled: false,
   allowedTools: TOGGLEABLE_TOOLS.map((t) => t.name),
   requiresApprovalForActions: false,
+  sourceTemplateKey: null,
+  sourceTemplateVersion: null,
 };
 
 function toForm(agent: AiAgentSummary): AgentForm {
@@ -121,6 +126,8 @@ function toForm(agent: AiAgentSummary): AgentForm {
     allowedToolsEnabled: agent.allowedToolsEnabled,
     allowedTools: agent.allowedToolsEnabled ? agent.allowedTools : TOGGLEABLE_TOOLS.map((t) => t.name),
     requiresApprovalForActions: agent.requiresApprovalForActions,
+    sourceTemplateKey: agent.sourceTemplateKey,
+    sourceTemplateVersion: agent.sourceTemplateVersion,
   };
 }
 
@@ -157,6 +164,8 @@ function toBody(form: AgentForm): CreateAgentBody {
     allowedToolsEnabled: form.allowedToolsEnabled,
     allowedTools: form.allowedTools,
     requiresApprovalForActions: form.requiresApprovalForActions,
+    sourceTemplateKey: form.sourceTemplateKey,
+    sourceTemplateVersion: form.sourceTemplateVersion,
   };
 }
 
@@ -189,6 +198,7 @@ function AgentEditor({
   submitLabel,
   onSubmit,
   onCancel,
+  sourceTemplate,
 }: {
   form: AgentForm;
   setForm: (form: AgentForm) => void;
@@ -198,6 +208,8 @@ function AgentEditor({
   submitLabel: string;
   onSubmit: (event: FormEvent) => void;
   onCancel: () => void;
+  /** The real, current system template this agent was created from, if any and if it's still loaded - null means either no source template or the template lookup hasn't resolved yet. */
+  sourceTemplate?: AgentTemplate | null;
 }) {
   const restricted = ADVICE_RESTRICTED_CATEGORIES.includes(form.category);
 
@@ -465,6 +477,55 @@ function AgentEditor({
         </p>
       </section>
 
+      {form.sourceTemplateKey && (
+        <section className="space-y-3 rounded-xl border border-border-subtle bg-surface-1 p-5">
+          <h2 className="text-body font-semibold text-fg">Template</h2>
+          {sourceTemplate ? (
+            <>
+              <p className="text-caption text-fg-muted">
+                Built from the <strong className="text-fg">{sourceTemplate.role}</strong> template
+                {form.sourceTemplateVersion !== null && form.sourceTemplateVersion < sourceTemplate.version && (
+                  <span className="ml-1.5 inline-flex items-center rounded-full bg-accent/15 px-2 py-0.5 text-meta font-medium text-accent">
+                    updated since you built this agent
+                  </span>
+                )}
+                .
+              </p>
+              {form.sourceTemplateVersion !== null && form.sourceTemplateVersion < sourceTemplate.version ? (
+                <div>
+                  <p className="text-meta text-fg-muted">
+                    This won't change anything unless you save afterward - review the fields below before submitting.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setForm({
+                        ...form,
+                        persona: sourceTemplate.defaultPersona ?? form.persona,
+                        tone: sourceTemplate.defaultTone ?? form.tone,
+                        systemInstruction: sourceTemplate.defaultSystemInstruction,
+                        greeting: sourceTemplate.defaultGreeting ?? form.greeting,
+                        triggerKeywords: sourceTemplate.defaultTriggerKeywords.join(', '),
+                        allowedToolsEnabled: true,
+                        allowedTools: sourceTemplate.recommendedTools,
+                        sourceTemplateVersion: sourceTemplate.version,
+                      })
+                    }
+                    className="mt-2 rounded-lg border border-border-subtle bg-surface-2 px-3 py-1.5 text-caption font-medium text-fg hover:bg-surface-3"
+                  >
+                    Reset to template defaults
+                  </button>
+                </div>
+              ) : (
+                <p className="text-meta text-fg-muted">Up to date with the template.</p>
+              )}
+            </>
+          ) : (
+            <p className="text-caption text-fg-muted">Built from a system template that no longer exists.</p>
+          )}
+        </section>
+      )}
+
       <section className="space-y-4 rounded-xl border border-border-subtle bg-surface-1 p-5">
         <h2 className="text-body font-semibold text-fg">Structure</h2>
         <div className="grid gap-4 sm:grid-cols-2">
@@ -519,6 +580,7 @@ function AgentEditor({
 
 export function AgentsPage() {
   const [agents, setAgents] = useState<AiAgentSummary[] | null>(null);
+  const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<{ mode: 'list' } | { mode: 'wizard' } | { mode: 'new' } | { mode: 'edit'; agentId: string }>({ mode: 'list' });
   const [form, setForm] = useState<AgentForm>(EMPTY_FORM);
@@ -535,6 +597,9 @@ export function AgentsPage() {
   }
 
   useEffect(load, []);
+  useEffect(() => {
+    api.listAgentTemplates().then((res) => setTemplates(res.templates)).catch(() => setTemplates([]));
+  }, []);
 
   async function handleToggleStatus(agent: AiAgentSummary) {
     const nextStatus = agent.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
@@ -609,6 +674,7 @@ export function AgentsPage() {
           submitLabel={view.mode === 'edit' ? 'Save changes' : 'Create agent'}
           onSubmit={handleSubmit}
           onCancel={() => setView({ mode: 'list' })}
+          sourceTemplate={form.sourceTemplateKey ? (templates.find((t) => t.templateKey === form.sourceTemplateKey) ?? null) : null}
         />
         {view.mode === 'edit' && (
           <div className="mx-auto mt-6 max-w-3xl">

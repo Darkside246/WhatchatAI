@@ -2259,6 +2259,8 @@ const createAgentSchema = z.object({
   forbiddenTools: z.array(z.string().trim().min(1)).max(50).optional(),
   allowedToolsEnabled: z.boolean().optional(),
   requiresApprovalForActions: z.boolean().optional(),
+  sourceTemplateKey: z.string().trim().min(1).nullish(),
+  sourceTemplateVersion: z.number().int().min(1).nullish(),
 });
 
 app.post('/api/workspace/agents', requireWorkspaceContext, requirePermission('ai.create'), async (req, res) => {

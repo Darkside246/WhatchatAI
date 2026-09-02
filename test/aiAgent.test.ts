@@ -65,6 +65,19 @@ describe('AiAgentRepository', () => {
     expect(updated?.requiresApprovalForActions).toBe(false);
   });
 
+  it('defaults to null source template provenance, and round-trips a real value through create and update', async () => {
+    const defaultAgent = await agents.create({ businessId, name: 'Default Agent' });
+    expect(defaultAgent.sourceTemplateKey).toBeNull();
+    expect(defaultAgent.sourceTemplateVersion).toBeNull();
+
+    const created = await agents.create({ businessId, name: 'From Template', sourceTemplateKey: 'personal_assistant', sourceTemplateVersion: 1 });
+    expect(created.sourceTemplateKey).toBe('personal_assistant');
+    expect(created.sourceTemplateVersion).toBe(1);
+
+    const updated = await agents.update(created.id, { name: 'From Template', sourceTemplateKey: 'personal_assistant', sourceTemplateVersion: 2 });
+    expect(updated?.sourceTemplateVersion).toBe(2);
+  });
+
   it('only counts ACTIVE/PAUSED agents toward the plan limit, not ARCHIVED ones', async () => {
     const a = await agents.create({ businessId, name: 'Reception Agent' });
     const b = await agents.create({ businessId, name: 'Support Agent' });

@@ -736,6 +736,9 @@ export interface AiAgentSummary {
   allowedToolsEnabled: boolean;
   /** A real, simple "ask before acting" toggle - when true, a SEND-tier tool call (e.g. booking a meeting) creates a pending action in the Approvals queue instead of executing immediately. */
   requiresApprovalForActions: boolean;
+  /** Which system template (and version of it) this agent was created from, if any - null for a manual or custom-description agent. */
+  sourceTemplateKey: string | null;
+  sourceTemplateVersion: number | null;
 }
 
 /** A real, system-owned starter template for the "Build My Agent" guided setup flow - see agent_templates (migration 951). */
@@ -746,8 +749,15 @@ export interface AgentTemplate {
   role: string;
   description: string;
   category: AgentCategory;
+  defaultPersona: string | null;
+  defaultTone: string | null;
+  defaultSystemInstruction: string;
+  defaultGreeting: string | null;
+  defaultTriggerKeywords: string[];
   /** Real tool names from the backend's tool registry - never a capability that isn't actually implemented. */
   recommendedTools: string[];
+  /** Bumped whenever the system template's own content changes - compared against an agent's sourceTemplateVersion to know honestly whether it's fallen behind. */
+  version: number;
 }
 
 /** The real structured shape a free-text agent description gets converted into - never persisted until the user activates it. */
@@ -803,6 +813,8 @@ export interface CreateAgentBody {
   forbiddenTools?: string[];
   allowedToolsEnabled?: boolean;
   requiresApprovalForActions?: boolean;
+  sourceTemplateKey?: string | null;
+  sourceTemplateVersion?: number | null;
 }
 
 export interface WorkspaceContact {

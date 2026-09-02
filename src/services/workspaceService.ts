@@ -305,6 +305,8 @@ export interface CreateAgentInput {
   escalateToAgentId?: string | null | undefined;
   priority?: number | undefined;
   requiresApprovalForActions?: boolean | undefined;
+  sourceTemplateKey?: string | null | undefined;
+  sourceTemplateVersion?: number | null | undefined;
 }
 
 export class WorkspaceService {
@@ -875,6 +877,8 @@ export class WorkspaceService {
       triggerKeywords: template.defaultTriggerKeywords,
       allowedTools: template.recommendedTools,
       allowedToolsEnabled: true,
+      sourceTemplateKey: template.templateKey,
+      sourceTemplateVersion: template.version,
     });
   }
 

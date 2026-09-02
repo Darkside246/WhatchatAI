@@ -66,6 +66,16 @@ export interface AiAgentRecord {
    * immediately (see aiReplyService.ts's createPendingMeetingApproval).
    */
   requiresApprovalForActions: boolean;
+  /**
+   * Which system template (agent_templates.template_key) and version this
+   * agent was created from, if any (migration 956) - null for a manually-
+   * created or custom-description agent. Set once at creation and updated
+   * only by an explicit "Reset to template defaults" action, never by an
+   * ordinary edit - editing an agent's own fields must never silently
+   * change what template it's tracked against.
+   */
+  sourceTemplateKey: string | null;
+  sourceTemplateVersion: number | null;
   status: AgentStatus;
   createdAt: string;
   updatedAt: string;
@@ -101,6 +111,8 @@ interface AiAgentRow {
   forbidden_tools: string[];
   allowed_tools_enabled: boolean;
   requires_approval_for_actions: boolean;
+  source_template_key: string | null;
+  source_template_version: number | null;
   status: AgentStatus;
   created_at: string;
   updated_at: string;
@@ -137,6 +149,8 @@ function toRecord(row: AiAgentRow): AiAgentRecord {
     forbiddenTools: row.forbidden_tools ?? [],
     allowedToolsEnabled: row.allowed_tools_enabled,
     requiresApprovalForActions: row.requires_approval_for_actions,
+    sourceTemplateKey: row.source_template_key,
+    sourceTemplateVersion: row.source_template_version,
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -170,6 +184,8 @@ export interface CreateAiAgentInput {
   forbiddenTools?: string[] | undefined;
   allowedToolsEnabled?: boolean | undefined;
   requiresApprovalForActions?: boolean | undefined;
+  sourceTemplateKey?: string | null | undefined;
+  sourceTemplateVersion?: number | null | undefined;
 }
 
 /** Every field an agent's owner can actually change after creation. */
@@ -185,8 +201,9 @@ export class AiAgentRepository {
           greeting, business_context, response_style, human_takeover_policy,
           category, specialization, trigger_keywords, blocked_keywords, protected_facts,
           blocked_reply_message, response_delay_seconds, parent_agent_id, escalate_to_agent_id, priority,
-          allowed_tools, forbidden_tools, allowed_tools_enabled, requires_approval_for_actions)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+          allowed_tools, forbidden_tools, allowed_tools_enabled, requires_approval_for_actions,
+          source_template_key, source_template_version)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
        RETURNING *`,
       [
         input.businessId,
@@ -214,6 +231,8 @@ export class AiAgentRepository {
         JSON.stringify(input.forbiddenTools ?? []),
         input.allowedToolsEnabled ?? false,
         input.requiresApprovalForActions ?? false,
+        input.sourceTemplateKey ?? null,
+        input.sourceTemplateVersion ?? null,
       ],
     );
     const row = rows[0];
@@ -235,7 +254,8 @@ export class AiAgentRepository {
          specialization = $13, trigger_keywords = $14, blocked_keywords = $15,
          protected_facts = $16, blocked_reply_message = $17, response_delay_seconds = $18,
          parent_agent_id = $19, escalate_to_agent_id = $20, priority = $21,
-         allowed_tools = $22, forbidden_tools = $23, allowed_tools_enabled = $24, requires_approval_for_actions = $25, updated_at = now()
+         allowed_tools = $22, forbidden_tools = $23, allowed_tools_enabled = $24, requires_approval_for_actions = $25,
+         source_template_key = $26, source_template_version = $27, updated_at = now()
        WHERE id = $1 AND deleted_at IS NULL
        RETURNING *`,
       [
@@ -264,6 +284,8 @@ export class AiAgentRepository {
         JSON.stringify(input.forbiddenTools ?? []),
         input.allowedToolsEnabled ?? false,
         input.requiresApprovalForActions ?? false,
+        input.sourceTemplateKey ?? null,
+        input.sourceTemplateVersion ?? null,
       ],
     );
     return rows[0] ? toRecord(rows[0]) : null;
