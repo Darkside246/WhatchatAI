@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { listAvailableProducts, listUserProductAccounts, provisionProductAccount, listAllProductAccounts, assignVertical, getControlPlaneStats } from '../services/productAccountService.js';
+import { listAvailableProducts, listUserProductAccounts, provisionProductAccount, listAllProductAccounts, assignVertical, getControlPlaneStats, getAiUsageOverview } from '../services/productAccountService.js';
 import {
   registerTrial,
   TrialAlreadyUsedOnboardingError,
@@ -88,6 +88,10 @@ router.get('/developer/control-plane-stats', requireAuth, requireDeveloper, asyn
  */
 router.get('/developer/system-health', requireAuth, requireDeveloper, async (_req, res) => {
   return res.status(200).json(await getSystemHealth());
+});
+
+router.get('/developer/ai-usage', requireAuth, requireDeveloper, async (_req, res) => {
+  return res.status(200).json(await getAiUsageOverview());
 });
 
 export { router as productAccountRouter };

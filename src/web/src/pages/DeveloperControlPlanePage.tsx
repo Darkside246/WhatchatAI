@@ -3,7 +3,7 @@ import type { LucideProps } from 'lucide-react';
 import {
   Activity, Bot, CreditCard, Database, Gauge, KeyRound, Radio, ShieldCheck, Users,
   Building2, CookingPot, ShoppingBag, Scissors, Car, Stethoscope, Scale, Hotel,
-  HardHat, Package, ChevronDown, ChevronRight, LayoutGrid, Check, HeartPulse, X,
+  HardHat, Package, ChevronDown, ChevronRight, LayoutGrid, Check, HeartPulse, X, Coins,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 
@@ -22,6 +22,7 @@ interface PlatformStats {
 }
 
 type SystemHealth = Awaited<ReturnType<typeof api.getSystemHealth>>;
+type AiUsageOverview = Awaited<ReturnType<typeof api.getAiUsageOverview>>;
 
 // ── Static data ────────────────────────────────────────────────────────────
 
@@ -158,6 +159,44 @@ function SystemHealthSection({ health }: { health: SystemHealth | null }) {
   );
 }
 
+/**
+ * Real Gemini token counts (ai_usage_events, migration 954) - deliberately
+ * no dollar figure, since this codebase has no verified current Gemini
+ * pricing table to compute one honestly. Tokens are the real number;
+ * a $ estimate can be layered on once real pricing is confirmed.
+ */
+function AiUsageSection({ usage }: { usage: AiUsageOverview | null }) {
+  if (!usage) return <p className="text-caption text-fg-muted">Loading…</p>;
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-xl bg-surface-2 p-4">
+          <span className="block text-2xl font-semibold tabular-nums text-fg">{usage.last24h.totalTokens.toLocaleString()}</span>
+          <span className="mt-1 block text-caption text-fg-secondary">Tokens, last 24h ({usage.last24h.callCount.toLocaleString()} calls)</span>
+        </div>
+        <div className="rounded-xl bg-surface-2 p-4">
+          <span className="block text-2xl font-semibold tabular-nums text-fg">{usage.last7d.totalTokens.toLocaleString()}</span>
+          <span className="mt-1 block text-caption text-fg-secondary">Tokens, last 7 days ({usage.last7d.callCount.toLocaleString()} calls)</span>
+        </div>
+      </div>
+      {usage.topBusinessesLast24h.length > 0 && (
+        <div>
+          <p className="mb-2 text-caption font-medium text-fg-secondary">Top businesses by usage (24h)</p>
+          <div className="space-y-1.5">
+            {usage.topBusinessesLast24h.map((b) => (
+              <div key={b.businessId} className="flex items-center justify-between rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-caption">
+                <span className="truncate text-fg">{b.businessName}</span>
+                <span className="shrink-0 tabular-nums text-fg-secondary">{b.totalTokens.toLocaleString()} tokens · {b.callCount} calls</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {usage.last24h.callCount === 0 && <p className="text-caption text-fg-muted">No AI usage recorded yet in this window.</p>}
+    </div>
+  );
+}
+
 function AccountRow({
   account, verticals, onAssign,
 }: {
@@ -210,15 +249,18 @@ function AccountRow({
 export function DeveloperControlPlanePage() {
   const [stats, setStats] = useState<PlatformStats | null>(null);
   const [health, setHealth] = useState<SystemHealth | null>(null);
+  const [aiUsage, setAiUsage] = useState<AiUsageOverview | null>(null);
   const [verticals, setVerticals] = useState<Vertical[]>([]);
   const [accounts, setAccounts] = useState<ProductAccount[]>([]);
   const [catalogOpen, setCatalogOpen] = useState(true);
   const [accountsOpen, setAccountsOpen] = useState(true);
   const [healthOpen, setHealthOpen] = useState(true);
+  const [aiUsageOpen, setAiUsageOpen] = useState(true);
 
   useEffect(() => {
     api.getControlPlaneStats().then((r) => setStats(r.stats)).catch(() => undefined);
     api.getSystemHealth().then(setHealth).catch(() => undefined);
+    api.getAiUsageOverview().then(setAiUsage).catch(() => undefined);
     api.listVerticals().then((r) => setVerticals(r.verticals)).catch(() => undefined);
     api.listAllProductAccountsDev().then((r) => setAccounts(r.accounts)).catch(() => undefined);
   }, []);
@@ -277,6 +319,29 @@ export function DeveloperControlPlanePage() {
           {healthOpen && (
             <div className="border-t border-border-subtle px-6 pb-6 pt-4">
               <SystemHealthSection health={health} />
+            </div>
+          )}
+        </section>
+
+        {/* ── AI usage — collapsible hamburger group ── */}
+        <section className="rounded-2xl border border-border-subtle bg-surface-1 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setAiUsageOpen((o) => !o)}
+            className="flex w-full items-center gap-3 px-6 py-4 text-left hover:bg-surface-2 transition-colors"
+          >
+            <Coins size={18} className="shrink-0 text-accent" />
+            <span className="flex-1 text-title font-semibold">AI Usage</span>
+            <span className="text-caption text-fg-muted">
+              {aiUsage ? `${aiUsage.last24h.totalTokens.toLocaleString()} tokens (24h)` : 'Loading…'}
+            </span>
+            {aiUsageOpen
+              ? <ChevronDown size={16} className="shrink-0 text-fg-muted" />
+              : <ChevronRight size={16} className="shrink-0 text-fg-muted" />}
+          </button>
+          {aiUsageOpen && (
+            <div className="border-t border-border-subtle px-6 pb-6 pt-4">
+              <AiUsageSection usage={aiUsage} />
             </div>
           )}
         </section>

@@ -1375,6 +1375,12 @@ export const api = {
       goose: { configured: boolean; reachable: boolean; reason?: string; lastSuccessAt: string | null; lastFailureAt: string | null; lastFailureReason: string | null; consecutiveFailureCount: number };
       ai: { configured: boolean; model: string };
     }>('/platform/developer/system-health'),
+  getAiUsageOverview: () =>
+    request<{
+      last24h: { totalTokens: number; callCount: number };
+      last7d: { totalTokens: number; callCount: number };
+      topBusinessesLast24h: Array<{ businessId: string; businessName: string; totalTokens: number; callCount: number }>;
+    }>('/platform/developer/ai-usage'),
 
   // ── Operator Mode ──────────────────────────────────────────────────────────
   getOperatorSettings: () =>

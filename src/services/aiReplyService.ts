@@ -26,6 +26,7 @@ import { PropertyOperationsRepository } from '../repositories/propertyOperations
 import { getGeminiCircuitBreaker, getGeminiConfigCircuitBreaker } from './aiCircuitBreaker.js';
 import { guardToolInvocation } from './ai/agentGuard.js';
 import { getToolPolicy } from './ai/aiToolPolicy.js';
+import { AiUsageRepository, type AiUsageCallKind } from '../repositories/aiUsageRepository.js';
 import { mediaFallbackText, type InlineMediaPart } from './ai/mediaContext.js';
 import { classifyAiError } from './ai/aiErrorClassification.js';
 import { notifyBusiness } from './notificationService.js';
@@ -35,6 +36,40 @@ const googleMeetingRepository = new GoogleMeetingRepository(pool);
 const zoomMeetingRepository = new ZoomMeetingRepository(pool);
 const scheduledMeetingsRepository = new ScheduledMeetingsRepository(pool);
 const propertyOperationsRepository = new PropertyOperationsRepository(pool);
+const aiUsageRepository = new AiUsageRepository(pool);
+
+/**
+ * Real token counts straight from Gemini's own response - never estimated
+ * or fabricated. Awaited (not fire-and-forget) at each call site so the
+ * write reliably completes before the reply flow continues, the same
+ * await-but-never-throw pattern guardToolInvocation's own audit writes
+ * use - but its own failure must never be the reason an otherwise-
+ * successful reply fails to reach the customer, so it never throws.
+ */
+async function recordAiUsage(
+  model: string,
+  callKind: AiUsageCallKind,
+  response: GenerateContentResponse,
+  agent: AiAgentRecord,
+  context: AiHandoffContext,
+): Promise<void> {
+  const usage = response.usageMetadata;
+  if (!usage) return;
+  await aiUsageRepository
+    .record({
+      businessId: context.businessId,
+      agentId: agent.id,
+      chatId: context.chatId,
+      model,
+      callKind,
+      promptTokens: usage.promptTokenCount ?? 0,
+      candidatesTokens: usage.candidatesTokenCount ?? 0,
+      totalTokens: usage.totalTokenCount ?? 0,
+    })
+    .catch((error) => {
+      console.error('[aiReplyService] Failed to record AI usage telemetry:', error instanceof Error ? error.message : error);
+    });
+}
 
 export type AiReplyResult =
   | { status: 'generated'; text: string }
@@ -739,11 +774,13 @@ async function resolveToolCalls(
   );
   followUpContents.push({ role: 'user', parts: responseParts });
 
-  return genAi.models.generateContent({
+  const followUpResponse = await genAi.models.generateContent({
     model,
     contents: followUpContents,
     config: { systemInstruction, temperature: 0.6, thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 1024 },
   });
+  await recordAiUsage(model, 'tool_follow_up', followUpResponse, agent, context);
+  return followUpResponse;
 }
 
 export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffContext): Promise<AiReplyResult> {
@@ -799,6 +836,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
           tools: buildReplyTools(context.connectedMeetingProviders ?? [], agent, context.aiActionsPaused ?? false, context.hasPropertyData ?? false),
         },
       });
+      await recordAiUsage(model, 'primary', response, agent, context);
     } catch (configError) {
       // A generic 400 from the provider gives no field-level detail, and
       // real evidence (via the "Test Gemini connection" diagnostic) showed
@@ -816,6 +854,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
         contents,
         config: { systemInstruction, maxOutputTokens: 1024 },
       });
+      await recordAiUsage(model, 'bare_retry', response, agent, context);
     }
 
     if (toolsEnabled) {

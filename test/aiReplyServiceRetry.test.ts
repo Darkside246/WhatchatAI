@@ -16,7 +16,9 @@ import { getGeminiCircuitBreaker, resetAllGeminiCircuitBreakers } from '../src/s
 import { register } from '../src/services/authService.js';
 import { aiGateway } from '../src/services/ai/aiGateway.js';
 import { PropertyOperationsRepository } from '../src/repositories/propertyOperationsRepository.js';
-import { resetDatabase } from './helpers.js';
+import { AiUsageRepository } from '../src/repositories/aiUsageRepository.js';
+import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
+import { createTestAccount, resetDatabase } from './helpers.js';
 
 async function createTestProperty(businessId: string, name: string): Promise<string> {
   const property = await new PropertyOperationsRepository(pool).createProperty({
@@ -510,6 +512,41 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
     expect(response?.openIncidents).toHaveLength(1);
     expect(response?.openIncidents[0]?.title).toBe('Leaking pipe');
     expect(response?.openIncidents[0]?.workOrders).toEqual([{ status: 'SCHEDULED', priority: 'PRIORITY', scheduledFor: null }]);
+  });
+
+  it('records real AI usage telemetry from Gemini\'s own usageMetadata on a successful reply', async () => {
+    // ai_usage_events.chat_id has a real FK to whatsapp_chats - a real row
+    // is needed here (unlike most tests in this file, whose fake "chat-1"
+    // string never touches a DB-enforced foreign key).
+    const accountId = await createTestAccount(realBusinessId);
+    const chat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId: realBusinessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550009999@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+
+    generateContentMock.mockResolvedValueOnce({
+      text: 'Hello there.',
+      usageMetadata: { promptTokenCount: 120, candidatesTokenCount: 30, totalTokenCount: 150 },
+    });
+
+    await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), fakeContext({ businessId: realBusinessId, chatId: chat.id }));
+
+    const total = await new AiUsageRepository(pool).getPlatformTotal(24);
+    expect(total.totalTokens).toBe(150);
+    expect(total.callCount).toBe(1);
+  });
+
+  it('never records usage telemetry when the response carries no usageMetadata (e.g. a mocked test response) - no fabricated numbers', async () => {
+    generateContentMock.mockResolvedValueOnce({ text: 'Hello there.' });
+
+    await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), fakeContext({ businessId: realBusinessId }));
+
+    const total = await new AiUsageRepository(pool).getPlatformTotal(24);
+    expect(total.totalTokens).toBe(0);
+    expect(total.callCount).toBe(0);
   });
 });
 

@@ -2,8 +2,11 @@ import { pool } from '../db/pool.js';
 import { ProductAccountRepository } from '../repositories/productAccountRepository.js';
 import { BusinessMembershipRepository } from '../repositories/businessMembershipRepository.js';
 import { TrialRepository } from '../repositories/trialRepository.js';
+import { AiUsageRepository, type AiUsageBusinessSummary } from '../repositories/aiUsageRepository.js';
 import { deriveTrialState } from './trialPolicy.js';
 import type { ProductKey, ProductAccountAccess } from '../domain/platform/productAccounts.js';
+
+const aiUsageRepository = new AiUsageRepository(pool);
 
 const productAccounts = new ProductAccountRepository(pool);
 const memberships = new BusinessMembershipRepository(pool);
@@ -170,6 +173,28 @@ export async function getControlPlaneStats(): Promise<ControlPlaneStats> {
     recentSecurityEvents: Number(row?.recent_security_events ?? 0),
     serverUptimeSeconds: Math.floor(process.uptime()),
   };
+}
+
+export interface AiUsageOverview {
+  last24h: { totalTokens: number; callCount: number };
+  last7d: { totalTokens: number; callCount: number };
+  topBusinessesLast24h: AiUsageBusinessSummary[];
+}
+
+/**
+ * Real Gemini token usage from ai_usage_events (migration 954) - never a
+ * fabricated dollar cost, since this codebase has no verified current
+ * Gemini pricing table to compute one honestly. Token counts alone are
+ * still the real, load-bearing signal for "which business/period is
+ * driving AI cost."
+ */
+export async function getAiUsageOverview(): Promise<AiUsageOverview> {
+  const [last24h, last7d, topBusinessesLast24h] = await Promise.all([
+    aiUsageRepository.getPlatformTotal(24),
+    aiUsageRepository.getPlatformTotal(24 * 7),
+    aiUsageRepository.getTopBusinessesByUsage(24),
+  ]);
+  return { last24h, last7d, topBusinessesLast24h };
 }
 
 /** Returns the product_key currently assigned to a business, or null if none. */
