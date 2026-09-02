@@ -103,6 +103,7 @@ export class WhatsAppSyncService {
         phoneNumber,
         displayName: contact.name ?? null,
         pushName: contact.notify ?? null,
+        username: contact.username ?? null,
         verifiedName: contact.verifiedName ?? null,
       });
 

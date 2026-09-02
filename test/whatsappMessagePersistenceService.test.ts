@@ -217,6 +217,74 @@ describe('WhatsAppMessagePersistenceService', () => {
     expect(rows[0]!.count).toBe('1');
   });
 
+  it('resolves a real contact for the actual group participant who sent the message, not the group itself', async () => {
+    const result = await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({
+        messageId: 'WA-GROUP-SENDER-1',
+        remoteJid: '111222333-4444@g.us',
+        jidKind: 'group',
+        phoneNumber: null,
+        participant: '15559990001@s.whatsapp.net',
+        pushName: 'Jordan',
+      }),
+    });
+
+    expect(result.message.senderContactId).not.toBeNull();
+
+    const { rows: senderContactRows } = await pool.query(
+      'SELECT * FROM whatsapp_contacts WHERE whatsapp_jid = $1',
+      ['15559990001@s.whatsapp.net'],
+    );
+    expect(senderContactRows).toHaveLength(1);
+    expect(senderContactRows[0].id).toBe(result.message.senderContactId);
+    expect(senderContactRows[0].push_name).toBe('Jordan');
+
+    // The group CHAT's own contact_id must stay null - it is a DM-only
+    // concept, and must never be silently overwritten by whichever
+    // participant happened to send the most recent group message.
+    const chat = await new WhatsAppChatRepository(pool).findById(result.chat.id);
+    expect(chat?.contactId).toBeNull();
+  });
+
+  it('reuses the same contact row for a second message from the same group participant, updating pushName rather than duplicating', async () => {
+    const first = await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({
+        messageId: 'WA-GROUP-SENDER-2A',
+        remoteJid: '111222333-4444@g.us',
+        jidKind: 'group',
+        phoneNumber: null,
+        participant: '15559990002@s.whatsapp.net',
+        pushName: 'Old Name',
+      }),
+    });
+
+    const second = await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({
+        messageId: 'WA-GROUP-SENDER-2B',
+        remoteJid: '111222333-4444@g.us',
+        jidKind: 'group',
+        phoneNumber: null,
+        participant: '15559990002@s.whatsapp.net',
+        pushName: 'New Name',
+      }),
+    });
+
+    expect(second.message.senderContactId).toBe(first.message.senderContactId);
+
+    const { rows } = await pool.query('SELECT * FROM whatsapp_contacts WHERE whatsapp_jid = $1', ['15559990002@s.whatsapp.net']);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].push_name).toBe('New Name');
+  });
+
   it('never links a group chat to a customer identity - there is no single individual contact to link', async () => {
     await whatsappMessagePersistenceService.persist({
       businessId,

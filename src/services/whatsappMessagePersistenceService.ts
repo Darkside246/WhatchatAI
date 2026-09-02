@@ -211,22 +211,35 @@ export class WhatsAppMessagePersistenceService {
     const chatType = chatTypeFromJidKind(ingested.jidKind);
     let contactId: string | null = null;
 
-    if (chatType === 'individual') {
+    // Resolves a real contact row for whoever actually sent this message -
+    // the chat's own remoteJid for a DM, or the real participant JID for a
+    // group message (previously only the individual/DM branch ran at all,
+    // so senderContactId was silently always null for every group message -
+    // the root cause of group chats never showing who sent what).
+    const senderWhatsappJid = ingested.fromMe ? null : (ingested.participant ?? ingested.remoteJid);
+    if (senderWhatsappJid) {
+      const senderJidKind = chatType === 'individual' ? ingested.jidKind : classifyJid(senderWhatsappJid);
       const contact = await contactRepo.upsertFromWhatsApp({
         businessId,
         whatsappAccountId,
-        whatsappJid: ingested.remoteJid,
-        jidKind: ingested.jidKind,
-        phoneNumber: ingested.phoneNumber,
+        whatsappJid: senderWhatsappJid,
+        jidKind: senderJidKind,
+        phoneNumber: chatType === 'individual' ? ingested.phoneNumber : derivePhoneNumber(senderWhatsappJid, senderJidKind, null),
         pushName: ingested.pushName,
       });
       contactId = contact.id;
-      // Additive: gives this contact a channel-agnostic customer UUID
-      // (Phase 1 of the identity roadmap) without changing anything about
-      // the WhatsApp identity this function already resolves - contactId
-      // above remains the one this function returns and every existing
-      // caller keeps using.
-      await customerIdentityRepo.getOrCreateForWhatsAppContact(businessId, contact.id, contact.displayName ?? contact.pushName ?? null);
+      if (chatType === 'individual') {
+        // Additive: gives this contact a channel-agnostic customer UUID
+        // (Phase 1 of the identity roadmap) without changing anything about
+        // the WhatsApp identity this function already resolves - contactId
+        // above remains the one this function returns and every existing
+        // caller keeps using. Individual-only: a group message's sender
+        // isn't necessarily a customer of this business, just a fellow
+        // group participant - conflating the two would pollute the
+        // customer-identity system with names of people who may never be a
+        // real contact.
+        await customerIdentityRepo.getOrCreateForWhatsAppContact(businessId, contact.id, contact.displayName ?? contact.pushName ?? null);
+      }
     }
 
     const chat = await chatRepo.upsertFromWhatsApp({
@@ -235,7 +248,12 @@ export class WhatsAppMessagePersistenceService {
       chatJid: ingested.remoteJid,
       jidKind: ingested.jidKind,
       chatType,
-      contactId,
+      // The chat's own contact_id is a DM-only concept (the one person on
+      // the other end of that chat) - contactId above is now also resolved
+      // for a group message's individual sender, which must never become
+      // the group CHAT's contact_id (every message would otherwise
+      // overwrite it with whoever sent most recently).
+      contactId: chatType === 'individual' ? contactId : null,
       phoneNumber: ingested.phoneNumber,
     });
 
@@ -243,6 +261,14 @@ export class WhatsAppMessagePersistenceService {
     const recipientJid = ingested.fromMe ? ingested.remoteJid : accountJid;
     const timestamp = ingested.messageTimestamp ?? ingested.ingestedAt;
     const isMedia = MEDIA_CONTENT_TYPES.has(ingested.contentType);
+
+    // Resolves WhatsApp's own reply/quote stanza id to our own row id, only
+    // when we actually persisted the quoted message ourselves - a reply to
+    // something outside our own history (predates this account's sync,
+    // or was later deleted) legitimately resolves to null, not an error.
+    const quotedMessage = ingested.quotedStanzaId
+      ? await messageRepo.findByWhatsAppId(businessId, whatsappAccountId, ingested.quotedStanzaId)
+      : null;
 
     const message = await messageRepo.insert({
       businessId,
@@ -260,7 +286,12 @@ export class WhatsAppMessagePersistenceService {
       fromMe: ingested.fromMe,
       isHistorical: !ingested.isLive,
       hasMedia: isMedia,
-      rawMetadata: { upsertType: ingested.upsertType, jidKind: ingested.jidKind },
+      quotedMessageId: quotedMessage?.id ?? null,
+      rawMetadata: {
+        upsertType: ingested.upsertType,
+        jidKind: ingested.jidKind,
+        ...(ingested.mentionedJids?.length ? { mentionedJids: ingested.mentionedJids } : {}),
+      },
     });
 
     let updatedChat = chat;

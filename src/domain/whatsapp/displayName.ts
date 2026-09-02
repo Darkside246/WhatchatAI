@@ -2,6 +2,8 @@ export interface ContactNameSources {
   verifiedName?: string | null;
   businessName?: string | null;
   displayName?: string | null;
+  /** WhatsApp's own @username feature - a contact's deliberately-chosen handle, more stable than the freely-mutable pushName below. */
+  username?: string | null;
   pushName?: string | null;
   shortName?: string | null;
   phoneNumber?: string | null;
@@ -12,6 +14,7 @@ const NAME_PRIORITY: (keyof ContactNameSources)[] = [
   'verifiedName',
   'businessName',
   'displayName',
+  'username',
   'pushName',
   'shortName',
   'phoneNumber',

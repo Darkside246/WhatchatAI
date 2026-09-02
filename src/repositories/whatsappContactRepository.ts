@@ -11,6 +11,7 @@ export interface WhatsAppContactRecord {
   phoneNumber: string | null;
   displayName: string | null;
   pushName: string | null;
+  username: string | null;
   verifiedName: string | null;
   shortName: string | null;
   businessName: string | null;
@@ -34,6 +35,7 @@ interface ContactRow {
   phone_number: string | null;
   display_name: string | null;
   push_name: string | null;
+  username: string | null;
   verified_name: string | null;
   short_name: string | null;
   business_name: string | null;
@@ -58,6 +60,7 @@ function toRecord(row: ContactRow): WhatsAppContactRecord {
     phoneNumber: row.phone_number,
     displayName: row.display_name,
     pushName: row.push_name,
+    username: row.username,
     verifiedName: row.verified_name,
     shortName: row.short_name,
     businessName: row.business_name,
@@ -81,6 +84,7 @@ export interface UpsertContactInput {
   phoneNumber?: string | null;
   displayName?: string | null;
   pushName?: string | null;
+  username?: string | null;
   verifiedName?: string | null;
   shortName?: string | null;
   businessName?: string | null;
@@ -100,14 +104,15 @@ export class WhatsAppContactRepository {
     const { rows } = await this.db.query<ContactRow>(
       `INSERT INTO whatsapp_contacts
          (business_id, whatsapp_account_id, whatsapp_jid, jid_kind, phone_number,
-          display_name, push_name, verified_name, short_name, business_name,
+          display_name, push_name, username, verified_name, short_name, business_name,
           is_business, is_contact)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        ON CONFLICT (business_id, whatsapp_account_id, whatsapp_jid) WHERE deleted_at IS NULL
        DO UPDATE SET
          phone_number = COALESCE(EXCLUDED.phone_number, whatsapp_contacts.phone_number),
          display_name = COALESCE(EXCLUDED.display_name, whatsapp_contacts.display_name),
          push_name = COALESCE(EXCLUDED.push_name, whatsapp_contacts.push_name),
+         username = COALESCE(EXCLUDED.username, whatsapp_contacts.username),
          verified_name = COALESCE(EXCLUDED.verified_name, whatsapp_contacts.verified_name),
          short_name = COALESCE(EXCLUDED.short_name, whatsapp_contacts.short_name),
          business_name = COALESCE(EXCLUDED.business_name, whatsapp_contacts.business_name),
@@ -123,6 +128,7 @@ export class WhatsAppContactRepository {
         input.phoneNumber ?? null,
         input.displayName ?? null,
         input.pushName ?? null,
+        input.username ?? null,
         input.verifiedName ?? null,
         input.shortName ?? null,
         input.businessName ?? null,
@@ -151,6 +157,12 @@ export class WhatsAppContactRepository {
   async findById(id: string): Promise<WhatsAppContactRecord | null> {
     const { rows } = await this.db.query<ContactRow>('SELECT * FROM whatsapp_contacts WHERE id = $1', [id]);
     return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  async findByIds(ids: string[]): Promise<WhatsAppContactRecord[]> {
+    if (ids.length === 0) return [];
+    const { rows } = await this.db.query<ContactRow>('SELECT * FROM whatsapp_contacts WHERE id = ANY($1)', [ids]);
+    return rows.map(toRecord);
   }
 
   /** Reconciliation read: @lid contacts with no phone number yet - real candidates for repair once a jid_mapping exists. */

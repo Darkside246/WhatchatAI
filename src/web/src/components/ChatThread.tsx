@@ -778,7 +778,7 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
     return (
       <div className="flex h-full flex-1 flex-col items-center justify-center gap-2 text-fg-muted">
         <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent-soft text-display font-bold text-accent">
-          W
+          A
         </div>
         <p className="text-body">Select a chat to view messages</p>
       </div>
@@ -945,6 +945,9 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
                 </>
               )}
 
+              {!message.fromMe && detail?.chat.chatType === 'group' && message.senderName && (
+                <p className="mb-0.5 truncate text-meta font-semibold text-accent">{message.senderName}</p>
+              )}
               {message.hasMedia && message.media ? (
                 <div className="space-y-1">
                   <MediaContent
