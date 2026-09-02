@@ -31,6 +31,7 @@ import { BusinessMembershipRepository } from '../repositories/businessMembership
 import { TeamRepository } from '../repositories/teamRepository.js';
 import { AgentCapacityRepository } from '../repositories/agentCapacityRepository.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
+import { PlatformActionRepository } from '../repositories/platformActionRepository.js';
 import type {
   CallStatus,
   CallType,
@@ -310,6 +311,18 @@ export interface CreateAgentInput {
   sourceTemplateVersion?: number | null | undefined;
 }
 
+export interface ApprovalPatternSuggestion {
+  agentId: string;
+  agentName: string;
+  approvedStreak: number;
+}
+
+const DEFAULT_APPROVAL_PATTERN_THRESHOLD = 10;
+function getApprovalPatternThreshold(): number {
+  const raw = Number(process.env.APPROVAL_PATTERN_THRESHOLD);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_APPROVAL_PATTERN_THRESHOLD;
+}
+
 export class WorkspaceService {
   private readonly accountRepository = new WhatsAppAccountRepository(pool);
   private readonly businessRepository = new BusinessRepository(pool);
@@ -336,6 +349,7 @@ export class WorkspaceService {
   private readonly teamRepository = new TeamRepository(pool);
   private readonly capacityRepository = new AgentCapacityRepository(pool);
   private readonly securityAuditLogRepository = new SecurityAuditLogRepository(pool);
+  private readonly platformActionRepository = new PlatformActionRepository(pool);
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
@@ -941,6 +955,21 @@ export class WorkspaceService {
   }
 
   /**
+   * The narrow action a real approval-pattern suggestion acts on - flips
+   * only requiresApprovalForActions, the same way updateAgentStatus above
+   * flips only status, without requiring the caller to round-trip the
+   * agent's entire configuration through the full edit form.
+   */
+  async updateAgentRequiresApproval(businessId: string, agentId: string, requiresApprovalForActions: boolean): Promise<AiAgentRecord> {
+    const agent = await this.agentRepository.findByIdForBusiness(agentId, businessId);
+    if (!agent || agent.deletedAt) {
+      throw this.notFound();
+    }
+    await this.agentRepository.updateRequiresApprovalForActions(agentId, requiresApprovalForActions);
+    return { ...agent, requiresApprovalForActions };
+  }
+
+  /**
    * Real aggregate counts over the trailing window, computed straight from
    * the same tables the rest of the workspace reads/writes - never a
    * separately maintained (and driftable) analytics rollup.
@@ -968,6 +997,33 @@ export class WorkspaceService {
    */
   async getOpenCommitments(businessId: string, olderThanHours = 4): Promise<AiCommitmentRecord[]> {
     return this.commitmentRepository.listOpen(businessId, olderThanHours);
+  }
+
+  /**
+   * Real "you've approved this N times, want it automatic?" detection -
+   * built on the real approval history platform_action_requests/
+   * platform_approvals already records (see ApprovalService), not a
+   * fabricated confidence score. Only considers agents that currently
+   * require approval (requiresApprovalForActions) and have at least
+   * `threshold` real, decided approvals on file - fewer than that is
+   * never enough to call it a pattern. A single REJECTED anywhere in the
+   * most recent `threshold` decisions breaks the streak entirely: this
+   * is a strict "every single one so far" signal, not an average.
+   */
+  async getApprovalPatternSuggestions(businessId: string): Promise<ApprovalPatternSuggestion[]> {
+    const threshold = getApprovalPatternThreshold();
+    const agents = (await this.agentRepository.listByBusiness(businessId)).filter((agent) => agent.requiresApprovalForActions);
+
+    const suggestions = await Promise.all(
+      agents.map(async (agent): Promise<ApprovalPatternSuggestion | null> => {
+        const decisions = await this.platformActionRepository.getRecentDecisionsForAgent(businessId, agent.id, threshold);
+        if (decisions.length < threshold) return null;
+        const allApproved = decisions.every((decision) => decision.status === 'APPROVED');
+        if (!allApproved) return null;
+        return { agentId: agent.id, agentName: agent.name, approvedStreak: decisions.length };
+      }),
+    );
+    return suggestions.filter((suggestion): suggestion is ApprovalPatternSuggestion => suggestion !== null);
   }
 
   async getBusinessProfile(businessId: string): Promise<BusinessRecord> {

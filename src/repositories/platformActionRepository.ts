@@ -97,6 +97,28 @@ export class PlatformActionRepository {
     return rows;
   }
 
+  /**
+   * The most recent real, decided (APPROVED/REJECTED) approvals a given
+   * agent's own action requests received, most-recent-first - the raw
+   * material "learning from approval patterns" is built on. Capped at
+   * `limit` so a fluke of 2-3 approvals never looks like a pattern; the
+   * caller decides how many real decisions must exist before it counts.
+   */
+  async getRecentDecisionsForAgent(businessId: string, agentId: string, limit: number): Promise<{ status: 'APPROVED' | 'REJECTED'; decidedAt: Date }[]> {
+    const { rows } = await this.db.query<{ status: 'APPROVED' | 'REJECTED'; decidedAt: Date }>(
+      `SELECT pap.status, pap.decided_at AS "decidedAt"
+         FROM platform_approvals pap
+         JOIN platform_action_requests par ON par.id = pap.action_request_id AND par.business_id = pap.business_id
+        WHERE pap.business_id = $1
+          AND par.requested_by_kind = 'AGENT' AND par.requested_by_id = $2
+          AND pap.status IN ('APPROVED','REJECTED')
+        ORDER BY pap.decided_at DESC
+        LIMIT $3`,
+      [businessId, agentId, limit],
+    );
+    return rows;
+  }
+
   async updateExecution(businessId: string, idempotencyKey: string, status: 'SUCCEEDED' | 'FAILED', result: unknown, error: string | undefined): Promise<void> {
     await this.db.query(
       `UPDATE platform_action_requests SET status = $3, execution_result = $4::jsonb, execution_error = $5 WHERE business_id = $1 AND idempotency_key = $2`,

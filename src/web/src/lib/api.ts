@@ -209,6 +209,13 @@ export interface AiCommitmentRecord {
   createdAt: string;
 }
 
+/** A real "you've approved this N times, want it automatic?" suggestion - only ever surfaced once a real, unbroken streak of approvals meets the threshold, never a fabricated confidence score. */
+export interface ApprovalPatternSuggestion {
+  agentId: string;
+  agentName: string;
+  approvedStreak: number;
+}
+
 export interface WorkspaceBillingEntitlement {
   key: string;
   label: string;
@@ -1071,6 +1078,7 @@ export const api = {
   getPlanCatalogue: () => request<PlanCatalogueDto>('/workspace/billing/plans'),
   getDashboard: () => request<WorkspaceDashboardOverview>('/workspace/dashboard'),
   getOpenCommitments: () => request<{ commitments: AiCommitmentRecord[] }>('/workspace/commitments/open'),
+  getApprovalPatternSuggestions: () => request<{ suggestions: ApprovalPatternSuggestion[] }>('/workspace/agents/approval-suggestions'),
   getBusiness: () => request<{ business: WorkspaceBusiness }>('/workspace/business'),
   updateBusiness: (name: string) =>
     request<{ business: WorkspaceBusiness }>('/workspace/business', { method: 'PATCH', body: JSON.stringify({ name }) }),
@@ -1127,6 +1135,11 @@ export const api = {
     request<ProtectedFactsTestResult>('/workspace/agents/protected-facts/test', {
       method: 'POST',
       body: JSON.stringify({ protectedFacts, sampleReply }),
+    }),
+  updateAgentRequiresApproval: (id: string, requiresApprovalForActions: boolean) =>
+    request<{ agent: AiAgentSummary }>(`/workspace/agents/${id}/requires-approval`, {
+      method: 'PATCH',
+      body: JSON.stringify({ requiresApprovalForActions }),
     }),
   updateAgentStatus: (id: string, status: AiAgentSummary['status']) =>
     request<{ agent: AiAgentSummary }>(`/workspace/agents/${id}/status`, {

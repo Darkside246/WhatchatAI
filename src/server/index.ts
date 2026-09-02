@@ -2043,6 +2043,12 @@ app.get('/api/workspace/commitments/open', requireWorkspaceContext, async (_req,
   return res.status(200).json({ commitments });
 });
 
+app.get('/api/workspace/agents/approval-suggestions', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const suggestions = await workspaceService.getApprovalPatternSuggestions(businessId);
+  return res.status(200).json({ suggestions });
+});
+
 app.get('/api/workspace/business', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const business = await workspaceService.getBusinessProfile(businessId);
@@ -2475,6 +2481,24 @@ app.patch('/api/workspace/agents/:agentId/status', requireWorkspaceContext, requ
   }
   try {
     const agent = await workspaceService.updateAgentStatus(businessId, String(req.params.agentId ?? ''), parsed.data.status);
+    return res.status(200).json({ agent });
+  } catch (error) {
+    if (isChatNotFoundError(error)) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });
+    throw error;
+  }
+});
+
+const updateAgentRequiresApprovalSchema = z.object({ requiresApprovalForActions: z.boolean() });
+
+/** The narrow action an approval-pattern suggestion acts on - see updateAgentRequiresApproval's own doc comment. */
+app.patch('/api/workspace/agents/:agentId/requires-approval', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = updateAgentRequiresApprovalSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_REQUIRES_APPROVAL', details: parsed.error.flatten() });
+  }
+  try {
+    const agent = await workspaceService.updateAgentRequiresApproval(businessId, String(req.params.agentId ?? ''), parsed.data.requiresApprovalForActions);
     return res.status(200).json({ agent });
   } catch (error) {
     if (isChatNotFoundError(error)) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });

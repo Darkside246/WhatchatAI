@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Bot, ShieldAlert, Plus, ArrowLeft, Clock, GitBranch, LayoutGrid, Network, Sparkles } from 'lucide-react';
+import { Bot, ShieldAlert, Plus, ArrowLeft, Clock, GitBranch, LayoutGrid, Network, Sparkles, Lightbulb } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -9,6 +9,7 @@ import {
   type AgentCategory,
   type CreateAgentBody,
   type AgentTemplate,
+  type ApprovalPatternSuggestion,
 } from '../lib/api.js';
 import { ToggleSwitch } from '../components/ToggleSwitch.js';
 import { AgentCanvas } from '../components/AgentCanvas.js';
@@ -581,6 +582,8 @@ function AgentEditor({
 export function AgentsPage() {
   const [agents, setAgents] = useState<AiAgentSummary[] | null>(null);
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
+  const [approvalSuggestions, setApprovalSuggestions] = useState<ApprovalPatternSuggestion[]>([]);
+  const [dismissingApprovalFor, setDismissingApprovalFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<{ mode: 'list' } | { mode: 'wizard' } | { mode: 'new' } | { mode: 'edit'; agentId: string }>({ mode: 'list' });
   const [form, setForm] = useState<AgentForm>(EMPTY_FORM);
@@ -600,6 +603,24 @@ export function AgentsPage() {
   useEffect(() => {
     api.listAgentTemplates().then((res) => setTemplates(res.templates)).catch(() => setTemplates([]));
   }, []);
+
+  function loadApprovalSuggestions() {
+    api.getApprovalPatternSuggestions().then((res) => setApprovalSuggestions(res.suggestions)).catch(() => setApprovalSuggestions([]));
+  }
+  useEffect(loadApprovalSuggestions, []);
+
+  async function handleDismissApprovalRequirement(suggestion: ApprovalPatternSuggestion) {
+    setDismissingApprovalFor(suggestion.agentId);
+    try {
+      await api.updateAgentRequiresApproval(suggestion.agentId, false);
+      setApprovalSuggestions((current) => current.filter((s) => s.agentId !== suggestion.agentId));
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not update that agent.');
+    } finally {
+      setDismissingApprovalFor(null);
+    }
+  }
 
   async function handleToggleStatus(agent: AiAgentSummary) {
     const nextStatus = agent.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
@@ -772,6 +793,26 @@ export function AgentsPage() {
             </p>
           </div>
         )}
+
+        {approvalSuggestions.map((suggestion) => (
+          <div key={suggestion.agentId} className="mt-4 flex items-start gap-2.5 rounded-lg border border-accent/40 bg-accent-soft p-3">
+            <Lightbulb size={16} className="mt-0.5 shrink-0 text-accent" aria-hidden />
+            <div className="flex flex-1 flex-wrap items-center justify-between gap-2">
+              <p className="text-caption text-fg-secondary">
+                <span className="font-semibold text-fg">{suggestion.agentName}</span> has had its last {suggestion.approvedStreak} action
+                requests approved, with none rejected. Turn off approval so it can act on its own from now on?
+              </p>
+              <button
+                type="button"
+                onClick={() => handleDismissApprovalRequirement(suggestion)}
+                disabled={dismissingApprovalFor === suggestion.agentId}
+                className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+              >
+                {dismissingApprovalFor === suggestion.agentId ? 'Updating…' : 'Turn off approval'}
+              </button>
+            </div>
+          </div>
+        ))}
 
         {error && <p className="mt-4 text-caption text-error">{error}</p>}
 

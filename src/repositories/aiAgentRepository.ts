@@ -351,4 +351,8 @@ export class AiAgentRepository {
   async updateStatus(id: string, status: AgentStatus): Promise<void> {
     await this.db.query('UPDATE ai_agents SET status = $2, updated_at = now() WHERE id = $1', [id, status]);
   }
+
+  async updateRequiresApprovalForActions(id: string, requiresApprovalForActions: boolean): Promise<void> {
+    await this.db.query('UPDATE ai_agents SET requires_approval_for_actions = $2, updated_at = now() WHERE id = $1', [id, requiresApprovalForActions]);
+  }
 }
