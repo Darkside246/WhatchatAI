@@ -110,7 +110,17 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 64
-    mem_limit: 256m
+    # 128m, not 256m: on this Droplet (2 GB RAM + 2 GB swap), the five
+    # services' mem_limits summed to exactly 2048m before this trim - 100%
+    # of physical RAM with nothing left for the OS/Docker daemon even
+    # before counting real tenant-connection growth. pg_dump streams rows
+    # rather than loading the whole database into memory, and gzip's
+    # buffer is small, so 128m stays comfortable for the data volume this
+    # deployment actually has today. Re-check as real tenant data grows -
+    # this is a stopgap, not a substitute for the real fix (a bigger
+    # Droplet, sized from measured per-tenant connection memory, before
+    # onboarding anywhere near 100 real tenants).
+    mem_limit: 128m
     cpus: 0.5
     networks:
       - whatchatai-net

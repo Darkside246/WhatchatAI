@@ -188,6 +188,37 @@ unconditionally `IMPLEMENTED AND VERIFIED`, not pending anything.
   itself was confirmed) - worth a real end-to-end message test as a
   follow-up, not required to call container *infrastructure* verified.
 
+## Capacity (single Droplet: 2 GB RAM + 2 GB swap, 60 GB disk, confirmed by the operator)
+
+`whatsappConnectionManager.ts` keeps every tenant's Baileys WhatsApp
+connection in **one process** (`app-server`), in a single
+`Map<businessId, connection>` - there is no per-tenant process isolation.
+That process is capped at `mem_limit: 512m`.
+
+Real math on the declared container limits, before this note's trim:
+app-server 512m + app-worker 512m + postgres 512m + redis 256m +
+postgres-backup 256m = **2048m - exactly 100% of this Droplet's physical
+RAM**, before counting OS/Docker-daemon overhead or any real tenant
+connections. Trimmed `postgres-backup` to 128m (see its own comment in
+docker-compose.yml) as an immediate stopgap, freeing 128m back - still
+tight, not a fix.
+
+The 2 GB swap file means a memory spike degrades into swapping rather than
+an instant OOM-kill, but for a real-time messaging platform, a WhatsApp
+connection whose state gets swapped to disk means real message delay for
+that tenant - not meaningfully better than downtime from that tenant's
+point of view.
+
+**No verified per-tenant memory measurement exists for this codebase.**
+General experience with Signal-protocol WhatsApp-Web session state (auth
+keys, contact/chat caches) suggests tens of MB per active connection once
+warmed up, but that is an unverified estimate, not a number to size a
+production launch around. **Before onboarding anywhere near 100 real
+tenants**: stage the rollout, watch real `docker stats` memory growth on
+`app-server` as real tenants connect, and upgrade the Droplet based on that
+measured curve rather than a guess. This phase deliberately does not pick
+that number.
+
 ## Backups
 
 Added ahead of the first real 100-tenant cohort - before this, `postgres-data`
