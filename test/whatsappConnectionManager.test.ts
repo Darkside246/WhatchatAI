@@ -21,6 +21,9 @@ const DISCONNECTED_SNAPSHOT: WhatsAppConnectionSnapshot = {
   reconnectAttempt: 0,
   qrGeneratedAt: null,
   avatarMediaId: null,
+  pairingCode: null,
+  pairingCodeGeneratedAt: null,
+  pairingPhoneNumber: null,
 };
 
 /** A minimal fake tenant, standing in for a real WhatsAppTenantConnection so these tests never open a real Baileys socket. */
@@ -50,6 +53,10 @@ function makeFakeTenant(businessId: string, overrides: Partial<WhatsAppTenantCon
     logout: vi.fn(async () => {
       ready = false;
       snapshot = { ...snapshot, status: 'LOGGED_OUT', connected: false };
+    }),
+    requestPhonePairingCode: vi.fn(async () => {
+      snapshot = { ...snapshot, status: 'PAIRING_CODE_READY', pairingCode: 'ABCD1234' };
+      return 'ABCD1234';
     }),
     ...overrides,
   };
@@ -188,6 +195,15 @@ describe('WhatsAppConnectionManager (bookkeeping, via a fake tenant factory)', (
       const tenant2Snapshot = manager.getPersistedContext('biz-2');
       expect(tenant1Snapshot?.businessId).toBe('biz-1');
       expect(tenant2Snapshot?.businessId).toBe('biz-2');
+    });
+
+    it('requestPhonePairingCode creates a tenant on first use (like connect) and routes to the correct instance only', async () => {
+      const manager = makeManager(makeFakeTenant);
+
+      const code = await manager.requestPhonePairingCode('biz-1', '+14155552671');
+      expect(code).toBe('ABCD1234');
+      expect(manager.getSnapshot('biz-1').status).toBe('PAIRING_CODE_READY');
+      expect(manager.getSnapshot('biz-2')).toEqual(DISCONNECTED_SNAPSHOT); // untouched
     });
   });
 });

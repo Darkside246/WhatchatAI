@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { Loader2, RefreshCw, ShieldCheck, Smartphone, AlertTriangle, Check, Eye } from 'lucide-react';
-import { api, type WhatsAppConnectionSnapshot } from '../lib/api.js';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { Loader2, RefreshCw, ShieldCheck, Smartphone, AlertTriangle, Check, Eye, QrCode, Phone } from 'lucide-react';
+import { api, ApiError, type WhatsAppConnectionSnapshot } from '../lib/api.js';
 
 interface Props {
   connection: WhatsAppConnectionSnapshot | null;
@@ -20,6 +20,7 @@ const STATUS_COPY: Record<Status, { title: string; detail: string }> = {
   DISCONNECTED: { title: 'Starting up', detail: 'Asking WhatsApp for a pairing code…' },
   CONNECTING: { title: 'Starting up', detail: 'Asking WhatsApp for a pairing code…' },
   QR_READY: { title: 'Scan to link', detail: 'Open WhatsApp on the phone that owns this number.' },
+  PAIRING_CODE_READY: { title: 'Enter this code', detail: 'Open WhatsApp on the phone that owns this number.' },
   CONNECTED: { title: 'Linked', detail: 'Your WhatsApp account is connected.' },
   RECONNECTING: { title: 'Reconnecting', detail: 'The link dropped. Trying to restore it…' },
   LOGGED_OUT: { title: 'Session ended', detail: 'This device was unlinked. Generate a new code to link again.' },
@@ -161,12 +162,126 @@ function QrPanel({
   );
 }
 
+/**
+ * WhatsApp Web's own second linking method - enter a phone number, type
+ * the resulting code into WhatsApp instead of scanning. Baileys never
+ * auto-rotates this code the way it rotates a QR, so there's no
+ * "generate a new code" gate behind a failure state here - the button is
+ * always available, matching how the code can go silently stale with no
+ * status change telling the UI.
+ */
+function PhonePairingPanel({
+  connection,
+  onSubmit,
+  submitting,
+  submitError,
+}: {
+  connection: WhatsAppConnectionSnapshot | null;
+  onSubmit: (phoneNumber: string) => void;
+  submitting: boolean;
+  submitError: string | null;
+}) {
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const status: Status = connection?.status ?? 'CONNECTING';
+  const pairingCode = connection?.pairingCode ?? null;
+  const copy = STATUS_COPY[status];
+
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const ago = refreshedAgo(connection?.pairingCodeGeneratedAt ?? null, now);
+
+  function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!phoneNumber.trim() || submitting) return;
+    onSubmit(phoneNumber.trim());
+  }
+
+  return (
+    <div className="w-full max-w-sm rounded-2xl border border-border-subtle bg-surface-1 p-6 shadow-xl sm:p-8">
+      {!pairingCode ? (
+        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+          <label className="flex flex-col gap-1 text-body text-fg-secondary">
+            Phone number
+            <input
+              type="tel"
+              required
+              autoFocus
+              placeholder="+1 415 555 2671"
+              value={phoneNumber}
+              onChange={(event) => setPhoneNumber(event.target.value)}
+              className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-body text-fg outline-none focus:border-accent"
+            />
+          </label>
+          <p className="text-meta text-fg-muted">Include your country code - this is the number WhatsApp is already linked to on your phone.</p>
+          {submitError && <p className="text-caption text-error">{submitError}</p>}
+          <button
+            type="submit"
+            disabled={submitting}
+            className="control-lg mt-2 w-full justify-center bg-accent font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+          >
+            {submitting ? <Loader2 size={15} className="animate-spin" aria-hidden /> : <Phone size={15} aria-hidden />}
+            {submitting ? 'Requesting a code…' : 'Get a pairing code'}
+          </button>
+        </form>
+      ) : (
+        <div className="text-center">
+          <p className="font-mono text-display font-semibold tracking-[0.15em] text-fg">
+            {pairingCode.slice(0, 4)}-{pairingCode.slice(4)}
+          </p>
+          <p className="mt-3 text-body font-semibold text-fg">{copy.title}</p>
+          <p className="mt-1 text-caption text-fg-secondary">Enter this code in WhatsApp on {connection?.pairingPhoneNumber ?? 'your phone'}.</p>
+          {ago && (
+            <p className="mt-2 flex items-center justify-center gap-1.5 text-meta text-fg-muted">
+              <RefreshCw size={11} aria-hidden />
+              Code {ago} — request a new one if it stops working.
+            </p>
+          )}
+          {submitError && <p className="mt-2 text-caption text-error">{submitError}</p>}
+          <button
+            type="button"
+            onClick={() => onSubmit(connection?.pairingPhoneNumber ?? phoneNumber)}
+            disabled={submitting}
+            className="control-lg mt-5 w-full justify-center bg-accent font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+          >
+            {submitting ? <Loader2 size={15} className="animate-spin" aria-hidden /> : <RefreshCw size={15} aria-hidden />}
+            {submitting ? 'Requesting…' : 'Request a new code'}
+          </button>
+        </div>
+      )}
+
+      <ol className="mt-6 space-y-3 border-t border-border-subtle pt-5">
+        {[
+          'Open WhatsApp on your phone.',
+          'Tap Settings, then Linked devices.',
+          'Tap Link a device, then Link with phone number instead.',
+          'Enter the code shown here.',
+        ].map((step, index) => (
+          <li key={step} className="flex gap-3 text-caption text-fg-secondary">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-surface-3 text-meta font-semibold text-fg-secondary">
+              {index + 1}
+            </span>
+            <span className="min-w-0-safe">{step}</span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 export function OnboardingPage({ connection, serverUnreachable = false }: Props) {
   const triggered = useRef(false);
   const [retrying, setRetrying] = useState(false);
+  const [pairMethod, setPairMethod] = useState<'qr' | 'phone'>('qr');
+  const [phoneSubmitting, setPhoneSubmitting] = useState(false);
+  const [phoneSubmitError, setPhoneSubmitError] = useState<string | null>(null);
+  const [switchingMethod, setSwitchingMethod] = useState(false);
 
   useEffect(() => {
     if (!connection) return;
+    if (pairMethod !== 'qr') return;
     if ((connection.status === 'DISCONNECTED' || connection.status === 'LOGGED_OUT') && !triggered.current) {
       triggered.current = true;
       api.connectWhatsApp().catch(() => {
@@ -176,7 +291,7 @@ export function OnboardingPage({ connection, serverUnreachable = false }: Props)
     if (connection.status === 'QR_READY' || connection.status === 'CONNECTING') {
       triggered.current = true;
     }
-  }, [connection]);
+  }, [connection, pairMethod]);
 
   async function handleRetry() {
     setRetrying(true);
@@ -189,14 +304,48 @@ export function OnboardingPage({ connection, serverUnreachable = false }: Props)
     }
   }
 
+  async function handleRequestPairingCode(phoneNumber: string) {
+    setPhoneSubmitting(true);
+    setPhoneSubmitError(null);
+    try {
+      await api.pairWhatsAppByPhone(phoneNumber);
+    } catch (err) {
+      setPhoneSubmitError(err instanceof ApiError ? err.message : 'Could not request a pairing code. Check the number and try again.');
+    } finally {
+      setPhoneSubmitting(false);
+    }
+  }
+
+  /**
+   * Switching tabs never happens silently against a live phone-pairing
+   * socket: requestPhonePairingCode() tears down a stale QR socket for you
+   * (see the backend), but going the other direction needs an explicit
+   * disconnect+reconnect from here so a chosen-but-unentered phone code
+   * doesn't linger while a fresh QR is generated underneath it.
+   */
+  async function handleSwitchMethod(method: 'qr' | 'phone') {
+    if (method === 'qr' && pairMethod !== 'qr' && (connection?.status === 'PAIRING_CODE_READY' || connection?.pairingCode)) {
+      setSwitchingMethod(true);
+      try {
+        await api.disconnectWhatsApp();
+        triggered.current = false;
+        await api.connectWhatsApp();
+      } finally {
+        setSwitchingMethod(false);
+      }
+    }
+    setPhoneSubmitError(null);
+    setPairMethod(method);
+  }
+
   return (
     <div className="flex min-h-full flex-col bg-surface-0 lg:flex-row">
       <section className="order-2 flex flex-1 flex-col justify-center gap-6 px-6 py-10 sm:px-10 lg:order-1 lg:px-16">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent-soft text-body-lg font-bold text-accent">
-            W
+            A
           </div>
-          <span className="text-title font-semibold tracking-tight text-fg">WhatchatAI</span>
+          <span className="text-title font-semibold tracking-tight text-fg">AURA</span>
         </div>
 
         <h1 className="max-w-md text-display font-semibold leading-tight tracking-tight text-fg sm:text-[2rem]">
@@ -204,7 +353,7 @@ export function OnboardingPage({ connection, serverUnreachable = false }: Props)
         </h1>
 
         <p className="max-w-md text-body leading-relaxed text-fg-secondary">
-          Connect your existing WhatsApp number once. WhatchatAI keeps every real conversation, contact and message in
+          Connect your existing WhatsApp number once. AURA keeps every real conversation, contact and message in
           sync, and gives your team AI agents, a CRM and automation built directly around it — no separate inbox, no
           manual exports.
         </p>
@@ -223,7 +372,7 @@ export function OnboardingPage({ connection, serverUnreachable = false }: Props)
         </ul>
 
         {/*
-          Said plainly, before anyone links anything. WhatchatAI joins as a
+          Said plainly, before anyone links anything. AURA joins as a
           WhatsApp linked device, exactly like WhatsApp Web - which means
           messages arrive here already decrypted and your team can read them.
           Claiming "nobody but you can read this" on this screen would be a
@@ -238,7 +387,7 @@ export function OnboardingPage({ connection, serverUnreachable = false }: Props)
             <li className="flex gap-2">
               <Smartphone size={12} className="mt-0.5 shrink-0 text-fg-muted" aria-hidden />
               <span className="min-w-0-safe">
-                WhatchatAI joins as a linked device, the same way WhatsApp Web does. Your phone stays the main device.
+                AURA joins as a linked device, the same way WhatsApp Web does. Your phone stays the main device.
               </span>
             </li>
             <li className="flex gap-2">
@@ -258,8 +407,42 @@ export function OnboardingPage({ connection, serverUnreachable = false }: Props)
         </div>
       </section>
 
-      <section className="order-1 flex flex-1 items-center justify-center border-b border-border-subtle bg-surface-2 px-6 py-10 sm:px-10 lg:order-2 lg:border-b-0 lg:border-l">
-        <QrPanel connection={connection} serverUnreachable={serverUnreachable} onRetry={() => void handleRetry()} retrying={retrying} />
+      <section className="order-1 flex flex-1 flex-col items-center justify-center gap-4 border-b border-border-subtle bg-surface-2 px-6 py-10 sm:px-10 lg:order-2 lg:border-b-0 lg:border-l">
+        <div className="flex w-full max-w-sm rounded-lg border border-border-subtle bg-surface-1 p-1">
+          <button
+            type="button"
+            onClick={() => void handleSwitchMethod('qr')}
+            disabled={switchingMethod}
+            className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-caption font-medium transition disabled:opacity-50 ${
+              pairMethod === 'qr' ? 'bg-accent text-white' : 'text-fg-secondary hover:bg-surface-2'
+            }`}
+          >
+            <QrCode size={13} aria-hidden />
+            Scan a QR code
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSwitchMethod('phone')}
+            disabled={switchingMethod}
+            className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-caption font-medium transition disabled:opacity-50 ${
+              pairMethod === 'phone' ? 'bg-accent text-white' : 'text-fg-secondary hover:bg-surface-2'
+            }`}
+          >
+            <Phone size={13} aria-hidden />
+            Enter a phone number
+          </button>
+        </div>
+
+        {pairMethod === 'qr' ? (
+          <QrPanel connection={connection} serverUnreachable={serverUnreachable} onRetry={() => void handleRetry()} retrying={retrying} />
+        ) : (
+          <PhonePairingPanel
+            connection={connection}
+            onSubmit={(phone) => void handleRequestPairingCode(phone)}
+            submitting={phoneSubmitting}
+            submitError={phoneSubmitError}
+          />
+        )}
       </section>
     </div>
   );

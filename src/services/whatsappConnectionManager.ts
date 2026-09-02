@@ -27,6 +27,7 @@ export interface WhatsAppTenantConnectionHandle {
   connect(): Promise<WhatsAppConnectionSnapshot>;
   disconnect(): Promise<void>;
   logout(): Promise<void>;
+  requestPhonePairingCode(phoneNumber: string): Promise<string>;
 }
 
 const DEFAULT_SNAPSHOT: WhatsAppConnectionSnapshot = {
@@ -43,6 +44,9 @@ const DEFAULT_SNAPSHOT: WhatsAppConnectionSnapshot = {
   reconnectAttempt: 0,
   qrGeneratedAt: null,
   avatarMediaId: null,
+  pairingCode: null,
+  pairingCodeGeneratedAt: null,
+  pairingPhoneNumber: null,
 };
 
 const EMPTY_INGESTION_STATS: WhatsAppIngestionStats = {
@@ -150,6 +154,11 @@ export class WhatsAppConnectionManager {
   async connect(businessId: string): Promise<WhatsAppConnectionSnapshot> {
     const tenant = this.getOrCreate(businessId);
     return tenant.connect();
+  }
+
+  async requestPhonePairingCode(businessId: string, phoneNumber: string): Promise<string> {
+    const tenant = this.getOrCreate(businessId);
+    return tenant.requestPhonePairingCode(phoneNumber);
   }
 
   async disconnect(businessId: string): Promise<void> {

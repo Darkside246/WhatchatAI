@@ -128,7 +128,10 @@ export function useAppGate(): AppGateState {
   let phase: AppPhase = 'loading';
   if (connection) {
     const needsOnboarding =
-      connection.status === 'QR_READY' || connection.status === 'LOGGED_OUT' || (!connection.connected && !pairedOnce);
+      connection.status === 'QR_READY' ||
+      connection.status === 'PAIRING_CODE_READY' ||
+      connection.status === 'LOGGED_OUT' ||
+      (!connection.connected && !pairedOnce);
 
     if (needsOnboarding) {
       phase = 'onboarding';

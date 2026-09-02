@@ -11,7 +11,7 @@ export interface AuthState {
   /** Only true while no business has any member yet - the one-time first-run signup window. */
   registrationOpen: boolean;
   error: string | null;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string, rememberMe?: boolean) => Promise<void>;
   register: (input: { email: string; password: string; displayName: string }) => Promise<void>;
   /** Real multi-tenant signup (POST /api/trials/register) - creates a genuinely new business, unlike register() above which is the single-install bootstrap path. No local state hand-rolling here: the route already sets a real session cookie, so this just rehydrates user/business/role via the normal refresh(). */
   registerTrial: (input: { name: string; email: string; phone: string; productKey: string }) => Promise<void>;
@@ -56,10 +56,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, [refresh]);
 
-  const login = useCallback(async (email: string, password: string) => {
+  const login = useCallback(async (email: string, password: string, rememberMe = true) => {
     setError(null);
     try {
-      const result = await api.login(email, password);
+      const result = await api.login(email, password, rememberMe);
       setUser(result.user);
       setBusiness(result.business);
       setRole(result.role);

@@ -21,7 +21,7 @@ import {
 
 import { mapBaileysMessageStatus } from '../domain/whatsapp/messageStatus.js';
 import { classifyJid, derivePhoneNumber, stripDeviceSuffix } from '../domain/whatsapp/jid.js';
-import { STATUS_BROADCAST_JID } from '../domain/whatsapp/types.js';
+import { STATUS_BROADCAST_JID, type ConnectionStatus } from '../domain/whatsapp/types.js';
 import { pool } from '../db/pool.js';
 import { syncAccountProfilePicture } from './profilePictureSyncService.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
@@ -34,6 +34,7 @@ export type WhatsAppConnectionStatus =
   | 'DISCONNECTED'
   | 'CONNECTING'
   | 'QR_READY'
+  | 'PAIRING_CODE_READY'
   | 'CONNECTED'
   | 'RECONNECTING'
   | 'LOGGED_OUT'
@@ -62,6 +63,17 @@ export interface WhatsAppConnectionSnapshot {
   qrGeneratedAt: string | null;
   /** This account's own real, downloaded profile picture media row - null until a sync has actually succeeded. */
   avatarMediaId: string | null;
+  /**
+   * The alternative to QR pairing - WhatsApp Web's own "Link with phone
+   * number instead" method (Baileys: sock.requestPairingCode()). Unlike
+   * the QR code, Baileys never auto-rotates this, so pairingCodeGeneratedAt
+   * is a real emission timestamp only, not an expiry - the UI must offer an
+   * explicit "request a new code" action rather than waiting for a status
+   * change that will never come on its own.
+   */
+  pairingCode: string | null;
+  pairingCodeGeneratedAt: string | null;
+  pairingPhoneNumber: string | null;
 }
 
 function sessionRootDir(): string {
@@ -242,6 +254,9 @@ export class WhatsAppTenantConnection {
     reconnectAttempt: 0,
     qrGeneratedAt: null,
     avatarMediaId: null,
+    pairingCode: null,
+    pairingCodeGeneratedAt: null,
+    pairingPhoneNumber: null,
   };
 
   constructor(private readonly businessId: string) {}
@@ -367,7 +382,14 @@ export class WhatsAppTenantConnection {
     return this.sessionDirPromise;
   }
 
-  async connect(): Promise<WhatsAppConnectionSnapshot> {
+  /**
+   * pairingPhoneNumberE164, when given, requests a WhatsApp Web-style
+   * phone-pairing code instead of waiting for a QR scan - see
+   * requestPhonePairingCode() below, the real public entry point for that
+   * flow. This parameter is additive only; every existing QR caller
+   * (connect() with no arguments) is completely unaffected.
+   */
+  async connect(pairingPhoneNumberE164?: string): Promise<WhatsAppConnectionSnapshot> {
     if (this.isReady()) return this.getSnapshot();
 
     if (this.connectInFlight) return this.getSnapshot();
@@ -390,6 +412,9 @@ export class WhatsAppTenantConnection {
         qrDataUrl: null,
         lastError: null,
         reconnectAttempt: this.reconnectAttempt,
+        pairingCode: null,
+        pairingCodeGeneratedAt: null,
+        pairingPhoneNumber: null,
       };
 
       // A business that has never successfully paired (no persisted
@@ -428,7 +453,7 @@ export class WhatsAppTenantConnection {
 
       this.socket = makeWASocket({
         auth: state,
-        browser: ['WhatchatAI', 'Chrome', '1.0.0'],
+        browser: ['AURA', 'Chrome', '1.0.0'],
         markOnlineOnConnect: false,
         syncFullHistory: true,
         generateHighQualityLinkPreview: false,
@@ -443,12 +468,41 @@ export class WhatsAppTenantConnection {
       // credential-save failure must never be allowed to take every other
       // business's live connection down with it.
       this.socket.ev.on('creds.update', (update: Partial<typeof state.creds>) => {
-        if (update?.me) this.hasPairedThisSession = true;
+        // requestPairingCode() (see requestPhonePairingCode() below) sets
+        // `me` speculatively the instant a code is requested, well before
+        // the user ever types it into their phone, and at that point
+        // `registered` is still false (Baileys' real default). It only
+        // flips to true on genuine pairing completion (QR success never
+        // sends `registered` at all - undefined there, not false). So
+        // `update?.me` alone is not a safe "really paired" signal once
+        // phone-pairing exists - a requested-but-never-entered code would
+        // otherwise permanently disable the pre-pairing purge guard above
+        // for this tenant instance.
+        if (update?.me && update?.registered !== false) this.hasPairedThisSession = true;
         this.pendingCredsSave = saveCreds().catch((error) => {
           console.error(`[WhatsApp] Failed to persist credentials for business ${this.businessId}:`, error);
         });
       });
       this.attachEventHandlers(this.socket);
+
+      if (pairingPhoneNumberE164) {
+        const digitsOnly = pairingPhoneNumberE164.replace(/^\+/, '');
+        // requestPairingCode() sends immediately over the socket; without
+        // this, a call made before the WebSocket handshake finishes throws
+        // "Connection Closed" - a real race Baileys' own docs don't
+        // mention, only its exported waitForSocketOpen() helper guards it.
+        await this.socket.waitForSocketOpen();
+        const pairingCode = await this.socket.requestPairingCode(digitsOnly);
+        this.snapshot = {
+          ...this.snapshot,
+          status: 'PAIRING_CODE_READY',
+          connected: false,
+          pairingCode,
+          pairingCodeGeneratedAt: new Date().toISOString(),
+          pairingPhoneNumber: pairingPhoneNumberE164,
+          lastError: null,
+        };
+      }
     } catch (error) {
       // Without this, a setup failure here (e.g. resolveContainedSessionDir
       // or useMultiFileAuthState throwing) left status stuck at CONNECTING
@@ -493,6 +547,9 @@ export class WhatsAppTenantConnection {
       connected: false,
       qrAvailable: false,
       qrDataUrl: null,
+      pairingCode: null,
+      pairingCodeGeneratedAt: null,
+      pairingPhoneNumber: null,
     };
   }
 
@@ -524,7 +581,27 @@ export class WhatsAppTenantConnection {
       phoneNumber: null,
       jid: null,
       pushName: null,
+      pairingCode: null,
+      pairingCodeGeneratedAt: null,
+      pairingPhoneNumber: null,
     };
+  }
+
+  /**
+   * The alternative to connect()'s QR flow - requests a WhatsApp Web-style
+   * "link with phone number" code instead. A stale socket from a prior QR
+   * or phone-pairing attempt must be torn down first: connect()'s own
+   * socket-reuse guard (see its CONNECTING/QR_READY/RECONNECTING check)
+   * would otherwise silently return that stale snapshot without ever
+   * requesting a new code.
+   */
+  async requestPhonePairingCode(phoneNumberE164: string): Promise<string> {
+    if (this.isReady()) throw new Error('WhatsApp is already connected for this business.');
+    if (this.connectInFlight) throw new Error('A connection attempt is already in progress.');
+    if (this.socket) await this.disconnect();
+    const snapshot = await this.connect(phoneNumberE164);
+    if (!snapshot.pairingCode) throw new Error(snapshot.lastError ?? 'WhatsApp did not return a pairing code.');
+    return snapshot.pairingCode;
   }
 
   /**
@@ -717,6 +794,11 @@ export class WhatsAppTenantConnection {
           lastError: null,
           reconnectAttempt: 0,
           avatarMediaId: null,
+          // Whichever method (QR or phone) got here, pairing is now done -
+          // no live code of either kind remains.
+          pairingCode: null,
+          pairingCodeGeneratedAt: null,
+          pairingPhoneNumber: null,
         };
 
         if (jid) {
@@ -929,7 +1011,7 @@ export class WhatsAppTenantConnection {
     const businessId = this.businessId;
     const accountId = this.persistedAccountId;
 
-    void this.accountRepository.markDisconnected(accountId, status as WhatsAppConnectionStatus).catch((error) => {
+    void this.accountRepository.markDisconnected(accountId, status as ConnectionStatus).catch((error) => {
       console.error('[WhatsApp] Failed to mark account disconnected:', error);
     });
     void this.connectionEventRepository

@@ -18,7 +18,13 @@ const { resolveContainedSessionDir } = await import('../src/services/whatsappTen
 const { WhatsAppTenantConnection } = await import('../src/services/whatsappTenantConnection.js');
 
 function fakeSocket() {
-  return { ev: new EventEmitter(), end: vi.fn(), user: undefined };
+  return {
+    ev: new EventEmitter(),
+    end: vi.fn(),
+    user: undefined,
+    waitForSocketOpen: vi.fn().mockResolvedValue(undefined),
+    requestPairingCode: vi.fn().mockResolvedValue('ABCD1234'),
+  };
 }
 
 /**
@@ -117,6 +123,108 @@ describe('WhatsAppTenantConnection.connect() - pre-pairing session purge (real f
     socket.ev.emit('connection.update', { connection: 'close' });
     // connection.update's handler is async; let it actually run (reset
     // this.socket, flip status) before driving the next connect() call.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await connection.connect(); // the restart's own connect() - must NOT purge now
+
+    await expect(access(realCredsFile)).resolves.toBeUndefined(); // untouched
+  });
+});
+
+describe('WhatsAppTenantConnection.requestPhonePairingCode() (real filesystem, real Postgres)', () => {
+  beforeEach(() => {
+    makeWASocketMock.mockReset();
+    makeWASocketMock.mockReturnValue(fakeSocket());
+  });
+
+  const cleanupDirs: string[] = [];
+  afterEach(async () => {
+    for (const dir of cleanupDirs.splice(0)) {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('requests a pairing code from Baileys using the digits-only phone number, after waiting for the socket to open', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    cleanupDirs.push(await resolveContainedSessionDir(businessId));
+
+    // Already-normalized E.164 in, as the real caller (the route, via
+    // normalizePhoneToE164) always provides - normalization is the
+    // route's job, not this class's; it only strips the leading '+'.
+    const connection = new WhatsAppTenantConnection(businessId);
+    const code = await connection.requestPhonePairingCode('+14155552671');
+    expect(code).toBe('ABCD1234');
+
+    const socket = makeWASocketMock.mock.results[0]!.value as {
+      waitForSocketOpen: ReturnType<typeof vi.fn>;
+      requestPairingCode: ReturnType<typeof vi.fn>;
+    };
+    expect(socket.requestPairingCode).toHaveBeenCalledWith('14155552671');
+    // waitForSocketOpen must be awaited before requestPairingCode is called -
+    // Baileys throws "Connection Closed" otherwise if the handshake hasn't
+    // finished yet.
+    const waitOrder = socket.waitForSocketOpen.mock.invocationCallOrder[0]!;
+    const requestOrder = socket.requestPairingCode.mock.invocationCallOrder[0]!;
+    expect(waitOrder).toBeLessThan(requestOrder);
+
+    const snapshot = connection.getSnapshot();
+    expect(snapshot.status).toBe('PAIRING_CODE_READY');
+    expect(snapshot.pairingCode).toBe('ABCD1234');
+    expect(snapshot.pairingPhoneNumber).toBe('+14155552671');
+  });
+
+  /**
+   * Real regression coverage for the guard bug found while adding this
+   * feature: requestPairingCode() sets creds.me speculatively and emits
+   * creds.update the instant a code is REQUESTED, well before the user
+   * ever types it into their phone - at that point Baileys' real
+   * `registered` field is still false. The old `if (update?.me)` guard
+   * alone would have wrongly treated that as "really paired," permanently
+   * disabling the pre-pairing purge for this tenant instance even though
+   * no real pairing ever happened.
+   */
+  it('a requested-but-never-entered phone-pairing code does not disable the pre-pairing purge guard', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    const dir = await resolveContainedSessionDir(businessId);
+    cleanupDirs.push(dir);
+
+    const connection = new WhatsAppTenantConnection(businessId);
+    await connection.requestPhonePairingCode('+14155552671'); // nothing on disk yet - this call's own purge is a no-op
+
+    const socket = makeWASocketMock.mock.results[0]!.value as { ev: EventEmitter };
+    // The real shape requestPairingCode() emits pre-completion: `me` set, `registered: false`.
+    socket.ev.emit('creds.update', { me: { id: '14155552671:1@s.whatsapp.net' }, registered: false });
+    socket.ev.emit('connection.update', { connection: 'close' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // A leftover file appears - e.g. from a killed process before the code was ever entered.
+    await mkdir(dir, { recursive: true });
+    const staleFile = path.join(dir, 'creds.json');
+    await writeFile(staleFile, '{"corrupt": true');
+
+    await connection.connect(); // an ordinary reconnect - must still purge, since real pairing never completed
+
+    await expect(access(staleFile)).rejects.toThrow(); // gone - hasPairedThisSession correctly stayed false
+  });
+
+  it('a genuine pairing-code completion (registered:true) does disable the purge guard, exactly like a real QR pairing', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    const dir = await resolveContainedSessionDir(businessId);
+    cleanupDirs.push(dir);
+    const realCredsFile = path.join(dir, 'creds.json');
+
+    const connection = new WhatsAppTenantConnection(businessId);
+    await connection.requestPhonePairingCode('+14155552671');
+
+    await mkdir(dir, { recursive: true });
+    await writeFile(realCredsFile, '{"real": "just-paired creds"}');
+
+    const socket = makeWASocketMock.mock.results[0]!.value as { ev: EventEmitter };
+    socket.ev.emit('creds.update', { me: { id: '14155552671:1@s.whatsapp.net' }, registered: true });
+    socket.ev.emit('connection.update', { connection: 'close' });
     await new Promise((resolve) => setImmediate(resolve));
 
     await connection.connect(); // the restart's own connect() - must NOT purge now

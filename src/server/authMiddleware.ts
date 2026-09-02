@@ -11,7 +11,16 @@ import { pool } from '../db/pool.js';
 export const SESSION_COOKIE_NAME = 'wc_session';
 export interface AuthContext { userId: string; businessId: string; role: BusinessRole; platformRole: PlatformRole; sessionId: string; user: PublicUser; }
 function isSecureRequest(req: Request): boolean { return req.secure || req.headers['x-forwarded-proto'] === 'https'; }
-export function setSessionCookie(req: Request, res: Response, token: string, maxAgeSeconds: number): void { res.setHeader('Set-Cookie', serializeCookie(SESSION_COOKIE_NAME, token, { httpOnly: true, secure: isSecureRequest(req), sameSite: 'Lax', maxAgeSeconds })); }
+/**
+ * maxAgeSeconds omitted (undefined) produces a true browser-session
+ * cookie - cleared when the browser fully closes, even though the
+ * server-side session token itself stays valid for its own TTL. This is
+ * how "remember me" is implemented: checked -> a persistent Max-Age
+ * cookie, unchecked -> this session-only cookie.
+ */
+export function setSessionCookie(req: Request, res: Response, token: string, maxAgeSeconds?: number): void {
+  res.setHeader('Set-Cookie', serializeCookie(SESSION_COOKIE_NAME, token, { httpOnly: true, secure: isSecureRequest(req), sameSite: 'Lax', ...(maxAgeSeconds !== undefined ? { maxAgeSeconds } : {}) }));
+}
 export function clearSessionCookie(req: Request, res: Response): void { res.setHeader('Set-Cookie', serializeCookie(SESSION_COOKIE_NAME, '', { httpOnly: true, secure: isSecureRequest(req), maxAgeSeconds: 0 })); }
 export function readSessionToken(req: Request): string | null { return parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME] ?? null; }
 

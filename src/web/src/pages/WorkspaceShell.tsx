@@ -5,6 +5,7 @@ import type { SyncStatusResponse, WhatsAppConnectionSnapshot } from '../lib/api.
 import { SaasNavRail, SaasNavBottomBar } from '../components/SaasNavRail.js';
 import { NotificationCenter } from '../components/NotificationCenter.js';
 import { CommandPalette } from '../components/CommandPalette.js';
+import { AccountMenu } from '../components/AccountMenu.js';
 const ChatsRoute = lazy(() => import('./ChatsRoute.js').then((m) => ({ default: m.ChatsRoute })));
 const AgentsPage = lazy(() => import('./AgentsPage.js').then((m) => ({ default: m.AgentsPage })));
 const CrmRoute = lazy(() => import('./CrmRoute.js').then((m) => ({ default: m.CrmRoute })));
@@ -30,7 +31,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
     {sync?.syncStatus === 'failed' && <div className="shrink-0 bg-warning/10 px-4 py-1.5 text-center text-caption text-warning">History sync did not fully complete ({sync.lastSyncError ?? 'unknown error'}). Some data may be missing.</div>}
     <CommandPalette open={searchOpen} onOpenChange={setSearchOpen} />
     <div className="flex min-h-0 flex-1"><SaasNavRail /><div className="flex min-w-0 flex-1 flex-col">
-      <header className="flex shrink-0 items-center justify-between border-b border-border-subtle bg-surface-1 px-4 py-2"><button type="button" onClick={() => setSearchOpen(true)} aria-label="Open global search" className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-caption text-fg-muted hover:bg-surface-3"><Search size={13} aria-hidden /><span className="hidden sm:inline">Search…</span><kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-meta sm:inline">⌘K</kbd></button><div className="flex items-center gap-3"><p className="hidden text-caption text-fg-muted md:block">Connected as {connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'}</p><NotificationCenter /><span className="rounded-full bg-success/15 px-2 py-0.5 text-meta text-success">Live</span></div></header>
+      <header className="flex shrink-0 items-center justify-between border-b border-border-subtle bg-surface-1 px-4 py-2"><button type="button" onClick={() => setSearchOpen(true)} aria-label="Open global search" className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-caption text-fg-muted hover:bg-surface-3"><Search size={13} aria-hidden /><span className="hidden sm:inline">Search…</span><kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-meta sm:inline">⌘K</kbd></button><div className="flex items-center gap-3"><p className="hidden text-caption text-fg-muted md:block">Connected as {connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'}</p><NotificationCenter /><span className="rounded-full bg-success/15 px-2 py-0.5 text-meta text-success">Live</span><AccountMenu /></div></header>
       <div className="flex min-h-0 flex-1"><Suspense fallback={<RouteFallback />}><Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/property" element={<ProductDashboardPage product="property" />} />
