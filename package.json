@@ -32,7 +32,7 @@
     "@aws-sdk/client-s3": "^3.1121.0",
     "@google/genai": "latest",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@whiskeysockets/baileys": "latest",
+    "@whiskeysockets/baileys": "github:doryani-ai/Baileys#4f263f0e365c2e74dd1b824031d1c5910f518c26",
     "bullmq": "^6.1.1",
     "concurrently": "latest",
     "dotenv": "latest",
