@@ -826,6 +826,7 @@ function ApprovalsTab() {
   const [rejectReason, setRejectReason] = useState('');
   const [approveNote, setApproveNote] = useState<Record<string, string>>({});
   const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [bulkApproving, setBulkApproving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -851,6 +852,25 @@ function ApprovalsTab() {
     finally { setBusyId(null); }
   }
 
+  async function handleApproveAll() {
+    setBulkApproving(true);
+    try {
+      const actionIds = items.map((item) => item.id);
+      const data = await platformApi<{ results: Array<{ actionId: string; status: 'approved' | 'failed'; error?: string }> }>('/approvals/bulk-approve', {
+        method: 'POST',
+        body: JSON.stringify({ actionIds }),
+      });
+      const approvedIds = new Set(data.results.filter((r) => r.status === 'approved').map((r) => r.actionId));
+      const failedCount = data.results.length - approvedIds.size;
+      setItems((prev) => prev.filter((item) => !approvedIds.has(item.id)));
+      if (failedCount > 0) setError(`${failedCount} of ${actionIds.length} could not be approved (already decided or removed) - refresh to see the current list.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Bulk approval failed');
+    } finally {
+      setBulkApproving(false);
+    }
+  }
+
   async function handleReject(id: string) {
     if (!rejectReason.trim()) return;
     setBusyId(id);
@@ -872,9 +892,23 @@ function ApprovalsTab() {
           <h2 className="text-body font-semibold text-fg">Pending approvals</h2>
           <p className="mt-0.5 text-caption text-fg-muted">AI-triaged maintenance requests waiting for your decision. Approved requests auto-create a work order.</p>
         </div>
-        <button type="button" onClick={() => void load()} className="inline-flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-0 px-3 py-2 text-caption text-fg hover:bg-surface-2">
-          <RefreshCw size={13} /> Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          {items.length > 1 && (
+            <button
+              type="button"
+              disabled={bulkApproving}
+              onClick={() => void handleApproveAll()}
+              title="Approve every pending item shown here - each is approved independently, so one failure never blocks the rest."
+              className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+            >
+              {bulkApproving ? <Loader2 size={13} className="animate-spin" /> : <ThumbsUp size={13} />}
+              Approve all ({items.length})
+            </button>
+          )}
+          <button type="button" onClick={() => void load()} className="inline-flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-0 px-3 py-2 text-caption text-fg hover:bg-surface-2">
+            <RefreshCw size={13} /> Refresh
+          </button>
+        </div>
       </div>
 
       {error && <div className="rounded-xl border border-error/30 bg-error/5 p-4 text-caption text-error">{error}</div>}
