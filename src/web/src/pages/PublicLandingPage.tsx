@@ -120,8 +120,8 @@ export function PublicLandingPage() {
       {/* Nav */}
       <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5 lg:px-10">
         <div className="flex items-center gap-3">
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-body font-bold text-white">W</span>
-          <span className="text-body font-semibold tracking-tight">WhatsChat</span>
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-body font-bold text-white">A</span>
+          <span className="text-body font-semibold tracking-tight">AURA</span>
         </div>
         <button
           type="button"
@@ -143,7 +143,7 @@ export function PublicLandingPage() {
             Run your entire business<br className="hidden lg:block" /> from one WhatsApp inbox.
           </h1>
           <p className="mt-5 max-w-lg text-lg leading-8 text-fg-secondary">
-            WhatsChat turns your existing WhatsApp number into a full operations platform — AI agents, invoices, bookings, work orders and customer management, built for the way Caribbean businesses already communicate.
+            AURA turns your existing WhatsApp number into a full operations platform — AI agents, invoices, bookings, work orders and customer management, built for the way Caribbean businesses already communicate.
           </p>
 
           {/* Trust signals */}
@@ -283,7 +283,7 @@ export function PublicLandingPage() {
                     className="mt-0.5 h-4 w-4 shrink-0 rounded border-border-subtle accent-accent"
                   />
                   <span className="text-caption leading-5 text-fg-muted">
-                    I'd like to receive product updates, tips, and occasional promotions from WhatsChat. (Optional — unsubscribe any time.)
+                    I'd like to receive product updates, tips, and occasional promotions from AURA. (Optional — unsubscribe any time.)
                   </span>
                 </label>
 
@@ -332,14 +332,14 @@ export function TrialStartPage() {
   const selected = new URLSearchParams(window.location.search).get('product') ?? window.localStorage.getItem('whatchat:selected-product');
 
   const PRODUCT_NAMES: Record<string, string> = {
-    property: 'WhatsChat Property',
-    food: 'WhatsChat Food',
-    retail: 'WhatsChat Retail',
-    beauty: 'WhatsChat Beauty',
-    auto: 'WhatsChat Auto',
-    health: 'WhatsChat Health',
+    property: 'AURA Property',
+    food: 'AURA Food',
+    retail: 'AURA Retail',
+    beauty: 'AURA Beauty',
+    auto: 'AURA Auto',
+    health: 'AURA Health',
   };
-  const product = (selected && PRODUCT_NAMES[selected]) ?? 'WhatsChat';
+  const product = (selected && PRODUCT_NAMES[selected]) ?? 'AURA';
 
   return (
     <main className="flex min-h-full items-center justify-center bg-surface-0 px-6 py-10 text-fg">

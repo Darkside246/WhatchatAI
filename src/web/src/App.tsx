@@ -30,7 +30,7 @@ function AuthenticatedApp() {
   const gate = useAppGate();
 
   if (gate.phase === 'loading') {
-    return <div className="flex h-full items-center justify-center bg-surface-0 text-body text-gray-400">Connecting to WhatchatAI backend…</div>;
+    return <div className="flex h-full items-center justify-center bg-surface-0 text-body text-gray-400">Connecting to AURA backend…</div>;
   }
   if (gate.phase === 'onboarding') {
     return <OnboardingPage connection={gate.connection} serverUnreachable={gate.serverUnreachable} />;
@@ -60,7 +60,7 @@ export default function App() {
   }, [auth.business?.brandColor]);
 
   if (auth.status === 'loading') {
-    return <div className="flex h-full items-center justify-center bg-surface-0 text-body text-gray-400">Loading WhatchatAI…</div>;
+    return <div className="flex h-full items-center justify-center bg-surface-0 text-body text-gray-400">Loading AURA…</div>;
   }
 
   if (auth.status === 'unauthenticated') {

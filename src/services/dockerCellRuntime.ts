@@ -401,7 +401,7 @@ export class DockerCellRuntime implements OpenClawCellRuntime {
       '--publish', `127.0.0.1:${port}:18789`,
       // The one exception to the network's own `--internal` blackhole:
       // this lets the cell resolve/reach the Docker host machine (where
-      // WhatchatAI's own Tool Gateway/adapter listens), via a name Docker
+      // AURA's own Tool Gateway/adapter listens), via a name Docker
       // resolves locally rather than a real DNS lookup - it costs nothing
       // in outbound reachability elsewhere. NOTE: this currently makes
       // the whole host reachable on whatever ports the host has open, not

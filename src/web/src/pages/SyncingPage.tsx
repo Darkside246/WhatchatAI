@@ -31,9 +31,9 @@ export function SyncingPage({ connection, sync, onContinueAnyway }: Props) {
     <div className="flex min-h-full flex-col items-center justify-center gap-8 bg-surface-0 px-6 py-16 text-center">
       <div className="flex items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-soft text-title font-bold text-accent">
-          W
+          A
         </div>
-        <span className="text-title font-semibold tracking-tight text-fg">WhatchatAI</span>
+        <span className="text-title font-semibold tracking-tight text-fg">AURA</span>
       </div>
 
       <div className="w-full max-w-md rounded-2xl border border-border-subtle bg-surface-2 p-8">

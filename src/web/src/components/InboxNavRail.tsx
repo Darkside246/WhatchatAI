@@ -11,7 +11,7 @@ interface Props {
  * A slim WhatsApp-style sub-nav scoped to the Inbox pane only - it switches
  * between real data views (Chats, Calls, Status) inside the workspace. This
  * is intentionally separate from SaasNavRail (the app-wide product nav for
- * Dashboard/CRM/Billing/etc.): WhatchatAI is a SaaS platform built on top of
+ * Dashboard/CRM/Billing/etc.): AURA is a SaaS platform built on top of
  * WhatsApp, not a WhatsApp Web clone, so the global nav stays as-is.
  */
 export function InboxNavRail({ view, onChange }: Props) {

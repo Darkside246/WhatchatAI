@@ -128,16 +128,19 @@ async function sendConfirmationEmail(to: string, name: string, confirmUrl: strin
     return;
   }
 
-  const bodyText = `Hi ${name},\n\nThank you for agreeing to the WhatsChat Terms of Service and Privacy Policy.\n\nPlease confirm your consent by clicking the link below:\n\n${confirmUrl}\n\nThis link expires in 48 hours. If you didn't fill out a form on WhatsChat, you can safely ignore this email.\n\nWhatsChat team`;
+  const bodyText = `Hi ${name},\n\nThank you for agreeing to the AURA Terms of Service and Privacy Policy.\n\nPlease confirm your consent by clicking the link below:\n\n${confirmUrl}\n\nThis link expires in 48 hours. If you didn't fill out a form on AURA, you can safely ignore this email.\n\nAURA team`;
 
   const transport: emailProvider.ResendTransport = { kind: 'resend', apiKey };
   await emailProvider.sendEmail(transport, {
+    // Domain left as-is deliberately - this is real sending infrastructure
+    // (SPF/DKIM tied to whatchat.ai), not display copy. Changing it needs
+    // a real AURA-branded domain provisioned first, not a text rename.
     fromEmail: 'noreply@whatchat.ai',
-    fromName: 'WhatsChat',
+    fromName: 'AURA',
     replyToEmail: null,
     toEmail: to,
     toName: name,
-    subject: 'Confirm your WhatsChat consent',
+    subject: 'Confirm your AURA consent',
     bodyText,
   });
 }

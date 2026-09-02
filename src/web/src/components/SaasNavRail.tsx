@@ -176,7 +176,7 @@ export function SaasNavRail() {
       <NavLink
         to="/"
         className="mb-4 flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-accent-soft text-body font-bold text-accent"
-        title={business?.name ?? 'WhatsChat'}
+        title={business?.name ?? 'AURA'}
       >
         {business?.logoDataUrl ? (
           <img src={business.logoDataUrl} alt="" className="h-full w-full object-contain" />

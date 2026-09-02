@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 
 /**
  * The credential a cell presents (as a Bearer token) when calling
- * into WhatchatAI's own OpenClaw Tool Gateway adapter endpoint. Same
+ * into AURA's own OpenClaw Tool Gateway adapter endpoint. Same
  * generate/hash shape as sessionTokenService.ts (32 random bytes, SHA-256
  * for the stored lookup value) - a deliberate mirror, not a shared import,
  * since this is a different credential for a different direction of

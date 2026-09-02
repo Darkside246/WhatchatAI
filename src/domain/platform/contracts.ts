@@ -119,7 +119,7 @@ export interface AIProviderMedia {
  * translates it into whatever native shape its own SDK expects (Gemini's
  * `Type` enum values, a plain OpenAI-style JSON schema, etc). Named to match
  * the vocabulary every provider's own function-calling API already uses
- * (name/description/parameters), not a WhatchatAI-specific shape.
+ * (name/description/parameters), not an AURA-specific shape.
  */
 export interface AIProviderToolDefinition {
   name: string;

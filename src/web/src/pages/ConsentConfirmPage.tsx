@@ -53,7 +53,7 @@ export function ConsentConfirmPage() {
             <CheckCircle size={40} className="mx-auto mb-4 text-success" aria-hidden />
             <h1 className="text-xl font-semibold text-fg">Consent confirmed</h1>
             <p className="mt-2 text-body leading-7 text-fg-secondary">
-              Thank you, {state.fullName}. Your agreement to the WhatsChat Terms of Service and Privacy Policy has been recorded.
+              Thank you, {state.fullName}. Your agreement to the AURA Terms of Service and Privacy Policy has been recorded.
               A copy was sent to <strong className="text-fg">{state.email}</strong>.
             </p>
             <p className="mt-4 text-caption text-fg-muted">

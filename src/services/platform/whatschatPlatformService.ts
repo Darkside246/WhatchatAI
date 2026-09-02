@@ -2,14 +2,14 @@ import { ProductAccountService, type ProductKey, type ProductAccount, type Trial
 
 export interface ProductDefinition { key: ProductKey; name: string; description: string; dashboardPath: string; navigation: string[]; }
 export const PRODUCT_CATALOGUE: ProductDefinition[] = [
-  { key: 'PROPERTY', name: 'WhatsChat Property', description: 'Property operations, maintenance and tenant conversations.', dashboardPath: '/property', navigation: ['Dashboard', 'Conversations', 'Maintenance', 'Work Orders', 'Properties', 'Vendors', 'Reports', 'Settings'] },
-  { key: 'FOOD', name: 'WhatsChat Food', description: 'Food ordering and operations for restaurants, food trucks and small food businesses.', dashboardPath: '/food', navigation: ['Dashboard', 'Conversations', 'Orders', 'Menu', 'Kitchen', 'Pickup & Delivery', 'Customers', 'Reports', 'Settings'] },
+  { key: 'PROPERTY', name: 'AURA Property', description: 'Property operations, maintenance and tenant conversations.', dashboardPath: '/property', navigation: ['Dashboard', 'Conversations', 'Maintenance', 'Work Orders', 'Properties', 'Vendors', 'Reports', 'Settings'] },
+  { key: 'FOOD', name: 'AURA Food', description: 'Food ordering and operations for restaurants, food trucks and small food businesses.', dashboardPath: '/food', navigation: ['Dashboard', 'Conversations', 'Orders', 'Menu', 'Kitchen', 'Pickup & Delivery', 'Customers', 'Reports', 'Settings'] },
 ];
 export interface TrialRegistration { fullName: string; email: string; phoneNumber: string; product: ProductKey; }
 export interface PaymentProviderDefinition { id: string; label: string; enabled: boolean; status: 'planned' | 'available' | 'unavailable'; }
 
 /** Commercial platform composition root. Reuses the existing WhatsApp transport rather than replacing QR pairing. */
-export class WhatsChatPlatformService {
+export class AuraPlatformService {
   private readonly accounts: ProductAccountService;
   constructor(accounts = new ProductAccountService()) { this.accounts = accounts; }
   listProducts(): ProductDefinition[] { return PRODUCT_CATALOGUE.map((p) => ({ ...p, navigation: [...p.navigation] })); }

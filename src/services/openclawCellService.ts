@@ -62,7 +62,7 @@ export interface CellProvisionResult {
    * later requires the explicit, narrow `repo.getGatewayToken` call.
    */
   gatewayToken: string | null;
-  /** The credential this cell must present when calling into WhatchatAI's own Tool Gateway adapter - see openclawCallbackTokenService.ts. Null on an idempotent no-op. */
+  /** The credential this cell must present when calling into AURA's own Tool Gateway adapter - see openclawCallbackTokenService.ts. Null on an idempotent no-op. */
   callbackToken: string | null;
 }
 

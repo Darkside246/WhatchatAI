@@ -8,7 +8,7 @@ import { isPrivateOrLoopbackAddress } from './privateAddressCheck.js';
  * The per-cell network policy enforcement boundary - a deliberately narrow
  * reverse relay, NOT a general-purpose HTTP/CONNECT proxy. It has exactly
  * two fixed upstream identities, configured once at startup and never
- * derived from anything a request says: the WhatchatAI MCP endpoint, and
+ * derived from anything a request says: the AURA MCP endpoint, and
  * (when configured) one Gemini provider endpoint. There is no code path
  * anywhere in this file that accepts a caller-supplied target host, port,
  * or URL - "proxy this request to https://anything.example" has nothing to

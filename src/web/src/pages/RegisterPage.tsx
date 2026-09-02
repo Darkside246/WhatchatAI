@@ -25,8 +25,8 @@ export function RegisterPage() {
     <div className="flex min-h-full items-center justify-center bg-surface-0 px-6 py-10">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-soft text-title font-bold text-accent">W</div>
-          <span className="text-title font-semibold tracking-tight text-fg">WhatchatAI</span>
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-soft text-title font-bold text-accent">A</div>
+          <span className="text-title font-semibold tracking-tight text-fg">AURA</span>
         </div>
 
         <h1 className="mb-1 text-display font-semibold text-fg">Create your workspace</h1>

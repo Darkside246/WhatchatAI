@@ -10,7 +10,7 @@ export interface OpenClawRuntimeOptions {
 }
 
 /**
- * Optional OpenClaw gateway boundary. WhatsChat remains the authority for
+ * Optional OpenClaw gateway boundary. AURA remains the authority for
  * tenant identity, permissions, action approval and audit. This adapter only
  * transports a bounded AgentTask to a separately controlled runtime.
  *

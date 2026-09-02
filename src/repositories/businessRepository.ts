@@ -50,7 +50,7 @@ function toRecord(row: BusinessRow): BusinessRecord {
 }
 
 /**
- * Bootstrap tenant repository. WhatchatAI's Authentication + Multi-Tenant phase
+ * Bootstrap tenant repository. AURA's Authentication + Multi-Tenant phase
  * has not been built yet, so this ensures exactly one real business row exists
  * for single-tenant operation until that phase replaces it with real signup.
  */

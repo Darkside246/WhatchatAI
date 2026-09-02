@@ -4,7 +4,7 @@ type Product = 'property' | 'food' | 'retail' | 'beauty' | 'auto' | 'health' | '
 
 const copy: Record<Product, { name: string; description: string; sections: Array<[string, string, string]> }> = {
   property: {
-    name: 'WhatsChat Property',
+    name: 'AURA Property',
     description: 'Property operations powered by the conversations already happening on WhatsApp.',
     sections: [
       ['Conversations', 'Review tenant and team conversations in one operational inbox.', '/chats'],
@@ -18,7 +18,7 @@ const copy: Record<Product, { name: string; description: string; sections: Array
     ],
   },
   food: {
-    name: 'WhatsChat Food',
+    name: 'AURA Food',
     description: 'A focused food ordering and operations workspace built around WhatsApp.',
     sections: [
       ['Conversations', 'Handle customer messages without leaving the operations workspace.', '/chats'],
@@ -32,7 +32,7 @@ const copy: Record<Product, { name: string; description: string; sections: Array
     ],
   },
   retail: {
-    name: 'WhatsChat Retail',
+    name: 'AURA Retail',
     description: 'Run your shop, boutique or store from WhatsApp — orders, stock, and customer conversations in one place.',
     sections: [
       ['Conversations', 'Handle enquiries and orders as WhatsApp messages.', '/chats'],
@@ -46,7 +46,7 @@ const copy: Record<Product, { name: string; description: string; sections: Array
     ],
   },
   beauty: {
-    name: 'WhatsChat Beauty',
+    name: 'AURA Beauty',
     description: 'Bookings, client management and reminders for salons, spas, and beauty studios — all from WhatsApp.',
     sections: [
       ['Conversations', 'Chat with clients and handle booking requests.', '/chats'],
@@ -60,7 +60,7 @@ const copy: Record<Product, { name: string; description: string; sections: Array
     ],
   },
   auto: {
-    name: 'WhatsChat Auto',
+    name: 'AURA Auto',
     description: 'Job management, invoicing and customer communication for auto dealers, garages, and rental operators.',
     sections: [
       ['Conversations', 'Handle service requests and customer messages.', '/chats'],
@@ -74,7 +74,7 @@ const copy: Record<Product, { name: string; description: string; sections: Array
     ],
   },
   health: {
-    name: 'WhatsChat Health',
+    name: 'AURA Health',
     description: 'Appointment scheduling, patient communication and reminders for clinics, pharmacies, and care providers.',
     sections: [
       ['Conversations', 'Communicate with patients securely over WhatsApp.', '/chats'],
@@ -88,7 +88,7 @@ const copy: Record<Product, { name: string; description: string; sections: Array
     ],
   },
   legal: {
-    name: 'WhatsChat Legal',
+    name: 'AURA Legal',
     description: 'Client intake, case enquiries and document requests for law practices — all via WhatsApp.',
     sections: [
       ['Conversations', 'Handle client enquiries and intake via WhatsApp.', '/chats'],
@@ -102,7 +102,7 @@ const copy: Record<Product, { name: string; description: string; sections: Array
     ],
   },
   hospitality: {
-    name: 'WhatsChat Hospitality',
+    name: 'AURA Hospitality',
     description: 'Room bookings, guest services and housekeeping coordination for hotels and short-stay properties.',
     sections: [
       ['Conversations', 'Respond to guest messages and booking requests.', '/chats'],
@@ -116,7 +116,7 @@ const copy: Record<Product, { name: string; description: string; sections: Array
     ],
   },
   construction: {
-    name: 'WhatsChat Construction',
+    name: 'AURA Construction',
     description: 'Project tracking, subcontractor coordination and client communication for construction and trade businesses.',
     sections: [
       ['Conversations', 'Communicate with clients and contractors over WhatsApp.', '/chats'],
@@ -130,7 +130,7 @@ const copy: Record<Product, { name: string; description: string; sections: Array
     ],
   },
   logistics: {
-    name: 'WhatsChat Logistics',
+    name: 'AURA Logistics',
     description: 'Delivery tracking, route management and real-time customer notifications for logistics and courier businesses.',
     sections: [
       ['Conversations', 'Handle delivery enquiries and customer messages.', '/chats'],

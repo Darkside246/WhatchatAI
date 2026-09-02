@@ -304,9 +304,9 @@ export async function sendTestEmail(businessId: string, requestedBy: string, toE
     replyToEmail: settings.replyToEmail,
     toEmail: toEmail.trim(),
     toName: null,
-    subject: 'WhatchatAI test email',
+    subject: 'AURA test email',
     bodyText:
-      'This is a real test email from WhatchatAI.\n\n' +
+      'This is a real test email from AURA.\n\n' +
       'If you are reading it, your sending settings work and the workspace can send email.',
   });
 

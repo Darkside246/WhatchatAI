@@ -76,7 +76,7 @@ function stableStringify(value: Record<string, unknown>): string {
 }
 
 /**
- * The WhatchatAI Tool Gateway for OpenClaw: the one path any OpenClaw
+ * The AURA Tool Gateway for OpenClaw: the one path any OpenClaw
  * cell's tool request must pass through before it becomes a real
  * database mutation. OpenClaw can request an action; this gateway alone
  * decides whether it is authorized - the request never carries any field

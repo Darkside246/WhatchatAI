@@ -70,7 +70,7 @@ export class GeminiProvider implements RegisteredAiProvider {
     const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [{ text: buildPrompt(input) }];
     for (const media of input.media ?? []) {
       if (!media.mimeType.startsWith('image/')) throw new Error(`Gemini provider cannot currently process ${media.mimeType}`);
-      if (!media.base64Data) throw new Error('Gemini image input requires base64Data from WhatchatAI media storage');
+      if (!media.base64Data) throw new Error('Gemini image input requires base64Data from AURA media storage');
       parts.push({ inlineData: { mimeType: media.mimeType, data: media.base64Data } });
     }
 

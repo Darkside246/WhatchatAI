@@ -35,7 +35,7 @@ export interface CustomerTimezoneInput {
 
 /**
  * Customer priority: explicit customer timezone -> location-derived timezone
- * -> business default -> system fallback. WhatchatAI has no per-contact
+ * -> business default -> system fallback. AURA has no per-contact
  * timezone field yet (no location/device signal is ever collected from a
  * WhatsApp customer today), so in practice this always resolves to the
  * business default - the full chain is implemented so a future explicit or
