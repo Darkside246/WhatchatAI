@@ -209,6 +209,13 @@ connection whose state gets swapped to disk means real message delay for
 that tenant - not meaningfully better than downtime from that tenant's
 point of view.
 
+**Real, measured confirmation** (`free -h` on the Droplet, 2026-09-02):
+`Mem: 1.9Gi total, 1.1Gi used, 88Mi free, 888Mi available; Swap: 2.0Gi
+total, 177Mi used, 1.8Gi free`. Only ~888 MB is genuinely available right
+now, *before* any real tenant WhatsApp load and before the trimmed
+`postgres-backup` container even existed - this was not a theoretical
+concern.
+
 **No verified per-tenant memory measurement exists for this codebase.**
 General experience with Signal-protocol WhatsApp-Web session state (auth
 keys, contact/chat caches) suggests tens of MB per active connection once
