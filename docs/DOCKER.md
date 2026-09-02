@@ -226,6 +226,13 @@ tenants**: stage the rollout, watch real `docker stats` memory growth on
 measured curve rather than a guess. This phase deliberately does not pick
 that number.
 
+**Operator's decision (2026-09-02):** start the real cohort at 10-100
+tenants on this Droplet as-is and resize reactively via DigitalOcean once
+`docker stats`/the incident alerting below shows real memory pressure,
+rather than upgrading preemptively on a guess. This is why the push-based
+alerting further down matters here specifically - it's the mechanism that
+turns "reactive scaling" from a hope into a real, timely signal.
+
 ## Backups
 
 Added ahead of the first real 100-tenant cohort - before this, `postgres-data`
