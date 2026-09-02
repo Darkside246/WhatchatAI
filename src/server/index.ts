@@ -80,6 +80,7 @@ import {
   isUserNotBusinessMemberError,
 } from '../services/teamService.js';
 import { isCapacityExceededError, isInvalidAssignmentError } from '../services/workspaceService.js';
+import { parseAgentDescription, AgentDescriptionParseError } from '../services/agentDescriptionParser.js';
 import {
   createKnowledgeBaseDocument,
   listKnowledgeBaseDocuments,
@@ -2317,6 +2318,34 @@ app.post('/api/workspace/agents/from-template', requireWorkspaceContext, require
       return res
         .status(403)
         .json({ error: 'ENTITLEMENT_DENIED', reason: error.reason, limit: error.limit, current: error.current, message });
+    }
+    throw error;
+  }
+});
+
+const parseAgentDescriptionSchema = z.object({ description: z.string().trim().min(1).max(2000) });
+
+/**
+ * "Build Custom Agent" - converts a free-text description into the exact
+ * same structured shape a system template provides. Never persists
+ * anything: the frontend shows this back for confirmation, same as the
+ * template preview, then submits the (possibly edited) result to the
+ * regular POST /api/workspace/agents route to actually create it - no
+ * separate creation path to keep in sync with entitlement/permission
+ * logic.
+ */
+app.post('/api/workspace/agents/parse-description', requireWorkspaceContext, requirePermission('ai.create'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = parseAgentDescriptionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_DESCRIPTION', details: parsed.error.flatten() });
+  }
+  try {
+    const config = await parseAgentDescription(businessId, parsed.data.description);
+    return res.status(200).json({ config });
+  } catch (error) {
+    if (error instanceof AgentDescriptionParseError) {
+      return res.status(422).json({ error: 'PARSE_FAILED', message: error.message });
     }
     throw error;
   }

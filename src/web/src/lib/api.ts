@@ -750,6 +750,21 @@ export interface AgentTemplate {
   recommendedTools: string[];
 }
 
+/** The real structured shape a free-text agent description gets converted into - never persisted until the user activates it. */
+export interface ParsedAgentConfig {
+  name: string;
+  role: string;
+  description: string;
+  persona: string;
+  tone: string;
+  systemInstruction: string;
+  greeting: string;
+  category: AgentCategory;
+  triggerKeywords: string[];
+  /** Filtered to only real, registered tool names server-side - never a fabricated capability. */
+  recommendedTools: string[];
+}
+
 export interface RoutingPreviewResult {
   outcome: 'route' | 'escalate_to_human' | 'no_agent';
   reason: string;
@@ -1074,6 +1089,8 @@ export const api = {
   listAgentTemplates: () => request<{ templates: AgentTemplate[] }>('/workspace/agent-templates'),
   createAgentFromTemplate: (templateKey: string, name?: string) =>
     request<{ agent: AiAgentSummary }>('/workspace/agents/from-template', { method: 'POST', body: JSON.stringify({ templateKey, name }) }),
+  parseAgentDescription: (description: string) =>
+    request<{ config: ParsedAgentConfig }>('/workspace/agents/parse-description', { method: 'POST', body: JSON.stringify({ description }) }),
   createAgent: (body: CreateAgentBody) =>
     request<{ agent: AiAgentSummary }>('/workspace/agents', { method: 'POST', body: JSON.stringify(body) }),
   updateAgent: (id: string, body: CreateAgentBody) =>
