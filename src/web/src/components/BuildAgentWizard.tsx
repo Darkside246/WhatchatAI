@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Bot, Check, X, Loader2, ArrowLeft, Clock, Brain, Video } from 'lucide-react';
+import { Bot, Check, X, Loader2, ArrowLeft, Clock, Brain, Video, Building2 } from 'lucide-react';
 import { api, ApiError, type AgentTemplate, type AiAgentSummary } from '../lib/api.js';
 
 /**
@@ -14,6 +14,11 @@ const TOOL_INFO: Record<string, { label: string; icon: typeof Clock; connectionP
   update_conversation_memory: { label: 'Conversation memory', icon: Brain },
   schedule_google_meet: { label: 'Book Google Meet calls', icon: Video, connectionProvider: 'google_meet' },
   schedule_zoom_meeting: { label: 'Book Zoom calls', icon: Video, connectionProvider: 'zoom' },
+  // No connectionProvider - gated server-side on the business actually
+  // having property data (see hasPropertyData in aiContextGathererService.ts),
+  // not an OAuth connection this wizard can check up front.
+  list_properties: { label: 'List your properties', icon: Building2 },
+  check_property_status: { label: 'Check property/incident status', icon: Building2 },
 };
 
 export function BuildAgentWizard({ onCreated, onCancel }: { onCreated: (agent: AiAgentSummary) => void; onCancel: () => void }) {

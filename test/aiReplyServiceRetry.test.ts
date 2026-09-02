@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@google/genai';
 import { pool } from '../src/db/pool.js';
@@ -9,10 +10,31 @@ import { GET_CURRENT_TIME_TOOL_NAME } from '../src/services/time/getCurrentTimeT
 import { UPDATE_CONVERSATION_STATE_TOOL_NAME } from '../src/services/state/updateConversationStateTool.js';
 import { SCHEDULE_MEETING_TOOL_NAME } from '../src/services/meeting/scheduleMeetingTool.js';
 import { SCHEDULE_ZOOM_MEETING_TOOL_NAME } from '../src/services/meeting/scheduleZoomMeetingTool.js';
+import { LIST_PROPERTIES_TOOL_NAME } from '../src/services/property/listPropertiesTool.js';
+import { CHECK_PROPERTY_STATUS_TOOL_NAME } from '../src/services/property/checkPropertyStatusTool.js';
 import { getGeminiCircuitBreaker, resetAllGeminiCircuitBreakers } from '../src/services/aiCircuitBreaker.js';
 import { register } from '../src/services/authService.js';
 import { aiGateway } from '../src/services/ai/aiGateway.js';
+import { PropertyOperationsRepository } from '../src/repositories/propertyOperationsRepository.js';
 import { resetDatabase } from './helpers.js';
+
+async function createTestProperty(businessId: string, name: string): Promise<string> {
+  const property = await new PropertyOperationsRepository(pool).createProperty({
+    id: randomUUID(),
+    businessId,
+    name,
+    propertyType: 'VILLA',
+    status: 'ACTIVE',
+    addressLine1: '123 Main St',
+    addressLine2: null,
+    city: 'Kingston',
+    countryCode: 'JM',
+    timezone: null,
+    guestInstructions: null,
+    emergencyInstructions: null,
+  });
+  return property.id;
+}
 
 function fakeAgent(overrides: Partial<AiAgentRecord> = {}): AiAgentRecord {
   return {
@@ -323,6 +345,18 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
     expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, SCHEDULE_MEETING_TOOL_NAME]);
   });
 
+  it('offers list_properties/check_property_status only when the business actually has property data (hasPropertyData)', async () => {
+    generateContentMock.mockResolvedValueOnce({ text: 'ok' });
+    await generateAiReply(fakeAgent(), fakeContext({ connectedMeetingProviders: [], hasPropertyData: false }));
+    let names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME]);
+
+    generateContentMock.mockResolvedValueOnce({ text: 'ok' });
+    await generateAiReply(fakeAgent(), fakeContext({ connectedMeetingProviders: [], hasPropertyData: true }));
+    names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, LIST_PROPERTIES_TOOL_NAME, CHECK_PROPERTY_STATUS_TOOL_NAME]);
+  });
+
   it('the emergency pause (aiActionsPaused) strips every above-READ tool, regardless of connections or capability list - only get_current_time survives', async () => {
     generateContentMock.mockResolvedValueOnce({ text: 'ok' });
     await generateAiReply(
@@ -399,6 +433,83 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
     // though every mocked response keeps requesting the tool again.
     expect(generateContentMock).toHaveBeenCalledTimes(2);
     expect(result.status).toBe('generated');
+  });
+
+  it('list_properties returns the real properties for this business, never an invented one', async () => {
+    await createTestProperty(realBusinessId, 'Oakwood Villa');
+    generateContentMock
+      .mockResolvedValueOnce({ text: undefined, functionCalls: [{ name: LIST_PROPERTIES_TOOL_NAME, args: {} }] })
+      .mockResolvedValueOnce({ text: 'We manage Oakwood Villa.' });
+
+    await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), fakeContext({ businessId: realBusinessId }));
+
+    const followUpContents = generateContentMock.mock.calls[1]?.[0]?.contents as Array<{
+      parts: Array<{ functionResponse?: { name: string; response: { properties: Array<{ name: string; address: string | null }> } } }>;
+    }>;
+    const response = followUpContents.at(-1)?.parts[0]?.functionResponse?.response;
+    expect(response?.properties).toEqual([{ name: 'Oakwood Villa', propertyType: 'VILLA', status: 'ACTIVE', address: '123 Main St, Kingston' }]);
+  });
+
+  it('check_property_status honestly reports no_match rather than guessing a property', async () => {
+    generateContentMock
+      .mockResolvedValueOnce({
+        text: undefined,
+        functionCalls: [{ name: CHECK_PROPERTY_STATUS_TOOL_NAME, args: { propertyReference: 'Nonexistent Place' } }],
+      })
+      .mockResolvedValueOnce({ text: "I couldn't find that property." });
+
+    await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), fakeContext({ businessId: realBusinessId }));
+
+    const followUpContents = generateContentMock.mock.calls[1]?.[0]?.contents as Array<{
+      parts: Array<{ functionResponse?: { response: { found: boolean; reason: string } } }>;
+    }>;
+    expect(followUpContents.at(-1)?.parts[0]?.functionResponse?.response).toEqual({ found: false, reason: 'no_match' });
+  });
+
+  it('check_property_status reports real open incidents and their work order status for a resolved, unambiguous match', async () => {
+    const propertyId = await createTestProperty(realBusinessId, 'Oakwood Villa');
+    const repo = new PropertyOperationsRepository(pool);
+    const incident = await repo.createIncident({
+      id: randomUUID(),
+      businessId: realBusinessId,
+      propertyId,
+      sourceChannel: 'WHATSAPP',
+      title: 'Leaking pipe',
+      category: 'PLUMBING',
+      severity: 'PRIORITY',
+      status: 'OPEN',
+    });
+    await repo.createWorkOrder({
+      id: randomUUID(),
+      businessId: realBusinessId,
+      incidentId: incident.id,
+      status: 'SCHEDULED',
+      priority: 'PRIORITY',
+      description: 'Vendor dispatched to fix the leak',
+    });
+
+    generateContentMock
+      .mockResolvedValueOnce({
+        text: undefined,
+        functionCalls: [{ name: CHECK_PROPERTY_STATUS_TOOL_NAME, args: { propertyReference: 'oakwood' } }],
+      })
+      .mockResolvedValueOnce({ text: 'A vendor is already scheduled for your leak.' });
+
+    await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), fakeContext({ businessId: realBusinessId }));
+
+    const followUpContents = generateContentMock.mock.calls[1]?.[0]?.contents as Array<{
+      parts: Array<{
+        functionResponse?: {
+          response: { found: boolean; property: { name: string }; openIncidents: Array<{ title: string; status: string; workOrders: Array<{ status: string }> }> };
+        };
+      }>;
+    }>;
+    const response = followUpContents.at(-1)?.parts[0]?.functionResponse?.response;
+    expect(response?.found).toBe(true);
+    expect(response?.property.name).toBe('Oakwood Villa');
+    expect(response?.openIncidents).toHaveLength(1);
+    expect(response?.openIncidents[0]?.title).toBe('Leaking pipe');
+    expect(response?.openIncidents[0]?.workOrders).toEqual([{ status: 'SCHEDULED', priority: 'PRIORITY', scheduledFor: null }]);
   });
 });
 

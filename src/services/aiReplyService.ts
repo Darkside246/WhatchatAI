@@ -20,6 +20,9 @@ import { GoogleMeetingRepository } from '../repositories/googleMeetingRepository
 import { ZoomMeetingRepository } from '../repositories/zoomMeetingRepository.js';
 import { ScheduledMeetingsRepository } from '../repositories/scheduledMeetingsRepository.js';
 import type { MeetingProvider } from './meeting/meetingProvider.js';
+import { LIST_PROPERTIES_TOOL_NAME, listPropertiesFunctionDeclaration } from './property/listPropertiesTool.js';
+import { CHECK_PROPERTY_STATUS_TOOL_NAME, checkPropertyStatusFunctionDeclaration, type CheckPropertyStatusToolArgs } from './property/checkPropertyStatusTool.js';
+import { PropertyOperationsRepository } from '../repositories/propertyOperationsRepository.js';
 import { getGeminiCircuitBreaker, getGeminiConfigCircuitBreaker } from './aiCircuitBreaker.js';
 import { guardToolInvocation } from './ai/agentGuard.js';
 import { getToolPolicy } from './ai/aiToolPolicy.js';
@@ -31,6 +34,7 @@ const conversationStateRepository = new ConversationStateRepository(pool);
 const googleMeetingRepository = new GoogleMeetingRepository(pool);
 const zoomMeetingRepository = new ZoomMeetingRepository(pool);
 const scheduledMeetingsRepository = new ScheduledMeetingsRepository(pool);
+const propertyOperationsRepository = new PropertyOperationsRepository(pool);
 
 export type AiReplyResult =
   | { status: 'generated'; text: string }
@@ -73,11 +77,17 @@ const MAX_REPLY_CHARS = 2000;
  * tool call passes through), so this filtering here is purely so a paused
  * business's model isn't offered a tool it would just have been denied
  * anyway, wasting the one round of tool calls Gemini gets per reply.
+ *
+ * list_properties/check_property_status are gated on hasPropertyData -
+ * whether this business has any real property_properties row - the same
+ * "never offer a tool with nothing real behind it" rule as the meeting
+ * tools above, not a property-vertical-only allowlist.
  */
-function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: AiAgentRecord, aiActionsPaused: boolean) {
+function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: AiAgentRecord, aiActionsPaused: boolean, hasPropertyData: boolean) {
   let functionDeclarations = [getCurrentTimeFunctionDeclaration, updateConversationStateFunctionDeclaration];
   if (connectedMeetingProviders.includes('google_meet')) functionDeclarations.push(scheduleMeetingFunctionDeclaration);
   if (connectedMeetingProviders.includes('zoom')) functionDeclarations.push(scheduleZoomMeetingFunctionDeclaration);
+  if (hasPropertyData) functionDeclarations.push(listPropertiesFunctionDeclaration, checkPropertyStatusFunctionDeclaration);
   // Defensive against undefined, not just empty: allowedTools/forbiddenTools
   // are required on AiAgentRecord, but test/ isn't covered by
   // npm run typecheck (see tsconfig.json's include), so an older fakeAgent()
@@ -446,7 +456,9 @@ async function executeOneToolCall(
     call.name !== GET_CURRENT_TIME_TOOL_NAME &&
     call.name !== UPDATE_CONVERSATION_STATE_TOOL_NAME &&
     call.name !== SCHEDULE_MEETING_TOOL_NAME &&
-    call.name !== SCHEDULE_ZOOM_MEETING_TOOL_NAME
+    call.name !== SCHEDULE_ZOOM_MEETING_TOOL_NAME &&
+    call.name !== LIST_PROPERTIES_TOOL_NAME &&
+    call.name !== CHECK_PROPERTY_STATUS_TOOL_NAME
   ) {
     // Fails closed on any tool name this codebase did not explicitly
     // register (defense in depth beyond the declared tools above) - never
@@ -572,74 +584,128 @@ async function executeOneToolCall(
     return { booked: true, meetUrl: result.meetUrl, startAt: startAt.toISOString(), title: args.title };
   }
 
-  // SCHEDULE_ZOOM_MEETING_TOOL_NAME from here - the only remaining
-  // registered tool name (the allowlist check at the top of this function
-  // guarantees call.name is one of the four handled cases). Same honest,
-  // never-fabricated-success contract as the Google branch above; the one
-  // real difference is attendeeEmail is optional (see
-  // scheduleZoomMeetingTool.ts's own doc comment for why).
-  const args = (call.args ?? {}) as unknown as ScheduleZoomMeetingToolArgs;
-  if (!args.title || !args.startDateTimeIso) {
-    return { booked: false, reason: 'missing_required_fields' };
-  }
-  const connection = await zoomMeetingRepository.getConnectionByBusiness(context.businessId);
-  if (!connection) {
-    return { booked: false, reason: 'not_connected' };
-  }
+  if (call.name === SCHEDULE_ZOOM_MEETING_TOOL_NAME) {
+    // Same honest, never-fabricated-success contract as the Google branch
+    // above; the one real difference is attendeeEmail is optional (see
+    // scheduleZoomMeetingTool.ts's own doc comment for why).
+    const args = (call.args ?? {}) as unknown as ScheduleZoomMeetingToolArgs;
+    if (!args.title || !args.startDateTimeIso) {
+      return { booked: false, reason: 'missing_required_fields' };
+    }
+    const connection = await zoomMeetingRepository.getConnectionByBusiness(context.businessId);
+    if (!connection) {
+      return { booked: false, reason: 'not_connected' };
+    }
 
-  const accessToken = await getValidZoomMeetingAccessToken(context.businessId);
-  if (!accessToken) {
-    return { booked: false, reason: 'token_invalid' };
-  }
+    const accessToken = await getValidZoomMeetingAccessToken(context.businessId);
+    if (!accessToken) {
+      return { booked: false, reason: 'token_invalid' };
+    }
 
-  const startAt = new Date(args.startDateTimeIso);
-  if (Number.isNaN(startAt.getTime())) {
-    return { booked: false, reason: 'invalid_start_time' };
-  }
-  const durationMinutes = args.durationMinutes && args.durationMinutes > 0 ? args.durationMinutes : 30;
-  const endAt = new Date(startAt.getTime() + durationMinutes * 60_000);
+    const startAt = new Date(args.startDateTimeIso);
+    if (Number.isNaN(startAt.getTime())) {
+      return { booked: false, reason: 'invalid_start_time' };
+    }
+    const durationMinutes = args.durationMinutes && args.durationMinutes > 0 ? args.durationMinutes : 30;
+    const endAt = new Date(startAt.getTime() + durationMinutes * 60_000);
 
-  const result = await createZoomMeeting({
-    accessToken,
-    title: args.title,
-    startAt,
-    endAt,
-    timezone: context.businessTimezone,
-  });
-
-  if (result.status === 'error') {
-    console.error(`[aiReplyService] schedule_zoom_meeting failed for chat ${context.chatId}:`, result.reason);
-    return { booked: false, reason: 'zoom_api_error', detail: result.reason };
-  }
-
-  try {
-    await scheduledMeetingsRepository.createMeeting({
-      provider: 'zoom',
-      zoomConnectionId: connection.id,
-      businessId: context.businessId,
-      chatId: context.chatId,
-      contactId: context.crmContact?.id ?? null,
-      agentId: agent.id,
+    const result = await createZoomMeeting({
+      accessToken,
       title: args.title,
       startAt,
       endAt,
       timezone: context.businessTimezone,
-      attendeeEmail: args.attendeeEmail ?? null,
-      externalEventId: result.externalEventId,
-      meetUrl: result.joinUrl,
     });
-  } catch (error) {
-    // The real Zoom meeting already exists - a failure to record it
-    // locally must not make the tool claim the booking failed. Logged
-    // loudly since this row is the only local record of a real external
-    // meeting.
-    console.error(
-      `[aiReplyService] schedule_zoom_meeting: Zoom meeting ${result.externalEventId} created but failed to persist scheduled_meetings row for chat ${context.chatId}:`,
-      error instanceof Error ? error.message : error,
-    );
+
+    if (result.status === 'error') {
+      console.error(`[aiReplyService] schedule_zoom_meeting failed for chat ${context.chatId}:`, result.reason);
+      return { booked: false, reason: 'zoom_api_error', detail: result.reason };
+    }
+
+    try {
+      await scheduledMeetingsRepository.createMeeting({
+        provider: 'zoom',
+        zoomConnectionId: connection.id,
+        businessId: context.businessId,
+        chatId: context.chatId,
+        contactId: context.crmContact?.id ?? null,
+        agentId: agent.id,
+        title: args.title,
+        startAt,
+        endAt,
+        timezone: context.businessTimezone,
+        attendeeEmail: args.attendeeEmail ?? null,
+        externalEventId: result.externalEventId,
+        meetUrl: result.joinUrl,
+      });
+    } catch (error) {
+      // The real Zoom meeting already exists - a failure to record it
+      // locally must not make the tool claim the booking failed. Logged
+      // loudly since this row is the only local record of a real external
+      // meeting.
+      console.error(
+        `[aiReplyService] schedule_zoom_meeting: Zoom meeting ${result.externalEventId} created but failed to persist scheduled_meetings row for chat ${context.chatId}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+
+    return { booked: true, joinUrl: result.joinUrl, startAt: startAt.toISOString(), title: args.title };
   }
 
-  return { booked: true, joinUrl: result.joinUrl, startAt: startAt.toISOString(), title: args.title };
+  if (call.name === LIST_PROPERTIES_TOOL_NAME) {
+    const properties = await propertyOperationsRepository.listProperties(context.businessId);
+    return {
+      properties: properties.map((property) => ({
+        name: property.name,
+        propertyType: property.propertyType,
+        status: property.status,
+        address: [property.addressLine1, property.addressLine2, property.city].filter(Boolean).join(', ') || null,
+      })),
+    };
+  }
+
+  // CHECK_PROPERTY_STATUS_TOOL_NAME from here - the only remaining
+  // registered tool name (the allowlist check at the top of this function
+  // guarantees call.name is one of the handled cases). Read-only: resolves
+  // the customer's free-text reference via the same ILIKE lookup Operator
+  // Mode already uses, then reports real incidents - never guesses which
+  // property was meant when the match is ambiguous or absent.
+  const statusArgs = (call.args ?? {}) as unknown as CheckPropertyStatusToolArgs;
+  if (!statusArgs.propertyReference) {
+    return { found: false, reason: 'missing_property_reference' };
+  }
+  const matches = await propertyOperationsRepository.findPropertiesByNameForBusiness(context.businessId, statusArgs.propertyReference);
+  if (matches.length === 0) {
+    return { found: false, reason: 'no_match' };
+  }
+  if (matches.length > 1) {
+    return { found: false, reason: 'ambiguous', candidates: matches.map((property) => property.name) };
+  }
+
+  const property = matches[0]!;
+  const incidents = await propertyOperationsRepository.listIncidents(context.businessId, property.id);
+  const openIncidents = incidents.filter((incident) => incident.status !== 'RESOLVED' && incident.status !== 'CANCELLED');
+
+  const incidentSummaries = await Promise.all(
+    openIncidents.map(async (incident) => {
+      const workOrders = await propertyOperationsRepository.listWorkOrders(context.businessId, incident.id);
+      return {
+        title: incident.title,
+        category: incident.category,
+        severity: incident.severity,
+        status: incident.status,
+        // pool.ts registers a global type parser that returns
+        // timestamp/timestamptz columns as ISO strings, not JS Date
+        // objects, despite PropertyOperationsRepository's own types
+        // claiming Date - reflect the real runtime shape rather than
+        // calling .toISOString() on an already-string value.
+        reportedAt: incident.createdAt as unknown as string,
+        workOrders: workOrders.map((workOrder) => ({ status: workOrder.status, priority: workOrder.priority, scheduledFor: (workOrder.scheduledFor as unknown as string | null) ?? null })),
+      };
+    }),
+  );
+
+  return { found: true, property: { name: property.name, status: property.status }, openIncidents: incidentSummaries };
 }
 
 /**
@@ -730,7 +796,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
           // rather than just making it less likely.
           thinkingConfig: { thinkingBudget: 0 },
           maxOutputTokens: 1024,
-          tools: buildReplyTools(context.connectedMeetingProviders ?? [], agent, context.aiActionsPaused ?? false),
+          tools: buildReplyTools(context.connectedMeetingProviders ?? [], agent, context.aiActionsPaused ?? false, context.hasPropertyData ?? false),
         },
       });
     } catch (configError) {

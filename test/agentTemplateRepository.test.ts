@@ -16,17 +16,33 @@ describe('AgentTemplateRepository (real Postgres, seeded by migration 951)', () 
 
     expect(templates.map((t) => t.templateKey).sort()).toEqual(['personal_assistant', 'property_operations_assistant']);
     for (const template of templates) {
-      // Both templates recommend only real, registered tool names - never a
-      // capability that isn't actually implemented (no property-data tool
-      // exists yet, so both lists must be identical today).
-      expect(template.recommendedTools).toEqual([
-        'get_current_time',
-        'update_conversation_memory',
-        'schedule_google_meet',
-        'schedule_zoom_meeting',
-      ]);
+      // Every recommended tool must be a real, registered tool name - never
+      // a capability that isn't actually implemented.
+      expect(template.recommendedTools.every((name) => typeof name === 'string' && name.length > 0)).toBe(true);
       expect(template.defaultSystemInstruction.length).toBeGreaterThan(20);
     }
+
+    const personalAssistant = templates.find((t) => t.templateKey === 'personal_assistant');
+    expect(personalAssistant?.recommendedTools).toEqual([
+      'get_current_time',
+      'update_conversation_memory',
+      'schedule_google_meet',
+      'schedule_zoom_meeting',
+    ]);
+
+    // Migration 953: once list_properties/check_property_status existed as
+    // real tools, the property template was updated to actually recommend
+    // them - it no longer needs to stay identical to personal_assistant's
+    // list just because no property-data tool existed at seed time.
+    const propertyAssistant = templates.find((t) => t.templateKey === 'property_operations_assistant');
+    expect(propertyAssistant?.recommendedTools).toEqual([
+      'get_current_time',
+      'update_conversation_memory',
+      'schedule_google_meet',
+      'schedule_zoom_meeting',
+      'list_properties',
+      'check_property_status',
+    ]);
   });
 
   it('findByKey returns the real matching template, and null for an unknown key', async () => {

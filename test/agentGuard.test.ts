@@ -65,7 +65,9 @@ describe('agentGuard / AI Security Governor (real Postgres tenant, actor, and ra
       expect.arrayContaining([{ name: 'get_current_time', risk: 'READ', description: expect.any(String) }]),
     );
     expect(listRegisteredTools().map((tool) => tool.name).sort()).toEqual([
+      'check_property_status',
       'get_current_time',
+      'list_properties',
       'schedule_google_meet',
       'schedule_zoom_meeting',
       'update_conversation_memory',

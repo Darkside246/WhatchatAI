@@ -433,14 +433,16 @@ describe('Durable conversation state (Phase 3 - supplements raw history, never r
 });
 
 describe('generateAiReply tool boundary is unaffected by document content (Phase D4-B, items 9 and 10)', () => {
-  it('exactly four AI tools are registered - get_current_time (READ), update_conversation_memory (WRITE), schedule_google_meet (SEND), and schedule_zoom_meeting (SEND) - and no others', () => {
+  it('exactly six AI tools are registered - get_current_time/list_properties/check_property_status (READ), update_conversation_memory (WRITE), schedule_google_meet/schedule_zoom_meeting (SEND) - and no others', () => {
     const tools = listRegisteredTools();
-    expect(tools).toHaveLength(4);
+    expect(tools).toHaveLength(6);
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
     expect(byName.get(GET_CURRENT_TIME_TOOL_NAME)?.risk).toBe('READ');
     expect(byName.get(UPDATE_CONVERSATION_STATE_TOOL_NAME)?.risk).toBe('WRITE');
     expect(byName.get(SCHEDULE_MEETING_TOOL_NAME)?.risk).toBe('SEND');
     expect(byName.get(SCHEDULE_ZOOM_MEETING_TOOL_NAME)?.risk).toBe('SEND');
+    expect(byName.get('list_properties')?.risk).toBe('READ');
+    expect(byName.get('check_property_status')?.risk).toBe('READ');
   });
 
   it("9/10. a hostile document instructing the AI to call a tool never changes the declared tools array - Gemini still has only the existing registered tools", async () => {

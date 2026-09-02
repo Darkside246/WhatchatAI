@@ -21,6 +21,8 @@ const TOGGLEABLE_TOOLS: { name: string; label: string }[] = [
   { name: 'update_conversation_memory', label: 'Conversation memory' },
   { name: 'schedule_google_meet', label: 'Book Google Meet calls' },
   { name: 'schedule_zoom_meeting', label: 'Book Zoom calls' },
+  { name: 'list_properties', label: 'List properties' },
+  { name: 'check_property_status', label: 'Check property/incident status' },
 ];
 
 const CATEGORY_LABEL: Record<AgentCategory, string> = {

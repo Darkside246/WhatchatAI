@@ -43,6 +43,19 @@ const AI_TOOL_POLICY: Record<string, AiToolPolicyEntry> = {
       'Creates a real Zoom meeting and returns a join link sent directly to the customer in this chat. A genuine ' +
       'externally-visible side effect - same SEND tier as schedule_google_meet.',
   },
+  list_properties: {
+    name: 'list_properties',
+    risk: 'READ',
+    description:
+      'Lists this business\'s real properties from PropertyOperationsRepository. No arguments, no side effect.',
+  },
+  check_property_status: {
+    name: 'check_property_status',
+    risk: 'READ',
+    description:
+      'Resolves a customer-described property reference to a real property and reports its open incidents/work ' +
+      'order status. Read-only - creates nothing.',
+  },
 };
 
 export function getToolPolicy(toolName: string): AiToolPolicyEntry | null {

@@ -10,6 +10,7 @@ import { resolveInlineMediaPart, type InlineMediaPart } from './ai/mediaContext.
 import { GoogleMeetingRepository } from '../repositories/googleMeetingRepository.js';
 import { ZoomMeetingRepository } from '../repositories/zoomMeetingRepository.js';
 import type { MeetingProvider } from './meeting/meetingProvider.js';
+import { PropertyOperationsRepository } from '../repositories/propertyOperationsRepository.js';
 
 export interface GatherAiHandoffContextInput {
   businessId: string;
@@ -60,6 +61,14 @@ export interface AiHandoffContext {
    */
   connectedMeetingProviders: MeetingProvider[];
   /**
+   * Whether this business has any real property_properties rows at all -
+   * gates list_properties/check_property_status the same way
+   * connectedMeetingProviders gates the meeting tools, so a non-property
+   * business's agent is never handed a tool that would only ever return an
+   * empty result.
+   */
+  hasPropertyData: boolean;
+  /**
    * Emergency "Stop All Agents" kill switch (businesses.ai_actions_paused).
    * The authoritative enforcement is agentGuard.ts's guardToolInvocation -
    * this field only lets buildReplyTools avoid offering a tool Gemini would
@@ -90,8 +99,9 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
   const conversationStateRepository = new ConversationStateRepository(pool);
   const googleMeetingRepository = new GoogleMeetingRepository(pool);
   const zoomMeetingRepository = new ZoomMeetingRepository(pool);
+  const propertyOperationsRepository = new PropertyOperationsRepository(pool);
 
-  const [crmContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState, googleMeetingConnection, zoomMeetingConnection] = await Promise.all([
+  const [crmContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState, googleMeetingConnection, zoomMeetingConnection, properties] = await Promise.all([
     input.contactId
       ? crmContactRepository.findByWhatsAppContact(input.businessId, input.contactId)
       : Promise.resolve(null),
@@ -108,6 +118,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     conversationStateRepository.find(input.businessId, input.chatId),
     googleMeetingRepository.getConnectionByBusiness(input.businessId),
     zoomMeetingRepository.getConnectionByBusiness(input.businessId),
+    propertyOperationsRepository.listProperties(input.businessId),
   ]);
 
   const businessTimezone = resolveBusinessTimezone({ timezone: business?.timezone ?? null });
@@ -130,6 +141,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     timeContext,
     media,
     connectedMeetingProviders,
+    hasPropertyData: properties.length > 0,
     aiActionsPaused: business?.aiActionsPaused ?? false,
   };
 }
