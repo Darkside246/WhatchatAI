@@ -234,6 +234,7 @@ import {
   isRevocationNotFoundError,
   isNotRevocableError,
 } from '../services/messageRevocationService.js';
+import { startIncidentMonitoring } from '../services/alerting/incidentAlertService.js';
 import type { Request, Response, NextFunction } from 'express';
 
 const app = express();
@@ -3097,6 +3098,12 @@ void whatsappConnectionManager.reconnectAllPersisted().catch((error) => {
 // a failed first sync just leaves TimeService reporting STALE until the
 // next retry, never an unhandled rejection.
 timeService.start();
+
+// Push-based incident alerting over the same health signals the developer
+// dashboard already shows - see incidentAlertService.ts. No-ops safely
+// (console warning only) until ALERT_EMAIL_TO/TELEGRAM_BOT_TOKEN etc. are
+// configured in .env.
+startIncidentMonitoring();
 
 const httpServer = createServer(app);
 attachWebSocketServer(httpServer);
