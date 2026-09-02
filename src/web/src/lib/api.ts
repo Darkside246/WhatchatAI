@@ -251,6 +251,9 @@ export interface WorkspaceBusiness {
   isDeveloper: boolean;
   brandColor: string | null;
   logoDataUrl: string | null;
+  /** Emergency "Stop All Agents" kill switch - true blocks every AI tool call above a plain read, enforced server-side regardless of this flag ever reaching the frontend. */
+  aiActionsPaused: boolean;
+  aiActionsPausedAt: string | null;
 }
 
 export type TimeSyncStatus = 'SYNCED' | 'DEGRADED' | 'STALE' | 'MANUAL_OVERRIDE';
@@ -1040,6 +1043,11 @@ export const api = {
     request<{ business: WorkspaceBusiness }>('/workspace/business/branding', {
       method: 'PATCH',
       body: JSON.stringify(patch),
+    }),
+  setAiActionsPaused: (paused: boolean) =>
+    request<{ business: WorkspaceBusiness }>('/workspace/business/ai-pause', {
+      method: 'PATCH',
+      body: JSON.stringify({ paused }),
     }),
   getTimeStatus: () => request<TimeStatusResponse>('/workspace/time-status'),
   /** `targetLocalDateTime` is a "YYYY-MM-DDTHH:mm" wall-clock string (no timezone suffix) - interpreted server-side against the business's own timezone. */

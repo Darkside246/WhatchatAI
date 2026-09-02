@@ -1012,6 +1012,17 @@ export class WorkspaceService {
   }
 
   /**
+   * Emergency "Stop All Agents" kill switch. The authoritative enforcement
+   * is server-side in agentGuard.ts's guardToolInvocation - this setter
+   * only flips the stored flag every tool call is checked against.
+   */
+  async setAiActionsPaused(businessId: string, paused: boolean): Promise<BusinessRecord> {
+    const updated = await this.businessRepository.setAiActionsPaused(businessId, paused);
+    if (!updated) throw new Error(`Business ${businessId} not found`);
+    return updated;
+  }
+
+  /**
    * A real profile picture change - pushed to WhatsApp's own servers first
    * (updateOwnProfilePicture throws on failure, so a rejected upload never
    * gets stored locally as if it succeeded), then the exact same bytes are

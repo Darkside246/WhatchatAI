@@ -59,6 +59,13 @@ export interface AiHandoffContext {
    * guaranteed not_connected.
    */
   connectedMeetingProviders: MeetingProvider[];
+  /**
+   * Emergency "Stop All Agents" kill switch (businesses.ai_actions_paused).
+   * The authoritative enforcement is agentGuard.ts's guardToolInvocation -
+   * this field only lets buildReplyTools avoid offering a tool Gemini would
+   * just have denied anyway, saving a wasted round trip.
+   */
+  aiActionsPaused: boolean;
 }
 
 /**
@@ -123,5 +130,6 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     timeContext,
     media,
     connectedMeetingProviders,
+    aiActionsPaused: business?.aiActionsPaused ?? false,
   };
 }

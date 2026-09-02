@@ -94,4 +94,24 @@ describe('workspaceService business profile (real businesses row, Settings page 
     const reread = await workspaceService.getBusinessProfile(businessId);
     expect(reread.logoDataUrl).toBeNull();
   });
+
+  it('defaults to not paused, persists a real pause with a timestamp, and clears the timestamp on unpause', async () => {
+    const initial = await workspaceService.getBusinessProfile(businessId);
+    expect(initial.aiActionsPaused).toBe(false);
+    expect(initial.aiActionsPausedAt).toBeNull();
+
+    const paused = await workspaceService.setAiActionsPaused(businessId, true);
+    expect(paused.aiActionsPaused).toBe(true);
+    expect(paused.aiActionsPausedAt).not.toBeNull();
+
+    const unpaused = await workspaceService.setAiActionsPaused(businessId, false);
+    expect(unpaused.aiActionsPaused).toBe(false);
+    expect(unpaused.aiActionsPausedAt).toBeNull();
+  });
+
+  it('throws for setAiActionsPaused on a business id that does not exist', async () => {
+    await expect(
+      workspaceService.setAiActionsPaused('00000000-0000-0000-0000-000000000000', true),
+    ).rejects.toThrow();
+  });
 });

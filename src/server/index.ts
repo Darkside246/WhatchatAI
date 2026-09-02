@@ -2067,6 +2067,21 @@ app.patch(
   },
 );
 
+const updateAiActionsPausedSchema = z.object({ paused: z.boolean() });
+
+app.patch(
+  '/api/workspace/business/ai-pause',
+  requireWorkspaceContext,
+  requirePermission('settings.manage'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const parsed = updateAiActionsPausedSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_AI_PAUSE' });
+    const business = await workspaceService.setAiActionsPaused(businessId, parsed.data.paused);
+    return res.status(200).json({ business });
+  },
+);
+
 const updateBusinessBrandingSchema = z.object({
   brandColor: z.string().trim().nullable().optional(),
   logoDataUrl: z.string().nullable().optional(),

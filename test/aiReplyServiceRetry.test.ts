@@ -323,6 +323,16 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
     expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, SCHEDULE_MEETING_TOOL_NAME]);
   });
 
+  it('the emergency pause (aiActionsPaused) strips every above-READ tool, regardless of connections or capability list - only get_current_time survives', async () => {
+    generateContentMock.mockResolvedValueOnce({ text: 'ok' });
+    await generateAiReply(
+      fakeAgent(),
+      fakeContext({ connectedMeetingProviders: ['google_meet', 'zoom'], aiActionsPaused: true }),
+    );
+    const names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME]);
+  });
+
   it('answers a get_current_time tool call with the real TimeContext and makes exactly one follow-up call', async () => {
     const context = fakeContext({ businessId: realBusinessId, businessTimezone: 'Asia/Tokyo' });
     generateContentMock

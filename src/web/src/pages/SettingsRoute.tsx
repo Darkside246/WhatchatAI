@@ -1,5 +1,5 @@
 import { type ComponentType, type ReactNode, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Bot, Building2, Camera, Check, ChevronDown, ChevronRight, Clipboard, Clock, KeyRound, Lock, LogOut, Mail, Monitor, Palette, PanelLeft, PanelLeftClose, Pencil, RefreshCw, ShieldCheck, Trash2, UserPlus, Users, Plus, Video, X } from 'lucide-react';
+import { AlertTriangle, Bot, Building2, Camera, Check, ChevronDown, ChevronRight, Clipboard, Clock, KeyRound, Lock, LogOut, Mail, Monitor, Palette, PanelLeft, PanelLeftClose, Pencil, RefreshCw, ShieldCheck, Trash2, UserPlus, Users, Plus, Video, X } from 'lucide-react';
 import {
   api,
   mediaUrl,
@@ -18,6 +18,7 @@ import { Avatar } from '../components/Avatar.js';
 import { IntegrationSettingsPanel } from '../components/IntegrationSettingsPanel.js';
 import { KnowledgeBaseCard } from '../components/KnowledgeBaseCard.js';
 import { MediaLightbox } from '../components/MediaLightbox.js';
+import { ToggleSwitch } from '../components/ToggleSwitch.js';
 import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
 import { triggerLockNow } from '../lib/lockEvents.js';
@@ -661,6 +662,59 @@ const LOGO_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
  * auth business record after each save is what makes that, and the nav
  * rail logo, update immediately with no reload.
  */
+/**
+ * A real, server-enforced emergency stop - not a frontend-only toggle.
+ * Turning this off blocks every AI tool call above a plain read (booking a
+ * meeting, and any future action tool) at the one gate every call passes
+ * through (agentGuard.ts's guardToolInvocation), regardless of which agent
+ * or which chat. The AI still replies to plain questions; it just cannot
+ * take any real-world action while paused.
+ */
+function AiActionsPauseCard() {
+  const auth = useAuth();
+  const canEdit = auth.role === 'OWNER' || auth.role === 'ADMIN';
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const paused = auth.business?.aiActionsPaused ?? false;
+
+  async function handleToggle() {
+    setSaving(true); setError(null);
+    try { await api.setAiActionsPaused(!paused); await auth.refresh(); }
+    catch (err) { setError(err instanceof ApiError ? err.message : 'Failed to update.'); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <div className={`rounded-xl border p-5 ${paused ? 'border-error/40 bg-error/5' : 'border-border-subtle bg-surface-2'}`}>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="flex items-center gap-2 text-body font-semibold text-fg">
+            {paused && <AlertTriangle size={15} className="text-error" aria-hidden />}
+            AI actions
+          </h2>
+          <p className="mt-1 max-w-lg text-caption text-fg-muted">
+            {paused
+              ? 'AI actions are paused. Every agent can still read and reply to messages, but no meeting booking or other real-world action will run for any agent or chat until you turn this back on.'
+              : 'Emergency stop for every AI agent on this business. Turning this off immediately blocks meeting booking and any other action-taking tool, everywhere - agents still reply, they just can\'t act.'}
+          </p>
+          {paused && auth.business?.aiActionsPausedAt && (
+            <p className="mt-1 text-meta text-fg-muted">
+              Paused since {new Date(auth.business.aiActionsPausedAt).toLocaleString()}
+            </p>
+          )}
+          {error && <p className="mt-1 text-caption text-error">{error}</p>}
+        </div>
+        {canEdit && (
+          <div className="flex shrink-0 items-center gap-2">
+            <span className="text-caption font-medium text-fg-secondary">{paused ? 'Paused' : 'Enabled'}</span>
+            <ToggleSwitch checked={!paused} onChange={() => void handleToggle()} disabled={saving} label="AI actions enabled" />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function BrandingCard() {
   const auth = useAuth();
   const canEdit = auth.role === 'OWNER' || auth.role === 'ADMIN'; // matches settings.manage in domain/auth/permissions.ts
@@ -1851,6 +1905,7 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
         {view === 'ai' && (
           <div className="space-y-4">
             <SectionTitle title="AI & Knowledge" desc="What your AI agents know and which external AI providers power them." />
+            <AiActionsPauseCard />
             <KnowledgeBaseCard />
             <IntegrationSettingsPanel />
           </div>

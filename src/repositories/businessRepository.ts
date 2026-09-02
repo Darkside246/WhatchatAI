@@ -16,6 +16,10 @@ export interface BusinessRecord {
   brandColor: string | null;
   /** A data: URI (validated + size-capped in workspaceService.ts), or null for no logo set. */
   logoDataUrl: string | null;
+  /** Emergency "Stop All Agents" kill switch - true blocks every AI tool call above the READ risk tier, enforced server-side in agentGuard.ts's guardToolInvocation (the one gate every tool call passes through), never just a frontend-hidden button. */
+  aiActionsPaused: boolean;
+  /** When aiActionsPaused was last turned on - null once cleared. Display-only ("paused since..."), not itself load-bearing for enforcement. */
+  aiActionsPausedAt: Date | null;
 }
 
 interface BusinessRow {
@@ -29,10 +33,12 @@ interface BusinessRow {
   scheduled_purge_at: Date | null;
   brand_color: string | null;
   logo_data_url: string | null;
+  ai_actions_paused: boolean;
+  ai_actions_paused_at: Date | null;
 }
 
 const BUSINESS_COLUMNS =
-  'id, name, timezone, time_source, manual_override_target_utc, manual_override_set_at, deletion_requested_at, scheduled_purge_at, brand_color, logo_data_url';
+  'id, name, timezone, time_source, manual_override_target_utc, manual_override_set_at, deletion_requested_at, scheduled_purge_at, brand_color, logo_data_url, ai_actions_paused, ai_actions_paused_at';
 
 function toRecord(row: BusinessRow): BusinessRecord {
   return {
@@ -46,6 +52,8 @@ function toRecord(row: BusinessRow): BusinessRecord {
     scheduledPurgeAt: row.scheduled_purge_at,
     brandColor: row.brand_color,
     logoDataUrl: row.logo_data_url,
+    aiActionsPaused: row.ai_actions_paused,
+    aiActionsPausedAt: row.ai_actions_paused_at,
   };
 }
 
@@ -125,6 +133,17 @@ export class BusinessRepository {
     const { rows } = await this.db.query<BusinessRow>(
       `UPDATE businesses SET brand_color = $2, updated_at = now() WHERE id = $1 RETURNING ${BUSINESS_COLUMNS}`,
       [id, color],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  async setAiActionsPaused(id: string, paused: boolean): Promise<BusinessRecord | null> {
+    const { rows } = await this.db.query<BusinessRow>(
+      `UPDATE businesses
+       SET ai_actions_paused = $2, ai_actions_paused_at = CASE WHEN $2 THEN now() ELSE NULL END, updated_at = now()
+       WHERE id = $1
+       RETURNING ${BUSINESS_COLUMNS}`,
+      [id, paused],
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }

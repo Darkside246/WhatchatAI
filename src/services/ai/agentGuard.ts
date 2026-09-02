@@ -9,6 +9,7 @@ export class UnknownTenantError extends Error {}
 export class UnknownActorError extends Error {}
 export class SystemTierToolDeniedError extends Error {}
 export class ToolRateLimitExceededError extends Error {}
+export class AiActionsPausedError extends Error {}
 
 export interface ToolInvocationContext {
   businessId: string;
@@ -121,6 +122,17 @@ export async function guardToolInvocation(toolName: string, context: ToolInvocat
   const business = await businessRepository.findById(context.businessId).catch(() => null);
   if (!business) {
     return denyAndAudit('Tool invocation for an unknown business', toolName, context, UnknownTenantError);
+  }
+
+  // Emergency "Stop All Agents" kill switch (businesses.ai_actions_paused,
+  // migration 952) - checked here, not just in aiReplyService's own
+  // buildReplyTools filtering, because this is the one gate every tool
+  // call passes through regardless of caller, so a future tool (an
+  // OpenClaw-routed call included) can never accidentally skip it.
+  // READ-tier tools stay available - "paused" means no action is taken,
+  // not that the AI stops answering basic questions.
+  if (business.aiActionsPaused && risk !== 'READ') {
+    return denyAndAudit('AI actions are paused for this business', toolName, context, AiActionsPausedError);
   }
 
   const agent = await aiAgentRepository.findByIdForBusiness(context.agentId, context.businessId).catch(() => null);

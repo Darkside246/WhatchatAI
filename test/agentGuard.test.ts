@@ -7,10 +7,12 @@ import {
   UnknownActorError,
   SystemTierToolDeniedError,
   ToolRateLimitExceededError,
+  AiActionsPausedError,
 } from '../src/services/ai/agentGuard.js';
 import { isToolRegistered, listRegisteredTools, isTierAlwaysDenied } from '../src/services/ai/aiToolPolicy.js';
 import { SecurityAuditLogRepository } from '../src/repositories/securityAuditLogRepository.js';
 import { AiAgentRepository } from '../src/repositories/aiAgentRepository.js';
+import { BusinessRepository } from '../src/repositories/businessRepository.js';
 import { createTestBusiness, resetDatabase } from './helpers.js';
 
 describe('agentGuard / AI Security Governor (real Postgres tenant, actor, and rate-limit checks - not mocked)', () => {
@@ -140,5 +142,33 @@ describe('agentGuard / AI Security Governor (real Postgres tenant, actor, and ra
     } finally {
       delete process.env.AI_TOOL_RATE_LIMIT_READ;
     }
+  });
+
+  it('the emergency pause blocks a WRITE-tier tool but still allows READ, and audits the denial', async () => {
+    await new BusinessRepository(pool).setAiActionsPaused(businessId, true);
+
+    await expect(
+      guardToolInvocation('update_conversation_memory', { businessId, whatsappAccountId: null, chatId: null, agentId }),
+    ).rejects.toThrow(AiActionsPausedError);
+
+    // A plain read is unaffected by the pause - "no action", not "AI goes silent".
+    await expect(
+      guardToolInvocation('get_current_time', { businessId, whatsappAccountId: null, chatId: null, agentId }),
+    ).resolves.toBeUndefined();
+
+    const log = await new SecurityAuditLogRepository(pool).listRecent(businessId, 10);
+    const denials = log.filter((entry) => entry.eventType === 'ai_tool_denied');
+    expect(denials).toHaveLength(1);
+    expect(denials[0]?.reason).toContain('AI actions are paused');
+  });
+
+  it('un-pausing restores a previously blocked WRITE-tier tool', async () => {
+    const businessRepository = new BusinessRepository(pool);
+    await businessRepository.setAiActionsPaused(businessId, true);
+    await businessRepository.setAiActionsPaused(businessId, false);
+
+    await expect(
+      guardToolInvocation('update_conversation_memory', { businessId, whatsappAccountId: null, chatId: null, agentId }),
+    ).resolves.toBeUndefined();
   });
 });

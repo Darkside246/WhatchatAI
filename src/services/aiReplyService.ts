@@ -22,6 +22,7 @@ import { ScheduledMeetingsRepository } from '../repositories/scheduledMeetingsRe
 import type { MeetingProvider } from './meeting/meetingProvider.js';
 import { getGeminiCircuitBreaker, getGeminiConfigCircuitBreaker } from './aiCircuitBreaker.js';
 import { guardToolInvocation } from './ai/agentGuard.js';
+import { getToolPolicy } from './ai/aiToolPolicy.js';
 import { mediaFallbackText, type InlineMediaPart } from './ai/mediaContext.js';
 import { classifyAiError } from './ai/aiErrorClassification.js';
 import { notifyBusiness } from './notificationService.js';
@@ -65,8 +66,15 @@ const MAX_REPLY_CHARS = 2000;
  * true (every pre-existing agent has it false, preserving today's
  * behavior of offering every connection-eligible tool); forbiddenTools
  * always applies, even for those agents - a real hard block.
+ *
+ * Also filtered by the business's own emergency "Stop All Agents" kill
+ * switch (aiActionsPaused) - the authoritative, unbypassable enforcement
+ * of this lives in agentGuard.ts's guardToolInvocation (the one gate every
+ * tool call passes through), so this filtering here is purely so a paused
+ * business's model isn't offered a tool it would just have been denied
+ * anyway, wasting the one round of tool calls Gemini gets per reply.
  */
-function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: AiAgentRecord) {
+function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: AiAgentRecord, aiActionsPaused: boolean) {
   let functionDeclarations = [getCurrentTimeFunctionDeclaration, updateConversationStateFunctionDeclaration];
   if (connectedMeetingProviders.includes('google_meet')) functionDeclarations.push(scheduleMeetingFunctionDeclaration);
   if (connectedMeetingProviders.includes('zoom')) functionDeclarations.push(scheduleZoomMeetingFunctionDeclaration);
@@ -81,6 +89,9 @@ function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: Ai
     functionDeclarations = functionDeclarations.filter((declaration) => !!declaration.name && allowedTools.includes(declaration.name));
   }
   functionDeclarations = functionDeclarations.filter((declaration) => !declaration.name || !forbiddenTools.includes(declaration.name));
+  if (aiActionsPaused) {
+    functionDeclarations = functionDeclarations.filter((declaration) => getToolPolicy(declaration.name ?? '')?.risk === 'READ');
+  }
   return [{ functionDeclarations }];
 }
 
@@ -719,7 +730,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
           // rather than just making it less likely.
           thinkingConfig: { thinkingBudget: 0 },
           maxOutputTokens: 1024,
-          tools: buildReplyTools(context.connectedMeetingProviders ?? [], agent),
+          tools: buildReplyTools(context.connectedMeetingProviders ?? [], agent, context.aiActionsPaused ?? false),
         },
       });
     } catch (configError) {
