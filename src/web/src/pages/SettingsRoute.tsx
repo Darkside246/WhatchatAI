@@ -1,5 +1,5 @@
 import { type ComponentType, type ReactNode, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Bot, Building2, Camera, Check, ChevronDown, ChevronRight, Clipboard, Clock, KeyRound, Lock, LogOut, Mail, Monitor, Palette, PanelLeft, PanelLeftClose, Pencil, RefreshCw, ShieldCheck, Trash2, UserPlus, Users, Plus, X } from 'lucide-react';
+import { Bot, Building2, Camera, Check, ChevronDown, ChevronRight, Clipboard, Clock, KeyRound, Lock, LogOut, Mail, Monitor, Palette, PanelLeft, PanelLeftClose, Pencil, RefreshCw, ShieldCheck, Trash2, UserPlus, Users, Plus, Video, X } from 'lucide-react';
 import {
   api,
   mediaUrl,
@@ -69,6 +69,7 @@ const STATUS_COLOR: Record<WhatsAppConnectionSnapshot['status'], string> = {
   CONNECTED: 'bg-success/15 text-success',
   CONNECTING: 'bg-info/15 text-info',
   QR_READY: 'bg-info/15 text-info',
+  PAIRING_CODE_READY: 'bg-info/15 text-info',
   RECONNECTING: 'bg-warning/15 text-warning',
   DISCONNECTED: 'bg-fg-muted/15 text-fg-muted',
   LOGGED_OUT: 'bg-error/15 text-error',
@@ -1769,12 +1770,13 @@ const COUNTRIES: [string, string][] = [
 ];
 
 
-type SettingsView = 'business' | 'ai' | 'appearance' | 'team' | 'account' | 'inbox';
+type SettingsView = 'business' | 'ai' | 'appearance' | 'team' | 'account' | 'inbox' | 'meetings';
 
 const SETTINGS_NAV: { id: SettingsView; label: string; sub: string; Icon: ComponentType<{ size?: number; className?: string; 'aria-hidden'?: boolean }> }[] = [
   { id: 'business',   label: 'Business',           sub: 'Profile · Time & location',       Icon: Building2   },
   { id: 'ai',         label: 'AI & Knowledge',      sub: 'Knowledge base · Integrations',   Icon: Bot         },
   { id: 'inbox',      label: 'Connected Inbox',     sub: 'Gmail · Outlook · App mail',      Icon: Mail        },
+  { id: 'meetings',   label: 'Meetings',            sub: 'Google Meet · Zoom',              Icon: Video       },
   { id: 'appearance', label: 'Appearance',           sub: 'Theme',                           Icon: Palette     },
   { id: 'team',       label: 'Team',                sub: 'Members · Teams · Availability',  Icon: Users       },
   { id: 'account',    label: 'Account & Security',  sub: 'Sessions · PIN · Sign out',       Icon: ShieldCheck },
@@ -1881,6 +1883,32 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
           <div className="space-y-4">
             <SectionTitle title="Connected Inbox" desc="Link Gmail and Outlook accounts to receive and read all your business email in one place." />
             <ConnectedInboxCard />
+          </div>
+        )}
+
+        {view === 'meetings' && (
+          <div className="space-y-4">
+            <SectionTitle title="Meetings" desc="Connect Google Meet and/or Zoom so your AI agents can book real meetings with customers directly in WhatsApp. Connect either or both - if both are connected, the AI asks which the customer prefers." />
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+              <ConnectMeetingProviderCard
+                provider="google_meet"
+                title="Google Meet booking"
+                badgeLabel="Google"
+                badgeClassName="bg-red-500/15 text-red-600 dark:text-red-400"
+                connectLabel="Connect Google"
+                notConnectedCopy="Not connected yet. Connect a Google account so AURA's AI can book real Google Meet calls with your customers directly in WhatsApp."
+                footerCopy="This is a separate grant from the Connected Inbox above — only calendar access is requested, no email is read. Your password is never stored, only an OAuth token. You can disconnect at any time."
+              />
+              <ConnectMeetingProviderCard
+                provider="zoom"
+                title="Zoom booking"
+                badgeLabel="Zoom"
+                badgeClassName="bg-blue-500/15 text-blue-600 dark:text-blue-400"
+                connectLabel="Connect Zoom"
+                notConnectedCopy="Not connected yet. Connect a Zoom account so AURA's AI can book real Zoom meetings and send customers a join link directly in WhatsApp."
+                footerCopy="Zoom delivers the join link directly in this chat, not by email. Your password is never stored, only an OAuth token. You can disconnect at any time."
+              />
+            </div>
           </div>
         )}
 
@@ -2026,6 +2054,101 @@ function ConnectedInboxCard() {
         Accounts connect via OAuth — your passwords are never stored. Only read access is requested.
         You can disconnect at any time.
       </p>
+    </div>
+  );
+}
+
+/**
+ * Reused for both Google Meet and Zoom - identical connect/disconnect flow
+ * and card layout, differing only in which provider's OAuth endpoints it
+ * calls and its display copy. See meetingOAuthRouter.ts / api.ts for the
+ * shared :provider-parameterized backend this drives.
+ */
+function ConnectMeetingProviderCard(props: {
+  provider: 'google_meet' | 'zoom';
+  title: string;
+  badgeLabel: string;
+  badgeClassName: string;
+  connectLabel: string;
+  notConnectedCopy: string;
+  footerCopy: string;
+}) {
+  type Connection = { id: string; email: string; displayName: string | null; createdAt: string };
+
+  const [connection, setConnection] = useState<Connection | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [disconnecting, setDisconnecting] = useState(false);
+
+  function load() {
+    api.getMeetingConnection(props.provider).then((r) => setConnection(r.connection)).catch(() => undefined).finally(() => setLoading(false));
+  }
+
+  useEffect(() => { load(); }, []);
+
+  // Check for OAuth success/error redirected from the callback - distinct
+  // query param names from email OAuth's own oauth_success/oauth_error so
+  // the two flows never collide when both redirect back to `/`. The
+  // success param's value is the provider - only reload this card's own
+  // provider, so connecting one doesn't spuriously refetch the other.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const success = params.get('meeting_oauth_success');
+    const error = params.get('meeting_oauth_error');
+    if (success || error) {
+      window.history.replaceState({}, '', window.location.pathname);
+      if (success === props.provider) load();
+    }
+  }, []);
+
+  async function handleDisconnect() {
+    setDisconnecting(true);
+    try {
+      await api.disconnectMeetingConnection(props.provider);
+      setConnection(null);
+    } finally { setDisconnecting(false); }
+  }
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-1 p-5">
+      <div className="mb-4 flex items-center gap-2">
+        <Video size={16} className="text-accent" aria-hidden />
+        <h3 className="text-body font-semibold text-fg">{props.title}</h3>
+      </div>
+
+      {loading ? (
+        <p className="text-caption text-fg-muted">Loading…</p>
+      ) : connection ? (
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-border-subtle p-3">
+          <span className={`rounded-full px-2 py-0.5 text-meta font-medium ${props.badgeClassName}`}>{props.badgeLabel}</span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-caption font-medium text-fg">{connection.email}</p>
+            <p className="text-meta text-fg-muted">Connected {new Date(connection.createdAt).toLocaleDateString()}</p>
+          </div>
+          <button
+            type="button"
+            disabled={disconnecting}
+            onClick={() => void handleDisconnect()}
+            className="flex items-center gap-1 rounded-lg border border-border-subtle px-2.5 py-1 text-meta text-error/70 hover:border-error/40 hover:text-error disabled:opacity-40"
+          >
+            <X size={11} aria-hidden />
+            Disconnect
+          </button>
+        </div>
+      ) : (
+        <p className="mb-4 text-caption text-fg-muted">{props.notConnectedCopy}</p>
+      )}
+
+      {!connection && (
+        <a
+          href={api.meetingOauthConnectUrl(props.provider)}
+          className="flex w-fit items-center gap-2 rounded-lg border border-accent/40 px-3 py-2 text-caption font-medium text-accent transition-colors hover:bg-accent/5"
+        >
+          <Video size={13} aria-hidden />
+          {props.connectLabel}
+        </a>
+      )}
+
+      <p className="mt-4 text-meta text-fg-muted">{props.footerCopy}</p>
     </div>
   );
 }

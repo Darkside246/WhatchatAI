@@ -5,6 +5,8 @@ import type { AiHandoffContext } from '../src/services/aiContextGathererService.
 import type { WhatsAppMessageRecord } from '../src/repositories/whatsappMessageRepository.js';
 import { buildTimeContext } from '../src/services/time/timeContext.js';
 import { listRegisteredTools } from '../src/services/ai/aiToolPolicy.js';
+import { SCHEDULE_MEETING_TOOL_NAME } from '../src/services/meeting/scheduleMeetingTool.js';
+import { SCHEDULE_ZOOM_MEETING_TOOL_NAME } from '../src/services/meeting/scheduleZoomMeetingTool.js';
 import { GET_CURRENT_TIME_TOOL_NAME } from '../src/services/time/getCurrentTimeTool.js';
 import { UPDATE_CONVERSATION_STATE_TOOL_NAME } from '../src/services/state/updateConversationStateTool.js';
 import { emptyConversationState } from '../src/repositories/conversationStateRepository.js';
@@ -431,12 +433,14 @@ describe('Durable conversation state (Phase 3 - supplements raw history, never r
 });
 
 describe('generateAiReply tool boundary is unaffected by document content (Phase D4-B, items 9 and 10)', () => {
-  it('exactly two AI tools are registered - get_current_time (READ) and update_conversation_memory (WRITE) - and no others', () => {
+  it('exactly four AI tools are registered - get_current_time (READ), update_conversation_memory (WRITE), schedule_google_meet (SEND), and schedule_zoom_meeting (SEND) - and no others', () => {
     const tools = listRegisteredTools();
-    expect(tools).toHaveLength(2);
+    expect(tools).toHaveLength(4);
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
     expect(byName.get(GET_CURRENT_TIME_TOOL_NAME)?.risk).toBe('READ');
     expect(byName.get(UPDATE_CONVERSATION_STATE_TOOL_NAME)?.risk).toBe('WRITE');
+    expect(byName.get(SCHEDULE_MEETING_TOOL_NAME)?.risk).toBe('SEND');
+    expect(byName.get(SCHEDULE_ZOOM_MEETING_TOOL_NAME)?.risk).toBe('SEND');
   });
 
   it("9/10. a hostile document instructing the AI to call a tool never changes the declared tools array - Gemini still has only the existing registered tools", async () => {

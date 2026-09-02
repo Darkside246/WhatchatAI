@@ -7,6 +7,9 @@ import { searchKnowledgeBase, type KnowledgeBaseSearchResult } from './knowledge
 import { retrieveAiDocumentContext, type AiDocumentRetrievalResponse } from './aiDocumentRetrievalService.js';
 import { timeService, resolveBusinessTimezone, type TimeContext } from './time/timeService.js';
 import { resolveInlineMediaPart, type InlineMediaPart } from './ai/mediaContext.js';
+import { GoogleMeetingRepository } from '../repositories/googleMeetingRepository.js';
+import { ZoomMeetingRepository } from '../repositories/zoomMeetingRepository.js';
+import type { MeetingProvider } from './meeting/meetingProvider.js';
 
 export interface GatherAiHandoffContextInput {
   businessId: string;
@@ -47,6 +50,15 @@ export interface AiHandoffContext {
   timeContext: TimeContext;
   /** Real, decoded image/audio/video/document bytes for the triggering message, when eligible - null when there is none, it hasn't downloaded yet, or it isn't a Gemini-supported mimeType/size. */
   media: InlineMediaPart | null;
+  /**
+   * Which meeting-booking provider(s) this business has actually connected
+   * (google_meet, zoom, both, or neither) - decided once here rather than
+   * re-checked per tool call, since Gemini gets exactly one round of tool
+   * calls per reply (see aiReplyService.ts's buildReplyTools): offering a
+   * tool for an unconnected provider would waste that one shot on a
+   * guaranteed not_connected.
+   */
+  connectedMeetingProviders: MeetingProvider[];
 }
 
 /**
@@ -69,8 +81,10 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
   const messageRepository = new WhatsAppMessageRepository(queryAsTenant(input.businessId));
   const businessRepository = new BusinessRepository(pool);
   const conversationStateRepository = new ConversationStateRepository(pool);
+  const googleMeetingRepository = new GoogleMeetingRepository(pool);
+  const zoomMeetingRepository = new ZoomMeetingRepository(pool);
 
-  const [crmContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState] = await Promise.all([
+  const [crmContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState, googleMeetingConnection, zoomMeetingConnection] = await Promise.all([
     input.contactId
       ? crmContactRepository.findByWhatsAppContact(input.businessId, input.contactId)
       : Promise.resolve(null),
@@ -85,10 +99,17 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     businessRepository.findById(input.businessId),
     input.mediaId ? resolveInlineMediaPart(input.businessId, input.mediaId) : Promise.resolve(null),
     conversationStateRepository.find(input.businessId, input.chatId),
+    googleMeetingRepository.getConnectionByBusiness(input.businessId),
+    zoomMeetingRepository.getConnectionByBusiness(input.businessId),
   ]);
 
   const businessTimezone = resolveBusinessTimezone({ timezone: business?.timezone ?? null });
   const timeContext = timeService.buildContextForTimezone(businessTimezone, business ?? undefined);
+
+  const connectedMeetingProviders: MeetingProvider[] = [
+    ...(googleMeetingConnection ? (['google_meet'] as const) : []),
+    ...(zoomMeetingConnection ? (['zoom'] as const) : []),
+  ];
 
   return {
     businessId: input.businessId,
@@ -101,5 +122,6 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     businessTimezone,
     timeContext,
     media,
+    connectedMeetingProviders,
   };
 }

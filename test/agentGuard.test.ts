@@ -56,13 +56,18 @@ describe('agentGuard / AI Security Governor (real Postgres tenant, actor, and ra
     expect(JSON.stringify(metadataWithoutAgentId)).not.toMatch(/\+?\d{7,}/); // no phone-number-shaped value
   });
 
-  it('the get_current_time tool is registered as READ risk, alongside only the one other known tool', () => {
+  it('the get_current_time tool is registered as READ risk, alongside only the other known tools', () => {
     expect(isToolRegistered('get_current_time')).toBe(true);
     expect(isToolRegistered('anything_else')).toBe(false);
     expect(listRegisteredTools()).toEqual(
       expect.arrayContaining([{ name: 'get_current_time', risk: 'READ', description: expect.any(String) }]),
     );
-    expect(listRegisteredTools().map((tool) => tool.name).sort()).toEqual(['get_current_time', 'update_conversation_memory']);
+    expect(listRegisteredTools().map((tool) => tool.name).sort()).toEqual([
+      'get_current_time',
+      'schedule_google_meet',
+      'schedule_zoom_meeting',
+      'update_conversation_memory',
+    ]);
   });
 
   it('SYSTEM is the only risk tier always denied, regardless of registration', () => {

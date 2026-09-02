@@ -28,6 +28,21 @@ const AI_TOOL_POLICY: Record<string, AiToolPolicyEntry> = {
       'Writes a goal/facts/open-questions patch to this exact conversation\'s structured state row (conversation_states). ' +
       'Cannot touch any other business record, execute any action, or affect any other conversation.',
   },
+  schedule_google_meet: {
+    name: 'schedule_google_meet',
+    risk: 'SEND',
+    description:
+      'Creates a real Google Calendar event with a Meet link and emails a real invite to the customer\'s address. ' +
+      'A genuine externally-visible side effect - rate-limited at the SEND tier, same category as any other tool ' +
+      'that sends something to a real address outside this system.',
+  },
+  schedule_zoom_meeting: {
+    name: 'schedule_zoom_meeting',
+    risk: 'SEND',
+    description:
+      'Creates a real Zoom meeting and returns a join link sent directly to the customer in this chat. A genuine ' +
+      'externally-visible side effect - same SEND tier as schedule_google_meet.',
+  },
 };
 
 export function getToolPolicy(toolName: string): AiToolPolicyEntry | null {

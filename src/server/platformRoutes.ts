@@ -8,6 +8,7 @@ import { invoiceRouter } from './invoiceRouter.js';
 import { operatorModeRouter } from './operatorModeRouter.js';
 import { legalRouter } from './legalRouter.js';
 import { emailOAuthRouter } from './emailOAuthRouter.js';
+import { meetingOAuthRouter } from './meetingOAuthRouter.js';
 import { pool } from '../db/pool.js';
 import { PlatformActionRepository } from '../repositories/platformActionRepository.js';
 import { PlatformAuditLedgerRepository } from '../repositories/platformAuditLedgerRepository.js';
@@ -31,4 +32,7 @@ export function mountPlatformRoutes(app: Express): void {
   app.use('/api/legal', legalRouter);
   // Email OAuth — mix of public (callback) and authenticated routes.
   app.use('/api/email-oauth', emailOAuthRouter);
+  // Google Meet booking OAuth — same mix, deliberately a separate router/mount
+  // from email OAuth (see googleMeetingOAuthService.ts's own header comment).
+  app.use('/api/meeting-oauth', meetingOAuthRouter);
 }
