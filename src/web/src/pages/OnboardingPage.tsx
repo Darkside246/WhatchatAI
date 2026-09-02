@@ -276,10 +276,48 @@ function hasInProgressPhonePairing(connection: WhatsAppConnectionSnapshot | null
   return Boolean(connection?.pairingPhoneNumber) || connection?.status === 'PAIRING_CODE_READY';
 }
 
+/**
+ * The connection-snapshot check above is not enough on its own: it only
+ * sees evidence of an in-progress phone pairing once the backend's
+ * response has actually landed in a poll. A remount that happens to land
+ * in the gap between "user submitted a phone number" and "the next poll
+ * reflects the resulting pairing code" - a real, observed race, not
+ * theoretical: the exact "code was on screen for one second" bug reported
+ * while testing - sees a null/stale connection and has no way to know the
+ * user was ever on the phone tab at all. sessionStorage survives a full
+ * component unmount/remount within the same tab, unlike React state or a
+ * ref, so it is the one signal that cannot be lost to that race. Scoped to
+ * sessionStorage (not localStorage) deliberately - this is a
+ * this-onboarding-attempt-only preference, not something that should
+ * outlive the tab or follow the user to a later, unrelated signup.
+ */
+const PAIR_METHOD_STORAGE_KEY = 'aura:onboarding:pairMethod';
+
+function readStoredPairMethod(): 'qr' | 'phone' | null {
+  try {
+    const value = sessionStorage.getItem(PAIR_METHOD_STORAGE_KEY);
+    return value === 'phone' ? 'phone' : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredPairMethod(method: 'qr' | 'phone'): void {
+  try {
+    if (method === 'phone') sessionStorage.setItem(PAIR_METHOD_STORAGE_KEY, 'phone');
+    else sessionStorage.removeItem(PAIR_METHOD_STORAGE_KEY);
+  } catch {
+    // Storage can throw (private browsing, quota) - the connection-snapshot
+    // check above still applies as a fallback, so this is not fatal.
+  }
+}
+
 export function OnboardingPage({ connection, serverUnreachable = false }: Props) {
   const triggered = useRef(false);
   const [retrying, setRetrying] = useState(false);
-  const [pairMethod, setPairMethod] = useState<'qr' | 'phone'>(() => (hasInProgressPhonePairing(connection) ? 'phone' : 'qr'));
+  const [pairMethod, setPairMethod] = useState<'qr' | 'phone'>(
+    () => (readStoredPairMethod() === 'phone' || hasInProgressPhonePairing(connection) ? 'phone' : 'qr'),
+  );
   const [phoneSubmitting, setPhoneSubmitting] = useState(false);
   const [phoneSubmitError, setPhoneSubmitError] = useState<string | null>(null);
   const [switchingMethod, setSwitchingMethod] = useState(false);
@@ -287,6 +325,7 @@ export function OnboardingPage({ connection, serverUnreachable = false }: Props)
   useEffect(() => {
     if (!connection) return;
     if (pairMethod !== 'qr') return;
+    if (readStoredPairMethod() === 'phone') return;
     if (hasInProgressPhonePairing(connection)) return;
     if ((connection.status === 'DISCONNECTED' || connection.status === 'LOGGED_OUT') && !triggered.current) {
       triggered.current = true;
@@ -342,6 +381,7 @@ export function OnboardingPage({ connection, serverUnreachable = false }: Props)
     }
     setPhoneSubmitError(null);
     setPairMethod(method);
+    writeStoredPairMethod(method);
   }
 
   return (
