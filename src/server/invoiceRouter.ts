@@ -3,12 +3,13 @@ import { z } from 'zod';
 import { pool } from '../db/pool.js';
 import { InvoiceService } from '../services/invoice/invoiceService.js';
 import { BusinessRepository } from '../repositories/businessRepository.js';
-import { requireAuth, type AuthContext } from './authMiddleware.js';
+import { requireAuth, requireActiveSubscription, type AuthContext } from './authMiddleware.js';
 
 const router = Router();
 const svc = new InvoiceService(pool);
 const businessRepository = new BusinessRepository(pool);
 router.use(requireAuth);
+router.use(requireActiveSubscription);
 
 const LineItemSchema = z.object({
   description: z.string().min(1).max(500),

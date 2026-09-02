@@ -160,7 +160,7 @@ import {
   isMembershipNotFoundError,
   isCannotModifyOwnerError,
 } from '../services/workspaceMemberService.js';
-import { requireAuth, requirePermission, setSessionCookie, clearSessionCookie, readSessionToken, type AuthContext } from './authMiddleware.js';
+import { requireAuth, requirePermission, requireActiveSubscription, setSessionCookie, clearSessionCookie, readSessionToken, type AuthContext } from './authMiddleware.js';
 import { BUSINESS_ROLES, isBusinessRole } from '../domain/auth/permissions.js';
 // Runs the real outbound-send BullMQ worker in this process, not the
 // separate incomingMessagesWorker.ts process - every tenant's live Baileys
@@ -1763,7 +1763,7 @@ app.patch('/api/workspace/email/:id', requirePermission('email.draft'), async (r
   }
 });
 
-app.post('/api/workspace/email/:id/approve', requirePermission('email.send'), async (req, res) => {
+app.post('/api/workspace/email/:id/approve', requirePermission('email.send'), requireActiveSubscription, async (req, res) => {
   const auth = res.locals.auth as AuthContext;
   try {
     const email = await approveAndSendEmail(auth.businessId, String(req.params.id ?? ''), auth.userId);

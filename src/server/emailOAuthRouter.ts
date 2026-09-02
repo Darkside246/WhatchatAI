@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth, type AuthContext } from './authMiddleware.js';
+import { requireAuth, requireActiveSubscription, type AuthContext } from './authMiddleware.js';
 import {
   initiateOAuth,
   handleOAuthCallback,
@@ -26,7 +26,7 @@ router.get('/accounts', async (req, res) => {
 });
 
 /** Begin OAuth flow — redirects the browser to the provider's consent screen. */
-router.get('/connect/:provider', requireAuth, (req, res) => {
+router.get('/connect/:provider', requireAuth, requireActiveSubscription, (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
   const provider = req.params['provider'] as OAuthProvider;
   if (provider !== 'gmail' && provider !== 'outlook') {

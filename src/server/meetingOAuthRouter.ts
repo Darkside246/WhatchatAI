@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth, type AuthContext } from './authMiddleware.js';
+import { requireAuth, requireActiveSubscription, type AuthContext } from './authMiddleware.js';
 import * as googleMeetingOAuthService from '../services/googleMeetingOAuthService.js';
 import * as zoomMeetingOAuthService from '../services/zoomMeetingOAuthService.js';
 import type { MeetingProvider } from '../services/meeting/meetingProvider.js';
@@ -40,7 +40,7 @@ router.get('/connection/:provider', async (req, res) => {
 });
 
 /** Begin OAuth flow — redirects the browser to the provider's consent screen. */
-router.get('/connect/:provider', requireAuth, (req, res) => {
+router.get('/connect/:provider', requireAuth, requireActiveSubscription, (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
   const provider = typeof req.params['provider'] === 'string' ? req.params['provider'] : '';
   if (!isMeetingProvider(provider)) {

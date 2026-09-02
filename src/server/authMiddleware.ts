@@ -6,6 +6,7 @@ import type { PlatformRole, PublicUser } from '../repositories/userRepository.js
 import { ProductAccountRepository } from '../repositories/productAccountRepository.js';
 import { getProductAccountAccess } from '../services/productAccountService.js';
 import type { ProductKey } from '../domain/platform/productAccounts.js';
+import { SubscriptionRepository } from '../repositories/subscriptionRepository.js';
 import { pool } from '../db/pool.js';
 
 export const SESSION_COOKIE_NAME = 'wc_session';
@@ -39,6 +40,29 @@ export function requireDeveloper(req: Request, res: Response, next: NextFunction
   const auth = res.locals.auth as AuthContext | undefined;
   if (!auth) return void res.status(401).json({ error: 'NOT_AUTHENTICATED' });
   if (auth.platformRole !== 'DEVELOPER') return void res.status(403).json({ error: 'DEVELOPER_ACCESS_REQUIRED' });
+  next();
+}
+
+const subscriptionRepository = new SubscriptionRepository(pool);
+
+/**
+ * Real, previously-missing gate for the few paid-feature surfaces
+ * (invoicing, meeting-provider connections, email-account connections)
+ * that had no entitlement or product-account check at all - only
+ * requireAuth, meaning a business whose subscription had lapsed could
+ * keep using them indefinitely. Every real business gets a live
+ * subscription auto-provisioned at signup (businessBootstrapService.ts),
+ * so this only ever blocks a genuinely cancelled/expired one - it does
+ * not gate by plan tier or count (that's EntitlementService's job where
+ * a real per-tier limit exists), just "is this business currently paying
+ * for anything at all."
+ */
+export async function requireActiveSubscription(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const auth = res.locals.auth as AuthContext | undefined;
+  if (!auth) return void res.status(401).json({ error: 'NOT_AUTHENTICATED' });
+  if (auth.platformRole === 'DEVELOPER') return void next();
+  const subscription = await subscriptionRepository.findLiveByBusiness(auth.businessId);
+  if (!subscription) return void res.status(402).json({ error: 'NO_ACTIVE_SUBSCRIPTION' });
   next();
 }
 
