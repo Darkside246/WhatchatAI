@@ -131,7 +131,23 @@ export function useAppGate(): AppGateState {
       connection.status === 'QR_READY' ||
       connection.status === 'PAIRING_CODE_READY' ||
       connection.status === 'LOGGED_OUT' ||
-      (!connection.connected && !pairedOnce);
+      // Real bug this excludes: WhatsApp's own multi-device protocol
+      // mandates one connection restart immediately after a pairing code
+      // is entered (Baileys surfaces this as "stream:error code 515,
+      // restart required" - see whatsappTenantConnection.ts's own
+      // hasPairedThisSession doc comment). That restart's real backend
+      // status is 'RECONNECTING', but it happens BEFORE the connection has
+      // ever reached a real 'open' event, so pairedOnce has not latched
+      // true yet either - without this exclusion, this same poll interval
+      // sees `!connected && !pairedOnce` and bounces a business that just
+      // successfully paired straight back to 'onboarding', which remounts
+      // OnboardingPage and resets its pairMethod/triggered state, firing a
+      // brand new QR connectWhatsApp() call on top of the real,
+      // already-succeeding phone-pairing socket. 'RECONNECTING' is only
+      // ever set by scheduleReconnect() after a real prior connection
+      // attempt existed for this business - it is never the status of a
+      // business that has genuinely never tried to connect.
+      (!connection.connected && !pairedOnce && connection.status !== 'RECONNECTING');
 
     if (needsOnboarding) {
       phase = 'onboarding';

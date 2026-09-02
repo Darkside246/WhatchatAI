@@ -271,10 +271,15 @@ function PhonePairingPanel({
   );
 }
 
+/** Real evidence a phone-pairing attempt is already under way for this business - a code was issued, or the backend is actively requesting one. Used so a remount (e.g. useAppGate briefly routing back through 'onboarding' during the real post-pairing reconnect) never silently resets an in-progress phone pairing back to the QR tab underneath the user. */
+function hasInProgressPhonePairing(connection: WhatsAppConnectionSnapshot | null): boolean {
+  return Boolean(connection?.pairingPhoneNumber) || connection?.status === 'PAIRING_CODE_READY';
+}
+
 export function OnboardingPage({ connection, serverUnreachable = false }: Props) {
   const triggered = useRef(false);
   const [retrying, setRetrying] = useState(false);
-  const [pairMethod, setPairMethod] = useState<'qr' | 'phone'>('qr');
+  const [pairMethod, setPairMethod] = useState<'qr' | 'phone'>(() => (hasInProgressPhonePairing(connection) ? 'phone' : 'qr'));
   const [phoneSubmitting, setPhoneSubmitting] = useState(false);
   const [phoneSubmitError, setPhoneSubmitError] = useState<string | null>(null);
   const [switchingMethod, setSwitchingMethod] = useState(false);
@@ -282,6 +287,7 @@ export function OnboardingPage({ connection, serverUnreachable = false }: Props)
   useEffect(() => {
     if (!connection) return;
     if (pairMethod !== 'qr') return;
+    if (hasInProgressPhonePairing(connection)) return;
     if ((connection.status === 'DISCONNECTED' || connection.status === 'LOGGED_OUT') && !triggered.current) {
       triggered.current = true;
       api.connectWhatsApp().catch(() => {
