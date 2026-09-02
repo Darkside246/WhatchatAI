@@ -9,6 +9,7 @@ import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobReposi
 import { CrmContactRepository, type UpdateCrmContactInput } from '../repositories/crmContactRepository.js';
 import { LeadRepository, type UpdateLeadInput, type LeadRecord } from '../repositories/leadRepository.js';
 import { AiAgentRepository, type AiAgentRecord, type AgentCategory } from '../repositories/aiAgentRepository.js';
+import { AgentTemplateRepository, type AgentTemplateRecord } from '../repositories/agentTemplateRepository.js';
 import { EntitlementService, type EntitlementDenialReason } from './entitlementService.js';
 import { SubscriptionRepository } from '../repositories/subscriptionRepository.js';
 import { PlanRepository } from '../repositories/planRepository.js';
@@ -122,6 +123,8 @@ export interface WorkspaceMessageSummary extends WhatsAppMessageRecord {
   reactions: WorkspaceReactionSummary[];
   /** True only when the AI reply pipeline sent this message - never inferred, read from the real dispatch record. */
   aiGenerated: boolean;
+  /** Resolved sender display name for a group chat's inbound message - null for a DM (the chat itself already shows who it's with) and for any outbound message. */
+  senderName: string | null;
 }
 
 export interface ChatNotFoundError extends Error {
@@ -313,6 +316,7 @@ export class WorkspaceService {
   private readonly crmContactRepository = new CrmContactRepository(pool);
   private readonly leadRepository = new LeadRepository(pool);
   private readonly agentRepository = new AiAgentRepository(pool);
+  private readonly agentTemplateRepository = new AgentTemplateRepository(pool);
   private readonly entitlementService = new EntitlementService(pool);
   private readonly subscriptionRepository = new SubscriptionRepository(pool);
   private readonly planRepository = new PlanRepository(pool);
@@ -607,6 +611,30 @@ export class WorkspaceService {
     const fromMeIds = messages.filter((message) => message.fromMe).map((message) => message.id);
     const aiGeneratedIds = new Set(await this.outboundMessageRepository.listAiGeneratedMessageIds(fromMeIds));
 
+    // A DM's sender is always "the chat" - already shown elsewhere in the
+    // UI, and its own senderContactId points at the same contact whichever
+    // message you look at - so this batch-fetch (and the whole point of a
+    // per-message sender label) only matters for a group chat.
+    const senderContactIds = chat.chatType === 'group'
+      ? [...new Set(messages.map((message) => message.senderContactId).filter((id): id is string => id !== null))]
+      : [];
+    const senderContacts = await this.contactRepository.findByIds(senderContactIds);
+    const senderNameByContactId = new Map(
+      senderContacts.map((contact) => [
+        contact.id,
+        resolveDisplayName({
+          verifiedName: contact.verifiedName,
+          businessName: contact.businessName,
+          displayName: contact.displayName,
+          username: contact.username,
+          pushName: contact.pushName,
+          shortName: contact.shortName,
+          phoneNumber: contact.phoneNumber,
+          whatsappJid: contact.whatsappJid,
+        }),
+      ]),
+    );
+
     return messages.map((message) => {
       const mediaRow = message.mediaId ? mediaById.get(message.mediaId) : undefined;
       const media: WorkspaceMediaSummary | null = mediaRow
@@ -627,6 +655,7 @@ export class WorkspaceService {
         media,
         reactions: reactionsByMessageId.get(message.id) ?? [],
         aiGenerated: aiGeneratedIds.has(message.id),
+        senderName: message.senderContactId ? (senderNameByContactId.get(message.senderContactId) ?? null) : null,
       };
     });
   }
@@ -805,6 +834,47 @@ export class WorkspaceService {
       throw error;
     }
     return this.agentRepository.create({ businessId, ...input });
+  }
+
+  async listAgentTemplates(): Promise<AgentTemplateRecord[]> {
+    return this.agentTemplateRepository.listAll();
+  }
+
+  /**
+   * "Build My Agent" - creates a real agent pre-filled from a system
+   * template, going through the exact same entitlement check and creation
+   * path as manual creation (createAgent above). allowedToolsEnabled is
+   * set true so the template's recommendedTools become a real, enforced
+   * capability list (see buildReplyTools in aiReplyService.ts) - not just
+   * a suggestion the agent ignores.
+   */
+  async createAgentFromTemplate(businessId: string, templateKey: string, nameOverride?: string): Promise<AiAgentRecord> {
+    const template = await this.agentTemplateRepository.findByKey(templateKey);
+    if (!template) throw this.notFound();
+
+    const check = await this.entitlementService.canCreateAgent(businessId);
+    if (!check.allowed) {
+      const error = new Error(`Agent creation denied: ${check.reason}`) as EntitlementDeniedError;
+      error.code = 'ENTITLEMENT_DENIED';
+      error.reason = check.reason as EntitlementDenialReason;
+      error.limit = check.limit;
+      error.current = check.current;
+      throw error;
+    }
+
+    return this.agentRepository.create({
+      businessId,
+      name: nameOverride?.trim() || template.name,
+      description: template.description,
+      persona: template.defaultPersona,
+      tone: template.defaultTone,
+      systemInstruction: template.defaultSystemInstruction,
+      greeting: template.defaultGreeting,
+      category: template.category,
+      triggerKeywords: template.defaultTriggerKeywords,
+      allowedTools: template.recommendedTools,
+      allowedToolsEnabled: true,
+    });
   }
 
   /**

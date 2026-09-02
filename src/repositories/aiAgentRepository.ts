@@ -47,6 +47,18 @@ export interface AiAgentRecord {
   /** Real operator-chosen canvas coordinates. Null until they actually place it. */
   canvasX: number | null;
   canvasY: number | null;
+  /**
+   * The tool this agent may call, when allowedToolsEnabled is true - a real
+   * restriction enforced in aiReplyService.ts's buildReplyTools, not just
+   * UI decoration. When allowedToolsEnabled is false (every pre-existing
+   * agent, and the default for a new one), this list is ignored and every
+   * connection-eligible tool is offered, unchanged from behavior before
+   * this column existed.
+   */
+  allowedTools: string[];
+  /** Always enforced, regardless of allowedToolsEnabled - a real hard block. */
+  forbiddenTools: string[];
+  allowedToolsEnabled: boolean;
   status: AgentStatus;
   createdAt: string;
   updatedAt: string;
@@ -78,6 +90,9 @@ interface AiAgentRow {
   priority: number;
   canvas_x: number | null;
   canvas_y: number | null;
+  allowed_tools: string[];
+  forbidden_tools: string[];
+  allowed_tools_enabled: boolean;
   status: AgentStatus;
   created_at: string;
   updated_at: string;
@@ -110,6 +125,9 @@ function toRecord(row: AiAgentRow): AiAgentRecord {
     priority: row.priority,
     canvasX: row.canvas_x === null ? null : Number(row.canvas_x),
     canvasY: row.canvas_y === null ? null : Number(row.canvas_y),
+    allowedTools: row.allowed_tools ?? [],
+    forbiddenTools: row.forbidden_tools ?? [],
+    allowedToolsEnabled: row.allowed_tools_enabled,
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -139,6 +157,9 @@ export interface CreateAiAgentInput {
   parentAgentId?: string | null | undefined;
   escalateToAgentId?: string | null | undefined;
   priority?: number | undefined;
+  allowedTools?: string[] | undefined;
+  forbiddenTools?: string[] | undefined;
+  allowedToolsEnabled?: boolean | undefined;
 }
 
 /** Every field an agent's owner can actually change after creation. */
@@ -153,8 +174,9 @@ export class AiAgentRepository {
          (business_id, name, description, persona, tone, language, system_instruction,
           greeting, business_context, response_style, human_takeover_policy,
           category, specialization, trigger_keywords, blocked_keywords, protected_facts,
-          blocked_reply_message, response_delay_seconds, parent_agent_id, escalate_to_agent_id, priority)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+          blocked_reply_message, response_delay_seconds, parent_agent_id, escalate_to_agent_id, priority,
+          allowed_tools, forbidden_tools, allowed_tools_enabled)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
        RETURNING *`,
       [
         input.businessId,
@@ -178,6 +200,9 @@ export class AiAgentRepository {
         input.parentAgentId ?? null,
         input.escalateToAgentId ?? null,
         input.priority ?? 0,
+        JSON.stringify(input.allowedTools ?? []),
+        JSON.stringify(input.forbiddenTools ?? []),
+        input.allowedToolsEnabled ?? false,
       ],
     );
     const row = rows[0];
@@ -198,7 +223,8 @@ export class AiAgentRepository {
          response_style = $10, human_takeover_policy = $11, category = $12,
          specialization = $13, trigger_keywords = $14, blocked_keywords = $15,
          protected_facts = $16, blocked_reply_message = $17, response_delay_seconds = $18,
-         parent_agent_id = $19, escalate_to_agent_id = $20, priority = $21, updated_at = now()
+         parent_agent_id = $19, escalate_to_agent_id = $20, priority = $21,
+         allowed_tools = $22, forbidden_tools = $23, allowed_tools_enabled = $24, updated_at = now()
        WHERE id = $1 AND deleted_at IS NULL
        RETURNING *`,
       [
@@ -223,6 +249,9 @@ export class AiAgentRepository {
         input.parentAgentId ?? null,
         input.escalateToAgentId ?? null,
         input.priority ?? 0,
+        JSON.stringify(input.allowedTools ?? []),
+        JSON.stringify(input.forbiddenTools ?? []),
+        input.allowedToolsEnabled ?? false,
       ],
     );
     return rows[0] ? toRecord(rows[0]) : null;

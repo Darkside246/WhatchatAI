@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Bot, ShieldAlert, Plus, ArrowLeft, Clock, GitBranch, LayoutGrid, Network } from 'lucide-react';
+import { Bot, ShieldAlert, Plus, ArrowLeft, Clock, GitBranch, LayoutGrid, Network, Sparkles } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -13,6 +13,15 @@ import { ToggleSwitch } from '../components/ToggleSwitch.js';
 import { AgentCanvas } from '../components/AgentCanvas.js';
 import { AiEngineStrip } from '../components/AiEngineStrip.js';
 import { PromptOptimizationsPanel } from '../components/PromptOptimizationsPanel.js';
+import { BuildAgentWizard } from '../components/BuildAgentWizard.js';
+
+/** Real tool names this codebase actually registers (aiToolPolicy.ts) - never a capability toggle with nothing behind it. */
+const TOGGLEABLE_TOOLS: { name: string; label: string }[] = [
+  { name: 'get_current_time', label: 'Time awareness' },
+  { name: 'update_conversation_memory', label: 'Conversation memory' },
+  { name: 'schedule_google_meet', label: 'Book Google Meet calls' },
+  { name: 'schedule_zoom_meeting', label: 'Book Zoom calls' },
+];
 
 const CATEGORY_LABEL: Record<AgentCategory, string> = {
   general: 'General',
@@ -54,6 +63,8 @@ interface AgentForm {
   priority: number;
   parentAgentId: string;
   escalateToAgentId: string;
+  allowedToolsEnabled: boolean;
+  allowedTools: string[];
 }
 
 const EMPTY_FORM: AgentForm = {
@@ -77,6 +88,8 @@ const EMPTY_FORM: AgentForm = {
   priority: 0,
   parentAgentId: '',
   escalateToAgentId: '',
+  allowedToolsEnabled: false,
+  allowedTools: TOGGLEABLE_TOOLS.map((t) => t.name),
 };
 
 function toForm(agent: AiAgentSummary): AgentForm {
@@ -101,6 +114,8 @@ function toForm(agent: AiAgentSummary): AgentForm {
     priority: agent.priority,
     parentAgentId: agent.parentAgentId ?? '',
     escalateToAgentId: agent.escalateToAgentId ?? '',
+    allowedToolsEnabled: agent.allowedToolsEnabled,
+    allowedTools: agent.allowedToolsEnabled ? agent.allowedTools : TOGGLEABLE_TOOLS.map((t) => t.name),
   };
 }
 
@@ -134,6 +149,8 @@ function toBody(form: AgentForm): CreateAgentBody {
     priority: form.priority,
     parentAgentId: form.parentAgentId || null,
     escalateToAgentId: form.escalateToAgentId || null,
+    allowedToolsEnabled: form.allowedToolsEnabled,
+    allowedTools: form.allowedTools,
   };
 }
 
@@ -383,6 +400,47 @@ function AgentEditor({
       </section>
 
       <section className="space-y-4 rounded-xl border border-border-subtle bg-surface-1 p-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-body font-semibold text-fg">Capabilities</h2>
+            <p className="text-caption text-fg-muted">Which real tools this agent may use - not a suggestion, actually enforced.</p>
+          </div>
+          <ToggleSwitch
+            checked={form.allowedToolsEnabled}
+            onChange={() => setForm({ ...form, allowedToolsEnabled: !form.allowedToolsEnabled })}
+            label="Restrict to selected capabilities"
+          />
+        </div>
+        <div className="space-y-2">
+          {TOGGLEABLE_TOOLS.map((tool) => (
+            <label
+              key={tool.name}
+              className={`flex items-center gap-2.5 rounded-lg border border-border-subtle px-3 py-2 text-caption ${form.allowedToolsEnabled ? 'text-fg-secondary' : 'text-fg-muted opacity-60'}`}
+            >
+              <input
+                type="checkbox"
+                disabled={!form.allowedToolsEnabled}
+                checked={form.allowedTools.includes(tool.name)}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    allowedTools: e.target.checked
+                      ? [...form.allowedTools, tool.name]
+                      : form.allowedTools.filter((name) => name !== tool.name),
+                  })
+                }
+                className="h-4 w-4 rounded border-border-subtle accent-accent"
+              />
+              {tool.label}
+            </label>
+          ))}
+        </div>
+        {!form.allowedToolsEnabled && (
+          <p className="text-meta text-fg-muted">Off means every capability this business has connected is available - the same as today.</p>
+        )}
+      </section>
+
+      <section className="space-y-4 rounded-xl border border-border-subtle bg-surface-1 p-5">
         <h2 className="text-body font-semibold text-fg">Structure</h2>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Reports to" hint="Where this agent sits under another in your structure.">
@@ -437,7 +495,7 @@ function AgentEditor({
 export function AgentsPage() {
   const [agents, setAgents] = useState<AiAgentSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<{ mode: 'list' } | { mode: 'new' } | { mode: 'edit'; agentId: string }>({ mode: 'list' });
+  const [view, setView] = useState<{ mode: 'list' } | { mode: 'wizard' } | { mode: 'new' } | { mode: 'edit'; agentId: string }>({ mode: 'list' });
   const [form, setForm] = useState<AgentForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -486,6 +544,20 @@ export function AgentsPage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  if (view.mode === 'wizard') {
+    return (
+      <div className="flex-1 overflow-y-auto p-6">
+        <BuildAgentWizard
+          onCreated={() => {
+            setView({ mode: 'list' });
+            load();
+          }}
+          onCancel={() => setView({ mode: 'list' })}
+        />
+      </div>
+    );
   }
 
   if (view.mode !== 'list') {
@@ -579,10 +651,18 @@ export function AgentsPage() {
                 setFormError(null);
                 setView({ mode: 'new' });
               }}
-              className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-body font-medium text-white hover:bg-accent-dim"
+              className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-body font-medium text-fg-secondary hover:border-accent hover:text-accent"
             >
               <Plus size={14} aria-hidden />
               New agent
+            </button>
+            <button
+              type="button"
+              onClick={() => setView({ mode: 'wizard' })}
+              className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-body font-medium text-white hover:bg-accent-dim"
+            >
+              <Sparkles size={14} aria-hidden />
+              Build my agent
             </button>
           </div>
         </div>
@@ -607,10 +687,20 @@ export function AgentsPage() {
         <div className="mt-5 grid gap-3 sm:grid-cols-2">
           {agents === null && <p className="text-caption text-fg-muted">Loading…</p>}
           {agents?.length === 0 && (
-            <div className="col-span-full flex flex-col items-center gap-2 rounded-xl border border-dashed border-border-subtle p-10 text-center">
+            <div className="col-span-full flex flex-col items-center gap-3 rounded-xl border border-dashed border-border-subtle p-10 text-center">
               <Bot size={22} className="text-fg-muted" aria-hidden />
-              <p className="text-body text-fg-secondary">No agents yet.</p>
-              <p className="text-caption text-fg-muted">Create one to let AI answer WhatsApp conversations for you.</p>
+              <div>
+                <p className="text-body text-fg-secondary">No agents yet.</p>
+                <p className="text-caption text-fg-muted">Let AURA build your first one - pick a template and it's ready in about a minute.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setView({ mode: 'wizard' })}
+                className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-body font-medium text-white hover:bg-accent-dim"
+              >
+                <Sparkles size={14} aria-hidden />
+                Build my agent
+              </button>
             </div>
           )}
           {agents?.map((agent) => {

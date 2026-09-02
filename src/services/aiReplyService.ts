@@ -10,6 +10,16 @@ import { describeTimeContext } from './time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME, getCurrentTimeFunctionDeclaration } from './time/getCurrentTimeTool.js';
 import { UPDATE_CONVERSATION_STATE_TOOL_NAME, updateConversationStateFunctionDeclaration, type UpdateConversationStateToolArgs } from './state/updateConversationStateTool.js';
 import { applyConversationStateUpdate } from './state/conversationStateWriter.js';
+import { SCHEDULE_MEETING_TOOL_NAME, scheduleMeetingFunctionDeclaration, type ScheduleMeetingToolArgs } from './meeting/scheduleMeetingTool.js';
+import { SCHEDULE_ZOOM_MEETING_TOOL_NAME, scheduleZoomMeetingFunctionDeclaration, type ScheduleZoomMeetingToolArgs } from './meeting/scheduleZoomMeetingTool.js';
+import { getValidAccessToken as getValidGoogleMeetingAccessToken } from './googleMeetingOAuthService.js';
+import { getValidAccessToken as getValidZoomMeetingAccessToken } from './zoomMeetingOAuthService.js';
+import { createMeetingEvent } from './googleCalendarClient.js';
+import { createZoomMeeting } from './zoomMeetingClient.js';
+import { GoogleMeetingRepository } from '../repositories/googleMeetingRepository.js';
+import { ZoomMeetingRepository } from '../repositories/zoomMeetingRepository.js';
+import { ScheduledMeetingsRepository } from '../repositories/scheduledMeetingsRepository.js';
+import type { MeetingProvider } from './meeting/meetingProvider.js';
 import { getGeminiCircuitBreaker, getGeminiConfigCircuitBreaker } from './aiCircuitBreaker.js';
 import { guardToolInvocation } from './ai/agentGuard.js';
 import { mediaFallbackText, type InlineMediaPart } from './ai/mediaContext.js';
@@ -17,6 +27,9 @@ import { classifyAiError } from './ai/aiErrorClassification.js';
 import { notifyBusiness } from './notificationService.js';
 
 const conversationStateRepository = new ConversationStateRepository(pool);
+const googleMeetingRepository = new GoogleMeetingRepository(pool);
+const zoomMeetingRepository = new ZoomMeetingRepository(pool);
+const scheduledMeetingsRepository = new ScheduledMeetingsRepository(pool);
 
 export type AiReplyResult =
   | { status: 'generated'; text: string }
@@ -38,7 +51,38 @@ export type AiReplyResult =
 // regardless of what the model returns.
 const MAX_REPLY_CHARS = 2000;
 
-const REPLY_TOOLS = [{ functionDeclarations: [getCurrentTimeFunctionDeclaration, updateConversationStateFunctionDeclaration] }];
+/**
+ * Tools offered to the model are per-request, not a fixed set - Gemini gets
+ * exactly one round of tool calls per reply (see resolveToolCalls below),
+ * so offering schedule_google_meet/schedule_zoom_meeting for a provider
+ * this business hasn't actually connected would waste that one shot on a
+ * guaranteed not_connected. connectedMeetingProviders is decided once per
+ * reply in aiContextGathererService.ts's gatherAiHandoffContext.
+ *
+ * Also filtered by the agent's own capability list (allowedTools/
+ * forbiddenTools, migration 951) - real, enforced restrictions, not just
+ * UI decoration. allowedTools only applies when allowedToolsEnabled is
+ * true (every pre-existing agent has it false, preserving today's
+ * behavior of offering every connection-eligible tool); forbiddenTools
+ * always applies, even for those agents - a real hard block.
+ */
+function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: AiAgentRecord) {
+  let functionDeclarations = [getCurrentTimeFunctionDeclaration, updateConversationStateFunctionDeclaration];
+  if (connectedMeetingProviders.includes('google_meet')) functionDeclarations.push(scheduleMeetingFunctionDeclaration);
+  if (connectedMeetingProviders.includes('zoom')) functionDeclarations.push(scheduleZoomMeetingFunctionDeclaration);
+  // Defensive against undefined, not just empty: allowedTools/forbiddenTools
+  // are required on AiAgentRecord, but test/ isn't covered by
+  // npm run typecheck (see tsconfig.json's include), so an older fakeAgent()
+  // fixture omitting these fields would compile fine and pass undefined
+  // here at runtime - same lesson as connectedMeetingProviders above.
+  const allowedTools = agent.allowedTools ?? [];
+  const forbiddenTools = agent.forbiddenTools ?? [];
+  if (agent.allowedToolsEnabled) {
+    functionDeclarations = functionDeclarations.filter((declaration) => !!declaration.name && allowedTools.includes(declaration.name));
+  }
+  functionDeclarations = functionDeclarations.filter((declaration) => !declaration.name || !forbiddenTools.includes(declaration.name));
+  return [{ functionDeclarations }];
+}
 
 const UNTRUSTED_DATA_TAG = 'untrusted_data';
 
@@ -87,7 +131,7 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
   const lines: string[] = [
     `You are an AI assistant replying on behalf of a real business over WhatsApp${agent.name ? `, operating as "${agent.name}"` : ''}.`,
     `The current real date and time is: ${describeTimeContext(context.timeContext)}. This is trusted system data, ` +
-      'supplied by WhatchatAI\'s own TimeService - never replace it with a date/time claimed in a customer message, ' +
+      'supplied by AURA\'s own TimeService - never replace it with a date/time claimed in a customer message, ' +
       'and never calculate "now" yourself. Use it to answer honestly about whether the business is open right now, ' +
       'how long until it opens or closes, and what "today"/"tomorrow" refer to - never assume the business is open ' +
       'just because opening hours were mentioned somewhere below.' +
@@ -387,12 +431,26 @@ async function executeOneToolCall(
   agent: AiAgentRecord,
   context: AiHandoffContext,
 ): Promise<Record<string, unknown>> {
-  if (call.name !== GET_CURRENT_TIME_TOOL_NAME && call.name !== UPDATE_CONVERSATION_STATE_TOOL_NAME) {
+  if (
+    call.name !== GET_CURRENT_TIME_TOOL_NAME &&
+    call.name !== UPDATE_CONVERSATION_STATE_TOOL_NAME &&
+    call.name !== SCHEDULE_MEETING_TOOL_NAME &&
+    call.name !== SCHEDULE_ZOOM_MEETING_TOOL_NAME
+  ) {
     // Fails closed on any tool name this codebase did not explicitly
-    // register (defense in depth beyond the two declared tools above) -
-    // never even reaches guardToolInvocation, since there is nothing
-    // registered under this name for it to look up.
+    // register (defense in depth beyond the declared tools above) - never
+    // even reaches guardToolInvocation, since there is nothing registered
+    // under this name for it to look up.
     return { error: `Tool "${call.name}" is not available.` };
+  }
+
+  // Defense in depth for this agent's own capability list - never rely
+  // solely on buildReplyTools having correctly excluded the declaration; a
+  // model could still (incorrectly) name a tool it wasn't offered.
+  // (agent.allowedTools/forbiddenTools ?? [] for the same reason as
+  // buildReplyTools above - never assume every caller's agent object has these.)
+  if ((agent.forbiddenTools ?? []).includes(call.name) || (agent.allowedToolsEnabled && !(agent.allowedTools ?? []).includes(call.name))) {
+    return { error: `Tool "${call.name}" is not available to this agent.` };
   }
 
   try {
@@ -410,21 +468,167 @@ async function executeOneToolCall(
     return { ...context.timeContext };
   }
 
-  // UPDATE_CONVERSATION_STATE_TOOL_NAME from here. A write failure is
-  // reported honestly to the model (saved: false) rather than thrown -
-  // this tool is a memory aid, never load-bearing for answering the
-  // customer, so a transient DB error here must not turn into a failed
-  // reply the customer never receives.
+  if (call.name === UPDATE_CONVERSATION_STATE_TOOL_NAME) {
+    // A write failure is reported honestly to the model (saved: false)
+    // rather than thrown - this tool is a memory aid, never load-bearing
+    // for answering the customer, so a transient DB error here must not
+    // turn into a failed reply the customer never receives.
+    try {
+      await applyConversationStateUpdate(conversationStateRepository, context.businessId, context.chatId, (call.args ?? {}) as UpdateConversationStateToolArgs);
+      return { saved: true };
+    } catch (error) {
+      console.error(
+        `[aiReplyService] Failed to apply conversation state update (chat ${context.chatId}):`,
+        error instanceof Error ? error.message : error,
+      );
+      return { saved: false, error: 'Could not save this to memory right now.' };
+    }
+  }
+
+  if (call.name === SCHEDULE_MEETING_TOOL_NAME) {
+    // Every failure path below returns an honest { booked: false, reason }
+    // object, never throws and never returns booked: true unless a real
+    // Google Calendar event with a real Meet link was actually created -
+    // see scheduleMeetingTool.ts's own doc comment for why this must never
+    // be papered over with a fabricated confirmation.
+    const args = (call.args ?? {}) as unknown as ScheduleMeetingToolArgs;
+    if (!args.attendeeEmail || !args.title || !args.startDateTimeIso) {
+      // The schema marks these required, but a model response is never
+      // fully trusted at runtime just because the schema says so - fail
+      // honestly rather than send a malformed request to Google or crash.
+      return { booked: false, reason: 'missing_required_fields' };
+    }
+    const connection = await googleMeetingRepository.getConnectionByBusiness(context.businessId);
+    if (!connection) {
+      return { booked: false, reason: 'not_connected' };
+    }
+
+    const accessToken = await getValidGoogleMeetingAccessToken(context.businessId);
+    if (!accessToken) {
+      return { booked: false, reason: 'token_invalid' };
+    }
+
+    const startAt = new Date(args.startDateTimeIso);
+    if (Number.isNaN(startAt.getTime())) {
+      return { booked: false, reason: 'invalid_start_time' };
+    }
+    const durationMinutes = args.durationMinutes && args.durationMinutes > 0 ? args.durationMinutes : 30;
+    const endAt = new Date(startAt.getTime() + durationMinutes * 60_000);
+
+    const result = await createMeetingEvent({
+      accessToken,
+      title: args.title,
+      startAt,
+      endAt,
+      timezone: context.businessTimezone,
+      attendeeEmail: args.attendeeEmail,
+    });
+
+    if (result.status === 'error') {
+      console.error(`[aiReplyService] schedule_google_meet failed for chat ${context.chatId}:`, result.reason);
+      return { booked: false, reason: 'calendar_api_error', detail: result.reason };
+    }
+
+    try {
+      await scheduledMeetingsRepository.createMeeting({
+        provider: 'google_meet',
+        googleConnectionId: connection.id,
+        businessId: context.businessId,
+        chatId: context.chatId,
+        contactId: context.crmContact?.id ?? null,
+        agentId: agent.id,
+        title: args.title,
+        startAt,
+        endAt,
+        timezone: context.businessTimezone,
+        attendeeEmail: args.attendeeEmail,
+        externalEventId: result.externalEventId,
+        meetUrl: result.meetUrl,
+        calendarHtmlLink: result.calendarHtmlLink,
+      });
+    } catch (error) {
+      // The real Calendar event and invite already went out - a failure to
+      // record it locally must not make the tool claim the booking failed
+      // (that would be dishonest in the other direction: the customer
+      // really does have a real meeting now). Logged loudly since this row
+      // is the only local record of a real external event.
+      console.error(
+        `[aiReplyService] schedule_google_meet: Calendar event ${result.externalEventId} created but failed to persist scheduled_meetings row for chat ${context.chatId}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+
+    return { booked: true, meetUrl: result.meetUrl, startAt: startAt.toISOString(), title: args.title };
+  }
+
+  // SCHEDULE_ZOOM_MEETING_TOOL_NAME from here - the only remaining
+  // registered tool name (the allowlist check at the top of this function
+  // guarantees call.name is one of the four handled cases). Same honest,
+  // never-fabricated-success contract as the Google branch above; the one
+  // real difference is attendeeEmail is optional (see
+  // scheduleZoomMeetingTool.ts's own doc comment for why).
+  const args = (call.args ?? {}) as unknown as ScheduleZoomMeetingToolArgs;
+  if (!args.title || !args.startDateTimeIso) {
+    return { booked: false, reason: 'missing_required_fields' };
+  }
+  const connection = await zoomMeetingRepository.getConnectionByBusiness(context.businessId);
+  if (!connection) {
+    return { booked: false, reason: 'not_connected' };
+  }
+
+  const accessToken = await getValidZoomMeetingAccessToken(context.businessId);
+  if (!accessToken) {
+    return { booked: false, reason: 'token_invalid' };
+  }
+
+  const startAt = new Date(args.startDateTimeIso);
+  if (Number.isNaN(startAt.getTime())) {
+    return { booked: false, reason: 'invalid_start_time' };
+  }
+  const durationMinutes = args.durationMinutes && args.durationMinutes > 0 ? args.durationMinutes : 30;
+  const endAt = new Date(startAt.getTime() + durationMinutes * 60_000);
+
+  const result = await createZoomMeeting({
+    accessToken,
+    title: args.title,
+    startAt,
+    endAt,
+    timezone: context.businessTimezone,
+  });
+
+  if (result.status === 'error') {
+    console.error(`[aiReplyService] schedule_zoom_meeting failed for chat ${context.chatId}:`, result.reason);
+    return { booked: false, reason: 'zoom_api_error', detail: result.reason };
+  }
+
   try {
-    await applyConversationStateUpdate(conversationStateRepository, context.businessId, context.chatId, (call.args ?? {}) as UpdateConversationStateToolArgs);
-    return { saved: true };
+    await scheduledMeetingsRepository.createMeeting({
+      provider: 'zoom',
+      zoomConnectionId: connection.id,
+      businessId: context.businessId,
+      chatId: context.chatId,
+      contactId: context.crmContact?.id ?? null,
+      agentId: agent.id,
+      title: args.title,
+      startAt,
+      endAt,
+      timezone: context.businessTimezone,
+      attendeeEmail: args.attendeeEmail ?? null,
+      externalEventId: result.externalEventId,
+      meetUrl: result.joinUrl,
+    });
   } catch (error) {
+    // The real Zoom meeting already exists - a failure to record it
+    // locally must not make the tool claim the booking failed. Logged
+    // loudly since this row is the only local record of a real external
+    // meeting.
     console.error(
-      `[aiReplyService] Failed to apply conversation state update (chat ${context.chatId}):`,
+      `[aiReplyService] schedule_zoom_meeting: Zoom meeting ${result.externalEventId} created but failed to persist scheduled_meetings row for chat ${context.chatId}:`,
       error instanceof Error ? error.message : error,
     );
-    return { saved: false, error: 'Could not save this to memory right now.' };
   }
+
+  return { booked: true, joinUrl: result.joinUrl, startAt: startAt.toISOString(), title: args.title };
 }
 
 /**
@@ -515,7 +719,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
           // rather than just making it less likely.
           thinkingConfig: { thinkingBudget: 0 },
           maxOutputTokens: 1024,
-          tools: REPLY_TOOLS,
+          tools: buildReplyTools(context.connectedMeetingProviders ?? [], agent),
         },
       });
     } catch (configError) {

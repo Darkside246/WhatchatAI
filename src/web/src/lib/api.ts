@@ -1,5 +1,5 @@
 export interface WhatsAppConnectionSnapshot {
-  status: 'DISCONNECTED' | 'CONNECTING' | 'QR_READY' | 'CONNECTED' | 'RECONNECTING' | 'LOGGED_OUT' | 'CONFLICT_REPLACED' | 'ERROR';
+  status: 'DISCONNECTED' | 'CONNECTING' | 'QR_READY' | 'PAIRING_CODE_READY' | 'CONNECTED' | 'RECONNECTING' | 'LOGGED_OUT' | 'CONFLICT_REPLACED' | 'ERROR';
   connected: boolean;
   qrAvailable: boolean;
   qrDataUrl: string | null;
@@ -14,6 +14,10 @@ export interface WhatsAppConnectionSnapshot {
   qrGeneratedAt: string | null;
   /** This account's own real, downloaded profile picture media row - null until a sync has actually succeeded. */
   avatarMediaId: string | null;
+  /** WhatsApp Web's own "Link with phone number instead" alternative to the QR code. Never auto-rotated by WhatsApp - pairingCodeGeneratedAt is an emission timestamp, not an expiry. */
+  pairingCode: string | null;
+  pairingCodeGeneratedAt: string | null;
+  pairingPhoneNumber: string | null;
 }
 
 export interface SyncStatusResponse {
@@ -96,6 +100,8 @@ export interface WorkspaceMessage {
   revokeStatus: 'none' | 'requested' | 'revoke_sent' | 'failed';
   revokeSentAt: string | null;
   revokeError: string | null;
+  /** Resolved sender display name for a group chat's inbound message - null for a DM and for any outbound message. */
+  senderName: string | null;
 }
 
 export interface OutboundMessageDto {
@@ -720,6 +726,23 @@ export interface AiAgentSummary {
   /** Real operator-chosen canvas coordinates. Null until they actually place it. */
   canvasX: number | null;
   canvasY: number | null;
+  /** The only tools this agent may call, when allowedToolsEnabled is true - a real, enforced restriction (see buildReplyTools in aiReplyService.ts), not a suggestion. */
+  allowedTools: string[];
+  /** Always enforced regardless of allowedToolsEnabled - a real hard block. */
+  forbiddenTools: string[];
+  allowedToolsEnabled: boolean;
+}
+
+/** A real, system-owned starter template for the "Build My Agent" guided setup flow - see agent_templates (migration 951). */
+export interface AgentTemplate {
+  id: string;
+  templateKey: string;
+  name: string;
+  role: string;
+  description: string;
+  category: AgentCategory;
+  /** Real tool names from the backend's tool registry - never a capability that isn't actually implemented. */
+  recommendedTools: string[];
 }
 
 export interface RoutingPreviewResult {
@@ -756,6 +779,9 @@ export interface CreateAgentBody {
   parentAgentId?: string | null;
   escalateToAgentId?: string | null;
   priority?: number;
+  allowedTools?: string[];
+  forbiddenTools?: string[];
+  allowedToolsEnabled?: boolean;
 }
 
 export interface WorkspaceContact {
@@ -969,6 +995,8 @@ export type CreateInvoiceInput = {
 export const api = {
   getWhatsAppStatus: () => request<WhatsAppConnectionSnapshot>('/whatsapp/status'),
   connectWhatsApp: () => request<WhatsAppConnectionSnapshot>('/whatsapp/connect', { method: 'POST' }),
+  pairWhatsAppByPhone: (phoneNumber: string) =>
+    request<WhatsAppConnectionSnapshot>('/whatsapp/pair-by-phone', { method: 'POST', body: JSON.stringify({ phoneNumber }) }),
   disconnectWhatsApp: () => request<WhatsAppConnectionSnapshot>('/whatsapp/disconnect', { method: 'POST' }),
   logoutWhatsApp: () => request<WhatsAppConnectionSnapshot>('/whatsapp/logout', { method: 'POST' }),
   getSyncStatus: () => request<SyncStatusResponse>('/workspace/sync-status'),
@@ -1032,6 +1060,9 @@ export const api = {
       body: JSON.stringify({ imageBase64, mimeType }),
     }),
   listAgents: () => request<{ agents: AiAgentSummary[] }>('/workspace/agents'),
+  listAgentTemplates: () => request<{ templates: AgentTemplate[] }>('/workspace/agent-templates'),
+  createAgentFromTemplate: (templateKey: string, name?: string) =>
+    request<{ agent: AiAgentSummary }>('/workspace/agents/from-template', { method: 'POST', body: JSON.stringify({ templateKey, name }) }),
   createAgent: (body: CreateAgentBody) =>
     request<{ agent: AiAgentSummary }>('/workspace/agents', { method: 'POST', body: JSON.stringify(body) }),
   updateAgent: (id: string, body: CreateAgentBody) =>
@@ -1126,8 +1157,8 @@ export const api = {
     request<AuthMeResponse>('/auth/register', { method: 'POST', body: JSON.stringify(body) }),
   registerTrial: (body: { name: string; email: string; phone: string; productKey: string }) =>
     request<RegisterTrialResponse>('/trials/register', { method: 'POST', body: JSON.stringify(body) }),
-  login: (email: string, password: string) =>
-    request<AuthMeResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  login: (email: string, password: string, rememberMe = true) =>
+    request<AuthMeResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password, rememberMe }) }),
   logout: () => request<{ status: string }>('/auth/logout', { method: 'POST' }),
   getMe: () => request<AuthMeResponse>('/auth/me'),
   listSessions: () => request<{ sessions: AuthSessionDto[] }>('/auth/sessions'),
@@ -1417,6 +1448,15 @@ export const api = {
     }>(`/email-oauth/messages/${accountId}${q ? `?${q}` : ''}`);
   },
   oauthConnectUrl: (provider: 'gmail' | 'outlook') => `/api/email-oauth/connect/${provider}`,
+
+  // ── Meeting booking OAuth (Google Meet, Zoom) ──────────────────────────────
+  getMeetingConnection: (provider: 'google_meet' | 'zoom') =>
+    request<{ connection: { id: string; email: string; displayName: string | null; createdAt: string } | null }>(
+      `/meeting-oauth/connection/${provider}`,
+    ),
+  disconnectMeetingConnection: (provider: 'google_meet' | 'zoom') =>
+    request<{ ok: boolean }>(`/meeting-oauth/connection/${provider}`, { method: 'DELETE' }),
+  meetingOauthConnectUrl: (provider: 'google_meet' | 'zoom') => `/api/meeting-oauth/connect/${provider}`,
 
   // ── Legal & Consent (public — no auth required) ───────────────────────────
   getLegalDocuments: () =>

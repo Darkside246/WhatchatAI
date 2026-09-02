@@ -158,6 +158,66 @@ describe('workspaceService.createAgent (real entitlement enforcement, not just a
   });
 });
 
+describe('workspaceService.createAgentFromTemplate ("Build My Agent")', () => {
+  let businessId: string;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+  });
+
+  it('creates a real agent pre-filled from the template, with the recommended tools as a real, enforced allow-list', async () => {
+    await createTestSubscription(businessId, 'starter');
+    const templates = await workspaceService.listAgentTemplates();
+    const property = templates.find((t) => t.templateKey === 'property_operations_assistant')!;
+
+    const agent = await workspaceService.createAgentFromTemplate(businessId, 'property_operations_assistant');
+
+    expect(agent.name).toBe(property.name);
+    expect(agent.systemInstruction).toBe(property.defaultSystemInstruction);
+    expect(agent.category).toBe(property.category);
+    expect(agent.allowedToolsEnabled).toBe(true);
+    expect(agent.allowedTools).toEqual(property.recommendedTools);
+    expect(agent.status).toBe('ACTIVE');
+  });
+
+  it('accepts a real name override instead of the template default', async () => {
+    await createTestSubscription(businessId, 'starter');
+    const agent = await workspaceService.createAgentFromTemplate(businessId, 'personal_assistant', 'My Assistant');
+    expect(agent.name).toBe('My Assistant');
+  });
+
+  it('throws not-found for an unknown template key', async () => {
+    await createTestSubscription(businessId, 'starter');
+    await expect(workspaceService.createAgentFromTemplate(businessId, 'not_a_real_template')).rejects.toThrow();
+  });
+
+  it('respects the exact same entitlement check as manual creation - denied with no active subscription', async () => {
+    await expect(workspaceService.createAgentFromTemplate(businessId, 'personal_assistant')).rejects.toThrow();
+    try {
+      await workspaceService.createAgentFromTemplate(businessId, 'personal_assistant');
+    } catch (error) {
+      expect(isEntitlementDeniedError(error)).toBe(true);
+      if (isEntitlementDeniedError(error)) expect(error.reason).toBe('NO_ACTIVE_SUBSCRIPTION');
+    }
+    expect(await workspaceService.listAgents(businessId)).toEqual([]);
+  });
+
+  it('respects the same per-plan agent count limit as manual creation', async () => {
+    await createTestSubscription(businessId, 'starter');
+    await workspaceService.createAgentFromTemplate(businessId, 'personal_assistant');
+    await workspaceService.createAgent(businessId, { name: 'Manually created' });
+
+    await expect(workspaceService.createAgentFromTemplate(businessId, 'property_operations_assistant')).rejects.toThrow();
+    try {
+      await workspaceService.createAgentFromTemplate(businessId, 'property_operations_assistant');
+    } catch (error) {
+      expect(isEntitlementDeniedError(error)).toBe(true);
+      if (isEntitlementDeniedError(error)) expect(error.reason).toBe('ENTITLEMENT_LIMIT_REACHED');
+    }
+  });
+});
+
 describe('workspaceService.updateAgentStatus (the real, business-wide AI kill switch)', () => {
   let businessId: string;
 
@@ -482,5 +542,76 @@ describe('workspaceService.assignChat (real assignment, real capacity enforcemen
     } catch (error) {
       expect(isChatNotFoundError(error)).toBe(true);
     }
+  });
+});
+
+describe('workspaceService.listMessages - group chat sender name resolution', () => {
+  let businessId: string;
+  let accountId: string;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId);
+  });
+
+  it('resolves the real sender name per message in a group chat, correctly distinguishing two different senders', async () => {
+    const chatRepository = new WhatsAppChatRepository(pool);
+    const messageRepository = new WhatsAppMessageRepository(pool);
+    const contactRepository = new WhatsAppContactRepository(pool);
+
+    const chat = await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '111222333-4444@g.us',
+      jidKind: 'group',
+      chatType: 'group',
+    });
+
+    const alex = await contactRepository.upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, whatsappJid: '15559990001@s.whatsapp.net', jidKind: 'individual', pushName: 'Alex',
+    });
+    const jordan = await contactRepository.upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, whatsappJid: '15559990002@s.whatsapp.net', jidKind: 'individual', displayName: 'Jordan Saved Name', pushName: 'jordan_push',
+    });
+
+    await messageRepository.insert({
+      businessId, whatsappAccountId: accountId, chatId: chat.id,
+      whatsappMessageId: 'WA-GROUP-MSG-1', remoteJid: chat.chatJid, senderJid: alex.whatsappJid, senderContactId: alex.id,
+      direction: 'inbound', messageType: 'text', textContent: 'hi from alex', timestamp: new Date(Date.now() - 1000).toISOString(), fromMe: false, isHistorical: false,
+    });
+    await messageRepository.insert({
+      businessId, whatsappAccountId: accountId, chatId: chat.id,
+      whatsappMessageId: 'WA-GROUP-MSG-2', remoteJid: chat.chatJid, senderJid: jordan.whatsappJid, senderContactId: jordan.id,
+      direction: 'inbound', messageType: 'text', textContent: 'hi from jordan', timestamp: new Date().toISOString(), fromMe: false, isHistorical: false,
+    });
+
+    const messages = await workspaceService.listMessages(businessId, accountId, chat.id);
+    const byText = new Map(messages.map((m) => [m.textContent, m.senderName]));
+    expect(byText.get('hi from alex')).toBe('Alex');
+    // displayName (the saved contact name) outranks pushName in resolveDisplayName's priority.
+    expect(byText.get('hi from jordan')).toBe('Jordan Saved Name');
+  });
+
+  it('never resolves a sender name for a DM - the chat itself is already the one contact, shown elsewhere in the UI', async () => {
+    const chatRepository = new WhatsAppChatRepository(pool);
+    const messageRepository = new WhatsAppMessageRepository(pool);
+    const contactRepository = new WhatsAppContactRepository(pool);
+
+    const contact = await contactRepository.upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, whatsappJid: '15559990003@s.whatsapp.net', jidKind: 'individual', pushName: 'Solo Contact',
+    });
+    const chat = await chatRepository.upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, chatJid: contact.whatsappJid, jidKind: 'individual', chatType: 'individual', contactId: contact.id,
+    });
+    await messageRepository.insert({
+      businessId, whatsappAccountId: accountId, chatId: chat.id,
+      whatsappMessageId: 'WA-DM-MSG-1', remoteJid: chat.chatJid, senderJid: contact.whatsappJid, senderContactId: contact.id,
+      direction: 'inbound', messageType: 'text', textContent: 'hi', timestamp: new Date().toISOString(), fromMe: false, isHistorical: false,
+    });
+
+    const messages = await workspaceService.listMessages(businessId, accountId, chat.id);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.senderName).toBeNull();
   });
 });

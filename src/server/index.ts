@@ -148,7 +148,7 @@ import {
   BusinessDeletionNotPendingError,
 } from '../services/accountDeletionService.js';
 import { changePhoneNumber, PhoneNumberAlreadyInUseError } from '../services/phoneNumberChangeService.js';
-import { InvalidPhoneNumberError } from '../services/phoneNormalizationService.js';
+import { InvalidPhoneNumberError, normalizePhoneToE164 } from '../services/phoneNormalizationService.js';
 import {
   listMembers,
   createMember,
@@ -431,7 +431,7 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-const loginSchema = z.object({ email: z.string().trim().email(), password: z.string().min(1) });
+const loginSchema = z.object({ email: z.string().trim().email(), password: z.string().min(1), rememberMe: z.boolean().optional().default(true) });
 
 app.post('/api/auth/login', async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
@@ -439,7 +439,7 @@ app.post('/api/auth/login', async (req, res) => {
 
   try {
     const result = await login(parsed.data.email, parsed.data.password, deviceContextFrom(req));
-    setSessionCookie(req, res, result.token, SESSION_MAX_AGE_SECONDS);
+    setSessionCookie(req, res, result.token, parsed.data.rememberMe ? SESSION_MAX_AGE_SECONDS : undefined);
     return res.status(200).json({ user: result.user, business: result.business, role: result.membership.role });
   } catch (error) {
     if (isRateLimitedError(error)) return res.status(429).json({ error: 'RATE_LIMITED', message: error.message });
@@ -787,6 +787,46 @@ app.post('/api/whatsapp/connect', async (_req, res) => {
   try {
     const snapshot = await whatsappConnectionManager.connect(businessId);
     return res.status(202).json(snapshot);
+  } catch (error) {
+    return res.status(500).json({
+      status: 'ERROR',
+      connected: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+const pairByPhoneSchema = z.object({ phoneNumber: z.string().trim().min(3).max(50) });
+
+/**
+ * WhatsApp Web's own "Link with phone number" alternative to scanning a
+ * QR code - same Baileys socket, same session storage, the only
+ * difference is which pairing stanza gets sent. See
+ * WhatsAppTenantConnection.requestPhonePairingCode() for the real logic.
+ */
+app.post('/api/whatsapp/pair-by-phone', async (req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  const parsed = pairByPhoneSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PAIR_BY_PHONE_PAYLOAD', details: parsed.error.flatten() });
+
+  let phoneNumberE164: string;
+  try {
+    phoneNumberE164 = normalizePhoneToE164(parsed.data.phoneNumber);
+  } catch (error) {
+    if (error instanceof InvalidPhoneNumberError) return res.status(400).json({ error: 'INVALID_PHONE_NUMBER', message: error.message });
+    throw error;
+  }
+
+  if (!whatsappConnectionManager.canProvisionNewTenant(businessId)) {
+    return res.status(503).json({
+      error: 'AT_CAPACITY',
+      message: 'This server is at its concurrent WhatsApp connection limit. Try again shortly.',
+    });
+  }
+
+  try {
+    await whatsappConnectionManager.requestPhonePairingCode(businessId, phoneNumberE164);
+    return res.status(202).json(whatsappConnectionManager.getSnapshot(businessId));
   } catch (error) {
     return res.status(500).json({
       status: 'ERROR',
@@ -2191,6 +2231,9 @@ const createAgentSchema = z.object({
   parentAgentId: z.string().uuid().nullish(),
   escalateToAgentId: z.string().uuid().nullish(),
   priority: z.number().int().min(0).max(1000).optional(),
+  allowedTools: z.array(z.string().trim().min(1)).max(50).optional(),
+  forbiddenTools: z.array(z.string().trim().min(1)).max(50).optional(),
+  allowedToolsEnabled: z.boolean().optional(),
 });
 
 app.post('/api/workspace/agents', requireWorkspaceContext, requirePermission('ai.create'), async (req, res) => {
@@ -2203,6 +2246,43 @@ app.post('/api/workspace/agents', requireWorkspaceContext, requirePermission('ai
     const agent = await workspaceService.createAgent(businessId, parsed.data);
     return res.status(201).json({ agent });
   } catch (error) {
+    if (isEntitlementDeniedError(error)) {
+      const message =
+        error.reason === 'NO_ACTIVE_SUBSCRIPTION'
+          ? 'This business has no active subscription.'
+          : error.reason === 'ENTITLEMENT_DISABLED'
+            ? 'AI agents are not enabled on this plan.'
+            : `Agent limit reached for this plan (${error.current}/${error.limit}).`;
+      return res
+        .status(403)
+        .json({ error: 'ENTITLEMENT_DENIED', reason: error.reason, limit: error.limit, current: error.current, message });
+    }
+    throw error;
+  }
+});
+
+app.get('/api/workspace/agent-templates', requireWorkspaceContext, async (_req, res) => {
+  const templates = await workspaceService.listAgentTemplates();
+  return res.status(200).json({ templates });
+});
+
+const createAgentFromTemplateSchema = z.object({
+  templateKey: z.string().trim().min(1),
+  name: z.string().trim().min(1).optional(),
+});
+
+/** "Build My Agent" - creates a real agent pre-filled from a system template. Same entitlement/permission surface as manual creation above. */
+app.post('/api/workspace/agents/from-template', requireWorkspaceContext, requirePermission('ai.create'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = createAgentFromTemplateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_TEMPLATE_REQUEST', details: parsed.error.flatten() });
+  }
+  try {
+    const agent = await workspaceService.createAgentFromTemplate(businessId, parsed.data.templateKey, parsed.data.name);
+    return res.status(201).json({ agent });
+  } catch (error) {
+    if (isChatNotFoundError(error)) return res.status(404).json({ error: 'TEMPLATE_NOT_FOUND' });
     if (isEntitlementDeniedError(error)) {
       const message =
         error.reason === 'NO_ACTIVE_SUBSCRIPTION'
@@ -2961,7 +3041,7 @@ const httpServer = createServer(app);
 attachWebSocketServer(httpServer);
 
 httpServer.listen(port, () => {
-  console.log(`[WhatchatAI] API listening on http://localhost:${port}`);
+  console.log(`[AURA] API listening on http://localhost:${port}`);
 });
 
 async function closeWorkers(): Promise<void> {
@@ -2973,7 +3053,7 @@ async function closeWorkers(): Promise<void> {
 }
 
 async function shutdown(signal: string): Promise<void> {
-  console.log(`[WhatchatAI] Received ${signal}, closing outbound dispatch worker...`);
+  console.log(`[AURA] Received ${signal}, closing outbound dispatch worker...`);
   await closeWorkers();
   process.exit(0);
 }
@@ -2985,4 +3065,4 @@ process.on('SIGINT', () => void shutdown('SIGINT'));
 // messages worker is guarded against (an unlistened stream 'error' event
 // from a mid-transfer network drop) can happen here too, since this
 // process is the one that owns the live Baileys socket.
-installCrashSafetyHandlers('WhatchatAI-server', closeWorkers);
+installCrashSafetyHandlers('AURA-server', closeWorkers);

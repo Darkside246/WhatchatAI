@@ -25,6 +25,35 @@ describe('AiAgentRepository', () => {
     expect(agent.status).toBe('ACTIVE');
   });
 
+  it('defaults to allowedToolsEnabled: false and empty tool lists - every pre-existing agent keeps offering every connection-eligible tool, unchanged', async () => {
+    const agent = await agents.create({ businessId, name: 'Default Agent' });
+    expect(agent.allowedToolsEnabled).toBe(false);
+    expect(agent.allowedTools).toEqual([]);
+    expect(agent.forbiddenTools).toEqual([]);
+  });
+
+  it('round-trips a real capability restriction through create and update', async () => {
+    const created = await agents.create({
+      businessId,
+      name: 'Restricted Agent',
+      allowedToolsEnabled: true,
+      allowedTools: ['get_current_time', 'schedule_google_meet'],
+      forbiddenTools: ['schedule_zoom_meeting'],
+    });
+    expect(created.allowedToolsEnabled).toBe(true);
+    expect(created.allowedTools).toEqual(['get_current_time', 'schedule_google_meet']);
+    expect(created.forbiddenTools).toEqual(['schedule_zoom_meeting']);
+
+    const updated = await agents.update(created.id, {
+      name: 'Restricted Agent',
+      allowedToolsEnabled: false,
+      allowedTools: [],
+      forbiddenTools: ['schedule_zoom_meeting'],
+    });
+    expect(updated?.allowedToolsEnabled).toBe(false);
+    expect(updated?.forbiddenTools).toEqual(['schedule_zoom_meeting']);
+  });
+
   it('only counts ACTIVE/PAUSED agents toward the plan limit, not ARCHIVED ones', async () => {
     const a = await agents.create({ businessId, name: 'Reception Agent' });
     const b = await agents.create({ businessId, name: 'Support Agent' });

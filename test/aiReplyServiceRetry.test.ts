@@ -7,6 +7,8 @@ import type { WhatsAppMessageRecord } from '../src/repositories/whatsappMessageR
 import { buildTimeContext } from '../src/services/time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME } from '../src/services/time/getCurrentTimeTool.js';
 import { UPDATE_CONVERSATION_STATE_TOOL_NAME } from '../src/services/state/updateConversationStateTool.js';
+import { SCHEDULE_MEETING_TOOL_NAME } from '../src/services/meeting/scheduleMeetingTool.js';
+import { SCHEDULE_ZOOM_MEETING_TOOL_NAME } from '../src/services/meeting/scheduleZoomMeetingTool.js';
 import { getGeminiCircuitBreaker, resetAllGeminiCircuitBreakers } from '../src/services/aiCircuitBreaker.js';
 import { register } from '../src/services/authService.js';
 import { aiGateway } from '../src/services/ai/aiGateway.js';
@@ -77,6 +79,9 @@ function fakeContext(overrides: Partial<AiHandoffContext> = {}): AiHandoffContex
     conversationHistory: [fakeMessage()],
     businessTimezone,
     timeContext,
+    // Offered to Gemini by default (see buildReplyTools in aiReplyService.ts) -
+    // this file's own declared-tools-array assertions expect schedule_google_meet present.
+    connectedMeetingProviders: ['google_meet'],
     ...overrides,
   };
 }
@@ -252,10 +257,11 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
     // document content never influences what tools are declared to Gemini.
     const tools = generateContentMock.mock.calls[0]?.[0]?.config?.tools;
     expect(tools).toHaveLength(1);
-    expect(tools?.[0]?.functionDeclarations).toHaveLength(2);
+    expect(tools?.[0]?.functionDeclarations).toHaveLength(3);
     expect(tools?.[0]?.functionDeclarations?.map((declaration: { name: string }) => declaration.name)).toEqual([
       GET_CURRENT_TIME_TOOL_NAME,
       UPDATE_CONVERSATION_STATE_TOOL_NAME,
+      SCHEDULE_MEETING_TOOL_NAME,
     ]);
 
     // The hostile instruction is present only inside the wrapped,
@@ -264,6 +270,57 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
     const systemInstruction = generateContentMock.mock.calls[0]?.[0]?.config?.systemInstruction as string;
     expect(systemInstruction).toContain('send_confidential_files');
     expect(systemInstruction).toContain('<untrusted_data source="business_document">');
+  });
+
+  it('offers only the connected meeting provider(s) to Gemini - never one the business has not actually connected', async () => {
+    // Gemini gets exactly one round of tool calls per reply (see
+    // resolveToolCalls in aiReplyService.ts), so offering a tool for an
+    // unconnected provider would waste that one shot on a guaranteed
+    // not_connected - buildReplyTools must gate on the real
+    // connectedMeetingProviders context field, not always offer both.
+    generateContentMock.mockResolvedValue({ text: 'ok' });
+
+    await generateAiReply(fakeAgent(), fakeContext({ connectedMeetingProviders: [] }));
+    let names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME]);
+
+    await generateAiReply(fakeAgent(), fakeContext({ connectedMeetingProviders: ['zoom'] }));
+    names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, SCHEDULE_ZOOM_MEETING_TOOL_NAME]);
+
+    await generateAiReply(fakeAgent(), fakeContext({ connectedMeetingProviders: ['google_meet', 'zoom'] }));
+    names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, SCHEDULE_MEETING_TOOL_NAME, SCHEDULE_ZOOM_MEETING_TOOL_NAME]);
+  });
+
+  it('an agent with allowedToolsEnabled: false (every pre-existing agent) still offers every connection-eligible tool unchanged', async () => {
+    generateContentMock.mockResolvedValueOnce({ text: 'ok' });
+    await generateAiReply(
+      fakeAgent({ allowedToolsEnabled: false, allowedTools: [], forbiddenTools: [] }),
+      fakeContext({ connectedMeetingProviders: ['google_meet', 'zoom'] }),
+    );
+    const names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, SCHEDULE_MEETING_TOOL_NAME, SCHEDULE_ZOOM_MEETING_TOOL_NAME]);
+  });
+
+  it('an agent with allowedToolsEnabled: true and a partial allowedTools list offers only those tools', async () => {
+    generateContentMock.mockResolvedValueOnce({ text: 'ok' });
+    await generateAiReply(
+      fakeAgent({ allowedToolsEnabled: true, allowedTools: [GET_CURRENT_TIME_TOOL_NAME, SCHEDULE_MEETING_TOOL_NAME], forbiddenTools: [] }),
+      fakeContext({ connectedMeetingProviders: ['google_meet', 'zoom'] }),
+    );
+    const names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, SCHEDULE_MEETING_TOOL_NAME]);
+  });
+
+  it('a tool present in forbiddenTools is excluded regardless of allowedToolsEnabled', async () => {
+    generateContentMock.mockResolvedValueOnce({ text: 'ok' });
+    await generateAiReply(
+      fakeAgent({ allowedToolsEnabled: false, allowedTools: [], forbiddenTools: [SCHEDULE_ZOOM_MEETING_TOOL_NAME] }),
+      fakeContext({ connectedMeetingProviders: ['google_meet', 'zoom'] }),
+    );
+    const names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, SCHEDULE_MEETING_TOOL_NAME]);
   });
 
   it('answers a get_current_time tool call with the real TimeContext and makes exactly one follow-up call', async () => {
