@@ -36,6 +36,7 @@ import { UserPreferenceRepository } from '../repositories/userPreferenceReposito
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
 import { checkRedisHealth } from '../redis/client.js';
+import { checkQueueHealth } from '../queue/queueHealth.js';
 import { verifyMasterKeyStability } from '../security/encryption/keyStabilityCheck.js';
 import { installCrashSafetyHandlers } from '../process/crashSafety.js';
 import { syncContactProfilePicture } from '../services/profilePictureSyncService.js';
@@ -381,6 +382,14 @@ app.get('/api/health/redis', async (_req, res) => {
   res.status(health.available ? 200 : 503).json({
     status: health.available ? 'CONNECTED' : 'REDIS_UNAVAILABLE',
     ...health,
+  });
+});
+
+app.get('/api/health/queues', async (_req, res) => {
+  const summary = await checkQueueHealth();
+  res.status(summary.healthy ? 200 : 503).json({
+    status: summary.healthy ? 'HEALTHY' : 'DEGRADED',
+    ...summary,
   });
 });
 
