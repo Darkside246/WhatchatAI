@@ -13,6 +13,16 @@ x-app-common: &app-common
   build:
     context: .
     dockerfile: Dockerfile
+    # Explicit target required: without it, Docker builds the LAST stage
+    # in the Dockerfile, not necessarily the one this image is meant to be.
+    # Real bug, found by an actual `docker compose up` boot: the
+    # relay-runtime stage was appended after this one for the unrelated
+    # OpenClaw relay component, so every app-server/app-worker build was
+    # silently producing the relay's tiny image (no node_modules, no
+    # dist/db, no dist/server) instead of the real app - `docker compose
+    # build` reported success throughout, and only a real container boot
+    # (MODULE_NOT_FOUND on dist/db/migrate.js) surfaced it.
+    target: runtime
   image: *app-image
   env_file:
     - .env

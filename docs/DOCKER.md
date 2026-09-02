@@ -267,14 +267,25 @@ structured so adding an upload step after each successful dump is a small,
 isolated change once those credentials exist - deliberately not built now
 rather than wired against a guessed bucket/endpoint.
 
-**Verified**: `docker compose config --quiet` passes and `docker compose
-config --services` lists `postgres-backup` alongside the existing four
-services - real schema validation, not just YAML parsing. A full container
-boot (`docker compose up -d`, confirming the backup loop actually produces
-a file) was not run in this environment - re-verify that before trusting
-this fully in production, the same way the rest of this file's "Real bugs
-found" section required an actual container boot rather than config
-validation alone.
+**Fully verified by a real `docker compose up -d` boot** (2026-09-02, local
+Docker Desktop, all 5 services): `postgres-backup` produced a real dump file
+(`whatchatai-<timestamp>.sql.gz`) within seconds of boot, all 5 containers
+reported `healthy`, `GET /api/health` returned 200, and the frontend served.
+
+**Real bug found and fixed by that same boot** (would have made every prior
+`docker compose build` silently wrong): `x-app-common`'s `build:` block had
+no `target:`, so Docker built the Dockerfile's *last* stage - which used to
+be `runtime` but is now `relay-runtime` (added later for the unrelated
+OpenClaw relay component, at the end of the file). Every `app-server`/
+`app-worker` image was silently being built from `relay-runtime` instead -
+a tiny image with no `node_modules`, no `dist/db`, no `dist/server` at all.
+`docker compose build` reported success every time; only an actual
+container boot surfaced it (`Error: Cannot find module '/app/dist/db/migrate.js'`,
+health check failing, `app-server` never becoming healthy). Fixed with an
+explicit `target: runtime` on the shared build block - see its own comment
+in `docker-compose.yml`. This is exactly the class of bug this file's own
+methodology exists to catch: config validation and `tsc`/test success are
+not the same as a real boot.
 
 **Operational warning, learned the hard way while verifying this:**
 `docker compose config` (without `--quiet`/`--services`) prints every
