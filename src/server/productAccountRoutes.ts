@@ -14,6 +14,7 @@ import { ProductKeySchema } from '../domain/platform/productAccounts.js';
 import { requireAuth, requireDeveloper, setSessionCookie, type AuthContext } from './authMiddleware.js';
 import type { Request } from 'express';
 import { pool } from '../db/pool.js';
+import { getSystemHealth } from '../services/systemHealthService.js';
 
 const router = Router();
 const productKey = ProductKeySchema;
@@ -76,6 +77,17 @@ router.post('/developer/accounts/:businessId/assign-vertical', requireAuth, requ
 router.get('/developer/control-plane-stats', requireAuth, requireDeveloper, async (_req, res) => {
   const stats = await getControlPlaneStats();
   return res.status(200).json({ stats });
+});
+
+/**
+ * Aggregates the real /api/health/* checks already used by the deployment
+ * probes into one authenticated, developer-only view - the previously
+ * unmet gap where those endpoints existed but nothing in the actual admin
+ * UI surfaced them. Runs the checks in parallel and never lets one
+ * failing check take the others down with it.
+ */
+router.get('/developer/system-health', requireAuth, requireDeveloper, async (_req, res) => {
+  return res.status(200).json(await getSystemHealth());
 });
 
 export { router as productAccountRouter };

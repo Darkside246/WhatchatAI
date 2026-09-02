@@ -3,7 +3,7 @@ import type { LucideProps } from 'lucide-react';
 import {
   Activity, Bot, CreditCard, Database, Gauge, KeyRound, Radio, ShieldCheck, Users,
   Building2, CookingPot, ShoppingBag, Scissors, Car, Stethoscope, Scale, Hotel,
-  HardHat, Package, ChevronDown, ChevronRight, LayoutGrid, Check,
+  HardHat, Package, ChevronDown, ChevronRight, LayoutGrid, Check, HeartPulse, X,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 
@@ -20,6 +20,8 @@ interface PlatformStats {
   totalBusinesses: number; activeWaConnections: number; totalAiAgents: number;
   activeTrials: number; recentSecurityEvents: number;
 }
+
+type SystemHealth = Awaited<ReturnType<typeof api.getSystemHealth>>;
 
 // ── Static data ────────────────────────────────────────────────────────────
 
@@ -91,6 +93,71 @@ function VerticalCard({ vertical }: { vertical: Vertical }) {
   );
 }
 
+function HealthBadge({ ok, label }: { ok: boolean; label: string }) {
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-meta font-medium ${ok ? 'bg-success/15 text-success' : 'bg-error/15 text-error'}`}>
+      {ok ? <Check size={11} /> : <X size={11} />}
+      {label}
+    </span>
+  );
+}
+
+/**
+ * Aggregates the real /api/health/* checks (added across this session for
+ * database, redis, BullMQ queues, and Goose fallback) into one developer
+ * view - previously each existed as a standalone probe with nothing in
+ * this admin UI surfacing them.
+ */
+function SystemHealthSection({ health }: { health: SystemHealth | null }) {
+  if (!health) return <p className="text-caption text-fg-muted">Loading…</p>;
+  const unhealthyQueues = health.queues.queues.filter((q) => !q.healthy);
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-xl bg-surface-2 p-4">
+          <p className="text-caption font-medium text-fg-secondary">Database</p>
+          <div className="mt-2"><HealthBadge ok={health.database.available} label={health.database.available ? 'Connected' : (health.database.error ?? 'Unavailable')} /></div>
+        </div>
+        <div className="rounded-xl bg-surface-2 p-4">
+          <p className="text-caption font-medium text-fg-secondary">Redis</p>
+          <div className="mt-2"><HealthBadge ok={health.redis.available} label={health.redis.available ? 'Connected' : (health.redis.error ?? 'Unavailable')} /></div>
+        </div>
+        <div className="rounded-xl bg-surface-2 p-4">
+          <p className="text-caption font-medium text-fg-secondary">Background queues</p>
+          <div className="mt-2"><HealthBadge ok={health.queues.healthy} label={health.queues.healthy ? 'Healthy' : `${unhealthyQueues.length} degraded`} /></div>
+        </div>
+        <div className="rounded-xl bg-surface-2 p-4">
+          <p className="text-caption font-medium text-fg-secondary">Goose fallback</p>
+          <div className="mt-2">
+            <HealthBadge
+              ok={!health.goose.configured || health.goose.reachable}
+              label={!health.goose.configured ? 'Not configured' : health.goose.reachable ? 'Reachable' : 'Unreachable'}
+            />
+          </div>
+        </div>
+      </div>
+      {unhealthyQueues.length > 0 && (
+        <div className="rounded-xl border border-error/30 bg-error/5 p-4">
+          <p className="text-caption font-medium text-fg">Queues with a real backlog</p>
+          <div className="mt-2 space-y-1">
+            {unhealthyQueues.map((q) => (
+              <p key={q.name} className="text-meta text-fg-secondary">
+                <span className="font-medium text-fg">{q.name}</span> — {q.waiting} waiting, {q.failed} failed
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+      {health.goose.configured && (health.goose.lastSuccessAt || health.goose.lastFailureAt) && (
+        <p className="text-meta text-fg-muted">
+          Goose: {health.goose.lastSuccessAt ? `last succeeded ${new Date(health.goose.lastSuccessAt).toLocaleString()}` : 'never succeeded this process'}
+          {health.goose.consecutiveFailureCount > 0 ? ` — ${health.goose.consecutiveFailureCount} consecutive failures` : ''}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function AccountRow({
   account, verticals, onAssign,
 }: {
@@ -142,13 +209,16 @@ function AccountRow({
 
 export function DeveloperControlPlanePage() {
   const [stats, setStats] = useState<PlatformStats | null>(null);
+  const [health, setHealth] = useState<SystemHealth | null>(null);
   const [verticals, setVerticals] = useState<Vertical[]>([]);
   const [accounts, setAccounts] = useState<ProductAccount[]>([]);
   const [catalogOpen, setCatalogOpen] = useState(true);
   const [accountsOpen, setAccountsOpen] = useState(true);
+  const [healthOpen, setHealthOpen] = useState(true);
 
   useEffect(() => {
     api.getControlPlaneStats().then((r) => setStats(r.stats)).catch(() => undefined);
+    api.getSystemHealth().then(setHealth).catch(() => undefined);
     api.listVerticals().then((r) => setVerticals(r.verticals)).catch(() => undefined);
     api.listAllProductAccountsDev().then((r) => setAccounts(r.accounts)).catch(() => undefined);
   }, []);
@@ -186,6 +256,29 @@ export function DeveloperControlPlanePage() {
           <StatPill label="AI agents"              value={stats?.totalAiAgents ?? null} />
           <StatPill label="Active trials"          value={stats?.activeTrials ?? null} />
           <StatPill label="Security events (24h)"  value={stats?.recentSecurityEvents ?? null} />
+        </section>
+
+        {/* ── System health — collapsible hamburger group ── */}
+        <section className="rounded-2xl border border-border-subtle bg-surface-1 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setHealthOpen((o) => !o)}
+            className="flex w-full items-center gap-3 px-6 py-4 text-left hover:bg-surface-2 transition-colors"
+          >
+            <HeartPulse size={18} className="shrink-0 text-accent" />
+            <span className="flex-1 text-title font-semibold">System Health</span>
+            <span className="text-caption text-fg-muted">
+              {health ? (health.database.available && health.redis.available && health.queues.healthy ? 'All systems healthy' : 'Needs attention') : 'Loading…'}
+            </span>
+            {healthOpen
+              ? <ChevronDown size={16} className="shrink-0 text-fg-muted" />
+              : <ChevronRight size={16} className="shrink-0 text-fg-muted" />}
+          </button>
+          {healthOpen && (
+            <div className="border-t border-border-subtle px-6 pb-6 pt-4">
+              <SystemHealthSection health={health} />
+            </div>
+          )}
         </section>
 
         {/* ── Vertical catalog — collapsible hamburger group ── */}

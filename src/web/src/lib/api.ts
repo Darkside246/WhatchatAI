@@ -1367,6 +1367,14 @@ export const api = {
         recentSecurityEvents: number;
       };
     }>('/platform/developer/control-plane-stats'),
+  getSystemHealth: () =>
+    request<{
+      database: { available: boolean; error: string | null };
+      redis: { available: boolean; error: string | null };
+      queues: { healthy: boolean; queues: Array<{ name: string; waiting: number; active: number; completed: number; failed: number; delayed: number; healthy: boolean }> };
+      goose: { configured: boolean; reachable: boolean; reason?: string; lastSuccessAt: string | null; lastFailureAt: string | null; lastFailureReason: string | null; consecutiveFailureCount: number };
+      ai: { configured: boolean; model: string };
+    }>('/platform/developer/system-health'),
 
   // ── Operator Mode ──────────────────────────────────────────────────────────
   getOperatorSettings: () =>
