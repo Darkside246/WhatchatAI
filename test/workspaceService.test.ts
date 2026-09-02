@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
@@ -164,6 +164,16 @@ describe('workspaceService.createAgentFromTemplate ("Build My Agent")', () => {
   beforeEach(async () => {
     await resetDatabase();
     businessId = await createTestBusiness();
+  });
+
+  // agent_templates is real seed/reference data, not per-test tenant data,
+  // so resetDatabase() deliberately never truncates it - but that means a
+  // version bump made below (mirroring a real template content update)
+  // would otherwise permanently leak into every later run against this
+  // same database. Restore it unconditionally so this file stays
+  // repeatable run after run, not just on a pristine database.
+  afterEach(async () => {
+    await pool.query(`UPDATE agent_templates SET version = 1 WHERE template_key = 'property_operations_assistant' AND version <> 1`);
   });
 
   it('creates a real agent pre-filled from the template, with the recommended tools as a real, enforced allow-list', async () => {

@@ -10,6 +10,10 @@ const TABLES = [
   // TRUNCATE ... CASCADE from any other table in this list never reaches
   // it, so it needs its own explicit entry to be cleared between tests.
   'trial_phone_fingerprints',
+  // Consent happens before a business exists (public landing page), so
+  // user_consents has no FK to businesses either - same reasoning as
+  // above. consent_confirmations cascades from it (ON DELETE CASCADE).
+  'user_consents',
   'business_document_versions',
   'business_documents',
   'openclaw_tool_executions',
