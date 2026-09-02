@@ -6,6 +6,7 @@ import {
   type ConversationOpenQuestion,
   type ConversationStatePatch,
 } from '../../repositories/conversationStateRepository.js';
+import { CustomerMemoryConflictError, type CustomerMemoryRepository } from '../../repositories/customerMemoryRepository.js';
 import type { UpdateConversationStateToolArgs } from './updateConversationStateTool.js';
 
 /**
@@ -114,6 +115,45 @@ export async function applyConversationStateUpdate(
       return;
     } catch (error) {
       if (error instanceof ConversationStateConflictError && attempt < MAX_CONFLICT_RETRIES - 1) continue;
+      throw error;
+    }
+  }
+}
+
+/**
+ * Layer 2 write-through: the same real, user-confirmed facts just written
+ * to this one conversation's state (above) also get merged into the
+ * customer's durable memory (see migration 959), so a returning customer
+ * does not have to restate the same fact in their next, unrelated
+ * conversation. Only ever called when a real customerId was resolved for
+ * this chat (see aiContextGathererService.ts) - group chats and messages
+ * from a contact with no linked customer never reach this. Never throws
+ * for an empty confirmFacts list - identical "nothing to write" reasoning
+ * as applyConversationStateUpdate above.
+ */
+export async function applyCustomerMemoryUpdate(
+  repository: CustomerMemoryRepository,
+  businessId: string,
+  customerId: string,
+  confirmFacts: Array<{ key: string; value: string }> | undefined,
+): Promise<void> {
+  if (!confirmFacts?.length) return;
+
+  for (let attempt = 0; attempt < MAX_CONFLICT_RETRIES; attempt++) {
+    const current = await repository.getOrCreate(businessId, customerId);
+    const now = new Date().toISOString();
+    const merged = new Map(current.confirmedFacts.map((fact) => [fact.key, fact]));
+    for (const incoming of confirmFacts) {
+      const key = incoming.key?.trim();
+      const value = incoming.value?.trim();
+      if (!key || !value) continue;
+      merged.set(key, { key, value, origin: 'user_confirmed', confirmedAt: now });
+    }
+    try {
+      await repository.update(businessId, customerId, current.version, [...merged.values()]);
+      return;
+    } catch (error) {
+      if (error instanceof CustomerMemoryConflictError && attempt < MAX_CONFLICT_RETRIES - 1) continue;
       throw error;
     }
   }

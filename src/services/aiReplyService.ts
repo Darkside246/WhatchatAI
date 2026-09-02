@@ -6,10 +6,11 @@ import { pool } from '../db/pool.js';
 import { ADVICE_RESTRICTED_CATEGORIES, type AiAgentRecord } from '../repositories/aiAgentRepository.js';
 import type { AiHandoffContext } from './aiContextGathererService.js';
 import { ConversationStateRepository } from '../repositories/conversationStateRepository.js';
+import { CustomerMemoryRepository } from '../repositories/customerMemoryRepository.js';
 import { describeTimeContext } from './time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME, getCurrentTimeFunctionDeclaration } from './time/getCurrentTimeTool.js';
 import { UPDATE_CONVERSATION_STATE_TOOL_NAME, updateConversationStateFunctionDeclaration, type UpdateConversationStateToolArgs } from './state/updateConversationStateTool.js';
-import { applyConversationStateUpdate } from './state/conversationStateWriter.js';
+import { applyConversationStateUpdate, applyCustomerMemoryUpdate } from './state/conversationStateWriter.js';
 import { randomUUID } from 'node:crypto';
 import { SCHEDULE_MEETING_TOOL_NAME, scheduleMeetingFunctionDeclaration, type ScheduleMeetingToolArgs } from './meeting/scheduleMeetingTool.js';
 import { SCHEDULE_ZOOM_MEETING_TOOL_NAME, scheduleZoomMeetingFunctionDeclaration, type ScheduleZoomMeetingToolArgs } from './meeting/scheduleZoomMeetingTool.js';
@@ -34,6 +35,7 @@ import { classifyAiError } from './ai/aiErrorClassification.js';
 import { notifyBusiness } from './notificationService.js';
 
 const conversationStateRepository = new ConversationStateRepository(pool);
+const customerMemoryRepository = new CustomerMemoryRepository(pool);
 const propertyOperationsRepository = new PropertyOperationsRepository(pool);
 const aiUsageRepository = new AiUsageRepository(pool);
 const aiCommitmentRepository = new AiCommitmentRepository(pool);
@@ -299,6 +301,18 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
   // UPDATE_CONVERSATION_STATE_TOOL_NAME tool declared below (see
   // conversationStateWriter.ts) - a conversation with no prior write still
   // renders nothing here, exactly as before that tool existed.
+  // Layer 2 of "layered memory" (migration 959): facts confirmed by this
+  // same customer in a DIFFERENT, past conversation - rendered as its own
+  // distinct line, never merged into "this conversation"'s facts below, so
+  // the model (and anyone reading a transcript later) can tell "the
+  // customer told us this before" apart from "the customer just told us
+  // this." null when no customer could be resolved for this chat (a group
+  // message, or a contact never linked to a customer).
+  if (context.customerMemory?.confirmedFacts.length) {
+    const facts = context.customerMemory.confirmedFacts.map((fact) => `${fact.key}=${fact.value}`).join(', ');
+    lines.push(`Known facts about this customer from earlier conversations: ${facts}.`);
+  }
+
   const state = context.conversationState;
   if (state?.currentGoal) {
     lines.push(`Current goal for this conversation: ${state.currentGoal.description}`);
@@ -585,7 +599,16 @@ async function executeOneToolCall(
     // for answering the customer, so a transient DB error here must not
     // turn into a failed reply the customer never receives.
     try {
-      await applyConversationStateUpdate(conversationStateRepository, context.businessId, context.chatId, (call.args ?? {}) as UpdateConversationStateToolArgs);
+      const args = (call.args ?? {}) as UpdateConversationStateToolArgs;
+      await applyConversationStateUpdate(conversationStateRepository, context.businessId, context.chatId, args);
+      // Layer 2 write-through (migration 959) - only when a real customer
+      // was resolved for this chat. Best-effort in the same sense as the
+      // conversation-level write above: a failure here must never turn
+      // into a failed reply, so it shares this same try/catch rather than
+      // its own separate one that could swallow a real problem silently.
+      if (context.customerId) {
+        await applyCustomerMemoryUpdate(customerMemoryRepository, context.businessId, context.customerId, args.confirmFacts);
+      }
       return { saved: true };
     } catch (error) {
       console.error(

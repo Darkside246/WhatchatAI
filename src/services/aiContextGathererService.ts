@@ -3,6 +3,8 @@ import { BusinessRepository } from '../repositories/businessRepository.js';
 import { CrmContactRepository, type CrmContactRecord } from '../repositories/crmContactRepository.js';
 import { WhatsAppMessageRepository, type WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { ConversationStateRepository, emptyConversationState, type ConversationStateRecord } from '../repositories/conversationStateRepository.js';
+import { CustomerMemoryRepository, emptyCustomerMemory, type CustomerMemoryRecord } from '../repositories/customerMemoryRepository.js';
+import { CustomerIdentityRepository } from '../repositories/customerIdentityRepository.js';
 import { searchKnowledgeBase, type KnowledgeBaseSearchResult } from './knowledgeBaseSearchService.js';
 import { retrieveAiDocumentContext, type AiDocumentRetrievalResponse } from './aiDocumentRetrievalService.js';
 import { timeService, resolveBusinessTimezone, type TimeContext } from './time/timeService.js';
@@ -39,12 +41,21 @@ export interface AiHandoffContext {
    * legitimately gather context for a chatId with no real whatsapp_chats
    * row yet), so a conversation with no real row gets a non-persisted
    * empty default (see emptyConversationState()) rather than a
-   * lazily-created one. Nothing currently writes real goals/facts/questions
-   * into this yet, so today every real conversation's state is empty -
-   * included now so a future writer has somewhere to put it, and so the
-   * prompt already knows how to surface it once one exists.
+   * lazily-created one. Written by the model itself via the
+   * update_conversation_memory tool (see conversationStateWriter.ts).
    */
   conversationState: ConversationStateRecord;
+  /**
+   * Layer 2 of "layered memory" (migration 959) - facts confirmed by this
+   * same customer in any PAST conversation, resolved via the
+   * channel-agnostic customer identity (migration 928), never just this
+   * chat's own history. null when no customer could be resolved for this
+   * chat (a group message, or a contact never linked to a customer) -
+   * distinct from "resolved but empty," which is a real CustomerMemoryRecord
+   * with an empty confirmedFacts array.
+   */
+  customerId: string | null;
+  customerMemory: CustomerMemoryRecord | null;
   /** Real IANA name from the business's own Settings, defaulting to 'UTC' - never guessed from the server's own clock. */
   businessTimezone: string;
   /** Authoritative, TimeService-built context (internet-synchronized where possible) - the AI must use this, never its own model knowledge, for "now". */
@@ -97,11 +108,22 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
   const messageRepository = new WhatsAppMessageRepository(queryAsTenant(input.businessId));
   const businessRepository = new BusinessRepository(pool);
   const conversationStateRepository = new ConversationStateRepository(pool);
+  const customerIdentityRepository = new CustomerIdentityRepository(pool);
+  const customerMemoryRepository = new CustomerMemoryRepository(pool);
   const googleMeetingRepository = new GoogleMeetingRepository(pool);
   const zoomMeetingRepository = new ZoomMeetingRepository(pool);
   const propertyOperationsRepository = new PropertyOperationsRepository(pool);
 
-  const [crmContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState, googleMeetingConnection, zoomMeetingConnection, properties] = await Promise.all([
+  // A single, fast indexed lookup - resolved before the main batch below
+  // since whether/what to fetch for customerMemory depends on it. null for
+  // a group message or a contact never linked to a customer (see
+  // whatsappMessagePersistenceService.ts's individual-only restriction on
+  // creating that link in the first place).
+  const customerId = input.contactId
+    ? await customerIdentityRepository.findCustomerIdByIdentity(input.businessId, 'whatsapp', 'whatsapp_contact_id', input.contactId)
+    : null;
+
+  const [crmContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState, customerMemory, googleMeetingConnection, zoomMeetingConnection, properties] = await Promise.all([
     input.contactId
       ? crmContactRepository.findByWhatsAppContact(input.businessId, input.contactId)
       : Promise.resolve(null),
@@ -116,6 +138,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     businessRepository.findById(input.businessId),
     input.mediaId ? resolveInlineMediaPart(input.businessId, input.mediaId) : Promise.resolve(null),
     conversationStateRepository.find(input.businessId, input.chatId),
+    customerId ? customerMemoryRepository.find(input.businessId, customerId) : Promise.resolve(null),
     googleMeetingRepository.getConnectionByBusiness(input.businessId),
     zoomMeetingRepository.getConnectionByBusiness(input.businessId),
     propertyOperationsRepository.listProperties(input.businessId),
@@ -137,6 +160,8 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     documentContext,
     conversationHistory,
     conversationState: conversationState ?? emptyConversationState(input.businessId, input.chatId),
+    customerId,
+    customerMemory: customerId ? (customerMemory ?? emptyCustomerMemory(input.businessId, customerId)) : null,
     businessTimezone,
     timeContext,
     media,
