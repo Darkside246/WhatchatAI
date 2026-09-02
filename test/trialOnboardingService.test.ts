@@ -10,14 +10,17 @@ import { EntitlementService } from '../src/services/entitlementService.js';
 import { BusinessRepository } from '../src/repositories/businessRepository.js';
 import { WhatsAppConnectionEventRepository } from '../src/repositories/whatsappConnectionEventRepository.js';
 import { resetDatabase, createTestAccount } from './helpers.js';
+import { login } from '../src/services/authService.js';
+import { WeakPasswordError } from '../src/services/passwordHashService.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
 
-function trialInput(overrides: Partial<{ name: string; email: string; phone: string }> = {}) {
+function trialInput(overrides: Partial<{ name: string; email: string; phone: string; password: string }> = {}) {
   return {
     name: 'Test Owner',
     email: 'owner@example.com',
     phone: '+14155552671',
+    password: 'correct-horse-battery',
     productKey: 'property' as const,
     device,
     ...overrides,
@@ -118,6 +121,43 @@ describe('registerTrial phone handling (real Postgres)', () => {
 });
 
 /**
+ * Real regression coverage for the account-takeover-shaped gap this used
+ * to be: every trial account's password was a random value nobody,
+ * including the user, ever saw or could set - so a trial user could never
+ * actually log back in with a password at all, only via the session
+ * cookie minted at signup. registerTrial() now takes the user's real
+ * chosen password and hashes exactly that, through the same
+ * hashPassword()/validatePasswordStrength() authService.ts's own
+ * register() already relies on.
+ */
+describe('registerTrial real password (real Postgres)', () => {
+  it('lets the trial user log back in with the exact password they chose at signup', async () => {
+    await resetDatabase();
+    const result = await registerTrial(trialInput({ email: 'login-test@example.com', password: 'correct-horse-battery-staple' }));
+
+    const session = await login('login-test@example.com', 'correct-horse-battery-staple', { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' });
+    expect(session.user.id).toBe(result.user.id);
+  });
+
+  it('rejects a wrong password for a trial account exactly like any other account', async () => {
+    await resetDatabase();
+    await registerTrial(trialInput({ email: 'login-test2@example.com', password: 'correct-horse-battery-staple' }));
+
+    await expect(
+      login('login-test2@example.com', 'totally-the-wrong-password', { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' }),
+    ).rejects.toThrow();
+  });
+
+  it('rejects a weak password before creating any account', async () => {
+    await resetDatabase();
+    await expect(registerTrial(trialInput({ password: 'short' }))).rejects.toThrow(WeakPasswordError);
+
+    const { rows } = await pool.query<{ count: string }>('SELECT COUNT(*)::text AS count FROM users');
+    expect(rows[0]?.count).toBe('0');
+  });
+});
+
+/**
  * Real regression coverage for a reported bug: a customer fills in the
  * trial form, the WhatsApp QR scan fails, and retrying with the same
  * email/phone got rejected with "already received a trial" even though
@@ -174,12 +214,12 @@ describe('registerTrial abandonment window and resume (real Postgres)', () => {
   });
 
   /**
-   * The security-critical case: without the phone check, anyone who
-   * merely knows an email address that recently started a trial but
-   * hasn't paired yet could resubmit this form and receive a fully
-   * authenticated session for that account - a real account-takeover
-   * path, since this flow has no password or email verification step at
-   * all. Same generic error as a genuine repeat trial, deliberately - no
+   * The security-critical case: this resume path still never checks a
+   * password (it authenticates purely on the email+phone match), so
+   * without the phone check, anyone who merely knows an email address
+   * that recently started a trial but hasn't paired yet could resubmit
+   * this form and receive a fully authenticated session for that account.
+   * Same generic error as a genuine repeat trial, deliberately - no
    * "phone mismatch" hint that would let an attacker confirm a pending
    * trial exists for a given email.
    */

@@ -59,6 +59,7 @@ export function PublicLandingPage() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
+  const [password, setPassword] = useState('');
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [marketingOptIn, setMarketingOptIn] = useState(false);
   const [legalDocs, setLegalDocs] = useState<LegalDocs>({ terms: null, privacy: null });
@@ -75,7 +76,7 @@ export function PublicLandingPage() {
 
   const canSubmit =
     !!selectedId && name.trim().length > 0 && email.trim().length > 0 &&
-    phone.trim().length >= 5 && agreedToTerms && phase === 'form';
+    phone.trim().length >= 5 && password.length >= 8 && agreedToTerms && phase === 'form';
 
   /**
    * The Terms/Privacy checkbox above is the real, sufficient consent
@@ -108,7 +109,7 @@ export function PublicLandingPage() {
         privacyVersion: legalDocs.privacy.version,
         marketingOptIn,
       });
-      await auth.registerTrial({ name: name.trim(), email: email.trim(), phone: phone.trim(), productKey: selectedId });
+      await auth.registerTrial({ name: name.trim(), email: email.trim(), phone: phone.trim(), password, productKey: selectedId });
     } catch (err) {
       setPhase('form');
       setSubmitError(err instanceof ApiError ? err.message : 'Something went wrong. Please try again.');
@@ -243,6 +244,21 @@ export function PublicLandingPage() {
                     onChange={(e) => setPhone(e.target.value)}
                     className="mt-1.5 w-full rounded-xl border border-border-subtle bg-surface-0 px-3 py-2.5 text-body text-fg outline-none placeholder:text-fg-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-caption font-medium text-fg-secondary" htmlFor="password">Password</label>
+                  <input
+                    id="password"
+                    type="password"
+                    required
+                    placeholder="At least 8 characters"
+                    autoComplete="new-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="mt-1.5 w-full rounded-xl border border-border-subtle bg-surface-0 px-3 py-2.5 text-body text-fg outline-none placeholder:text-fg-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  />
+                  <p className="mt-1 text-meta text-fg-muted">So you can sign back in later, even before WhatsApp finishes syncing.</p>
                 </div>
 
                 {/* T&C consent */}

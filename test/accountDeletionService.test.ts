@@ -138,7 +138,7 @@ describe('accountDeletionService.sweepDueAccountDeletions (the real cascade-purg
 
   it('the permanent phone fingerprint survives purge and still blocks a fresh trial signup on the same real number', async () => {
     await resetDatabase();
-    const trial = await registerTrial({ name: 'Owner', email: 'owner@example.com', phone: '+14155552671', productKey: 'property', device });
+    const trial = await registerTrial({ name: 'Owner', email: 'owner@example.com', phone: '+14155552671', password: 'correct-horse-battery', productKey: 'property', device });
 
     await requestBusinessDeletion(trial.businessId, trial.user.id);
     await pool.query(`UPDATE businesses SET scheduled_purge_at = now() - interval '1 minute' WHERE id = $1`, [trial.businessId]);
@@ -148,7 +148,7 @@ describe('accountDeletionService.sweepDueAccountDeletions (the real cascade-purg
     expect(businessRow.rows).toHaveLength(0); // genuinely gone
 
     await expect(
-      registerTrial({ name: 'New Name', email: 'brand-new-email@example.com', phone: '+14155552671', productKey: 'property', device }),
+      registerTrial({ name: 'New Name', email: 'brand-new-email@example.com', phone: '+14155552671', password: 'correct-horse-battery', productKey: 'property', device }),
     ).rejects.toThrow(TrialPhoneAlreadyUsedOnboardingError);
   });
 });

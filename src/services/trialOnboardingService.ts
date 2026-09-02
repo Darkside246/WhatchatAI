@@ -1,7 +1,6 @@
-import { randomBytes } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { pool } from '../db/pool.js';
-import { hashPassword } from './passwordHashService.js';
+import { hashPassword, validatePasswordStrength } from './passwordHashService.js';
 import { createAuthenticatedSession, type DeviceContext } from './authService.js';
 import { normalizeTrialEmail, TRIAL_DURATION_MS, TRIAL_ABANDONMENT_WINDOW_MS } from './trialPolicy.js';
 import { productEntitlements } from './productAccountService.js';
@@ -29,11 +28,13 @@ export { InvalidPhoneNumberError };
  * transaction/client - never commits or rolls back itself.
  *
  * Security note: requiring the phone to match (not just the email) is
- * deliberate, not incidental. Without it, anyone who merely knows an
- * email address that recently started a trial but hasn't paired yet could
- * resubmit this form and receive a fully authenticated session for that
- * account - a real account-takeover path, since this flow has no
- * password or email verification step at all.
+ * deliberate, not incidental. This resume path still never checks a
+ * password (the account does have a real one now - see registerTrial's
+ * own doc comment - it's simply not asked for here), so without the phone
+ * check, anyone who merely knows an email address that recently started a
+ * trial but hasn't paired yet could resubmit this form and receive a
+ * fully authenticated session for that account - a real account-takeover
+ * path this phone match is what actually closes.
  */
 async function tryResumeTrial(
   client: PoolClient,
@@ -116,6 +117,7 @@ export async function registerTrial(input: {
   name: string;
   email: string;
   phone: string;
+  password: string;
   productKey: ProductKey;
   device: DeviceContext;
 }) {
@@ -123,6 +125,18 @@ export async function registerTrial(input: {
   const email = normalizeTrialEmail(input.email);
   const phone = input.phone.trim();
   if (!name || !email || !phone) throw new Error('Name, email and phone are required.');
+
+  // Real password, chosen by the person signing up - not the random,
+  // never-shown placeholder this used to generate. Collected here (not
+  // deferred to a later "secure your account" step) so a trial user can
+  // log back in - via the normal password flow, not just the session
+  // cookie from the moment they signed up - even before WhatsApp finishes
+  // syncing; App.tsx's own gate already sends a logged-in-but-unconnected
+  // user straight to the QR/link-code screen, so nothing else about the
+  // resume path needs to change for that. Validated before the DB
+  // transaction opens, same as the phone number below - fail fast, never
+  // partway through a real transaction.
+  validatePasswordStrength(input.password);
 
   // Normalized/hashed before the transaction even opens - an invalid
   // number should fail fast, never partway through a real DB transaction.
@@ -215,7 +229,7 @@ export async function registerTrial(input: {
       [businessId, planId, startsAt.toISOString(), endsAt.toISOString()],
     );
 
-    const credential = await hashPassword(randomBytes(32).toString('base64url'));
+    const credential = await hashPassword(input.password);
     const phoneEnvelope = await getEncryptionService().encryptField(businessId, e164Phone);
     const userResult = await client.query<{ id: string }>(
       `INSERT INTO users (email, password_hash, password_salt, password_params, display_name, phone_number, phone_number_hash)

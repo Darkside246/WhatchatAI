@@ -44,7 +44,7 @@ describe('phoneNumberChangeService.changePhoneNumber (real Postgres)', () => {
     // registerTrial() always creates its own separate business directly,
     // so it's safe to call afterward without colliding with that default.
     const owner = await register({ email: 'owner@example.com', password: PASSWORD, displayName: 'Owner' }, device);
-    const trial = await registerTrial({ name: 'Existing', email: 'existing@example.com', phone: '+14155552671', productKey: 'property', device });
+    const trial = await registerTrial({ name: 'Existing', email: 'existing@example.com', phone: '+14155552671', password: 'correct-horse-battery', productKey: 'property', device });
 
     await expect(
       changePhoneNumber(owner.business.id, owner.user.id, PASSWORD, '+14155552671'),
@@ -54,7 +54,7 @@ describe('phoneNumberChangeService.changePhoneNumber (real Postgres)', () => {
 
   it('allows a number that was freed up by a deleted account', async () => {
     await resetDatabase();
-    const trial = await registerTrial({ name: 'Old Owner', email: 'old-owner@example.com', phone: '+14155552671', productKey: 'property', device });
+    const trial = await registerTrial({ name: 'Old Owner', email: 'old-owner@example.com', phone: '+14155552671', password: 'correct-horse-battery', productKey: 'property', device });
     await requestBusinessDeletion(trial.businessId, trial.user.id);
     await pool.query(`UPDATE businesses SET scheduled_purge_at = now() - interval '1 minute' WHERE id = $1`, [trial.businessId]);
     await sweepDueAccountDeletions();

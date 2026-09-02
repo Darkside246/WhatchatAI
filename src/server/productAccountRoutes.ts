@@ -9,6 +9,7 @@ import {
   InvalidPhoneNumberError,
 } from '../services/trialOnboardingService.js';
 import { hasUsedTrial } from '../services/trialService.js';
+import { isWeakPasswordError } from '../services/authService.js';
 import { TrialRepository } from '../repositories/trialRepository.js';
 import { ProductKeySchema } from '../domain/platform/productAccounts.js';
 import { requireAuth, requireDeveloper, setSessionCookie, type AuthContext } from './authMiddleware.js';
@@ -19,7 +20,7 @@ import { getSystemHealth } from '../services/systemHealthService.js';
 const router = Router();
 const productKey = ProductKeySchema;
 const trials = new TrialRepository(pool);
-const trialRegistrationSchema = z.object({ name: z.string().trim().min(1).max(200), email: z.string().trim().email(), phone: z.string().trim().min(3).max(50), productKey });
+const trialRegistrationSchema = z.object({ name: z.string().trim().min(1).max(200), email: z.string().trim().email(), phone: z.string().trim().min(3).max(50), password: z.string().min(1).max(200), productKey });
 const deviceContextFrom = (req: Request) => ({ ipAddress: req.ip ?? null, userAgent: req.headers['user-agent'] ?? null });
 
 router.get('/products', async (_req, res) => res.status(200).json({ products: await listAvailableProducts() }));
@@ -41,6 +42,7 @@ router.post('/trials/register', async (req, res) => {
     if (error instanceof TrialPhoneAlreadyUsedOnboardingError) return res.status(409).json({ error: 'TRIAL_ALREADY_USED', message: error.message });
     if (error instanceof InvalidPhoneNumberError) return res.status(400).json({ error: 'INVALID_PHONE_NUMBER', message: error.message });
     if (error instanceof TrialProductUnavailableOnboardingError) return res.status(404).json({ error: 'PRODUCT_UNAVAILABLE', message: error.message });
+    if (isWeakPasswordError(error)) return res.status(400).json({ error: 'WEAK_PASSWORD', message: error.message });
     throw error;
   }
 });

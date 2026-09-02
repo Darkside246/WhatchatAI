@@ -1263,7 +1263,7 @@ export const api = {
   getBootstrapStatus: () => request<BootstrapStatusResponse>('/auth/bootstrap-status'),
   registerAccount: (body: { email: string; password: string; displayName: string }) =>
     request<AuthMeResponse>('/auth/register', { method: 'POST', body: JSON.stringify(body) }),
-  registerTrial: (body: { name: string; email: string; phone: string; productKey: string }) =>
+  registerTrial: (body: { name: string; email: string; phone: string; password: string; productKey: string }) =>
     request<RegisterTrialResponse>('/trials/register', { method: 'POST', body: JSON.stringify(body) }),
   login: (email: string, password: string, rememberMe = true) =>
     request<AuthMeResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password, rememberMe }) }),
