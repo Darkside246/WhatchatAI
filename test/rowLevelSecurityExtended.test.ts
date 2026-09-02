@@ -76,6 +76,17 @@ describe('Row-Level Security, extended tables (migration 958, real Postgres)', (
     expect(rows[0]?.business_id).toBe(businessB);
   });
 
+  it('customer_memory (migration 960): a customer\'s durable facts are isolated by business, not just by customer_id', async () => {
+    const customerA = (await pool.query<{ id: string }>('INSERT INTO customers (business_id) VALUES ($1) RETURNING id', [businessA])).rows[0]!.id;
+    const customerB = (await pool.query<{ id: string }>('INSERT INTO customers (business_id) VALUES ($1) RETURNING id', [businessB])).rows[0]!.id;
+    await pool.query(`INSERT INTO customer_memory (business_id, customer_id, confirmed_facts) VALUES ($1, $2, '[{"key":"unit","value":"A-only"}]'::jsonb)`, [businessA, customerA]);
+    await pool.query(`INSERT INTO customer_memory (business_id, customer_id, confirmed_facts) VALUES ($1, $2, '[{"key":"unit","value":"B-only"}]'::jsonb)`, [businessB, customerB]);
+
+    const { rows } = await queryAsTenant(businessB).query<{ customer_id: string }>('SELECT customer_id FROM customer_memory');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.customer_id).toBe(customerB);
+  });
+
   it('with no tenant context set, the tenant role sees nothing (fails closed, never open)', async () => {
     await pool.query(
       `INSERT INTO security_audit_logs (business_id, event_type, severity) VALUES ($1, 'sentinel_pass', 'info')`,
