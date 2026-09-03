@@ -171,6 +171,18 @@ export class ConversationStateRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /** Section 75-91 (data export): every real conversation_states row for chats linked to one WhatsApp contact - the per-conversation memory layer a real data-access export needs alongside customer_memory's cross-conversation layer. */
+  async listByWhatsAppContact(businessId: string, whatsappContactId: string): Promise<ConversationStateRecord[]> {
+    const { rows } = await this.db.query<ConversationStateRow>(
+      `SELECT cs.* FROM conversation_states cs
+       JOIN whatsapp_chats wc ON wc.id = cs.chat_id
+       WHERE cs.business_id = $1 AND wc.contact_id = $2
+       ORDER BY cs.updated_at DESC`,
+      [businessId, whatsappContactId],
+    );
+    return rows.map(toRecord);
+  }
+
   /** Idempotent: a conversation that already has state gets it back unchanged; one that doesn't gets a fresh, empty row. Never overwrites an existing row. */
   async getOrCreate(businessId: string, chatId: string): Promise<ConversationStateRecord> {
     const existing = await this.find(businessId, chatId);

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { WhatsAppContactRepository } from '../src/repositories/whatsappContactRepository.js';
+import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
+import { ConversationStateRepository } from '../src/repositories/conversationStateRepository.js';
 import { CustomerIdentityRepository } from '../src/repositories/customerIdentityRepository.js';
 import { CustomerMemoryRepository } from '../src/repositories/customerMemoryRepository.js';
 import { workspaceService, isCrmContactNotFoundError, isLeadNotFoundError } from '../src/services/workspaceService.js';
@@ -216,6 +218,53 @@ describe('workspaceService CRM & Leads (real display-name resolution + tenant is
 
       const result = await workspaceService.getCrmContactMemory(otherBusinessId, otherCrmContactId);
       expect(result.confirmedFacts).toEqual([]);
+    });
+  });
+
+  describe('exportCrmContactData (Section 75-91 - a real data-subject-access export for one contact)', () => {
+    it('bundles the real CRM profile, customer_memory, and every real conversation_states row for this contact', async () => {
+      const chat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+        businessId,
+        whatsappAccountId: accountId,
+        chatJid: '15550007777@s.whatsapp.net',
+        jidKind: 'individual',
+        chatType: 'individual',
+        contactId: whatsappContactId,
+      });
+      const stateRepo = new ConversationStateRepository(pool);
+      const state = await stateRepo.getOrCreate(businessId, chat.id);
+      await stateRepo.update(businessId, chat.id, state.version, { funnelStage: 'APPOINTMENT_OFFERED' });
+
+      const identities = new CustomerIdentityRepository(pool);
+      const customerId = await identities.getOrCreateForWhatsAppContact(businessId, whatsappContactId, 'Real Prospect');
+      const memory = new CustomerMemoryRepository(pool);
+      const current = await memory.getOrCreate(businessId, customerId);
+      await memory.update(businessId, customerId, current.version, [
+        { key: 'preferred_time', value: 'evenings', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
+      ]);
+
+      const exportResult = await workspaceService.exportCrmContactData(businessId, crmContactId);
+
+      expect(exportResult.contact?.displayName).toBe('Real Prospect');
+      expect(exportResult.customerMemory).toEqual([expect.objectContaining({ key: 'preferred_time', value: 'evenings' })]);
+      expect(exportResult.conversationStates).toHaveLength(1);
+      expect(exportResult.conversationStates[0]?.chatId).toBe(chat.id);
+      expect(exportResult.conversationStates[0]?.funnelStage).toBe('APPOINTMENT_OFFERED');
+      expect(exportResult.exportedAt).toBeTruthy();
+    });
+
+    it('returns real, honest empty arrays (never fabricated) for a contact with no memory or conversation state at all', async () => {
+      const exportResult = await workspaceService.exportCrmContactData(businessId, crmContactId);
+      expect(exportResult.customerMemory).toEqual([]);
+      expect(exportResult.conversationStates).toEqual([]);
+      expect(exportResult.contact).not.toBeNull();
+    });
+
+    it('throws CrmContactNotFoundError for a cross-tenant or nonexistent contact', async () => {
+      const otherBusinessId = await createTestBusiness('Other Business');
+      await expect(
+        workspaceService.exportCrmContactData(otherBusinessId, crmContactId),
+      ).rejects.toSatisfy((error: unknown) => isCrmContactNotFoundError(error));
     });
   });
 });

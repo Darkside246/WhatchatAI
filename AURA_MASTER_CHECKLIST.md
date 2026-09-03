@@ -442,6 +442,10 @@ Checked each named sub-category against real code rather than assuming full cove
 
 **Verified**: new regression test in `accountDeletionService.test.ts` reproducing the exact broken scenario (a business with real, written customer memory) and confirming the business, its `customer_memory` row, and its `customers` row are all now genuinely erased by the sweep - 9/9 tests in that file pass. Typecheck clean.
 
+**Third slice - real data-subject-*access* export** (the counterpart to erasure above): nothing anywhere let staff produce "what do you have on this person" for one specific contact - a genuine, common shape of privacy request, distinct from a bulk business-wide dump. Added `WorkspaceService.exportCrmContactData()` - bundles the real CRM profile, every identity source, `customer_memory`'s cross-conversation facts, and every real `conversation_states` row (goal/facts/funnel stage/readiness) for every chat linked to that contact. New `ConversationStateRepository.listByWhatsAppContact()` (joins through `whatsapp_chats.contact_id` - no prior method resolved a contact's conversations at all). New `GET /api/workspace/crm-contacts/:id/export` route, a real "Export data" button on the CRM contact detail view (downloads a JSON file client-side, reusing the same Blob pattern the existing bulk CRM export already used). Deliberately excludes raw message history/media - a real, separate, larger export surface, not conjured as a side effect here.
+
+**Verified**: 3 new tests in `workspaceServiceCrm.test.ts` (bundles real profile/memory/conversation-state data / honest empty arrays for a contact with none / cross-tenant 404), 3 new tests in `conversationStateRepository.test.ts` for the new join query (returns real linked states / empty for a contact with a chat but no state / never leaks another contact's state). Typecheck clean both sides.
+
 ## Section checklist
 
 ```

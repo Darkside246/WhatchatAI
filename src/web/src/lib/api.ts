@@ -210,6 +210,20 @@ export interface WorkspaceCustomerMemory {
   confirmedFacts: { key: string; value: string; origin: string; confirmedAt: string }[];
 }
 
+/** Section 75-91: a real data-subject-access export for one contact - the structured personal data this system holds on them, downloadable as JSON. */
+export interface WorkspaceCrmContactExport {
+  contact: WorkspaceCrmContactSummary | null;
+  email: string | null;
+  stage: string | null;
+  leadStatus: string | null;
+  tags: string[];
+  notes: string | null;
+  customFields: Record<string, unknown>;
+  customerMemory: { key: string; value: string; origin: string; confirmedAt: string }[];
+  conversationStates: { chatId: string; goal: string | null; confirmedFacts: { key: string; value: string; origin: string; confirmedAt: string }[]; funnelStage: string | null; customerReadiness: string | null; updatedAt: string }[];
+  exportedAt: string;
+}
+
 export type LeadStatusValue = 'NEW' | 'QUALIFIED' | 'ENGAGED' | 'WON' | 'LOST';
 
 export interface WorkspaceLeadSummary {
@@ -1351,6 +1365,7 @@ export const api = {
       body: JSON.stringify(flags),
     }),
   getCrmContactMemory: (id: string) => request<{ memory: WorkspaceCustomerMemory }>(`/workspace/crm-contacts/${id}/memory`),
+  exportCrmContactData: (id: string) => request<WorkspaceCrmContactExport>(`/workspace/crm-contacts/${id}/export`),
   listLeads: () => request<{ leads: WorkspaceLeadSummary[] }>('/workspace/leads'),
   createLead: (body: CreateLeadBody) =>
     request<{ lead: WorkspaceLeadSummary }>('/workspace/leads', { method: 'POST', body: JSON.stringify(body) }),

@@ -7,6 +7,7 @@ import {
 } from '../src/repositories/conversationStateRepository.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
+import { WhatsAppContactRepository } from '../src/repositories/whatsappContactRepository.js';
 
 async function createTestChat(businessId: string, accountId: string, jid = '15550009999@s.whatsapp.net'): Promise<string> {
   const chat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
@@ -135,5 +136,79 @@ describe('ConversationStateRepository', () => {
     await repo.getOrCreate(businessId, chatId);
     const foundInOther = await repo.find(otherBusinessId, chatId);
     expect(foundInOther).toBeNull();
+  });
+});
+
+describe('ConversationStateRepository.listByWhatsAppContact (Section 75-91 - the real data-export query)', () => {
+  let businessId: string;
+  let accountId: string;
+  let contactId: string;
+  let repo: ConversationStateRepository;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId);
+    const contact = await new WhatsAppContactRepository(pool).upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      whatsappJid: '15550007777@s.whatsapp.net',
+      jidKind: 'individual',
+      pushName: 'Real Contact',
+    });
+    contactId = contact.id;
+    repo = new ConversationStateRepository(pool);
+  });
+
+  it('returns every real conversation state for chats linked to this contact', async () => {
+    const chat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550007777@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+      contactId,
+    });
+    const state = await repo.getOrCreate(businessId, chat.id);
+    await repo.update(businessId, chat.id, state.version, {
+      confirmedFacts: [{ key: 'unit_number', value: '4B', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }],
+    });
+
+    const results = await repo.listByWhatsAppContact(businessId, contactId);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.chatId).toBe(chat.id);
+    expect(results[0]?.confirmedFacts[0]?.key).toBe('unit_number');
+  });
+
+  it('returns an empty list for a contact with a real chat but no conversation state ever written', async () => {
+    await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550007777@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+      contactId,
+    });
+    expect(await repo.listByWhatsAppContact(businessId, contactId)).toEqual([]);
+  });
+
+  it('never returns another contact\'s conversation state (tenant/contact isolation)', async () => {
+    const otherContact = await new WhatsAppContactRepository(pool).upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      whatsappJid: '15550008888@s.whatsapp.net',
+      jidKind: 'individual',
+    });
+    const otherChat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550008888@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+      contactId: otherContact.id,
+    });
+    await repo.getOrCreate(businessId, otherChat.id);
+
+    expect(await repo.listByWhatsAppContact(businessId, contactId)).toEqual([]);
   });
 });

@@ -237,6 +237,20 @@ export interface WorkspaceCustomerMemory {
   confirmedFacts: ConversationFact[];
 }
 
+/** Section 75-91: a real data-subject-access export for one contact - see exportCrmContactData's own doc comment for scope. */
+export interface WorkspaceCrmContactExport {
+  contact: WorkspaceCrmContactSummary | null;
+  email: string | null;
+  stage: string | null;
+  leadStatus: string | null;
+  tags: string[];
+  notes: string | null;
+  customFields: Record<string, unknown>;
+  customerMemory: ConversationFact[];
+  conversationStates: { chatId: string; goal: string | null; confirmedFacts: ConversationFact[]; funnelStage: string | null; customerReadiness: string | null; updatedAt: string }[];
+  exportedAt: string;
+}
+
 export interface WorkspaceLeadSummary {
   id: string;
   crmContactId: string;
@@ -1593,6 +1607,67 @@ export class WorkspaceService {
 
     const memory = (await this.customerMemoryRepository.find(businessId, customerId)) ?? emptyCustomerMemory(businessId, customerId);
     return { customerId, confirmedFacts: memory.confirmedFacts };
+  }
+
+  /**
+   * Section 75-91 (data privacy - the real-access counterpart to
+   * Section 72's real deletion): a genuine data-subject-access export
+   * for one specific contact, not a bulk business dump - matches the
+   * actual shape of a real privacy request ("what do you have on me?"),
+   * scoped to the structured personal data this system actually holds:
+   * the CRM profile, every automatic identity source, the cross-
+   * conversation facts customer_memory records, and the per-conversation
+   * facts/goal/funnel state conversation_states records for every real
+   * chat this contact has ever had. Deliberately does not bundle raw
+   * message history or media - a real, separate, much larger export
+   * surface, not conjured as a side effect of this pass.
+   */
+  async exportCrmContactData(businessId: string, crmContactId: string): Promise<WorkspaceCrmContactExport> {
+    const crmContact = await this.crmContactRepository.findByIdForBusiness(businessId, crmContactId);
+    if (!crmContact) throw this.crmContactNotFound();
+
+    const rows = await this.crmContactRepository.listByBusiness(businessId, 1000);
+    const row = rows.find((r) => r.id === crmContactId);
+    const summary = row ? this.toCrmContactSummary(row) : null;
+
+    let customerMemory: ConversationFact[] = [];
+    let conversationStates: { chatId: string; goal: string | null; confirmedFacts: ConversationFact[]; funnelStage: string | null; customerReadiness: string | null; updatedAt: string }[] = [];
+
+    if (crmContact.whatsappContactId) {
+      const customerId = await this.customerIdentityRepository.findCustomerIdByIdentity(
+        businessId,
+        'whatsapp',
+        'whatsapp_contact_id',
+        crmContact.whatsappContactId,
+      );
+      if (customerId) {
+        const memory = await this.customerMemoryRepository.find(businessId, customerId);
+        customerMemory = memory?.confirmedFacts ?? [];
+      }
+
+      const states = await this.conversationStateRepository.listByWhatsAppContact(businessId, crmContact.whatsappContactId);
+      conversationStates = states.map((state) => ({
+        chatId: state.chatId,
+        goal: state.currentGoal?.description ?? null,
+        confirmedFacts: state.confirmedFacts,
+        funnelStage: state.funnelStage,
+        customerReadiness: state.customerReadiness,
+        updatedAt: state.updatedAt,
+      }));
+    }
+
+    return {
+      contact: summary,
+      email: crmContact.email,
+      stage: crmContact.stage,
+      leadStatus: crmContact.leadStatus,
+      tags: crmContact.tags,
+      notes: crmContact.notes,
+      customFields: crmContact.customFields,
+      customerMemory,
+      conversationStates,
+      exportedAt: new Date().toISOString(),
+    };
   }
 
   private toLeadSummary(row: Awaited<ReturnType<LeadRepository['listByBusiness']>>[number]): WorkspaceLeadSummary {

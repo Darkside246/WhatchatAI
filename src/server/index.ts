@@ -2763,6 +2763,17 @@ app.get('/api/workspace/crm-contacts/:id/memory', requireWorkspaceContext, async
   }
 });
 
+app.get('/api/workspace/crm-contacts/:id/export', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    const data = await workspaceService.exportCrmContactData(businessId, String(req.params.id ?? ''));
+    return res.status(200).json(data);
+  } catch (error) {
+    if (isCrmContactNotFoundError(error)) return res.status(404).json({ error: 'CRM_CONTACT_NOT_FOUND' });
+    throw error;
+  }
+});
+
 app.patch('/api/workspace/crm-contacts/:id/privacy', requireWorkspaceContext, requirePermission('crm.edit'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const privacySchema = z.object({

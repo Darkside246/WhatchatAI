@@ -14,6 +14,24 @@ import { PIPELINE_STATUSES, nextPipelineOptions } from '../lib/pipelineStages.js
 const STAGE_OPTIONS = ['new_enquiry', 'qualified', 'proposal_sent', 'negotiation', 'customer', 'lost'];
 const LEAD_STATUS_OPTIONS = ['open', 'nurturing', 'unresponsive', 'closed'];
 
+/**
+ * Section 75-91 (data privacy): a real data-subject-access download,
+ * client-side from the already-fetched JSON - no server-side
+ * Content-Disposition route needed for this one, unlike downloadCrmExport's
+ * bulk CSV/JSON export above, since there's no format choice here.
+ */
+function downloadJson(filename: string, data: unknown): void {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 const PIPELINE_LABEL: Record<LeadStatusValue, string> = {
   NEW: 'New',
   QUALIFIED: 'Qualified',
@@ -141,6 +159,7 @@ function ContactDetailCard({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [creatingLead, setCreatingLead] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [isHidden, setIsHidden] = useState(contact.isHidden);
   const [syncExcluded, setSyncExcluded] = useState(contact.syncExcluded);
   const [aiExcluded, setAiExcluded] = useState(contact.aiExcluded);
@@ -169,6 +188,19 @@ function ContactDetailCard({
       setError(err instanceof ApiError ? err.message : 'Failed to create lead.');
     } finally {
       setCreatingLead(false);
+    }
+  }
+
+  async function handleExportData() {
+    setExporting(true);
+    setError(null);
+    try {
+      const data = await api.exportCrmContactData(contact.id);
+      downloadJson(`contact-${contact.id}-data-export.json`, data);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to export this contact\'s data.');
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -213,14 +245,25 @@ function ContactDetailCard({
           <h2 className="text-body-lg font-semibold text-fg">{contact.displayName}</h2>
           <p className="mt-0.5 text-caption text-fg-muted">{contact.phoneNumber ?? 'No phone number on file'}</p>
         </div>
-        <button
-          type="button"
-          onClick={() => void handleCreateLead()}
-          disabled={creatingLead || leadCreated}
-          className="shrink-0 rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-2 disabled:opacity-50"
-        >
-          {leadCreated ? 'Lead created — see Pipeline' : creatingLead ? 'Creating…' : '+ Create lead'}
-        </button>
+        <div className="flex shrink-0 gap-2">
+          <button
+            type="button"
+            onClick={() => void handleExportData()}
+            disabled={exporting}
+            title="Download the structured personal data this system holds on this contact - a real data-access export"
+            className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-2 disabled:opacity-50"
+          >
+            {exporting ? 'Exporting…' : 'Export data'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleCreateLead()}
+            disabled={creatingLead || leadCreated}
+            className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-2 disabled:opacity-50"
+          >
+            {leadCreated ? 'Lead created — see Pipeline' : creatingLead ? 'Creating…' : '+ Create lead'}
+          </button>
+        </div>
       </div>
 
       <IdentitySourcesPanel contact={contact} />
