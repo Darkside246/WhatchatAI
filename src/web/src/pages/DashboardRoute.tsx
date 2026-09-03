@@ -201,6 +201,54 @@ function HBar({ label, value, max, pct, color, onClick, tooltip }: {
   return tooltip ? <Tip tip={tooltip}><div className="w-full">{inner}</div></Tip> : inner;
 }
 
+/**
+ * Section 68 (Analytics): the first real trend chart this dashboard has
+ * ever had - every other number on this page is a single collapsed
+ * period total. No charting library in this project, so a plain
+ * CSS-height bar pair per day, same hand-rolled-visualization approach
+ * HBar/DonutRing above already use. Fetches on its own (a second real
+ * query beyond the main dashboard overview), not preloaded into it.
+ */
+function MessageVolumeTrend() {
+  const [trend, setTrend] = useState<{ date: string; inbound: number; outbound: number }[] | null>(null);
+
+  useEffect(() => {
+    api.getMessageVolumeTrend(30).then((res) => setTrend(res.trend)).catch(() => setTrend([]));
+  }, []);
+
+  if (trend === null) return <p className="text-caption text-fg-muted">Loading…</p>;
+  if (trend.every((day) => day.inbound === 0 && day.outbound === 0)) {
+    return <p className="text-caption text-fg-muted">No messages in the last 30 days yet.</p>;
+  }
+
+  const max = Math.max(1, ...trend.map((day) => Math.max(day.inbound, day.outbound)));
+
+  return (
+    <div>
+      <div className="flex h-24 items-end gap-[3px]">
+        {trend.map((day) => (
+          <Tip key={day.date} tip={`${new Date(day.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} — ${day.inbound} received, ${day.outbound} sent`}>
+            <div className="flex flex-1 items-end gap-[1.5px]">
+              <div className="flex-1 rounded-t-sm transition-all" style={{ height: `${Math.max(2, (day.inbound / max) * 100)}%`, backgroundColor: C_AI_PAUSED }} />
+              <div className="flex-1 rounded-t-sm transition-all" style={{ height: `${Math.max(2, (day.outbound / max) * 100)}%`, backgroundColor: C_ACCENT }} />
+            </div>
+          </Tip>
+        ))}
+      </div>
+      <div className="mt-2 flex items-center gap-4 text-meta text-fg-muted">
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: C_AI_PAUSED }} aria-hidden />
+          Received
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: C_ACCENT }} aria-hidden />
+          Sent
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // ── AI Mode badge ────────────────────────────────────────────────────────
 const AI_MODE_STYLE: Record<WorkspaceChatSummary['aiMode'], { label: string; color: string }> = {
   AI_ACTIVE:      { label: 'AI',    color: C_AI_ACTIVE },
@@ -542,6 +590,16 @@ export function DashboardRoute() {
               </div>
             )}
           </div>
+        </div>
+
+        {/* ── Message volume trend (Section 68) ───────────────────── */}
+        <div className="mt-3 rounded-xl border border-border-subtle bg-surface-2 p-4">
+          <p className="mb-1 flex items-center gap-1.5 text-caption font-semibold text-fg-muted uppercase tracking-wide">
+            <TrendingUp size={13} aria-hidden />
+            Message volume
+          </p>
+          <p className="mb-3 text-meta text-fg-muted">Real inbound vs outbound message counts, day by day</p>
+          <MessageVolumeTrend />
         </div>
 
         {/* ── Breakdown row ──────────────────────────────────────── */}

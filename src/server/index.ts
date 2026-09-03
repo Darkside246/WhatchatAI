@@ -2066,6 +2066,17 @@ app.get('/api/workspace/dashboard', requireWorkspaceContext, async (_req, res) =
   return res.status(200).json(dashboard);
 });
 
+app.get('/api/workspace/dashboard/message-volume', requireWorkspaceContext, async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
+    businessId: string;
+    whatsappAccountId: string;
+  };
+  const rawDays = typeof req.query.days === 'string' ? Number(req.query.days) : 30;
+  const periodDays = Number.isFinite(rawDays) ? rawDays : 30;
+  const trend = await workspaceService.getMessageVolumeTrend(businessId, whatsappAccountId, periodDays);
+  return res.status(200).json({ trend });
+});
+
 app.get('/api/workspace/commitments/open', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const commitments = await workspaceService.getOpenCommitments(businessId);

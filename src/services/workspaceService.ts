@@ -1081,6 +1081,20 @@ export class WorkspaceService {
   }
 
   /**
+   * Section 68 (Analytics): getDashboardOverview above has only ever
+   * returned one collapsed period total - real enough, but useless for
+   * "is this growing or shrinking," the actual question a trend chart
+   * answers. Reuses the same real countByDirectionPerDay signal, capped
+   * to a sane charting range (1-90 days) rather than trusting a caller-
+   * supplied period directly into a query.
+   */
+  async getMessageVolumeTrend(businessId: string, whatsappAccountId: string, periodDays = 30): Promise<{ date: string; inbound: number; outbound: number }[]> {
+    const clampedDays = Math.min(90, Math.max(1, Math.trunc(periodDays)));
+    const sinceIso = new Date(Date.now() - clampedDays * 24 * 60 * 60 * 1000).toISOString();
+    return this.messageRepository.countByDirectionPerDay(businessId, whatsappAccountId, sinceIso);
+  }
+
+  /**
    * Real, unaddressed follow-up promises an AI reply made and nothing has
    * followed up on since (see AiCommitmentRepository.listOpen) - never a
    * guess at what "should" have happened, only chats where no later real

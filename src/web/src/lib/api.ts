@@ -394,6 +394,9 @@ export interface WorkspaceBusiness {
   /** Emergency "Stop All Agents" kill switch - true blocks every AI tool call above a plain read, enforced server-side regardless of this flag ever reaching the frontend. */
   aiActionsPaused: boolean;
   aiActionsPausedAt: string | null;
+  /** Section 75-91: a real, pending account-deletion request (accountDeletionService.ts) - null unless the OWNER has explicitly requested it. */
+  deletionRequestedAt: string | null;
+  scheduledPurgeAt: string | null;
 }
 
 export type TimeSyncStatus = 'SYNCED' | 'DEGRADED' | 'STALE' | 'MANUAL_OVERRIDE';
@@ -1231,6 +1234,9 @@ export const api = {
   getBilling: () => request<WorkspaceBillingOverview>('/workspace/billing'),
   getPlanCatalogue: () => request<PlanCatalogueDto>('/workspace/billing/plans'),
   getDashboard: () => request<WorkspaceDashboardOverview>('/workspace/dashboard'),
+  /** Section 68: the same real inbound/outbound message signal getDashboard already aggregates, broken out per day for a real trend chart. */
+  getMessageVolumeTrend: (days = 30) =>
+    request<{ trend: { date: string; inbound: number; outbound: number }[] }>(`/workspace/dashboard/message-volume?days=${days}`),
   getOpenCommitments: () => request<{ commitments: AiCommitmentRecord[] }>('/workspace/commitments/open'),
   getApprovalPatternSuggestions: () => request<{ suggestions: ApprovalPatternSuggestion[] }>('/workspace/agents/approval-suggestions'),
   getNextBestActions: () => request<{ actions: NextBestAction[] }>('/workspace/next-best-actions'),
@@ -1399,6 +1405,9 @@ export const api = {
   revokeOtherSessions: () => request<{ revokedCount: number }>('/auth/sessions/revoke-others', { method: 'POST' }),
   renameSession: (id: string, deviceName: string) =>
     request<{ sessions: AuthSessionDto[] }>(`/auth/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ deviceName }) }),
+  /** Section 75-91: real, cascading account deletion (accountDeletionService.ts) - OWNER only, revokes every session for this business including the caller's own. */
+  deleteAccount: () => request<{ status: 'deletion_scheduled'; scheduledPurgeAt: string }>('/auth/account/delete', { method: 'POST' }),
+  cancelAccountDeletion: () => request<{ status: 'deletion_cancelled' }>('/auth/account/delete/cancel', { method: 'POST' }),
 
   listMembers: () => request<{ members: MemberDto[] }>('/workspace/members'),
   createMember: (body: { email: string; displayName: string; role: BusinessRole }) =>

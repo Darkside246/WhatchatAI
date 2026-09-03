@@ -412,6 +412,30 @@ Checked each named sub-category against real code rather than assuming full cove
 
 **Verified**: 6 new tests in `campaignService.test.ts` (stores once at creation / defaults to text-only when omitted / sends the stored reference to every recipient with no re-encoded `mediaBase64` in the call / draft can add an attachment later / `removeAttachment` reverts to text-only / an invalid attachment never leaves a partial campaign behind), 2 new tests in `whatsappOutboundMessageService.test.ts` for the `mediaStorageReference` bypass itself. All 21+5 tests across the touched files pass. Typecheck clean both sides.
 
+## Section 68 — Analytics (a real first trend chart, not yet a full analytics surface)
+
+**Real gap found**: `getDashboardOverview()` already computed real signal (messages, chats, calls, outbound replies) - but always collapsed into one period total. Every number on the dashboard answers "how much," never "is this growing or shrinking," which is what a trend actually needs. Checked several adjacent candidates first (a per-contact send-timing/availability engine, MCP tool-architecture consistency, incident alerting, CI) and found them either already solid or genuinely unbuilt-from-zero; this was the one concrete, well-scoped gap in already-real data.
+
+**Fix**:
+- `WhatsAppMessageRepository.countByDirectionPerDay()` - the same real inbound/outbound signal `countByDirectionSince` already aggregates, broken out per UTC calendar day (a deliberate, documented simplification over the business's own timezone, to avoid threading a new parameter through a query that never needed one). Every day in range gets a real entry, including zero-message days - a chart must never have to guess whether a missing day means zero or not-yet-fetched.
+- `WorkspaceService.getMessageVolumeTrend()` - clamps a caller-supplied period to a real 1-90 day charting window rather than trusting it directly into the query range.
+- New `GET /api/workspace/dashboard/message-volume` route.
+- Real UI: a hand-rolled CSS bar-pair chart (no charting library in this project - matches `HBar`/`DonutRing`'s existing approach) on the dashboard, showing 30 days of inbound vs outbound volume.
+
+**Verified**: 4 new tests in `workspaceServiceDashboard.test.ts` (one real entry per day, zero-filled / real messages bucketed onto the right day and direction / tenant isolation / period clamping). Typecheck clean both sides.
+
+**Still open**: per-agent, per-campaign, and per-funnel performance analytics; anything beyond this one message-volume signal.
+
+## Sections 75-91 — Data privacy & retention (real, significant gap found and fixed - a first slice of 17 sections)
+
+**Real gap found**, same recurring shape as today's other sections: `accountDeletionService.ts`'s `requestBusinessDeletion()`/`cancelBusinessDeletion()`/`sweepDueAccountDeletions()` are real, thoroughly-tested (8 existing tests - real cascading purge, owner anonymization once they have no other memberships, permanent phone-fingerprint retention to block re-signup on the same number, session revocation) - a genuine, working right-to-be-forgotten mechanism. It was completely unreachable: zero frontend surface anywhere. A business owner who wanted to delete their account and all its data had no way to do so through the product.
+
+**Fix**: `deletionRequestedAt`/`scheduledPurgeAt` were already returned by `/api/auth/me` (`BusinessRecord` already carried them) - just never typed or read on the frontend. Added them to `WorkspaceBusiness`, added `deleteAccount()`/`cancelAccountDeletion()` client methods against the already-existing routes, and a new "Danger zone" card on the Account & Security settings tab (OWNER-only, matching the backend's own role guard): a two-step confirmation (type "delete my account" to enable the real button) when nothing is pending, or the real scheduled purge date with a Cancel option when a deletion is already in flight. Zero backend changes - this section's entire gap was UI-only.
+
+**Verified**: existing 8-test `accountDeletionService.test.ts` suite re-confirmed passing (untouched, since no backend logic changed). Typecheck clean both sides. Not browser-verified - the same WhatsApp-pairing onboarding gate that blocked Section 34-40's UI verification blocks reaching Settings too; relied on clean typecheck and matching this file's own already-established card/role-gating patterns exactly.
+
+**Still fully open**: the other 16 sections in this block - data minimisation audit, the actual memory architecture question (customer_memory/conversation_states already exist but their retention policy was never defined), a genuine learning-safeguards review, and the "privacy/probing engine" (resisting a customer trying to extract another customer's data or the system prompt itself) are all unstarted.
+
 ## Section checklist
 
 ```
@@ -447,11 +471,11 @@ Checked each named sub-category against real code rather than assuming full cove
 [X] 66      - CRM identity profile fields on the contact view - real gap found (source fields queried but discarded) and fixed, verified
 [X] 56      - Appointment System - real lifecycle mutation + completion sweep + dedicated page built (none existed before), verified
 [X] 67      - CRM Data Export - real CSV/JSON export, verified
-[ ] 68      - Analytics
+[~] 68      - Analytics - a real message-volume trend chart built and verified; deeper per-agent/campaign/funnel analytics still open
 [~] 69,70,72 - Observability, webhook reliability; 72 (billing preservation/trial expiry) - real gap found and fixed, verified
 [X] 71      - Queue reliability - real gap found (documentParseWorker's retry guard silently masked a permanently stuck document) and fixed with a staleness sweep, verified
 [!] 73-74   - Real payment architecture (Barbados) - APPROVAL REQUIRED (provider selection), Email config hardening
-[ ] 75-91   - Data privacy, minimisation, memory architecture, retention, learning, privacy/probing engine
+[~] 75-91   - Data privacy, minimisation, memory architecture, retention, learning, privacy/probing engine - real gap found (account deletion had zero UI) and fixed, verified; the rest of this 17-section block remains open
 [ ] 93,94,96,97,98 - Security model, global dashboard, AI provider mgmt, resource/cost mgmt, agent teamwork, failure handling
 [X] 92      - Loop protection - agent/tool-call loops already solid; real gap found in funnel CONDITION cycles and fixed, verified
 [ ] 99-101  - Testing, adversarial testing, performance

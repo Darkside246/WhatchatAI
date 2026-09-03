@@ -392,4 +392,54 @@ export class WhatsAppMessageRepository {
     const outbound = rows.find((row) => row.direction === 'outbound')?.count ?? '0';
     return { inbound: Number(inbound), outbound: Number(outbound) };
   }
+
+  /**
+   * Section 68 (Analytics): the same real inbound/outbound signal
+   * countByDirectionSince already aggregates, broken out per day instead
+   * of collapsed into one period total - the minimum a real trend chart
+   * needs. Buckets by UTC calendar day, not the business's own timezone -
+   * a known, deliberate simplification for this first real analytics
+   * surface (a day boundary a few hours off from the business's actual
+   * midnight is still a genuinely useful trend, and this avoids threading
+   * a timezone parameter through a query that has never needed one
+   * before). Every real day in range gets an entry, including days with
+   * zero messages - a caller charting this must never have to guess
+   * whether a missing day means "zero" or "not fetched yet".
+   */
+  async countByDirectionPerDay(
+    businessId: string,
+    whatsappAccountId: string,
+    sinceIso: string,
+  ): Promise<{ date: string; inbound: number; outbound: number }[]> {
+    const { rows } = await this.db.query<{ day: string; direction: MessageDirection; count: string }>(
+      `SELECT to_char(date_trunc('day', "timestamp"), 'YYYY-MM-DD') AS day, direction, count(*)::int AS count
+       FROM whatsapp_messages
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND "timestamp" >= $3 AND deleted_at IS NULL
+       GROUP BY day, direction
+       ORDER BY day ASC`,
+      [businessId, whatsappAccountId, sinceIso],
+    );
+
+    const byDay = new Map<string, { inbound: number; outbound: number }>();
+    for (const row of rows) {
+      const entry = byDay.get(row.day) ?? { inbound: 0, outbound: 0 };
+      if (row.direction === 'inbound') entry.inbound = Number(row.count);
+      else if (row.direction === 'outbound') entry.outbound = Number(row.count);
+      byDay.set(row.day, entry);
+    }
+
+    // Fill every real calendar day in [since, today] - never a gap a chart would render as a break in the axis.
+    const result: { date: string; inbound: number; outbound: number }[] = [];
+    const cursor = new Date(sinceIso);
+    cursor.setUTCHours(0, 0, 0, 0);
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    while (cursor.getTime() <= today.getTime()) {
+      const key = cursor.toISOString().slice(0, 10);
+      const entry = byDay.get(key) ?? { inbound: 0, outbound: 0 };
+      result.push({ date: key, inbound: entry.inbound, outbound: entry.outbound });
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return result;
+  }
 }

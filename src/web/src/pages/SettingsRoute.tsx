@@ -1213,6 +1213,131 @@ function AccountCard() {
   );
 }
 
+/**
+ * Section 75-91 (data privacy/retention): accountDeletionService.ts's
+ * requestBusinessDeletion/cancelBusinessDeletion have been real since
+ * they were built - a genuine, cascading, irreversible purge, OWNER-only,
+ * revoking every session for the business on request - but nothing
+ * anywhere in the product ever let an owner actually reach them. This is
+ * that missing surface, not a new deletion mechanism.
+ */
+function DangerZoneCard() {
+  const auth = useAuth();
+  const [confirming, setConfirming] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (auth.role !== 'OWNER') return null;
+
+  const pending = auth.business?.deletionRequestedAt != null;
+
+  async function handleDelete() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.deleteAccount();
+      // Every session for this business, including this one, was just
+      // revoked server-side - the session cookie is now dead. A full
+      // reload is the only honest next step, not a client-side route
+      // change that would leave the app running against a session that
+      // no longer exists.
+      window.location.href = '/';
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not schedule account deletion.');
+      setBusy(false);
+    }
+  }
+
+  async function handleCancel() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.cancelAccountDeletion();
+      await auth.refresh();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not cancel the pending deletion.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-error/30 bg-error/5 p-5">
+      <h2 className="flex items-center gap-1.5 text-body font-semibold text-error">
+        <AlertTriangle size={15} aria-hidden />
+        Danger zone
+      </h2>
+
+      {pending ? (
+        <>
+          <p className="mt-2 text-caption text-fg-secondary">
+            Account deletion is scheduled for{' '}
+            <span className="font-medium text-fg">{auth.business?.scheduledPurgeAt ? new Date(auth.business.scheduledPurgeAt).toLocaleString() : 'soon'}</span>.
+            Every conversation, contact, and setting for this business will be permanently erased - this cannot be undone once it runs.
+          </p>
+          {error && <p className="mt-2 text-caption text-error">{error}</p>}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void handleCancel()}
+            className="mt-3 rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
+          >
+            {busy ? 'Cancelling…' : 'Cancel deletion'}
+          </button>
+        </>
+      ) : !confirming ? (
+        <>
+          <p className="mt-2 text-caption text-fg-secondary">
+            Permanently delete this business and everything in it - every conversation, contact, agent, and setting. This cannot be undone.
+          </p>
+          <button
+            type="button"
+            onClick={() => setConfirming(true)}
+            className="mt-3 flex items-center gap-1.5 rounded-lg border border-error/40 px-3 py-1.5 text-caption font-medium text-error hover:bg-error/10"
+          >
+            <Trash2 size={13} aria-hidden />
+            Delete this account
+          </button>
+        </>
+      ) : (
+        <>
+          <p className="mt-2 text-caption text-fg-secondary">
+            Type <span className="font-mono font-semibold text-fg">delete my account</span> to confirm. This immediately signs out every device and
+            permanently erases everything - there is no recovery after the scheduled purge runs.
+          </p>
+          <input
+            type="text"
+            value={confirmText}
+            onChange={(event) => setConfirmText(event.target.value)}
+            placeholder="delete my account"
+            className="mt-2 w-full max-w-xs rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-error"
+          />
+          {error && <p className="mt-2 text-caption text-error">{error}</p>}
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              disabled={busy || confirmText.trim().toLowerCase() !== 'delete my account'}
+              onClick={() => void handleDelete()}
+              className="rounded-lg bg-error px-3 py-1.5 text-caption font-medium text-white hover:bg-error/90 disabled:opacity-40"
+            >
+              {busy ? 'Deleting…' : 'Permanently delete'}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => { setConfirming(false); setConfirmText(''); setError(null); }}
+              className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function formatSessionTimestamp(iso: string): string {
   return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
@@ -1976,6 +2101,7 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
             </div>
             <SessionsCard />
             <OperatorModeCard />
+            <DangerZoneCard />
           </div>
         )}
       </div>

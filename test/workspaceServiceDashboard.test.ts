@@ -170,6 +170,113 @@ describe('workspaceService.getDashboardOverview (real aggregates, never a separa
   });
 });
 
+describe('workspaceService.getMessageVolumeTrend (Section 68 - real day-bucketed message counts)', () => {
+  let businessId: string;
+  let accountId: string;
+  let chatId: string;
+  const toJid = '15550009999@s.whatsapp.net';
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId);
+    const chat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: toJid,
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+    chatId = chat.id;
+  });
+
+  async function insertMessage(direction: 'inbound' | 'outbound', whatsappMessageId: string, timestamp: string) {
+    await new WhatsAppMessageRepository(pool).insert({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      whatsappMessageId,
+      remoteJid: toJid,
+      senderJid: toJid,
+      direction,
+      messageType: 'text',
+      textContent: 'hi',
+      timestamp,
+      fromMe: direction === 'outbound',
+      isHistorical: false,
+    });
+  }
+
+  it('returns one real entry per day in range, zero-filled for days with no messages - never a gap', async () => {
+    const trend = await workspaceService.getMessageVolumeTrend(businessId, accountId, 7);
+    expect(trend).toHaveLength(8); // 7 days back through today, inclusive
+    expect(trend.every((day) => day.inbound === 0 && day.outbound === 0)).toBe(true);
+    // Strictly ascending, real calendar dates - never out of order.
+    const dates = trend.map((day) => day.date);
+    expect(dates).toEqual([...dates].sort());
+  });
+
+  it('buckets real messages onto the real day they occurred, correctly separated by direction', async () => {
+    const today = new Date();
+    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    await insertMessage('inbound', 'TREND-TODAY-IN', today.toISOString());
+    await insertMessage('inbound', 'TREND-TODAY-IN-2', today.toISOString());
+    await insertMessage('outbound', 'TREND-TODAY-OUT', today.toISOString());
+    await insertMessage('outbound', 'TREND-YDAY-OUT', yesterday.toISOString());
+
+    const trend = await workspaceService.getMessageVolumeTrend(businessId, accountId, 7);
+    const todayKey = today.toISOString().slice(0, 10);
+    const yesterdayKey = yesterday.toISOString().slice(0, 10);
+
+    expect(trend.find((day) => day.date === todayKey)).toEqual({ date: todayKey, inbound: 2, outbound: 1 });
+    expect(trend.find((day) => day.date === yesterdayKey)).toEqual({ date: yesterdayKey, inbound: 0, outbound: 1 });
+  });
+
+  it('never leaks another business\' messages into this business\' trend', async () => {
+    const otherBusinessId = await createTestBusiness('Other Business');
+    const otherAccountId = await createTestAccount(otherBusinessId, '15550001234@s.whatsapp.net');
+    const otherChat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId: otherBusinessId,
+      whatsappAccountId: otherAccountId,
+      chatJid: toJid,
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+    await new WhatsAppMessageRepository(pool).insert({
+      businessId: otherBusinessId,
+      whatsappAccountId: otherAccountId,
+      chatId: otherChat.id,
+      whatsappMessageId: 'TREND-OTHER-BUSINESS',
+      remoteJid: toJid,
+      senderJid: toJid,
+      direction: 'inbound',
+      messageType: 'text',
+      textContent: 'hi',
+      timestamp: new Date().toISOString(),
+      fromMe: false,
+      isHistorical: false,
+    });
+
+    const trend = await workspaceService.getMessageVolumeTrend(businessId, accountId, 7);
+    expect(trend.every((day) => day.inbound === 0 && day.outbound === 0)).toBe(true);
+  });
+
+  it('clamps an out-of-range or invalid periodDays into the real 1-90 day charting window, never trusting caller input directly into the query window', async () => {
+    // "1 day back" can genuinely span 2 real calendar days depending on
+    // what time of day this runs (e.g. 3pm today back to 3pm yesterday
+    // still touches yesterday's calendar date) - never exactly 1 unless
+    // this happens to run at midnight, so this asserts the clamp took
+    // effect (far fewer days than an unclamped 10,000 would produce)
+    // rather than a time-of-day-dependent exact count.
+    const zero = await workspaceService.getMessageVolumeTrend(businessId, accountId, 0);
+    expect(zero.length).toBeLessThanOrEqual(2);
+
+    const huge = await workspaceService.getMessageVolumeTrend(businessId, accountId, 10_000);
+    expect(huge.length).toBeLessThanOrEqual(91); // clamped to 90 days back through today, never the full 10,000
+    expect(huge.length).toBeGreaterThan(80);
+  });
+});
+
 describe('workspaceService.getOpenCommitments (composes AiCommitmentRepository.listOpen)', () => {
   let businessId: string;
   let accountId: string;
