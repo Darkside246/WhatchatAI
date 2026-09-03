@@ -4,12 +4,26 @@ import { requireAuth, requireDeveloper, type AuthContext } from './authMiddlewar
 import { activateVerifiedPayment, createCheckout, submitPaymentProof } from '../services/billing/paymentService.js';
 import { resolveProvider } from '../services/billing/providers/registry.js';
 import type { PaymentProvider } from '../domain/billing/payment.js';
+import { PlanRepository } from '../repositories/planRepository.js';
 import { pool } from '../db/pool.js';
 
 const router = Router();
+const planRepository = new PlanRepository(pool);
 const checkoutSchema = z.object({ productAccountId: z.string().uuid(), amountMinor: z.number().int().positive(), currency: z.string().trim().length(3).default('BBD'), billingInterval: z.enum(['month', 'year', 'one_time']).default('month') });
 const proofSchema = z.object({ productAccountId: z.string().uuid(), paymentAttemptId: z.string().uuid(), proofUrl: z.string().url().max(2000), note: z.string().trim().max(2000).optional() });
 const proofReviewSchema = z.object({ decision: z.enum(['APPROVE', 'REJECT']), note: z.string().trim().max(2000).optional() });
+const updatePlanSchema = z.object({
+  name: z.string().trim().min(1).max(200).optional(),
+  description: z.string().trim().max(2000).nullable().optional(),
+  priceMonthlyCents: z.number().int().min(0).optional(),
+  priceYearlyCents: z.number().int().min(0).nullable().optional(),
+  isActive: z.boolean().optional(),
+});
+const upsertEntitlementSchema = z.object({
+  // null means unlimited (matches plan_entitlements.limit_value's own documented meaning) - never confused with 0, a real zero-access cap.
+  limitValue: z.number().int().min(0).nullable(),
+  isEnabled: z.boolean(),
+});
 
 router.post('/checkout', requireAuth, async (req, res) => {
   const parsed = checkoutSchema.safeParse(req.body);
@@ -137,6 +151,46 @@ router.post('/developer/payment-proofs/:proofId/review', requireAuth, requireDev
     await client.query('COMMIT');
     return res.status(200).json({ status: 'APPROVED', accountStatus: 'ACTIVE' });
   } catch (error) { try { await client.query('ROLLBACK'); } catch {} throw error; } finally { client.release(); }
+});
+
+/**
+ * Section 34-40 (Token economy) / general plan administration - before
+ * this, every plan's price and every entitlement limit (agents per tier,
+ * AI tokens per month, etc.) was only ever changeable by hand-editing a
+ * migration file, despite migration 025's own seed comment promising
+ * "illustrative starting values... the business can change". This is that
+ * promised admin surface, developer-only like every other cross-tenant
+ * control in this router.
+ */
+router.get('/developer/plans', requireAuth, requireDeveloper, async (_req, res) => {
+  const plans = await planRepository.listAll();
+  const withEntitlements = await Promise.all(
+    plans.map(async (plan) => ({ ...plan, entitlements: await planRepository.listEntitlements(plan.id) })),
+  );
+  return res.status(200).json({ plans: withEntitlements });
+});
+
+router.patch('/developer/plans/:planId', requireAuth, requireDeveloper, async (req, res) => {
+  const planId = z.string().uuid().safeParse(req.params.planId);
+  if (!planId.success) return res.status(400).json({ error: 'INVALID_PLAN_ID' });
+  const parsed = updatePlanSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PLAN_UPDATE', details: parsed.error.flatten() });
+  const updated = await planRepository.updatePlan(planId.data, parsed.data);
+  if (!updated) return res.status(404).json({ error: 'PLAN_NOT_FOUND' });
+  return res.status(200).json({ plan: updated });
+});
+
+router.put('/developer/plans/:planId/entitlements/:entitlementKey', requireAuth, requireDeveloper, async (req, res) => {
+  const planId = z.string().uuid().safeParse(req.params.planId);
+  if (!planId.success) return res.status(400).json({ error: 'INVALID_PLAN_ID' });
+  const entitlementKey = z.string().trim().min(1).max(100).safeParse(req.params.entitlementKey);
+  if (!entitlementKey.success) return res.status(400).json({ error: 'INVALID_ENTITLEMENT_KEY' });
+  const parsed = upsertEntitlementSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_ENTITLEMENT_UPDATE', details: parsed.error.flatten() });
+  const plan = await planRepository.findById(planId.data);
+  if (!plan) return res.status(404).json({ error: 'PLAN_NOT_FOUND' });
+  const entitlement = await planRepository.upsertEntitlement(planId.data, entitlementKey.data, parsed.data);
+  return res.status(200).json({ entitlement });
 });
 
 export { router as billingRouter };

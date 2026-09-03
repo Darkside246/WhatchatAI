@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { resolveDisplayName } from '../src/domain/whatsapp/displayName.js';
 
-describe('resolveDisplayName (5-tier real-name fallback, never fabricates a name)', () => {
+describe('resolveDisplayName (multi-tier real-name fallback, never fabricates a name)', () => {
+  it('prefers manualDisplayName (Section 23 - a staff correction/confirmation) over every other source', () => {
+    const name = resolveDisplayName({
+      manualDisplayName: 'Michael Thompson',
+      verifiedName: 'Acme Corp (verified)',
+      businessName: 'Acme Corp',
+      whatsappJid: '15550001111@s.whatsapp.net',
+    });
+    expect(name).toBe('Michael Thompson');
+  });
+
   it('prefers verifiedName over every other source', () => {
     const name = resolveDisplayName({
       verifiedName: 'Acme Corp (verified)',

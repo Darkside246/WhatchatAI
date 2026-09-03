@@ -1,5 +1,6 @@
 import { Type } from '@google/genai';
 import type { FunctionDeclaration } from '@google/genai';
+import { CONVERSATION_FUNNEL_STAGES, CUSTOMER_READINESS_LEVELS, type ConversationFunnelStage, type CustomerReadiness } from '../../repositories/conversationStateRepository.js';
 
 export const UPDATE_CONVERSATION_STATE_TOOL_NAME = 'update_conversation_memory';
 
@@ -63,6 +64,34 @@ export const updateConversationStateFunctionDeclaration: FunctionDeclaration = {
         description: 'The exact text of previously open questions that have now been answered.',
         items: { type: Type.STRING },
       },
+      funnelStage: {
+        type: Type.STRING,
+        format: 'enum',
+        enum: [...CONVERSATION_FUNNEL_STAGES],
+        description:
+          'Where this conversation currently sits, for your own internal tracking only - never mention this to the ' +
+          'customer or let it change how natural you sound. Omit this field entirely unless the stage has genuinely ' +
+          'changed since it was last set. Do not force a conversation through every stage in order - skip ahead or ' +
+          'stay put, whatever honestly reflects this conversation.',
+      },
+      customerReadiness: {
+        type: Type.STRING,
+        format: 'enum',
+        enum: [...CUSTOMER_READINESS_LEVELS],
+        description:
+          'How ready this customer currently seems to act (book, buy, commit), based only on what they have actually ' +
+          'said - never a guess dressed up as certainty. Omit this field entirely unless it has genuinely changed. ' +
+          'Never use this to justify pushing an appointment or offer on a customer who is NOT_READY or BROWSING - ' +
+          'provide value first instead.',
+      },
+      preferredName: {
+        type: Type.STRING,
+        description:
+          'What the customer explicitly said they would like to be called (e.g. they said "call me Mike" or ' +
+          '"I go by Mike"). Never infer this from their WhatsApp display name, username, or how they signed a ' +
+          'message - only from them directly telling you. Omit this field entirely unless they just told you this ' +
+          'for the first time or asked to be called something different.',
+      },
     },
   },
 };
@@ -72,4 +101,7 @@ export interface UpdateConversationStateToolArgs {
   confirmFacts?: Array<{ key: string; value: string }>;
   openQuestions?: string[];
   resolveQuestions?: string[];
+  funnelStage?: ConversationFunnelStage;
+  customerReadiness?: CustomerReadiness;
+  preferredName?: string;
 }

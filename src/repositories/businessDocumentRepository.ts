@@ -284,6 +284,25 @@ export class BusinessDocumentRepository {
     return (rowCount ?? 0) > 0;
   }
 
+  /**
+   * A document left stuck in 'processing' with no worker left to finish it.
+   * processDocumentParseJob's own "already past uploaded, skip duplicate
+   * job" guard means an unexpected exception thrown after
+   * markDocumentProcessing (e.g. a parser library crash rather than a clean
+   * DocumentParseFailureReason) turns every BullMQ retry into a silent
+   * no-op success - the job never reaches a final 'failed' state, so
+   * nothing else ever resolves it. Same reconciliation-by-staleness pattern
+   * as findStalePending (email) / findStaleWaiting (funnel instances).
+   */
+  async findStaleProcessing(staleAfterSeconds: number): Promise<BusinessDocumentRecord[]> {
+    const { rows } = await this.db.query<BusinessDocumentRow>(
+      `SELECT * FROM business_documents
+       WHERE status = 'processing' AND deleted_at IS NULL AND updated_at < now() - ($1 || ' seconds')::interval`,
+      [staleAfterSeconds],
+    );
+    return rows.map(toRecord);
+  }
+
   /** Each chunk's checksum is computed by the caller (Node crypto, same as every other checksum in this system - business_document_versions.checksum, whatsapp_media.sha256) - no new Postgres extension (pgcrypto) is introduced just for this. */
   async createChunks(input: { businessId: string; documentId: string; versionId: string; chunks: DocumentChunkInput[] }): Promise<number> {
     if (input.chunks.length === 0) return 0;

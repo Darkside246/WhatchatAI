@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type MouseEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Megaphone, Send, Check, X, Users, CalendarClock, Image as ImageIcon, Sparkles, Trash2 } from 'lucide-react';
+import { ArrowLeft, Megaphone, Send, Check, X, Users, CalendarClock, Image as ImageIcon, Sparkles, Trash2, Ban } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -8,6 +8,7 @@ import {
   type CampaignDetailDto,
   type EligibleRecipientDto,
   type ScheduledStatusDto,
+  type StatusReplyDto,
 } from '../lib/api.js';
 
 /**
@@ -114,6 +115,7 @@ const RECIPIENT_STATUS_LABEL: Record<string, string> = {
   read: 'Read',
   played: 'Played',
   failed: 'Failed',
+  cancelled: 'Stopped',
 };
 
 function formatDate(iso: string | null): string {
@@ -374,6 +376,19 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
           >
             <Send size={13} aria-hidden />
             Send now
+          </button>
+        )}
+        {/* The emergency stop - only useful while there's still something left to stop (counts.queued). Recipients already sending/sent are never touched. */}
+        {campaign.status === 'RUNNING' && counts.queued > 0 && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => handleAction(() => api.cancelCampaign(campaign.id))}
+            title="Stops every recipient not yet sent to. Messages already sent or in flight are not affected."
+            className="flex items-center gap-1.5 rounded-lg border border-error/40 px-3 py-1.5 text-caption font-medium text-error hover:bg-error/10 disabled:opacity-50"
+          >
+            <Ban size={13} aria-hidden />
+            Stop sending
           </button>
         )}
         {/* Only offered once messages have genuinely gone out - counts.queued is what has not been sent yet. */}
@@ -719,6 +734,97 @@ function NewStatusForm({ onCreated, onCancel }: { onCreated: () => void; onCance
   );
 }
 
+/**
+ * "Status comments" - real replies WhatsApp delivered to this one
+ * published status, fetched on demand rather than preloaded for every
+ * status in the list (progressive disclosure, avoids an N+1 fetch on
+ * load). Never a public comment thread - WhatsApp Status has no such
+ * thing; these are the private replies the business itself received.
+ */
+function StatusRepliesPanel({ statusId }: { statusId: string }) {
+  const [replies, setReplies] = useState<StatusReplyDto[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listStatusReplies(statusId)
+      .then((result) => { if (!cancelled) setReplies(result.replies); })
+      .catch((err) => { if (!cancelled) setError(err instanceof ApiError ? err.message : 'Could not load replies.'); });
+    return () => { cancelled = true; };
+  }, [statusId]);
+
+  if (error) return <p className="mt-2 text-caption text-error">{error}</p>;
+  if (replies === null) return <p className="mt-2 text-caption text-fg-muted">Loading replies…</p>;
+  if (replies.length === 0) return <p className="mt-2 text-caption text-fg-muted">No replies yet.</p>;
+
+  return (
+    <div className="mt-2 space-y-1.5 border-t border-border-subtle pt-2">
+      {replies.map((reply) => (
+        <div key={reply.id} className="rounded-lg bg-surface-1 px-3 py-2 text-caption">
+          <p className="text-fg">{reply.textContent ?? reply.caption ?? `[${reply.messageType}]`}</p>
+          <p className="mt-0.5 text-meta text-fg-muted">{formatDate(reply.timestamp)}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StatusRow({
+  status, busy, onCancel, onDeleteRecord, onDeleteFromWhatsApp,
+}: {
+  status: ScheduledStatusDto;
+  busy: boolean;
+  onCancel: () => void;
+  onDeleteRecord: () => void;
+  onDeleteFromWhatsApp: () => void;
+}) {
+  const [showReplies, setShowReplies] = useState(false);
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+      <div className="flex items-center justify-between">
+        <div className="min-w-0">
+          <p className="truncate text-body font-medium text-fg capitalize">
+            {status.statusType} Status{status.textContent ? `: ${status.textContent.slice(0, 40)}` : ''}
+          </p>
+          <p className="mt-0.5 text-caption text-fg-muted">
+            {formatDate(status.scheduledAt)}
+            {status.lastError ? ` · ${status.lastError}` : ''}
+            {status.revokeStatus === 'requested' ? ' · asking WhatsApp to delete this…' : ''}
+            {status.revokeStatus === 'revoke_sent' ? ' · delete sent to WhatsApp' : ''}
+            {status.revokeStatus === 'failed' ? ` · delete failed${status.revokeError ? `: ${status.revokeError}` : ''}` : ''}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${SCHEDULED_STATUS_COLOR[status.status]}`}>{SCHEDULED_STATUS_LABEL[status.status]}</span>
+          {status.status === 'SCHEDULED' && (
+            <button type="button" disabled={busy} onClick={onCancel} aria-label="Cancel scheduled status" title="Cancel" className="text-fg-muted hover:text-error disabled:opacity-50">
+              <X size={14} aria-hidden />
+            </button>
+          )}
+          {status.status === 'PUBLISHED' && status.publishedWhatsappMessageId && status.revokeStatus === 'none' && (
+            <button type="button" disabled={busy} onClick={onDeleteFromWhatsApp} aria-label="Delete this Status from WhatsApp" title="Delete from WhatsApp" className="text-fg-muted hover:text-error disabled:opacity-50">
+              <Trash2 size={14} aria-hidden />
+            </button>
+          )}
+          {(status.status === 'CANCELLED' || status.status === 'FAILED') && (
+            <button type="button" disabled={busy} onClick={onDeleteRecord} aria-label="Delete this record" title="Remove from list" className="text-fg-muted hover:text-error disabled:opacity-50">
+              <Trash2 size={14} aria-hidden />
+            </button>
+          )}
+        </div>
+      </div>
+      {status.status === 'PUBLISHED' && (
+        <button type="button" onClick={() => setShowReplies((v) => !v)} className="mt-2 text-caption font-medium text-accent hover:text-accent-dim">
+          {showReplies ? 'Hide replies' : 'View replies'}
+        </button>
+      )}
+      {showReplies && <StatusRepliesPanel statusId={status.id} />}
+    </div>
+  );
+}
+
 function StatusSchedulerTab() {
   const [statuses, setStatuses] = useState<ScheduledStatusDto[] | null>(null);
   const [creating, setCreating] = useState(false);
@@ -817,59 +923,14 @@ function StatusSchedulerTab() {
             </div>
           )}
           {statuses?.map((status) => (
-            <div key={status.id} className="flex items-center justify-between rounded-xl border border-border-subtle bg-surface-2 p-4">
-              <div className="min-w-0">
-                <p className="truncate text-body font-medium text-fg capitalize">
-                  {status.statusType} Status{status.textContent ? `: ${status.textContent.slice(0, 40)}` : ''}
-                </p>
-                <p className="mt-0.5 text-caption text-fg-muted">
-                  {formatDate(status.scheduledAt)}
-                  {status.lastError ? ` · ${status.lastError}` : ''}
-                  {status.revokeStatus === 'requested' ? ' · asking WhatsApp to delete this…' : ''}
-                  {status.revokeStatus === 'revoke_sent' ? ' · delete sent to WhatsApp' : ''}
-                  {status.revokeStatus === 'failed' ? ` · delete failed${status.revokeError ? `: ${status.revokeError}` : ''}` : ''}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${SCHEDULED_STATUS_COLOR[status.status]}`}>{SCHEDULED_STATUS_LABEL[status.status]}</span>
-                {status.status === 'SCHEDULED' && (
-                  <button
-                    type="button"
-                    disabled={busyId === status.id}
-                    onClick={() => void handleCancel(status.id)}
-                    aria-label="Cancel scheduled status"
-                    title="Cancel"
-                    className="text-fg-muted hover:text-error disabled:opacity-50"
-                  >
-                    <X size={14} aria-hidden />
-                  </button>
-                )}
-                {status.status === 'PUBLISHED' && status.publishedWhatsappMessageId && status.revokeStatus === 'none' && (
-                  <button
-                    type="button"
-                    disabled={busyId === status.id}
-                    onClick={() => void handleDeleteFromWhatsApp(status.id)}
-                    aria-label="Delete this Status from WhatsApp"
-                    title="Delete from WhatsApp"
-                    className="text-fg-muted hover:text-error disabled:opacity-50"
-                  >
-                    <Trash2 size={14} aria-hidden />
-                  </button>
-                )}
-                {(status.status === 'CANCELLED' || status.status === 'FAILED') && (
-                  <button
-                    type="button"
-                    disabled={busyId === status.id}
-                    onClick={() => void handleDeleteRecord(status.id)}
-                    aria-label="Delete this record"
-                    title="Remove from list"
-                    className="text-fg-muted hover:text-error disabled:opacity-50"
-                  >
-                    <Trash2 size={14} aria-hidden />
-                  </button>
-                )}
-              </div>
-            </div>
+            <StatusRow
+              key={status.id}
+              status={status}
+              busy={busyId === status.id}
+              onCancel={() => void handleCancel(status.id)}
+              onDeleteRecord={() => void handleDeleteRecord(status.id)}
+              onDeleteFromWhatsApp={() => void handleDeleteFromWhatsApp(status.id)}
+            />
           ))}
         </div>
       </div>

@@ -424,6 +424,45 @@ describe('Durable conversation state (Phase 3 - supplements raw history, never r
     expect(instruction).not.toContain('Already resolved question');
   });
 
+  it('surfaces the funnel stage and customer readiness as internal-only, never-mention-to-customer context', () => {
+    const state = { ...emptyConversationState('business-1', 'chat-1'), funnelStage: 'QUALIFIED' as const, customerReadiness: 'INTERESTED' as const };
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state }));
+    expect(instruction).toContain('Conversation stage as of your last assessment: QUALIFIED');
+    expect(instruction).toContain('Customer readiness as of your last assessment: INTERESTED');
+    expect(instruction).toContain('never mention this');
+  });
+
+  it('adds no funnel-stage/readiness lines when neither has ever been set', () => {
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext());
+    expect(instruction).not.toContain('Conversation stage');
+    expect(instruction).not.toContain('Customer readiness');
+  });
+
+  it('Sections 14-24: offers the resolved name when there is real evidence and it has never been used yet', () => {
+    const state = { ...emptyConversationState('business-1', 'chat-1'), preferredName: 'Mike' };
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state }));
+    expect(instruction).toContain('"Mike"');
+    expect(instruction).toContain('may naturally address');
+  });
+
+  it('withholds the name-offer instruction when the name was used recently (within cooldown)', () => {
+    const state = { ...emptyConversationState('business-1', 'chat-1'), preferredName: 'Mike', lastNameUsedAt: new Date().toISOString() };
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state }));
+    expect(instruction).not.toContain('may naturally address');
+    expect(instruction).toContain('do not use it again this reply');
+  });
+
+  it('never offers a name when there is no real evidence for one at all', () => {
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext());
+    expect(instruction).not.toContain('may naturally address');
+    expect(instruction).not.toContain('do not use it again this reply');
+  });
+
+  it('falls back through the real name hierarchy to a WhatsApp push name when there is no confirmed preferred name', () => {
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ contactNameSources: { verifiedName: null, businessName: null, pushName: 'Jane P.', username: null, shortName: null } }));
+    expect(instruction).toContain('"Jane P."');
+  });
+
   it('does not crash when conversationState is missing entirely (older test fixtures that predate this field)', () => {
     const context = fakeContext();
     // @ts-expect-error - deliberately simulating a fixture that omits the field, matching how some existing test files still build AiHandoffContext via Partial<> spreads.

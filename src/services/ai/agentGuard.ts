@@ -10,6 +10,7 @@ export class UnknownActorError extends Error {}
 export class SystemTierToolDeniedError extends Error {}
 export class ToolRateLimitExceededError extends Error {}
 export class AiActionsPausedError extends Error {}
+export class AgentAutonomyRestrictedError extends Error {}
 
 export interface ToolInvocationContext {
   businessId: string;
@@ -138,6 +139,17 @@ export async function guardToolInvocation(toolName: string, context: ToolInvocat
   const agent = await aiAgentRepository.findByIdForBusiness(context.agentId, context.businessId).catch(() => null);
   if (!agent || agent.status !== 'ACTIVE') {
     return denyAndAudit('Tool invocation from an unknown or cross-tenant agent', toolName, context, UnknownActorError);
+  }
+
+  // Autonomy level 1 ("read-only") - the authoritative enforcement of the
+  // lowest rung of the 5-level ladder (migration 961). aiReplyService.ts's
+  // buildReplyTools also filters the tool list down to READ for a level-1
+  // agent so Gemini is never even offered one of these tools, but that is
+  // purely an efficiency filter; this is the one gate every tool call
+  // passes through regardless of caller, same reasoning as the
+  // aiActionsPaused check above.
+  if (agent.autonomyLevel === 1 && risk !== 'READ') {
+    return denyAndAudit('Agent autonomy level is read-only', toolName, context, AgentAutonomyRestrictedError);
   }
 
   const windowMinutes = getRateLimitWindowMinutes();

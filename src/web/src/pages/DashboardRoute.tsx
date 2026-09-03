@@ -12,6 +12,7 @@ import {
   type AiEnginesDto,
   type AiCommitmentRecord,
   type NextBestAction,
+  type MorningBriefing,
 } from '../lib/api.js';
 import { AiEngineStrip } from '../components/AiEngineStrip.js';
 import { TimeSyncStrip } from '../components/TimeSyncStrip.js';
@@ -216,6 +217,7 @@ export function DashboardRoute() {
   const [engines,        setEngines]        = useState<AiEnginesDto | null>(null);
   const [commitments,    setCommitments]    = useState<AiCommitmentRecord[] | null>(null);
   const [nextActions,    setNextActions]    = useState<NextBestAction[] | null>(null);
+  const [briefing,       setBriefing]       = useState<MorningBriefing | null>(null);
   const [error,          setError]          = useState<string | null>(null);
 
   useEffect(() => {
@@ -226,12 +228,14 @@ export function DashboardRoute() {
       api.getAiEngines().catch(() => null),
       api.getOpenCommitments().catch(() => ({ commitments: [] as AiCommitmentRecord[] })),
       api.getNextBestActions().catch(() => ({ actions: [] as NextBestAction[] })),
+      api.getMorningBriefing().catch(() => null),
     ])
-      .then(([d, c, n, e, k, nba]) => {
+      .then(([d, c, n, e, k, nba, brief]) => {
         setOverview(d); setChats(c.chats);
         setNotifications(n.notifications); setEngines(e);
         setCommitments(k.commitments);
         setNextActions(nba.actions);
+        setBriefing(brief);
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load dashboard.'));
   }, []);
@@ -327,6 +331,57 @@ export function DashboardRoute() {
                 </button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* ── Morning Briefing: "what happened while you were away" - real counts only ── */}
+        {briefing && (
+          briefing.completedActions.length + briefing.failedActions.length + briefing.riskFlags.length
+            + briefing.newAppointments.length + briefing.newLeads.length > 0
+        ) && (
+          <div className="mt-4 rounded-xl border border-border-subtle bg-surface-1">
+            <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-2.5">
+              <CheckCircle size={14} className="text-accent" aria-hidden />
+              <p className="text-caption font-semibold text-fg">Since you last checked</p>
+            </div>
+            <div className="grid grid-cols-2 gap-px bg-border-subtle sm:grid-cols-3 lg:grid-cols-6">
+              {briefing.completedActions.length > 0 && (
+                <div className="bg-surface-1 px-4 py-3">
+                  <p className="text-title font-semibold text-fg">{briefing.completedActions.length}</p>
+                  <p className="text-meta text-fg-muted">Completed</p>
+                </div>
+              )}
+              {briefing.failedActions.length > 0 && (
+                <button type="button" onClick={() => navigate('/approvals')} className="bg-surface-1 px-4 py-3 text-left hover:bg-surface-2">
+                  <p className="text-title font-semibold text-error">{briefing.failedActions.length}</p>
+                  <p className="text-meta text-fg-muted">Failed</p>
+                </button>
+              )}
+              {briefing.pendingApprovals.length > 0 && (
+                <button type="button" onClick={() => navigate('/approvals')} className="bg-surface-1 px-4 py-3 text-left hover:bg-surface-2">
+                  <p className="text-title font-semibold text-warning">{briefing.pendingApprovals.length}</p>
+                  <p className="text-meta text-fg-muted">Waiting for you</p>
+                </button>
+              )}
+              {briefing.riskFlags.length > 0 && (
+                <div className="bg-surface-1 px-4 py-3">
+                  <p className="text-title font-semibold text-warning">{briefing.riskFlags.length}</p>
+                  <p className="text-meta text-fg-muted">Flagged conversations</p>
+                </div>
+              )}
+              {briefing.newAppointments.length > 0 && (
+                <div className="bg-surface-1 px-4 py-3">
+                  <p className="text-title font-semibold text-fg">{briefing.newAppointments.length}</p>
+                  <p className="text-meta text-fg-muted">New appointments</p>
+                </div>
+              )}
+              {briefing.newLeads.length > 0 && (
+                <button type="button" onClick={() => navigate('/crm')} className="bg-surface-1 px-4 py-3 text-left hover:bg-surface-2">
+                  <p className="text-title font-semibold text-fg">{briefing.newLeads.length}</p>
+                  <p className="text-meta text-fg-muted">New leads</p>
+                </button>
+              )}
+            </div>
           </div>
         )}
 

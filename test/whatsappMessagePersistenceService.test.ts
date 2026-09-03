@@ -6,8 +6,11 @@ import { CustomerIdentityRepository } from '../src/repositories/customerIdentity
 import { ConversationEventRepository } from '../src/repositories/conversationEventRepository.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 import { WhatsAppOutboundMessageRepository } from '../src/repositories/whatsappOutboundMessageRepository.js';
+import { ScheduledStatusRepository } from '../src/repositories/scheduledStatusRepository.js';
+import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
+import { listStatusReplies } from '../src/services/scheduledStatusService.js';
 import type { IngestedWhatsAppMessage } from '../src/services/whatsappMessageIngestionService.js';
-import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
+import { createTestAccount, createTestBusiness, createTestUser, resetDatabase } from './helpers.js';
 
 function ingestedMessage(overrides: Partial<IngestedWhatsAppMessage> = {}): IngestedWhatsAppMessage {
   return {
@@ -435,6 +438,75 @@ describe('WhatsAppMessagePersistenceService', () => {
 
       const chat = await new WhatsAppChatRepository(pool).findById(result.chat.id);
       expect(chat?.aiMode).toBe('AI_ACTIVE');
+    });
+  });
+
+  describe('"Status comments" - resolving a reply to a real published status', () => {
+    it('tags a message whose quotedStanzaId matches a real published status', async () => {
+      const userId = await createTestUser(businessId);
+      const status = await new ScheduledStatusRepository(pool).create({
+        businessId, whatsappAccountId: accountId, createdBy: userId,
+        statusType: 'text', textContent: 'Weekend sale!', scheduledAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      await new ScheduledStatusRepository(pool).recordPublishedMessageId(status.id, 'STATUS-WAMSG-1');
+
+      const result = await whatsappMessagePersistenceService.persist({
+        businessId,
+        whatsappAccountId: accountId,
+        accountJid,
+        ingested: ingestedMessage({ messageId: 'WA-STATUS-REPLY-1', quotedStanzaId: 'STATUS-WAMSG-1' }),
+      });
+
+      const persisted = await new WhatsAppMessageRepository(pool).findById(result.message.id);
+      expect(persisted?.rawMetadata['repliedToStatusId']).toBe(status.id);
+    });
+
+    it('leaves rawMetadata untouched when quotedStanzaId matches nothing real (no status, no ordinary message)', async () => {
+      const result = await whatsappMessagePersistenceService.persist({
+        businessId,
+        whatsappAccountId: accountId,
+        accountJid,
+        ingested: ingestedMessage({ messageId: 'WA-STATUS-REPLY-NONE', quotedStanzaId: 'SOME-UNKNOWN-STANZA-ID' }),
+      });
+
+      const persisted = await new WhatsAppMessageRepository(pool).findById(result.message.id);
+      expect(persisted?.rawMetadata['repliedToStatusId']).toBeUndefined();
+    });
+
+    it('never overrides a real ordinary-message quote with a status match - an ordinary reply takes priority', async () => {
+      const original = await whatsappMessagePersistenceService.persist({
+        businessId, whatsappAccountId: accountId, accountJid,
+        ingested: ingestedMessage({ messageId: 'WA-ORIGINAL-CHAT-MSG' }),
+      });
+
+      const reply = await whatsappMessagePersistenceService.persist({
+        businessId, whatsappAccountId: accountId, accountJid,
+        ingested: ingestedMessage({ messageId: 'WA-ORDINARY-REPLY', quotedStanzaId: 'WA-ORIGINAL-CHAT-MSG' }),
+      });
+
+      expect(reply.message.quotedMessageId).toBe(original.message.id);
+      const persisted = await new WhatsAppMessageRepository(pool).findById(reply.message.id);
+      expect(persisted?.rawMetadata['repliedToStatusId']).toBeUndefined();
+    });
+
+    it('surfaces a real status reply via listRepliesToStatus/listStatusReplies, tenant-scoped', async () => {
+      const userId = await createTestUser(businessId);
+      const status = await new ScheduledStatusRepository(pool).create({
+        businessId, whatsappAccountId: accountId, createdBy: userId,
+        statusType: 'text', textContent: 'Weekend sale!', scheduledAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      await new ScheduledStatusRepository(pool).recordPublishedMessageId(status.id, 'STATUS-WAMSG-2');
+      await whatsappMessagePersistenceService.persist({
+        businessId, whatsappAccountId: accountId, accountJid,
+        ingested: ingestedMessage({ messageId: 'WA-STATUS-REPLY-2', quotedStanzaId: 'STATUS-WAMSG-2', textPreview: 'Is this still on?', fullText: 'Is this still on?' }),
+      });
+
+      const replies = await listStatusReplies(businessId, status.id);
+      expect(replies).toHaveLength(1);
+      expect(replies[0]?.textContent).toBe('Is this still on?');
+
+      const otherBusinessId = await createTestBusiness('Other Business');
+      await expect(listStatusReplies(otherBusinessId, status.id)).rejects.toThrow();
     });
   });
 });

@@ -135,6 +135,17 @@ export interface CreateCampaignInput {
  * sent/failed), then the real whatsapp_messages row once linked, for the
  * fuller delivered/read lifecycle. There is no duplicated status column to
  * go stale.
+ *
+ * Section 26 (Message Delivery Status Reconciliation) - real bug found and
+ * fixed here: whatsapp_messages.status is `NOT NULL DEFAULT 'unknown'`
+ * (007_create_whatsapp_messages.sql), never actually NULL for a real row -
+ * this CASE originally checked `wm.status IS NOT NULL`, which is true the
+ * instant a message row is linked, before any real delivery/read ack has
+ * ever arrived. That made every freshly-sent (linked, not yet acked)
+ * recipient show the literal placeholder 'unknown' instead of 'sent' -
+ * exactly the "stuck at nothing" symptom this section describes. Fixed by
+ * treating wm.status = 'unknown' the same as "no real ack yet" and falling
+ * through to the outbound message's own real 'sent' status instead.
  */
 const RECIPIENT_STATUS_SELECT = `
   cr.id, cr.campaign_id, cr.crm_contact_id, cr.chat_id, cr.outbound_message_id,
@@ -142,7 +153,7 @@ const RECIPIENT_STATUS_SELECT = `
   wc.phone_number,
   CASE
     WHEN om.status = 'failed' THEN 'failed'
-    WHEN wm.status IS NOT NULL THEN wm.status::text
+    WHEN wm.status IS NOT NULL AND wm.status != 'unknown' THEN wm.status::text
     WHEN om.status IS NOT NULL THEN om.status::text
     WHEN cr.last_error IS NOT NULL THEN 'failed'
     ELSE NULL
@@ -321,6 +332,21 @@ export class CampaignRepository {
     return rows.map((row) => ({ messageId: row.id, whatsappAccountId: row.whatsapp_account_id }));
   }
 
+  /**
+   * Every recipient's own outbound message id, whatever its current state -
+   * the caller (cancelCampaign's emergency-stop path) is responsible for
+   * only acting on the ones still genuinely stoppable (the repository's own
+   * cancelQueuedByIds only ever matches 'queued', never a message already
+   * sending/sent).
+   */
+  async listOutboundMessageIds(campaignId: string): Promise<string[]> {
+    const { rows } = await this.db.query<{ outbound_message_id: string }>(
+      `SELECT outbound_message_id FROM campaign_recipients WHERE campaign_id = $1 AND outbound_message_id IS NOT NULL`,
+      [campaignId],
+    );
+    return rows.map((row) => row.outbound_message_id);
+  }
+
   async hardDelete(businessId: string, campaignId: string): Promise<boolean> {
     const { rowCount } = await this.db.query(
       `DELETE FROM campaigns WHERE id = $1 AND business_id = $2`,
@@ -330,7 +356,9 @@ export class CampaignRepository {
   }
 
   /** Real, live counts by status - computed the same way listRecipients derives status, never a separately maintained counter. */
-  async getStatusCounts(campaignId: string): Promise<{ total: number; queued: number; sent: number; delivered: number; read: number; failed: number }> {
+  async getStatusCounts(
+    campaignId: string,
+  ): Promise<{ total: number; queued: number; sent: number; delivered: number; read: number; failed: number; cancelled: number }> {
     const { rows } = await this.db.query<{
       total: string;
       queued: string;
@@ -338,14 +366,16 @@ export class CampaignRepository {
       delivered: string;
       read: string;
       failed: string;
+      cancelled: string;
     }>(
       `SELECT
          COUNT(*)::text AS total,
          COUNT(*) FILTER (WHERE (om.id IS NULL AND cr.last_error IS NULL) OR om.status IN ('queued', 'sending'))::text AS queued,
-         COUNT(*) FILTER (WHERE om.status = 'sent' AND wm.status IS NULL)::text AS sent,
+         COUNT(*) FILTER (WHERE om.status = 'sent' AND (wm.id IS NULL OR wm.status = 'unknown'))::text AS sent,
          COUNT(*) FILTER (WHERE wm.status IN ('delivered', 'played'))::text AS delivered,
          COUNT(*) FILTER (WHERE wm.status = 'read')::text AS read,
-         COUNT(*) FILTER (WHERE om.status = 'failed' OR (om.id IS NULL AND cr.last_error IS NOT NULL))::text AS failed
+         COUNT(*) FILTER (WHERE om.status = 'failed' OR (om.id IS NULL AND cr.last_error IS NOT NULL))::text AS failed,
+         COUNT(*) FILTER (WHERE om.status = 'cancelled')::text AS cancelled
        FROM campaign_recipients cr
        LEFT JOIN whatsapp_outbound_messages om ON om.id = cr.outbound_message_id
        LEFT JOIN whatsapp_messages wm ON wm.id = om.message_id
@@ -357,6 +387,7 @@ export class CampaignRepository {
       total: Number(row?.total ?? '0'),
       queued: Number(row?.queued ?? '0'),
       sent: Number(row?.sent ?? '0'),
+      cancelled: Number(row?.cancelled ?? '0'),
       delivered: Number(row?.delivered ?? '0'),
       read: Number(row?.read ?? '0'),
       failed: Number(row?.failed ?? '0'),

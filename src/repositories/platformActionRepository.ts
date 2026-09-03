@@ -98,6 +98,23 @@ export class PlatformActionRepository {
   }
 
   /**
+   * Section 48 (Autonomous Morning Briefing): every real action this
+   * business's agents completed or failed since a given point in time -
+   * the raw material for "what did Aura do while I was asleep", never a
+   * fabricated activity summary. `statuses` lets the caller ask for
+   * SUCCEEDED and FAILED separately rather than filtering client-side.
+   */
+  async listByStatusSince(businessId: string, statuses: PlatformActionRow['status'][], sinceIso: string, limit = 50): Promise<PlatformActionRow[]> {
+    const { rows } = await this.db.query<PlatformActionRow>(
+      `SELECT ${ACTION_COLUMNS} FROM platform_action_requests
+       WHERE business_id = $1 AND status = ANY($2::text[]) AND updated_at >= $3
+       ORDER BY updated_at DESC LIMIT $4`,
+      [businessId, statuses, sinceIso, limit],
+    );
+    return rows;
+  }
+
+  /**
    * The most recent real, decided (APPROVED/REJECTED) approvals a given
    * agent's own action requests received, most-recent-first - the raw
    * material "learning from approval patterns" is built on. Capped at

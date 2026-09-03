@@ -29,9 +29,9 @@ export function initializePlatformFoundation(): void {
   if (!actionBusService.listExecutors().includes(MAINTENANCE_CREATE_WORK_ORDER_ACTION_TYPE)) {
     actionBusService.register(new MaintenanceCreateWorkOrderExecutor());
   }
-  // Only reachable for an agent with requiresApprovalForActions on (see
-  // aiReplyService.ts's createPendingMeetingApproval) - an agent without
-  // it still books immediately and never creates one of these actions.
+  // Only reachable for an agent at autonomy level 1-2 (see
+  // aiReplyService.ts's createPendingApprovalAction) - an agent at level
+  // 3+ still books immediately and never creates one of these actions.
   if (!actionBusService.listExecutors().includes(SCHEDULE_GOOGLE_MEET_ACTION_TYPE)) {
     actionBusService.register(new GoogleMeetBookingExecutor());
   }

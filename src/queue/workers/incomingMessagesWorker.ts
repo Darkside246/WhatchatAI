@@ -41,6 +41,7 @@ import { WhatsAppGroupRepository } from '../../repositories/whatsappGroupReposit
 import { WhatsAppJidMappingRepository } from '../../repositories/whatsappJidMappingRepository.js';
 import { WhatsAppOutboundMessageRepository } from '../../repositories/whatsappOutboundMessageRepository.js';
 import { EmailMessageRepository } from '../../repositories/emailMessageRepository.js';
+import { BusinessDocumentRepository } from '../../repositories/businessDocumentRepository.js';
 import { mapBaileysCallStatus, callTypeFromEvent, isTerminalCallStatus } from '../../domain/whatsapp/callStatus.js';
 import { classifyJid, derivePhoneNumber, stripDeviceSuffix } from '../../domain/whatsapp/jid.js';
 import { decodeBuffersFromQueue } from '../../domain/whatsapp/binaryCodec.js';
@@ -50,6 +51,7 @@ import { sweepStaleFunnelInstances } from '../../services/funnelService.js';
 import { runSecurityScan } from '../../services/securityScanService.js';
 import { runSecurityWatcher } from '../../services/openclawSecurityWatcherService.js';
 import { sweepDueAccountDeletions } from '../../services/accountDeletionService.js';
+import { sweepExpiredTrials } from '../../services/billing/subscriptionExpiryService.js';
 import type { WhatsAppMessageRecord } from '../../repositories/whatsappMessageRepository.js';
 import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaRepository.js';
 import type { MediaDownloadErrorCategory } from '../../domain/whatsapp/types.js';
@@ -57,6 +59,7 @@ import { verifyMasterKeyStability } from '../../security/encryption/keyStability
 import { installCrashSafetyHandlers } from '../../process/crashSafety.js';
 import { OperatorCommandService } from '../../services/operator/operatorCommandService.js';
 import { ReminderRepository } from '../../repositories/reminderRepository.js';
+import { ScheduledMeetingsRepository } from '../../repositories/scheduledMeetingsRepository.js';
 import { initializePlatformFoundation } from '../../services/platform/platformBootstrap.js';
 import { runPropertyMaintenanceHandoff } from '../../services/property/propertyMaintenanceOrchestrator.js';
 import { evaluateGroupParticipationGate, type GroupParticipationGateResult } from '../../services/ai/groupParticipationGate.js';
@@ -605,10 +608,12 @@ const reactionRepository = new WhatsAppMessageReactionRepository(pool);
 const presenceRepository = new WhatsAppPresenceRepository(pool);
 const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
 const emailMessageRepository = new EmailMessageRepository(pool);
+const businessDocumentRepository = new BusinessDocumentRepository(pool);
 const chatRepository = new WhatsAppChatRepository(pool);
 const crmContactRepository = new CrmContactRepository(pool);
 const operatorCommandService = new OperatorCommandService(pool);
 const reminderRepository = new ReminderRepository(pool);
+const scheduledMeetingsRepository = new ScheduledMeetingsRepository(pool);
 const groupRepository = new WhatsAppGroupRepository(pool);
 const jidMappingRepository = new WhatsAppJidMappingRepository(pool);
 const groupParticipationGateDeps = { messageRepository, accountRepository, groupRepository, jidMappingRepository };
@@ -940,7 +945,7 @@ async function processHumanTakeoverResume(data: HumanTakeoverResumeJobData): Pro
   }
 }
 
-async function processMessageStatus(data: MessageStatusJobData): Promise<void> {
+export async function processMessageStatus(data: MessageStatusJobData): Promise<void> {
   const { businessId, whatsappAccountId, whatsappMessageId, status } = data;
   const message = await messageRepository.findByWhatsAppId(businessId, whatsappAccountId, whatsappMessageId);
   if (!message) return; // The message hasn't been persisted yet (or ever will be, e.g. Sentinel-blocked) - nothing to update.
@@ -1201,6 +1206,23 @@ export async function sweepStaleSyncJobs(): Promise<void> {
   }
 }
 
+// Section 56 (Appointment System) - real lifecycle tracking. Before this,
+// scheduled_meetings had no completion state at all; a real Google Meet/
+// Zoom booking stayed "confirmed" forever even long after it happened.
+// 'completed' is a genuinely computable fact (end_at has passed) - never a
+// guess about attendance, which is what 'no_show' is for (human-set only).
+const MEETING_COMPLETION_SWEEP_INTERVAL_MS = 300_000;
+
+export async function sweepCompletedMeetings(): Promise<void> {
+  const due = await scheduledMeetingsRepository.findConfirmedPastEnd(new Date().toISOString());
+  for (const meeting of due) {
+    await scheduledMeetingsRepository.markCompleted(meeting.id);
+  }
+  if (due.length > 0) {
+    console.log(`[RealtimeEventsWorker] Marked ${due.length} past-due confirmed meeting(s) completed`);
+  }
+}
+
 // A row wedged in 'queued'/'sending' with no BullMQ retry left to resolve it
 // (worker crashed mid-dispatch, process killed between markSending and the
 // actual sendMessage call) - the same honesty problem the call/sync-job
@@ -1269,6 +1291,13 @@ export async function sweepDueReminders(): Promise<void> {
 const EMAIL_STALE_SECONDS = 300;
 const EMAIL_TIMEOUT_SWEEP_INTERVAL_MS = 60_000;
 
+// documentParseWorker's own retry attempts never actually re-run once a
+// document is past 'uploaded' (see findStaleProcessing's comment) - a
+// crashed or exception-throwing parse is otherwise invisible forever, so
+// this needs the same stale-reconciliation cadence as email/funnel.
+const DOCUMENT_PROCESSING_STALE_SECONDS = 300;
+const DOCUMENT_PROCESSING_SWEEP_INTERVAL_MS = 60_000;
+
 // A WAITING funnel instance can legitimately stay WAITING for days (a
 // WAIT node's own configured delay) - see sweepStaleFunnelInstances in
 // funnelService.ts for why this sweep checks a much longer interval than
@@ -1299,6 +1328,12 @@ const OPENCLAW_SECURITY_WATCHER_INTERVAL_MS = 21_600_000;
 // "not time-critical" cadence.
 const ACCOUNT_DELETION_PURGE_SWEEP_INTERVAL_MS = 3_600_000;
 
+// Section 72: a trial's own window (48 hours for the public signup flow,
+// 14 days for the interim single-tenant bootstrap) doesn't need
+// minute-level precision - worst case a business gets a few extra
+// minutes of trial access past its real expiry.
+const TRIAL_EXPIRY_SWEEP_INTERVAL_MS = 900_000;
+
 export async function sweepStaleEmails(): Promise<void> {
   const stale = await emailMessageRepository.findStalePending(EMAIL_STALE_SECONDS);
   for (const email of stale) {
@@ -1318,6 +1353,31 @@ export async function sweepStaleEmails(): Promise<void> {
   }
   if (stale.length > 0) {
     console.log(`[RealtimeEventsWorker] Reconciled ${stale.length} stale email(s) to indeterminate`);
+  }
+}
+
+export async function sweepStaleProcessingDocuments(): Promise<void> {
+  const stale = await businessDocumentRepository.findStaleProcessing(DOCUMENT_PROCESSING_STALE_SECONDS);
+  for (const document of stale) {
+    const reason = `Abandoned mid-parse - no progress for over ${DOCUMENT_PROCESSING_STALE_SECONDS}s (likely a parser crash or process restart)`;
+    if (document.currentVersionId) {
+      await businessDocumentRepository.markVersionFailed(document.businessId, document.currentVersionId, 'processing_error');
+      await businessDocumentRepository.markDocumentFailedIfCurrentVersion(document.businessId, document.id, document.currentVersionId);
+    }
+    await notifyBusiness({
+      businessId: document.businessId,
+      type: 'AUTOMATION_FAILURE',
+      severity: 'warning',
+      title: 'A document upload needs a manual check',
+      body: `"${document.filename}" got stuck mid-processing and never finished. Re-upload it if you want to try again.`,
+      targetType: 'business_document',
+      targetId: document.id,
+    }).catch((error) => {
+      console.error('[RealtimeEventsWorker] Failed to dispatch AUTOMATION_FAILURE notification:', error);
+    });
+  }
+  if (stale.length > 0) {
+    console.log(`[RealtimeEventsWorker] Reconciled ${stale.length} stale processing document(s) to failed`);
   }
 }
 
@@ -1343,6 +1403,10 @@ async function processRealtimeEventJob(
     await sweepStaleRingingCalls();
   } else if (job.name === 'sync-job-timeout-sweep') {
     await sweepStaleSyncJobs();
+  } else if (job.name === 'meeting-completion-sweep') {
+    await sweepCompletedMeetings();
+  } else if (job.name === 'trial-expiry-sweep') {
+    await sweepExpiredTrials();
   } else if (job.name === 'media-download-timeout-sweep') {
     await sweepStaleDownloadingMedia();
   } else if (job.name === 'ai-handoff-sweep') {
@@ -1359,6 +1423,8 @@ async function processRealtimeEventJob(
     await sweepStaleEmails();
   } else if (job.name === 'funnel-instance-timeout-sweep') {
     await sweepStaleFunnelInstances();
+  } else if (job.name === 'document-processing-timeout-sweep') {
+    await sweepStaleProcessingDocuments();
   } else if (job.name === 'security-scan') {
     await runSecurityScan();
   } else if (job.name === 'openclaw-security-watcher') {
@@ -1500,6 +1566,11 @@ void realtimeEventsQueue
   .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule reminder-sweep:', error.message));
 
 void realtimeEventsQueue
+  .upsertJobScheduler('meeting-completion-sweep', { every: MEETING_COMPLETION_SWEEP_INTERVAL_MS }, { name: 'meeting-completion-sweep' })
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled meeting-completion-sweep every ${MEETING_COMPLETION_SWEEP_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule meeting-completion-sweep:', error.message));
+
+void realtimeEventsQueue
   .upsertJobScheduler(
     'funnel-instance-timeout-sweep',
     { every: FUNNEL_INSTANCE_TIMEOUT_SWEEP_INTERVAL_MS },
@@ -1512,6 +1583,19 @@ void realtimeEventsQueue
   )
   .catch((error: Error) =>
     console.error('[RealtimeEventsWorker] Failed to schedule funnel-instance-timeout-sweep:', error.message),
+  );
+
+void realtimeEventsQueue
+  .upsertJobScheduler(
+    'document-processing-timeout-sweep',
+    { every: DOCUMENT_PROCESSING_SWEEP_INTERVAL_MS },
+    { name: 'document-processing-timeout-sweep' },
+  )
+  .then(() =>
+    console.log(`[RealtimeEventsWorker] Scheduled document-processing-timeout-sweep every ${DOCUMENT_PROCESSING_SWEEP_INTERVAL_MS}ms`),
+  )
+  .catch((error: Error) =>
+    console.error('[RealtimeEventsWorker] Failed to schedule document-processing-timeout-sweep:', error.message),
   );
 
 void realtimeEventsQueue
@@ -1540,3 +1624,8 @@ void realtimeEventsQueue
     console.log(`[RealtimeEventsWorker] Scheduled account-deletion-purge-sweep every ${ACCOUNT_DELETION_PURGE_SWEEP_INTERVAL_MS}ms`),
   )
   .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule account-deletion-purge-sweep:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler('trial-expiry-sweep', { every: TRIAL_EXPIRY_SWEEP_INTERVAL_MS }, { name: 'trial-expiry-sweep' })
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled trial-expiry-sweep every ${TRIAL_EXPIRY_SWEEP_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule trial-expiry-sweep:', error.message));

@@ -132,6 +132,35 @@ describe('CRM contacts and leads', () => {
       const untouched = await crmContacts.findByIdForBusiness(businessId, crmContact.id);
       expect(untouched?.stage).toBeNull();
     });
+
+    it('sets a manual display name (Section 23) and lets it flow into the joined list view\'s displayName', async () => {
+      const crmContact = await crmContacts.upsertForWhatsAppContact({ businessId, whatsappContactId });
+
+      await crmContacts.update(businessId, crmContact.id, {
+        stage: null,
+        leadStatus: null,
+        notes: null,
+        tags: [],
+        manualDisplayName: 'Michael Thompson',
+      });
+
+      const persisted = await crmContacts.findByIdForBusiness(businessId, crmContact.id);
+      expect(persisted?.manualDisplayName).toBe('Michael Thompson');
+
+      const rows = await crmContacts.listByBusiness(businessId);
+      expect(rows[0]?.manualDisplayName).toBe('Michael Thompson');
+    });
+
+    it('omitting manualDisplayName leaves the stored value untouched; passing null clears it', async () => {
+      const crmContact = await crmContacts.upsertForWhatsAppContact({ businessId, whatsappContactId });
+      await crmContacts.update(businessId, crmContact.id, { stage: null, leadStatus: null, notes: null, tags: [], manualDisplayName: 'Michael' });
+
+      const untouched = await crmContacts.update(businessId, crmContact.id, { stage: 'qualified', leadStatus: null, notes: null, tags: [] });
+      expect(untouched?.manualDisplayName).toBe('Michael');
+
+      const cleared = await crmContacts.update(businessId, crmContact.id, { stage: null, leadStatus: null, notes: null, tags: [], manualDisplayName: null });
+      expect(cleared?.manualDisplayName).toBeNull();
+    });
   });
 
   describe('LeadRepository.listByBusiness / update (joined + tenant-scoped)', () => {

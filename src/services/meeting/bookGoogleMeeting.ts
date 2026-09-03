@@ -3,6 +3,7 @@ import { GoogleMeetingRepository } from '../../repositories/googleMeetingReposit
 import { ScheduledMeetingsRepository } from '../../repositories/scheduledMeetingsRepository.js';
 import { getValidAccessToken as getValidGoogleMeetingAccessToken } from '../googleMeetingOAuthService.js';
 import { createMeetingEvent } from '../googleCalendarClient.js';
+import { notifyBusiness } from '../notificationService.js';
 
 const googleMeetingRepository = new GoogleMeetingRepository(pool);
 const scheduledMeetingsRepository = new ScheduledMeetingsRepository(pool);
@@ -26,12 +27,11 @@ export type BookGoogleMeetingResult =
 /**
  * The real Google Meet booking side effect - extracted verbatim from
  * aiReplyService.ts's executeOneToolCall so it can be called from two real
- * places with identical behavior: immediately (an agent with
- * requiresApprovalForActions off), or later from GoogleMeetBookingExecutor
- * once an operator approves (an agent with it on). Same honest,
- * never-fabricated-success contract either way: booked: true is only ever
- * returned once a real Calendar event with a real Meet link actually
- * exists.
+ * places with identical behavior: immediately (an agent at autonomy level
+ * 3+), or later from GoogleMeetBookingExecutor once an operator approves
+ * (an agent at level 1-2). Same honest, never-fabricated-success contract
+ * either way: booked: true is only ever returned once a real Calendar
+ * event with a real Meet link actually exists.
  */
 export async function bookGoogleMeeting(input: BookGoogleMeetingInput): Promise<BookGoogleMeetingResult> {
   if (!input.attendeeEmail || !input.title || !input.startDateTimeIso) {
@@ -44,12 +44,40 @@ export async function bookGoogleMeeting(input: BookGoogleMeetingInput): Promise<
 
   const accessToken = await getValidGoogleMeetingAccessToken(input.businessId);
   if (!accessToken) {
+    // A dead refresh token (revoked from the customer's own Google Account
+    // settings, or expired) fails the exact same way on every future
+    // booking attempt - AI-driven or operator-approved - with nothing else
+    // in the system to ever surface it. Before this, the customer just got
+    // told the AI couldn't book anything, and staff had no way to know why
+    // short of noticing the pattern themselves.
+    await notifyBusiness({
+      businessId: input.businessId,
+      type: 'AUTOMATION_FAILURE',
+      severity: 'warning',
+      title: 'Google Meet needs to be reconnected',
+      body: 'A booking attempt failed because the Google connection is no longer valid (likely revoked or expired). Reconnect it in Settings to resume booking Meet links.',
+      targetType: 'google_meeting_connection',
+      targetId: connection.id,
+    }).catch((error) => {
+      console.error('[bookGoogleMeeting] Failed to dispatch AUTOMATION_FAILURE notification:', error);
+    });
     return { booked: false, reason: 'token_invalid' };
   }
 
   const startAt = new Date(input.startDateTimeIso);
   if (Number.isNaN(startAt.getTime())) {
     return { booked: false, reason: 'invalid_start_time' };
+  }
+  // The immediate (autonomy level 3+) path only ever proposes a real future
+  // time, but this same function is also called from the approval-executor
+  // path once an operator finally approves a level 1-2 agent's request -
+  // and approval has no deadline. A request sitting in the queue long
+  // enough for its own proposed time to pass would otherwise still create a
+  // real Calendar event and send the customer an invite for a moment
+  // that's already gone. A minute of grace covers ordinary processing
+  // delay without accepting a request that's genuinely stale.
+  if (startAt.getTime() < Date.now() - 60_000) {
+    return { booked: false, reason: 'start_time_already_passed' };
   }
   const durationMinutes = input.durationMinutes && input.durationMinutes > 0 ? input.durationMinutes : 30;
   const endAt = new Date(startAt.getTime() + durationMinutes * 60_000);

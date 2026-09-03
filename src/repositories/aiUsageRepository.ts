@@ -66,4 +66,22 @@ export class AiUsageRepository {
     );
     return { totalTokens: Number(rows[0]?.total_tokens ?? 0), callCount: Number(rows[0]?.call_count ?? 0) };
   }
+
+  /**
+   * One real business's usage for the current calendar month (server's own
+   * clock, in UTC via date_trunc - not a rolling 30-day window) - the
+   * number entitlementService.canUseAiThisMonth() compares against the
+   * plan's max_ai_tokens_per_month limit. Resets naturally on the 1st of
+   * each month with no separate reset job needed, the same way a real
+   * monthly billing cycle would.
+   */
+  async getMonthlyTotalForBusiness(businessId: string): Promise<number> {
+    const { rows } = await this.db.query<{ total_tokens: string }>(
+      `SELECT COALESCE(sum(total_tokens), 0) AS total_tokens
+       FROM ai_usage_events
+       WHERE business_id = $1 AND created_at >= date_trunc('month', now())`,
+      [businessId],
+    );
+    return Number(rows[0]?.total_tokens ?? 0);
+  }
 }

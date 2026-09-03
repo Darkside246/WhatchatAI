@@ -60,12 +60,15 @@ export interface AiAgentRecord {
   forbiddenTools: string[];
   allowedToolsEnabled: boolean;
   /**
-   * A real, simple "ask before acting" toggle (migration 955) - not a
-   * graduated autonomy ladder. When true, a SEND-tier tool call creates a
-   * pending action in the real approval queue instead of executing
-   * immediately (see aiReplyService.ts's createPendingMeetingApproval).
+   * The real 5-level autonomy ladder (migration 961, superseding the
+   * boolean from 955): 1 read-only, 2 manual (SEND-tier needs approval),
+   * 3 balanced (SEND-tier executes immediately - default), 4 trusted
+   * (executes immediately + notifies the business), 5 fully autonomous
+   * (executes immediately, no extra notification). See aiReplyService.ts's
+   * buildReplyTools/createPendingApprovalAction and agentGuard.ts's
+   * guardToolInvocation for where each level is actually enforced.
    */
-  requiresApprovalForActions: boolean;
+  autonomyLevel: number;
   /**
    * Which system template (agent_templates.template_key) and version this
    * agent was created from, if any (migration 956) - null for a manually-
@@ -110,7 +113,7 @@ interface AiAgentRow {
   allowed_tools: string[];
   forbidden_tools: string[];
   allowed_tools_enabled: boolean;
-  requires_approval_for_actions: boolean;
+  autonomy_level: number;
   source_template_key: string | null;
   source_template_version: number | null;
   status: AgentStatus;
@@ -148,7 +151,7 @@ function toRecord(row: AiAgentRow): AiAgentRecord {
     allowedTools: row.allowed_tools ?? [],
     forbiddenTools: row.forbidden_tools ?? [],
     allowedToolsEnabled: row.allowed_tools_enabled,
-    requiresApprovalForActions: row.requires_approval_for_actions,
+    autonomyLevel: row.autonomy_level,
     sourceTemplateKey: row.source_template_key,
     sourceTemplateVersion: row.source_template_version,
     status: row.status,
@@ -183,7 +186,7 @@ export interface CreateAiAgentInput {
   allowedTools?: string[] | undefined;
   forbiddenTools?: string[] | undefined;
   allowedToolsEnabled?: boolean | undefined;
-  requiresApprovalForActions?: boolean | undefined;
+  autonomyLevel?: number | undefined;
   sourceTemplateKey?: string | null | undefined;
   sourceTemplateVersion?: number | null | undefined;
 }
@@ -201,7 +204,7 @@ export class AiAgentRepository {
           greeting, business_context, response_style, human_takeover_policy,
           category, specialization, trigger_keywords, blocked_keywords, protected_facts,
           blocked_reply_message, response_delay_seconds, parent_agent_id, escalate_to_agent_id, priority,
-          allowed_tools, forbidden_tools, allowed_tools_enabled, requires_approval_for_actions,
+          allowed_tools, forbidden_tools, allowed_tools_enabled, autonomy_level,
           source_template_key, source_template_version)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
        RETURNING *`,
@@ -230,7 +233,7 @@ export class AiAgentRepository {
         JSON.stringify(input.allowedTools ?? []),
         JSON.stringify(input.forbiddenTools ?? []),
         input.allowedToolsEnabled ?? false,
-        input.requiresApprovalForActions ?? false,
+        input.autonomyLevel ?? 3,
         input.sourceTemplateKey ?? null,
         input.sourceTemplateVersion ?? null,
       ],
@@ -254,7 +257,7 @@ export class AiAgentRepository {
          specialization = $13, trigger_keywords = $14, blocked_keywords = $15,
          protected_facts = $16, blocked_reply_message = $17, response_delay_seconds = $18,
          parent_agent_id = $19, escalate_to_agent_id = $20, priority = $21,
-         allowed_tools = $22, forbidden_tools = $23, allowed_tools_enabled = $24, requires_approval_for_actions = $25,
+         allowed_tools = $22, forbidden_tools = $23, allowed_tools_enabled = $24, autonomy_level = $25,
          source_template_key = $26, source_template_version = $27, updated_at = now()
        WHERE id = $1 AND deleted_at IS NULL
        RETURNING *`,
@@ -283,7 +286,7 @@ export class AiAgentRepository {
         JSON.stringify(input.allowedTools ?? []),
         JSON.stringify(input.forbiddenTools ?? []),
         input.allowedToolsEnabled ?? false,
-        input.requiresApprovalForActions ?? false,
+        input.autonomyLevel ?? 3,
         input.sourceTemplateKey ?? null,
         input.sourceTemplateVersion ?? null,
       ],
@@ -352,7 +355,7 @@ export class AiAgentRepository {
     await this.db.query('UPDATE ai_agents SET status = $2, updated_at = now() WHERE id = $1', [id, status]);
   }
 
-  async updateRequiresApprovalForActions(id: string, requiresApprovalForActions: boolean): Promise<void> {
-    await this.db.query('UPDATE ai_agents SET requires_approval_for_actions = $2, updated_at = now() WHERE id = $1', [id, requiresApprovalForActions]);
+  async updateAutonomyLevel(id: string, autonomyLevel: number): Promise<void> {
+    await this.db.query('UPDATE ai_agents SET autonomy_level = $2, updated_at = now() WHERE id = $1', [id, autonomyLevel]);
   }
 }

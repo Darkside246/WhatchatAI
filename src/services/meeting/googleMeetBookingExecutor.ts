@@ -6,11 +6,11 @@ export const SCHEDULE_GOOGLE_MEET_ACTION_TYPE = 'meeting.schedule_google_meet';
 
 /**
  * Dispatches a Google Meet booking an operator just approved through the
- * real ApprovalService/ActionBus flow - only reachable for an agent whose
- * requiresApprovalForActions is on (see aiReplyService.ts's
- * createPendingMeetingApproval, the only place that ever persists this
+ * real ApprovalService/ActionBus flow - only reachable for an agent at
+ * autonomy level 1 or 2 (see aiReplyService.ts's
+ * createPendingApprovalAction, the only place that ever persists this
  * action type). Calls the exact same bookGoogleMeeting() the immediate
- * (non-approval) path calls - one real booking implementation, two ways
+ * (level 3+) path calls - one real booking implementation, two ways
  * to reach it.
  */
 export class GoogleMeetBookingExecutor implements ActionExecutor {

@@ -1,4 +1,6 @@
 export interface ContactNameSources {
+  /** Section 23: a staff member's manual correction/confirmation (crm_contacts.manual_display_name) - outranks every automatic source, same as identityEngine.ts's own hierarchy. */
+  manualDisplayName?: string | null;
   verifiedName?: string | null;
   businessName?: string | null;
   displayName?: string | null;
@@ -11,6 +13,7 @@ export interface ContactNameSources {
 }
 
 const NAME_PRIORITY: (keyof ContactNameSources)[] = [
+  'manualDisplayName',
   'verifiedName',
   'businessName',
   'displayName',

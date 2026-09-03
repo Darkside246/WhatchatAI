@@ -31,6 +31,28 @@ export interface ConversationOpenQuestion {
   resolvedAt: string | null;
 }
 
+/** Section 06's own funnel stages - the AI decides what stage is appropriate, never forced through every step in order. */
+export type ConversationFunnelStage =
+  | 'NEW' | 'CONVERSING' | 'INTENT_IDENTIFIED' | 'NEED_IDENTIFIED' | 'QUALIFIED'
+  | 'SOLUTION_MATCHED' | 'INTEREST_CONFIRMED' | 'APPOINTMENT_OFFERED'
+  | 'APPOINTMENT_SELECTED' | 'BOOKED' | 'FOLLOW_UP' | 'CUSTOMER';
+
+export const CONVERSATION_FUNNEL_STAGES: readonly ConversationFunnelStage[] = [
+  'NEW', 'CONVERSING', 'INTENT_IDENTIFIED', 'NEED_IDENTIFIED', 'QUALIFIED',
+  'SOLUTION_MATCHED', 'INTEREST_CONFIRMED', 'APPOINTMENT_OFFERED',
+  'APPOINTMENT_SELECTED', 'BOOKED', 'FOLLOW_UP', 'CUSTOMER',
+];
+
+/** Section 10's own readiness levels - never used to force an appointment on a customer who isn't ready. */
+export type CustomerReadiness =
+  | 'NOT_READY' | 'BROWSING' | 'NEEDS_INFORMATION' | 'COMPARING'
+  | 'INTERESTED' | 'HIGHLY_INTERESTED' | 'READY_TO_ACT' | 'URGENT';
+
+export const CUSTOMER_READINESS_LEVELS: readonly CustomerReadiness[] = [
+  'NOT_READY', 'BROWSING', 'NEEDS_INFORMATION', 'COMPARING',
+  'INTERESTED', 'HIGHLY_INTERESTED', 'READY_TO_ACT', 'URGENT',
+];
+
 export interface ConversationStateRecord {
   id: string;
   businessId: string;
@@ -40,6 +62,13 @@ export interface ConversationStateRecord {
   openQuestions: ConversationOpenQuestion[];
   /** Reserved for Phase 3 (ActionBus). Opaque today - nothing reads or writes real content into it yet. */
   pendingActions: unknown[];
+  /** Current-state snapshot, not an accumulating history - overwritten on each write, unlike confirmedFacts/openQuestions. Null until the model has ever set it. */
+  funnelStage: ConversationFunnelStage | null;
+  customerReadiness: CustomerReadiness | null;
+  /** Section 15 Tier 2 evidence: what the customer explicitly said to call them, set via update_conversation_memory. Never assumed from a WhatsApp display name - see identityEngine.ts. */
+  preferredName: string | null;
+  /** Section 19 (Name Repetition Protection): set by the system, never the model, after checking whether a just-sent reply actually used the resolved name. */
+  lastNameUsedAt: string | null;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -53,6 +82,10 @@ interface ConversationStateRow {
   confirmed_facts: ConversationFact[];
   open_questions: ConversationOpenQuestion[];
   pending_actions: unknown[];
+  funnel_stage: ConversationFunnelStage | null;
+  customer_readiness: CustomerReadiness | null;
+  preferred_name: string | null;
+  last_name_used_at: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -67,6 +100,10 @@ function toRecord(row: ConversationStateRow): ConversationStateRecord {
     confirmedFacts: row.confirmed_facts,
     openQuestions: row.open_questions,
     pendingActions: row.pending_actions,
+    funnelStage: row.funnel_stage,
+    customerReadiness: row.customer_readiness,
+    preferredName: row.preferred_name,
+    lastNameUsedAt: row.last_name_used_at,
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -94,6 +131,10 @@ export function emptyConversationState(businessId: string, chatId: string): Conv
     confirmedFacts: [],
     openQuestions: [],
     pendingActions: [],
+    funnelStage: null,
+    customerReadiness: null,
+    preferredName: null,
+    lastNameUsedAt: null,
     version: 1,
     createdAt: now,
     updatedAt: now,
@@ -113,6 +154,10 @@ export interface ConversationStatePatch {
   confirmedFacts?: ConversationFact[];
   openQuestions?: ConversationOpenQuestion[];
   pendingActions?: unknown[];
+  funnelStage?: ConversationFunnelStage | null;
+  customerReadiness?: CustomerReadiness | null;
+  preferredName?: string | null;
+  lastNameUsedAt?: string | null;
 }
 
 export class ConversationStateRepository {
@@ -148,6 +193,39 @@ export class ConversationStateRepository {
   }
 
   /**
+   * Section 09 (Next-Best-Action Engine) real signal source: conversations
+   * where the AI itself has assessed the customer as READY_TO_ACT or
+   * URGENT (set via update_conversation_memory - never fabricated here),
+   * but which the AI has NOT already escalated to HUMAN_TAKEOVER and which
+   * haven't already converted (BOOKED/CUSTOMER) - a genuinely distinct
+   * signal from "chat needs human" (that only fires on an explicit AI
+   * handoff): a human may want to jump into a conversation the AI is still
+   * confidently handling, specifically because the AI has flagged real
+   * urgency or readiness to close.
+   */
+  async listHighReadinessForBusiness(businessId: string, limit = 20): Promise<Array<{ chatId: string; displayName: string; readiness: CustomerReadiness; updatedAt: string }>> {
+    const { rows } = await this.db.query<{ chat_id: string; name: string | null; phone_number: string | null; customer_readiness: CustomerReadiness; updated_at: string }>(
+      `SELECT cs.chat_id, wc.name, wc.phone_number, cs.customer_readiness, cs.updated_at
+       FROM conversation_states cs
+       JOIN whatsapp_chats wc ON wc.id = cs.chat_id AND wc.business_id = cs.business_id
+       WHERE cs.business_id = $1
+         AND cs.customer_readiness IN ('READY_TO_ACT', 'URGENT')
+         AND (cs.funnel_stage IS NULL OR cs.funnel_stage NOT IN ('BOOKED', 'CUSTOMER'))
+         AND wc.ai_mode != 'HUMAN_TAKEOVER'
+         AND wc.deleted_at IS NULL
+       ORDER BY cs.updated_at ASC
+       LIMIT $2`,
+      [businessId, limit],
+    );
+    return rows.map((row) => ({
+      chatId: row.chat_id,
+      displayName: row.name ?? row.phone_number ?? 'a contact',
+      readiness: row.customer_readiness,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  /**
    * Optimistic-concurrency patch: only the fields present in patch are
    * changed, and the write only lands if the row is still at
    * expectedVersion (the version the caller read before deciding what to
@@ -167,6 +245,10 @@ export class ConversationStateRepository {
     if (patch.confirmedFacts !== undefined) { values.push(JSON.stringify(patch.confirmedFacts)); sets.push(`confirmed_facts = $${values.length}::jsonb`); }
     if (patch.openQuestions !== undefined) { values.push(JSON.stringify(patch.openQuestions)); sets.push(`open_questions = $${values.length}::jsonb`); }
     if (patch.pendingActions !== undefined) { values.push(JSON.stringify(patch.pendingActions)); sets.push(`pending_actions = $${values.length}::jsonb`); }
+    if (patch.funnelStage !== undefined) { values.push(patch.funnelStage); sets.push(`funnel_stage = $${values.length}`); }
+    if (patch.customerReadiness !== undefined) { values.push(patch.customerReadiness); sets.push(`customer_readiness = $${values.length}`); }
+    if (patch.preferredName !== undefined) { values.push(patch.preferredName); sets.push(`preferred_name = $${values.length}`); }
+    if (patch.lastNameUsedAt !== undefined) { values.push(patch.lastNameUsedAt); sets.push(`last_name_used_at = $${values.length}`); }
 
     const { rows } = await this.db.query<ConversationStateRow>(
       `UPDATE conversation_states SET ${sets.join(', ')}

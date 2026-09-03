@@ -293,6 +293,35 @@ export class WhatsAppMessageRepository {
     );
   }
 
+  /**
+   * "Status comments" feature: this message is a real reply to a real
+   * scheduled_statuses row (resolved via WhatsApp's own contextInfo.stanzaId
+   * - see whatsappMessagePersistenceService.ts). Stored in rawMetadata
+   * rather than a dedicated column, same convention as mentionedJids - a
+   * genuinely optional enrichment on the hot message table, not core to
+   * the message's own identity.
+   */
+  async recordStatusReply(id: string, statusId: string): Promise<void> {
+    // Deliberately does not touch updated_at - this is a background
+    // enrichment discovered after the message was already fully persisted,
+    // not a change to the message's own content or delivery state.
+    await this.db.query(
+      `UPDATE whatsapp_messages SET raw_metadata = raw_metadata || jsonb_build_object('repliedToStatusId', $2::text) WHERE id = $1`,
+      [id, statusId],
+    );
+  }
+
+  /** "Status comments" feature: every real reply to one specific status, most-recent-first. Business-scoped so a status id can never be probed cross-tenant. */
+  async listRepliesToStatus(businessId: string, statusId: string, limit = 100): Promise<WhatsAppMessageRecord[]> {
+    const { rows } = await this.db.query<MessageRow>(
+      `SELECT * FROM whatsapp_messages
+       WHERE business_id = $1 AND deleted_at IS NULL AND raw_metadata ->> 'repliedToStatusId' = $2
+       ORDER BY "timestamp" DESC LIMIT $3`,
+      [businessId, statusId, limit],
+    );
+    return Promise.all(rows.map((row) => toRecord(row, false)));
+  }
+
   async listByChat(chatId: string, limit = 50): Promise<WhatsAppMessageRecord[]> {
     const { rows } = await this.db.query<MessageRow>(
       `SELECT * FROM whatsapp_messages WHERE chat_id = $1 AND deleted_at IS NULL

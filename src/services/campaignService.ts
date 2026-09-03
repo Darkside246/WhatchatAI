@@ -6,12 +6,14 @@ import {
   type CampaignStatus,
 } from '../repositories/campaignRepository.js';
 import { whatsappOutboundMessageService } from './whatsappOutboundMessageService.js';
+import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import { EntitlementService } from './entitlementService.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { notifyBusiness } from './notificationService.js';
 import { type EntitlementDeniedError } from './workspaceService.js';
 
 const campaignRepository = new CampaignRepository(pool);
+const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
 const entitlementService = new EntitlementService(pool);
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
 
@@ -257,16 +259,38 @@ export async function sendCampaign(businessId: string, campaignId: string): Prom
   return running;
 }
 
+/**
+ * The emergency stop: DRAFT/REVIEW/APPROVED simply never sent anything, so
+ * cancelling there is bookkeeping only. RUNNING is the real case - by the
+ * time sendCampaign() returns, every recipient already has a real 'queued'
+ * outbound message with a staggered BullMQ delay (SEND_STAGGER_MS apart),
+ * so for up to MAX_RECIPIENTS_PER_CAMPAIGN * SEND_STAGGER_MS after Send is
+ * clicked, some recipients genuinely have not been messaged yet. Before
+ * this, a mistake spotted in that window (wrong price, wrong message, wrong
+ * list) had no way to be stopped - requireStatus refused anything past
+ * APPROVED. Recipients already 'sending'/'sent'/'indeterminate' by the time
+ * this runs are deliberately left alone (cancelQueuedByIds only ever
+ * matches 'queued') - a message that may have already reached WhatsApp is
+ * never raced against a cancel.
+ */
 export async function cancelCampaign(businessId: string, campaignId: string): Promise<CampaignRecord> {
   const campaign = await requireOwnCampaign(businessId, campaignId);
-  requireStatus(campaign, ['DRAFT', 'REVIEW', 'APPROVED']);
+  requireStatus(campaign, ['DRAFT', 'REVIEW', 'APPROVED', 'RUNNING']);
+  const wasRunning = campaign.status === 'RUNNING';
   const updated = await campaignRepository.updateStatus(campaignId, 'CANCELLED');
   if (!updated) throw new CampaignNotFoundError('Campaign not found.');
+
+  let stoppedCount = 0;
+  if (wasRunning) {
+    const outboundMessageIds = await campaignRepository.listOutboundMessageIds(campaignId);
+    stoppedCount = (await outboundMessageRepository.cancelQueuedByIds(businessId, outboundMessageIds)).length;
+  }
+
   await securityAuditLogRepository.record({
     businessId,
     whatsappAccountId: campaign.whatsappAccountId,
     eventType: 'campaign_cancelled',
-    rawMetadata: { campaignId },
+    rawMetadata: { campaignId, wasRunning, stoppedCount },
   });
   return updated;
 }

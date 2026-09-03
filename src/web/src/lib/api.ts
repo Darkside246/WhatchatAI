@@ -74,6 +74,17 @@ export interface WorkspaceReaction {
   reaction: string;
 }
 
+/** "Status comments" feature - a real WhatsApp reply to one published status. Never a public comment (WhatsApp Status has no such thing) - this is the private reply the poster's own business received, associated back to which status it replied to. */
+export interface StatusReplyDto {
+  id: string;
+  chatId: string;
+  senderJid: string;
+  messageType: string;
+  textContent: string | null;
+  caption: string | null;
+  timestamp: string;
+}
+
 export interface WorkspaceMessage {
   id: string;
   chatId: string;
@@ -128,6 +139,35 @@ export function mediaUrl(mediaId: string): string {
   return `/api/media/${mediaId}`;
 }
 
+export interface PlanEntitlement {
+  id: string;
+  planId: string;
+  entitlementKey: string;
+  /** null means unlimited for this plan. */
+  limitValue: number | null;
+  isEnabled: boolean;
+}
+
+export interface DeveloperPlan {
+  id: string;
+  planKey: string;
+  name: string;
+  description: string | null;
+  priceMonthlyCents: number;
+  priceYearlyCents: number | null;
+  currency: string;
+  isActive: boolean;
+  entitlements: PlanEntitlement[];
+}
+
+export interface UpdatePlanBody {
+  name?: string;
+  description?: string | null;
+  priceMonthlyCents?: number;
+  priceYearlyCents?: number | null;
+  isActive?: boolean;
+}
+
 export interface WorkspaceCrmContactSummary {
   id: string;
   whatsappContactId: string | null;
@@ -144,6 +184,13 @@ export interface WorkspaceCrmContactSummary {
   isHidden: boolean;
   syncExcluded: boolean;
   aiExcluded: boolean;
+  /** The real name sources AURA's AI actually draws from - see identityEngine.ts. Null when WhatsApp never supplied that particular field. */
+  verifiedName: string | null;
+  businessName: string | null;
+  pushName: string | null;
+  shortName: string | null;
+  /** Section 23: a staff member's manual correction/confirmation - outranks every automatic source, including the customer's own self-reported preferred name. */
+  manualDisplayName: string | null;
 }
 
 export interface UpdateCrmContactBody {
@@ -153,6 +200,8 @@ export interface UpdateCrmContactBody {
   tags: string[];
   /** Omit to keep the stored address; null clears it. */
   email?: string | null;
+  /** Omit to keep the stored name override; null clears it, reverting to the next-best automatic source. */
+  manualDisplayName?: string | null;
 }
 
 export type LeadStatusValue = 'NEW' | 'QUALIFIED' | 'ENGAGED' | 'WON' | 'LOST';
@@ -243,12 +292,45 @@ export interface ActivityLogFilters {
 /** One real, ranked entry from the Next-Best-Action engine - see workspaceService.getNextBestActions's own doc comment for why priority is two real deterministic tiers, never a fabricated score. */
 export interface NextBestAction {
   id: string;
-  type: 'chat_needs_human' | 'open_commitment' | 'pending_approval' | 'overdue_invoice' | 'approval_pattern_suggestion';
+  type: 'chat_needs_human' | 'open_commitment' | 'pending_approval' | 'overdue_invoice' | 'approval_pattern_suggestion' | 'high_readiness_conversation';
   priority: 'action_needed' | 'suggestion';
   title: string;
   description: string;
   link: string;
   occurredAt: string;
+}
+
+/** Section 56 (Appointment System) - a real meeting booked via Google Meet or Zoom, the first time this data has ever had a dedicated page. */
+export interface AppointmentDto {
+  id: string;
+  chatId: string | null;
+  contactId: string | null;
+  provider: 'google_meet' | 'zoom';
+  status: 'confirmed' | 'cancelled' | 'failed' | 'completed' | 'no_show';
+  title: string;
+  startAt: string;
+  endAt: string;
+  timezone: string;
+  attendeeEmail: string | null;
+  attendeeName: string | null;
+  meetUrl: string;
+  calendarHtmlLink: string | null;
+  createdAt: string;
+  cancelledAt: string | null;
+}
+
+/** Section 48 (Autonomous Morning Briefing) - see workspaceService.getMorningBriefing's own doc comment. Every field is real, already-recorded rows, never a generated narrative. */
+export interface MorningBriefing {
+  sinceIso: string;
+  completedActions: Array<{ id: string; type: string; payload: Record<string, unknown>; createdAt: string; updatedAt: string }>;
+  failedActions: Array<{ id: string; type: string; payload: Record<string, unknown>; executionError: string | null; createdAt: string; updatedAt: string }>;
+  pendingApprovals: Array<{ id: string; type: string; riskLevel: string; createdAt: string }>;
+  riskFlags: Array<{ id: string; reason: string | null; severity: string; createdAt: string; rawMetadata: Record<string, unknown> }>;
+  chatsNeedingHuman: Array<{ id: string; displayName: string; updatedAt: string }>;
+  newAppointments: Array<{ id: string; title: string; provider: string; startAt: string; attendeeEmail: string | null }>;
+  newLeads: Array<{ id: string; stage: string | null; contactDisplayName: string | null; phoneNumber: string | null; createdAt: string }>;
+  overdueInvoices: Array<{ id: string; invoiceNumber: string; totalCents: number; currencyCode: string; dueDate: string | null }>;
+  recommendedPriorities: NextBestAction[];
 }
 
 export interface WorkspaceBillingEntitlement {
@@ -439,6 +521,7 @@ export interface CampaignCounts {
   delivered: number;
   read: number;
   failed: number;
+  cancelled: number;
 }
 
 export interface CampaignDto {
@@ -466,7 +549,7 @@ export interface CampaignRecipientDto {
   outboundMessageId: string | null;
   displayName: string;
   phoneNumber: string | null;
-  status: 'queued' | 'sending' | 'sent' | 'delivered' | 'read' | 'played' | 'failed' | null;
+  status: 'queued' | 'sending' | 'sent' | 'delivered' | 'read' | 'played' | 'failed' | 'cancelled' | null;
   createdAt: string;
 }
 
@@ -786,8 +869,8 @@ export interface AiAgentSummary {
   /** Always enforced regardless of allowedToolsEnabled - a real hard block. */
   forbiddenTools: string[];
   allowedToolsEnabled: boolean;
-  /** A real, simple "ask before acting" toggle - when true, a SEND-tier tool call (e.g. booking a meeting) creates a pending action in the Approvals queue instead of executing immediately. */
-  requiresApprovalForActions: boolean;
+  /** The real 5-level autonomy ladder: 1 read-only, 2 manual (SEND-tier needs approval), 3 balanced (default), 4 trusted (executes + notifies), 5 fully autonomous. */
+  autonomyLevel: number;
   /** Which system template (and version of it) this agent was created from, if any - null for a manual or custom-description agent. */
   sourceTemplateKey: string | null;
   sourceTemplateVersion: number | null;
@@ -864,7 +947,7 @@ export interface CreateAgentBody {
   allowedTools?: string[];
   forbiddenTools?: string[];
   allowedToolsEnabled?: boolean;
-  requiresApprovalForActions?: boolean;
+  autonomyLevel?: number;
   sourceTemplateKey?: string | null;
   sourceTemplateVersion?: number | null;
 }
@@ -1022,6 +1105,31 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export { ApiError };
 
+/**
+ * Section 67 (CRM Data Export): triggers a real browser download of every
+ * real contact/lead this business owns - a real file, not a preview.
+ * Bypasses request() above since the response is a file, not JSON.
+ */
+export async function downloadCrmExport(format: 'csv' | 'json' = 'csv'): Promise<void> {
+  const response = await fetch(`/api/workspace/crm/export?format=${format}`, { credentials: 'same-origin' });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new ApiError(response.status, body.error ?? 'EXPORT_FAILED', body.message ?? response.statusText);
+  }
+  const disposition = response.headers.get('content-disposition') ?? '';
+  const filenameMatch = /filename="([^"]+)"/.exec(disposition);
+  const filename = filenameMatch?.[1] ?? `crm-export.${format}`;
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 export type InvoiceDto = {
   id: string;
   businessId: string;
@@ -1115,6 +1223,11 @@ export const api = {
   getOpenCommitments: () => request<{ commitments: AiCommitmentRecord[] }>('/workspace/commitments/open'),
   getApprovalPatternSuggestions: () => request<{ suggestions: ApprovalPatternSuggestion[] }>('/workspace/agents/approval-suggestions'),
   getNextBestActions: () => request<{ actions: NextBestAction[] }>('/workspace/next-best-actions'),
+  getMorningBriefing: (sinceHours?: number) =>
+    request<MorningBriefing>(`/workspace/morning-briefing${sinceHours ? `?sinceHours=${sinceHours}` : ''}`),
+  listAppointments: () => request<{ appointments: AppointmentDto[] }>('/workspace/appointments'),
+  cancelAppointment: (id: string) => request<{ appointment: AppointmentDto }>(`/workspace/appointments/${id}/cancel`, { method: 'POST' }),
+  markAppointmentNoShow: (id: string) => request<{ appointment: AppointmentDto }>(`/workspace/appointments/${id}/no-show`, { method: 'POST' }),
   getActivityLog: (filters: ActivityLogFilters = {}) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(filters)) {
@@ -1180,10 +1293,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ protectedFacts, sampleReply }),
     }),
-  updateAgentRequiresApproval: (id: string, requiresApprovalForActions: boolean) =>
-    request<{ agent: AiAgentSummary }>(`/workspace/agents/${id}/requires-approval`, {
+  updateAgentAutonomyLevel: (id: string, autonomyLevel: number) =>
+    request<{ agent: AiAgentSummary }>(`/workspace/agents/${id}/autonomy-level`, {
       method: 'PATCH',
-      body: JSON.stringify({ requiresApprovalForActions }),
+      body: JSON.stringify({ autonomyLevel }),
     }),
   updateAgentStatus: (id: string, status: AiAgentSummary['status']) =>
     request<{ agent: AiAgentSummary }>(`/workspace/agents/${id}/status`, {
@@ -1412,6 +1525,7 @@ export const api = {
   scheduleStatus: (id: string) => request<{ status: ScheduledStatusDto }>(`/workspace/scheduled-statuses/${id}/schedule`, { method: 'POST' }),
   cancelScheduledStatus: (id: string) => request<{ status: ScheduledStatusDto }>(`/workspace/scheduled-statuses/${id}/cancel`, { method: 'POST' }),
   deleteScheduledStatus: (id: string) => request<{ ok: boolean }>(`/workspace/scheduled-statuses/${id}`, { method: 'DELETE' }),
+  listStatusReplies: (id: string) => request<{ replies: StatusReplyDto[] }>(`/workspace/scheduled-statuses/${id}/replies`),
 
   listFunnels: () => request<{ funnels: FunnelDto[] }>('/workspace/funnels'),
   createFunnel: (name: string, description: string | null) =>
@@ -1481,6 +1595,17 @@ export const api = {
       last7d: { totalTokens: number; callCount: number };
       topBusinessesLast24h: Array<{ businessId: string; businessName: string; totalTokens: number; callCount: number }>;
     }>('/platform/developer/ai-usage'),
+
+  // ── Plan management (developer-only) ────────────────────────────────────────
+  listPlans: () =>
+    request<{ plans: DeveloperPlan[] }>('/billing/developer/plans'),
+  updatePlan: (planId: string, input: UpdatePlanBody) =>
+    request<{ plan: DeveloperPlan }>(`/billing/developer/plans/${planId}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  upsertPlanEntitlement: (planId: string, entitlementKey: string, input: { limitValue: number | null; isEnabled: boolean }) =>
+    request<{ entitlement: PlanEntitlement }>(`/billing/developer/plans/${planId}/entitlements/${encodeURIComponent(entitlementKey)}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
 
   // ── Operator Mode ──────────────────────────────────────────────────────────
   getOperatorSettings: () =>
@@ -1620,4 +1745,13 @@ export const api = {
         displayName: string; status: string; ownerUserId: string | null;
       }>;
     }>('/platform/developer/product-accounts'),
+  listDeveloperTrials: () =>
+    request<{
+      trials: Array<{
+        id: string; email: string; productKey: string;
+        state: 'CREATED' | 'ACTIVE' | 'EXPIRING' | 'EXPIRED' | 'CONVERTED' | 'CANCELLED';
+        startsAt: string | null; endsAt: string | null; expiredAt: string | null; convertedAt: string | null;
+        createdAt: string;
+      }>;
+    }>('/developer/trials'),
 };

@@ -9,6 +9,7 @@ import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMapping
 import { CustomerIdentityRepository } from '../repositories/customerIdentityRepository.js';
 import { ConversationEventRepository } from '../repositories/conversationEventRepository.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
+import { ScheduledStatusRepository } from '../repositories/scheduledStatusRepository.js';
 import type { WhatsAppChatRecord } from '../repositories/whatsappChatRepository.js';
 import type { MediaType, MessageType } from '../domain/whatsapp/types.js';
 import { chatTypeFromJidKind } from '../domain/whatsapp/chatType.js';
@@ -65,6 +66,8 @@ export class WhatsAppMessagePersistenceService {
   private readonly conversationEventRepository = new ConversationEventRepository(pool);
   private readonly chatRepository = new WhatsAppChatRepository(pool);
   private readonly outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
+  private readonly scheduledStatusRepository = new ScheduledStatusRepository(pool);
+  private readonly messageRepository = new WhatsAppMessageRepository(pool);
 
   /**
    * The one authoritative write path for an inbound/outbound WhatsApp message:
@@ -151,6 +154,28 @@ export class WhatsAppMessagePersistenceService {
         }
       } catch (error) {
         console.error('[WhatsAppMessagePersistenceService] Manual-reply takeover detection failed:', error instanceof Error ? error.message : error);
+      }
+    }
+
+    // "Status comments" feature: WhatsApp's own reply-to-status carries the
+    // original status's real WhatsApp message id via contextInfo.stanzaId,
+    // extracted the same way as an ordinary quoted-message reply
+    // (ingested.quotedStanzaId). A status was never inserted into
+    // whatsapp_messages (see whatsappSyncService.ts's status/message
+    // split), so persistWithClient's own quotedMessage lookup above always
+    // misses for one - quotedMessageId comes back null even though this
+    // really is a reply. Resolved here, after the real message is already
+    // durably committed, as a genuinely optional enrichment: a lookup
+    // failure, or a reply to a status this feature predates, must never
+    // fail the message write itself.
+    if (!result.deduplicated && input.ingested.quotedStanzaId && !result.message.quotedMessageId) {
+      try {
+        const repliedStatus = await this.scheduledStatusRepository.findByPublishedWhatsappMessageId(input.businessId, input.ingested.quotedStanzaId);
+        if (repliedStatus) {
+          await this.messageRepository.recordStatusReply(result.message.id, repliedStatus.id);
+        }
+      } catch (error) {
+        console.error('[WhatsAppMessagePersistenceService] Status-reply resolution failed:', error instanceof Error ? error.message : error);
       }
     }
 

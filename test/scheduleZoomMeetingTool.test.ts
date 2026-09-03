@@ -280,13 +280,13 @@ describe('schedule_zoom_meeting tool (real Postgres + real guardToolInvocation, 
     });
   }
 
-  it('an agent with requiresApprovalForActions on never books immediately - it creates a real pending action in the approval queue instead', async () => {
+  it('an agent at autonomy level 2 never books immediately - it creates a real pending action in the approval queue instead', async () => {
     await connectZoom();
     generateContentMock
       .mockResolvedValueOnce({ text: undefined, functionCalls: [{ name: SCHEDULE_ZOOM_MEETING_TOOL_NAME, args: toolCallArgs() }] })
       .mockResolvedValueOnce({ text: "Let me check with the team and confirm shortly." });
 
-    await generateAiReply(fakeAgent({ id: agentId, businessId, requiresApprovalForActions: true }), fakeContext({ businessId, chatId }));
+    await generateAiReply(fakeAgent({ id: agentId, businessId, autonomyLevel: 2 }), fakeContext({ businessId, chatId }));
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(lastFunctionResponse()).toEqual({ booked: false, reason: 'pending_approval' });

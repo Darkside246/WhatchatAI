@@ -278,11 +278,32 @@ async function runFromPosition(instance: FunnelInstanceRecord): Promise<void> {
   let position = instance.currentPosition;
   const steps = await funnelRepository.listSteps(instance.funnelId);
 
+  // A CONDITION step's matchStepPosition/elseStepPosition are only ever
+  // validated to be a real, in-range step index (see validateStep) - not
+  // that it's forward of the current position. A funnel authored with a
+  // cycle between CONDITION steps (accidentally, or by someone probing for
+  // exactly this) would otherwise spin here forever: no WAIT/MESSAGE in the
+  // cycle to ever return control, and enrollContact()/resumeFunnelInstance()
+  // both await this function directly, so the real HTTP request or queue
+  // job would hang indefinitely, not just the funnel instance. Capped
+  // generously above any legitimate traversal of a real funnel (forward
+  // steps plus the occasional deliberate backtrack), so a genuine cycle is
+  // caught fast and reconciled to FAILED by the catch below - the same
+  // honest-failure path any other real step error already takes.
+  const MAX_SYNCHRONOUS_FUNNEL_STEPS = Math.max(50, steps.length * 5);
+  let stepsExecuted = 0;
+
   while (position < steps.length) {
     const step = steps[position];
     if (!step) break;
 
     try {
+      stepsExecuted += 1;
+      if (stepsExecuted > MAX_SYNCHRONOUS_FUNNEL_STEPS) {
+        throw new Error(
+          `This funnel exceeded ${MAX_SYNCHRONOUS_FUNNEL_STEPS} steps in one run without reaching a WAIT step or completing - likely a CONDITION cycle.`,
+        );
+      }
       switch (step.nodeType) {
         case 'MESSAGE': {
           const funnel = await funnelRepository.findByIdForBusiness(instance.businessId, instance.funnelId);

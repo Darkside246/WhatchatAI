@@ -87,6 +87,33 @@ describe('Plans and subscriptions', () => {
     expect(byId?.priceMonthlyCents).toBe(starter!.priceMonthlyCents);
   });
 
+  describe('findExpiredTrials (Section 72 - the real population the trial-expiry sweep acts on)', () => {
+    it('finds a TRIALING subscription whose trial_ends_at has already passed', async () => {
+      const starter = await plans.findByKey('starter');
+      const subscription = await subscriptions.ensureDefault(businessId, starter!.id, -1);
+
+      const expired = await subscriptions.findExpiredTrials();
+      expect(expired.map((s) => s.id)).toContain(subscription.id);
+    });
+
+    it('never returns a TRIALING subscription still within its trial window', async () => {
+      const starter = await plans.findByKey('starter');
+      const subscription = await subscriptions.ensureDefault(businessId, starter!.id, 14);
+
+      const expired = await subscriptions.findExpiredTrials();
+      expect(expired.map((s) => s.id)).not.toContain(subscription.id);
+    });
+
+    it('never returns a subscription already in a real non-TRIALING status, even if its old trial_ends_at is in the past', async () => {
+      const starter = await plans.findByKey('starter');
+      const subscription = await subscriptions.ensureDefault(businessId, starter!.id, -1);
+      await subscriptions.updateStatus(subscription.id, 'ACTIVE');
+
+      const expired = await subscriptions.findExpiredTrials();
+      expect(expired.map((s) => s.id)).not.toContain(subscription.id);
+    });
+  });
+
   it('findLiveByBusiness never returns another business’s subscription - it can only ever look up by businessId, not by a caller-supplied subscription id', async () => {
     const starter = await plans.findByKey('starter');
     const ownSubscription = await subscriptions.ensureDefault(businessId, starter!.id);

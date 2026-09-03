@@ -7,6 +7,7 @@ import { CampaignRepository } from '../repositories/campaignRepository.js';
 import { FunnelRepository } from '../repositories/funnelRepository.js';
 import { KnowledgeBaseRepository } from '../repositories/knowledgeBaseRepository.js';
 import { BusinessDocumentRepository } from '../repositories/businessDocumentRepository.js';
+import { AiUsageRepository } from '../repositories/aiUsageRepository.js';
 
 export type EntitlementDenialReason = 'NO_ACTIVE_SUBSCRIPTION' | 'ENTITLEMENT_DISABLED' | 'ENTITLEMENT_LIMIT_REACHED';
 export interface EntitlementCheckResult { allowed: boolean; reason?: EntitlementDenialReason; limit?: number | null; current?: number; }
@@ -20,6 +21,7 @@ export class EntitlementService {
   private readonly funnelRepository: FunnelRepository;
   private readonly knowledgeBaseRepository: KnowledgeBaseRepository;
   private readonly businessDocumentRepository: BusinessDocumentRepository;
+  private readonly aiUsageRepository: AiUsageRepository;
 
   constructor(private readonly db: Queryable) {
     this.planRepository = new PlanRepository(db);
@@ -30,6 +32,7 @@ export class EntitlementService {
     this.funnelRepository = new FunnelRepository(db);
     this.knowledgeBaseRepository = new KnowledgeBaseRepository(db);
     this.businessDocumentRepository = new BusinessDocumentRepository(db);
+    this.aiUsageRepository = new AiUsageRepository(db);
   }
 
   async checkEntitlement(businessId: string, entitlementKey: string): Promise<EntitlementCheckResult> {
@@ -47,6 +50,19 @@ export class EntitlementService {
   async canActivateFunnel(businessId: string): Promise<EntitlementCheckResult> { return this.checkCountLimit(businessId, 'max_active_funnels', () => this.funnelRepository.countActiveByBusiness(businessId)); }
   async canCreateKnowledgeBaseDocument(businessId: string): Promise<EntitlementCheckResult> { return this.checkCountLimit(businessId, 'max_knowledge_base_documents', () => this.knowledgeBaseRepository.countByBusiness(businessId)); }
   async canCreateBusinessDocument(businessId: string): Promise<EntitlementCheckResult> { return this.checkCountLimit(businessId, 'max_business_documents', () => this.businessDocumentRepository.countByBusiness(businessId)); }
+
+  /**
+   * Real cost-control gate - before this, no per-business ceiling on
+   * actual AI usage existed anywhere: max_ai_agents caps how many agents a
+   * business can *create*, nothing capped what one active agent could
+   * *spend* generating real replies. checkCountLimit's own "current < limit"
+   * comparison works identically for a running monthly token total as it
+   * does for an agent count, so this reuses it rather than duplicating the
+   * subscription/entitlement lookup.
+   */
+  async canUseAiThisMonth(businessId: string): Promise<EntitlementCheckResult> {
+    return this.checkCountLimit(businessId, 'max_ai_tokens_per_month', () => this.aiUsageRepository.getMonthlyTotalForBusiness(businessId));
+  }
 
   private async checkCountLimit(businessId: string, entitlementKey: string, countCurrent: () => Promise<number>): Promise<EntitlementCheckResult> {
     const subscription = await this.subscriptionRepository.findLiveByBusiness(businessId);

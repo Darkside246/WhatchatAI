@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { EntitlementService } from '../src/services/entitlementService.js';
 import { AiAgentRepository } from '../src/repositories/aiAgentRepository.js';
+import { AiUsageRepository } from '../src/repositories/aiUsageRepository.js';
 import { createTestAccount, createTestBusiness, createTestSubscription, resetDatabase } from './helpers.js';
 
 describe('EntitlementService (real backend enforcement, not UI-only)', () => {
@@ -79,5 +80,53 @@ describe('EntitlementService (real backend enforcement, not UI-only)', () => {
 
     const result = await entitlements.canCreateAgent(businessId);
     expect(result.allowed).toBe(true);
+  });
+
+  describe('canUseAiThisMonth (real cost-control gate)', () => {
+    it('allows AI usage while the starter plan\'s 500,000 token/month budget has not been reached', async () => {
+      const businessId = await createTestBusiness();
+      await createTestSubscription(businessId, 'starter');
+      const usage = new AiUsageRepository(pool);
+      await usage.record({ businessId, model: 'gemini-test', callKind: 'primary', promptTokens: 100000, candidatesTokens: 100000, totalTokens: 200000 });
+
+      const result = await entitlements.canUseAiThisMonth(businessId);
+      expect(result.allowed).toBe(true);
+      expect(result.limit).toBe(500000);
+      expect(result.current).toBe(200000);
+    });
+
+    it('denies further AI usage once the monthly token budget is reached', async () => {
+      const businessId = await createTestBusiness();
+      await createTestSubscription(businessId, 'starter');
+      const usage = new AiUsageRepository(pool);
+      await usage.record({ businessId, model: 'gemini-test', callKind: 'primary', promptTokens: 300000, candidatesTokens: 300000, totalTokens: 600000 });
+
+      const result = await entitlements.canUseAiThisMonth(businessId);
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toBe('ENTITLEMENT_LIMIT_REACHED');
+      expect(result.limit).toBe(500000);
+    });
+
+    it('treats a NULL plan limit as genuinely unlimited AI usage (enterprise plan)', async () => {
+      const businessId = await createTestBusiness();
+      await createTestSubscription(businessId, 'enterprise');
+      const usage = new AiUsageRepository(pool);
+      await usage.record({ businessId, model: 'gemini-test', callKind: 'primary', promptTokens: 50000000, candidatesTokens: 50000000, totalTokens: 100000000 });
+
+      const result = await entitlements.canUseAiThisMonth(businessId);
+      expect(result.allowed).toBe(true);
+    });
+
+    it('never lets one business\'s AI usage count against another business\'s budget (tenant isolation)', async () => {
+      const businessA = await createTestBusiness('Business A');
+      const businessB = await createTestBusiness('Business B');
+      await createTestSubscription(businessA, 'starter');
+      await createTestSubscription(businessB, 'starter');
+      const usage = new AiUsageRepository(pool);
+      await usage.record({ businessId: businessA, model: 'gemini-test', callKind: 'primary', promptTokens: 300000, candidatesTokens: 300000, totalTokens: 600000 });
+
+      expect((await entitlements.canUseAiThisMonth(businessA)).allowed).toBe(false);
+      expect((await entitlements.canUseAiThisMonth(businessB)).allowed).toBe(true);
+    });
   });
 });

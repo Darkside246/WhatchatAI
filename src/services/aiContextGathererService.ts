@@ -1,6 +1,7 @@
 import { pool, queryAsTenant } from '../db/pool.js';
 import { BusinessRepository } from '../repositories/businessRepository.js';
 import { CrmContactRepository, type CrmContactRecord } from '../repositories/crmContactRepository.js';
+import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
 import { WhatsAppMessageRepository, type WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { ConversationStateRepository, emptyConversationState, type ConversationStateRecord } from '../repositories/conversationStateRepository.js';
 import { CustomerMemoryRepository, emptyCustomerMemory, type CustomerMemoryRecord } from '../repositories/customerMemoryRepository.js';
@@ -86,6 +87,23 @@ export interface AiHandoffContext {
    * just have denied anyway, saving a wasted round trip.
    */
   aiActionsPaused: boolean;
+  /**
+   * Sections 14-24 (Identity & Name Discovery Engine): the real WhatsApp
+   * name fields for this contact, raw - never assumed to be a real name on
+   * their own (see identityEngine.ts's resolveNameEvidence, which turns
+   * these into evidence-classified confidence, not a bare display name).
+   * Null for a group message or when no WhatsApp contact could be
+   * resolved for this chat.
+   */
+  contactNameSources: {
+    /** Section 23: a staff member's manual correction/confirmation from crm_contacts - identityEngine.ts's highest-priority tier. */
+    staffConfirmedName: string | null;
+    verifiedName: string | null;
+    businessName: string | null;
+    pushName: string | null;
+    username: string | null;
+    shortName: string | null;
+  } | null;
 }
 
 /**
@@ -105,6 +123,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
   // this). businesses/conversation_states aren't in that RLS scope yet, so
   // they stay on the ordinary pool.
   const crmContactRepository = new CrmContactRepository(queryAsTenant(input.businessId));
+  const whatsappContactRepository = new WhatsAppContactRepository(pool);
   const messageRepository = new WhatsAppMessageRepository(queryAsTenant(input.businessId));
   const businessRepository = new BusinessRepository(pool);
   const conversationStateRepository = new ConversationStateRepository(pool);
@@ -123,10 +142,15 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     ? await customerIdentityRepository.findCustomerIdByIdentity(input.businessId, 'whatsapp', 'whatsapp_contact_id', input.contactId)
     : null;
 
-  const [crmContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState, customerMemory, googleMeetingConnection, zoomMeetingConnection, properties] = await Promise.all([
+  const [crmContact, whatsappContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState, customerMemory, googleMeetingConnection, zoomMeetingConnection, properties] = await Promise.all([
     input.contactId
       ? crmContactRepository.findByWhatsAppContact(input.businessId, input.contactId)
       : Promise.resolve(null),
+    // Sections 14-24 (Identity & Name Discovery Engine) - the real name
+    // sources identityEngine.ts resolves evidence from. Never assumed to
+    // be a real name just because it's here (see that module's own doc
+    // comment) - this is raw material, not a resolved identity.
+    input.contactId ? whatsappContactRepository.findById(input.contactId) : Promise.resolve(null),
     searchKnowledgeBase(input.businessId, input.queryText),
     // Same businessId and queryText already used for searchKnowledgeBase
     // above - never a value derived from AI output, tool arguments, or
@@ -168,5 +192,20 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     connectedMeetingProviders,
     hasPropertyData: properties.length > 0,
     aiActionsPaused: business?.aiActionsPaused ?? false,
+    // Guarded on either source existing, not just whatsappContact - a
+    // staff-confirmed name (crmContact) must still resolve even in the
+    // (normally-impossible-but-not-guaranteed) case the WhatsApp contact
+    // row itself is unavailable, since it's the single highest-priority
+    // tier identityEngine.ts has.
+    contactNameSources: whatsappContact || crmContact
+      ? {
+          staffConfirmedName: crmContact?.manualDisplayName ?? null,
+          verifiedName: whatsappContact?.verifiedName ?? null,
+          businessName: whatsappContact?.businessName ?? null,
+          pushName: whatsappContact?.pushName ?? null,
+          username: whatsappContact?.username ?? null,
+          shortName: whatsappContact?.shortName ?? null,
+        }
+      : null,
   };
 }

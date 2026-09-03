@@ -6,8 +6,8 @@ import { WhatsAppChatRepository, type ChatAiMode } from '../repositories/whatsap
 import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
 import { WhatsAppMessageRepository } from '../repositories/whatsappMessageRepository.js';
 import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobRepository.js';
-import { CrmContactRepository, type UpdateCrmContactInput } from '../repositories/crmContactRepository.js';
-import { LeadRepository, type UpdateLeadInput, type LeadRecord } from '../repositories/leadRepository.js';
+import { CrmContactRepository, type UpdateCrmContactInput, type CrmContactWithContactInfo } from '../repositories/crmContactRepository.js';
+import { LeadRepository, type UpdateLeadInput, type LeadRecord, type LeadWithContactInfo } from '../repositories/leadRepository.js';
 import { AiAgentRepository, type AiAgentRecord, type AgentCategory } from '../repositories/aiAgentRepository.js';
 import { AgentTemplateRepository, type AgentTemplateRecord } from '../repositories/agentTemplateRepository.js';
 import { AiCommitmentRepository, type AiCommitmentRecord } from '../repositories/aiCommitmentRepository.js';
@@ -30,11 +30,18 @@ import { notifyBusiness, notifyUser } from './notificationService.js';
 import { BusinessMembershipRepository } from '../repositories/businessMembershipRepository.js';
 import { TeamRepository } from '../repositories/teamRepository.js';
 import { AgentCapacityRepository } from '../repositories/agentCapacityRepository.js';
-import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
-import { PlatformActionRepository } from '../repositories/platformActionRepository.js';
+import { SecurityAuditLogRepository, type SecurityAuditLogRecord } from '../repositories/securityAuditLogRepository.js';
+import { PlatformActionRepository, type PlatformActionRow } from '../repositories/platformActionRepository.js';
 import { PlatformAuditLedgerRepository, type AuditEventSearchFilters } from '../repositories/platformAuditLedgerRepository.js';
 import type { AuditEvent } from '../domain/platform/contracts.js';
-import { InvoiceRepository } from '../repositories/invoiceRepository.js';
+import { InvoiceRepository, type InvoiceRecord } from '../repositories/invoiceRepository.js';
+import { ConversationStateRepository } from '../repositories/conversationStateRepository.js';
+import { ScheduledMeetingsRepository, type ScheduledMeetingRecord } from '../repositories/scheduledMeetingsRepository.js';
+import { AiUsageRepository } from '../repositories/aiUsageRepository.js';
+import { CampaignRepository } from '../repositories/campaignRepository.js';
+import { FunnelRepository } from '../repositories/funnelRepository.js';
+import { KnowledgeBaseRepository } from '../repositories/knowledgeBaseRepository.js';
+import { BusinessDocumentRepository } from '../repositories/businessDocumentRepository.js';
 import type {
   CallStatus,
   CallType,
@@ -203,6 +210,22 @@ export interface WorkspaceCrmContactSummary {
   isHidden: boolean;
   syncExcluded: boolean;
   aiExcluded: boolean;
+  /**
+   * Section 66: the real name-source breakdown identityEngine.ts's
+   * resolveNameEvidence() already uses to personalize AI replies (see
+   * aiContextGathererService.ts's contactNameSources) - previously computed
+   * into a single collapsed displayName and then discarded, leaving staff
+   * with no way to see which source AURA is actually drawing from, or that
+   * "verified" (WhatsApp's own confirmed identity) and "push name"
+   * (whatever the customer's phone happens to be set to) are different
+   * things with very different trustworthiness.
+   */
+  verifiedName: string | null;
+  businessName: string | null;
+  pushName: string | null;
+  shortName: string | null;
+  /** Section 23: a staff member's manual correction/confirmation - the name actually shown above, when set. */
+  manualDisplayName: string | null;
 }
 
 export interface WorkspaceLeadSummary {
@@ -286,6 +309,11 @@ const BILLING_ENTITLEMENT_LABELS: Record<string, string> = {
   max_whatsapp_accounts: 'WhatsApp Accounts',
   max_users: 'Team Members',
   advanced_analytics: 'Advanced Analytics',
+  max_active_campaigns: 'Active Campaigns',
+  max_active_funnels: 'Active Funnels',
+  max_knowledge_base_documents: 'Knowledge Base Documents',
+  max_business_documents: 'Business Documents',
+  max_ai_tokens_per_month: 'AI Tokens / Month',
 };
 
 export interface CreateAgentInput {
@@ -309,7 +337,7 @@ export interface CreateAgentInput {
   parentAgentId?: string | null | undefined;
   escalateToAgentId?: string | null | undefined;
   priority?: number | undefined;
-  requiresApprovalForActions?: boolean | undefined;
+  autonomyLevel?: number | undefined;
   sourceTemplateKey?: string | null | undefined;
   sourceTemplateVersion?: number | null | undefined;
 }
@@ -322,7 +350,7 @@ export interface ApprovalPatternSuggestion {
 
 export interface NextBestAction {
   id: string;
-  type: 'chat_needs_human' | 'open_commitment' | 'pending_approval' | 'overdue_invoice' | 'approval_pattern_suggestion';
+  type: 'chat_needs_human' | 'open_commitment' | 'pending_approval' | 'overdue_invoice' | 'approval_pattern_suggestion' | 'high_readiness_conversation';
   /**
    * Two tiers, deliberately - never a fabricated numeric priority/confidence
    * score. 'action_needed' is real, waiting, blocking work (a customer with
@@ -336,6 +364,27 @@ export interface NextBestAction {
   description: string;
   link: string;
   occurredAt: string;
+}
+
+/**
+ * Section 48 (Autonomous Morning Briefing): "what did Aura do while I was
+ * asleep" - built entirely from real, already-recorded rows (completed/
+ * failed action requests, real audit events, real bookings, real leads),
+ * never a generated narrative. `sinceIso` is caller-supplied (the frontend
+ * defaults to a lookback window) rather than a fabricated "since you went
+ * to sleep" precision this system has no real way to know.
+ */
+export interface MorningBriefing {
+  sinceIso: string;
+  completedActions: PlatformActionRow[];
+  failedActions: PlatformActionRow[];
+  pendingApprovals: PlatformActionRow[];
+  riskFlags: SecurityAuditLogRecord[];
+  chatsNeedingHuman: Array<{ id: string; displayName: string; updatedAt: string }>;
+  newAppointments: ScheduledMeetingRecord[];
+  newLeads: LeadWithContactInfo[];
+  overdueInvoices: InvoiceRecord[];
+  recommendedPriorities: NextBestAction[];
 }
 
 const DEFAULT_APPROVAL_PATTERN_THRESHOLD = 10;
@@ -373,6 +422,13 @@ export class WorkspaceService {
   private readonly platformActionRepository = new PlatformActionRepository(pool);
   private readonly platformAuditLedgerRepository = new PlatformAuditLedgerRepository(pool);
   private readonly invoiceRepository = new InvoiceRepository(pool);
+  private readonly conversationStateRepository = new ConversationStateRepository(pool);
+  private readonly scheduledMeetingsRepository = new ScheduledMeetingsRepository(pool);
+  private readonly aiUsageRepository = new AiUsageRepository(pool);
+  private readonly campaignRepository = new CampaignRepository(pool);
+  private readonly funnelRepository = new FunnelRepository(pool);
+  private readonly knowledgeBaseRepository = new KnowledgeBaseRepository(pool);
+  private readonly businessDocumentRepository = new BusinessDocumentRepository(pool);
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
@@ -979,17 +1035,20 @@ export class WorkspaceService {
 
   /**
    * The narrow action a real approval-pattern suggestion acts on - flips
-   * only requiresApprovalForActions, the same way updateAgentStatus above
-   * flips only status, without requiring the caller to round-trip the
-   * agent's entire configuration through the full edit form.
+   * only autonomyLevel, the same way updateAgentStatus above flips only
+   * status, without requiring the caller to round-trip the agent's entire
+   * configuration through the full edit form.
    */
-  async updateAgentRequiresApproval(businessId: string, agentId: string, requiresApprovalForActions: boolean): Promise<AiAgentRecord> {
+  async updateAgentAutonomyLevel(businessId: string, agentId: string, autonomyLevel: number): Promise<AiAgentRecord> {
+    if (!Number.isInteger(autonomyLevel) || autonomyLevel < 1 || autonomyLevel > 5) {
+      throw new Error('autonomyLevel must be an integer between 1 and 5');
+    }
     const agent = await this.agentRepository.findByIdForBusiness(agentId, businessId);
     if (!agent || agent.deletedAt) {
       throw this.notFound();
     }
-    await this.agentRepository.updateRequiresApprovalForActions(agentId, requiresApprovalForActions);
-    return { ...agent, requiresApprovalForActions };
+    await this.agentRepository.updateAutonomyLevel(agentId, autonomyLevel);
+    return { ...agent, autonomyLevel };
   }
 
   /**
@@ -1027,7 +1086,7 @@ export class WorkspaceService {
    * built on the real approval history platform_action_requests/
    * platform_approvals already records (see ApprovalService), not a
    * fabricated confidence score. Only considers agents that currently
-   * require approval (requiresApprovalForActions) and have at least
+   * require approval (autonomyLevel 1 or 2) and have at least
    * `threshold` real, decided approvals on file - fewer than that is
    * never enough to call it a pattern. A single REJECTED anywhere in the
    * most recent `threshold` decisions breaks the streak entirely: this
@@ -1035,7 +1094,7 @@ export class WorkspaceService {
    */
   async getApprovalPatternSuggestions(businessId: string): Promise<ApprovalPatternSuggestion[]> {
     const threshold = getApprovalPatternThreshold();
-    const agents = (await this.agentRepository.listByBusiness(businessId)).filter((agent) => agent.requiresApprovalForActions);
+    const agents = (await this.agentRepository.listByBusiness(businessId)).filter((agent) => agent.autonomyLevel <= 2);
 
     const suggestions = await Promise.all(
       agents.map(async (agent): Promise<ApprovalPatternSuggestion | null> => {
@@ -1061,22 +1120,26 @@ export class WorkspaceService {
   }
 
   /**
-   * Real Next-Best-Action engine: aggregates every real "this needs a
-   * decision" signal this codebase already has real data for - chats
-   * waiting on a human, unaddressed AI commitments, pending approvals,
-   * overdue invoices - plus the one real "nice to have" signal (approval
-   * pattern suggestions), into one ranked list. Ranking is two real,
-   * deterministic tiers (see NextBestAction.priority's own doc comment),
-   * never a fabricated AI-generated priority score - this is a real
-   * aggregation of existing structured data, not a new judgment call.
+   * Real Next-Best-Action engine (Section 09 of the AURA master directive):
+   * aggregates every real "this needs a decision" signal this codebase has
+   * real data for - chats waiting on a human, unaddressed AI commitments,
+   * pending approvals, overdue invoices, high-readiness/urgent
+   * conversations the AI itself flagged (see conversation_states'
+   * funnel_stage/customer_readiness, Sections 06/10) - plus the one real
+   * "nice to have" signal (approval pattern suggestions), into one ranked
+   * list. Ranking is two real, deterministic tiers (see
+   * NextBestAction.priority's own doc comment), never a fabricated
+   * AI-generated priority score - this is a real aggregation of existing
+   * structured data, not a new judgment call.
    */
   async getNextBestActions(businessId: string, limit = 10): Promise<NextBestAction[]> {
-    const [chatsNeedingHuman, commitments, pendingApprovals, overdueInvoices, approvalSuggestions] = await Promise.all([
+    const [chatsNeedingHuman, commitments, pendingApprovals, overdueInvoices, approvalSuggestions, highReadinessChats] = await Promise.all([
       this.chatRepository.listNeedingHumanTakeover(businessId),
       this.commitmentRepository.listOpen(businessId, 4),
       this.platformActionRepository.listPendingApprovals(businessId),
       this.invoiceRepository.list(businessId, { status: 'OVERDUE' }),
       this.getApprovalPatternSuggestions(businessId),
+      this.conversationStateRepository.listHighReadinessForBusiness(businessId),
     ]);
 
     const actions: NextBestAction[] = [
@@ -1130,6 +1193,15 @@ export class WorkspaceService {
         link: '/agents',
         occurredAt: new Date().toISOString(),
       })),
+      ...highReadinessChats.map((chat): NextBestAction => ({
+        id: `readiness:${chat.chatId}`,
+        type: 'high_readiness_conversation',
+        priority: 'action_needed',
+        title: `${chat.displayName} looks ${chat.readiness === 'URGENT' ? 'urgent' : 'ready to act'}`,
+        description: 'The AI assessed this customer as ready to move forward - a human check-in could help close it.',
+        link: `/chats/${chat.chatId}`,
+        occurredAt: chat.updatedAt,
+      })),
     ];
 
     actions.sort((a, b) => {
@@ -1138,6 +1210,80 @@ export class WorkspaceService {
     });
 
     return actions.slice(0, limit);
+  }
+
+  /**
+   * Section 48 (Autonomous Morning Briefing): "what did Aura do while I was
+   * asleep" - a real aggregation of already-recorded activity since
+   * sinceIso, reusing the exact same real signal sources as
+   * getNextBestActions/getApprovalPatternSuggestions above rather than a
+   * second, parallel implementation. Nothing here is generated narrative;
+   * every field is rows that already existed before this method ran.
+   */
+  async getMorningBriefing(businessId: string, sinceIso: string): Promise<MorningBriefing> {
+    const [
+      completedActions, failedActions, pendingApprovals, riskFlags,
+      chatsNeedingHuman, newAppointments, newLeads, overdueInvoices, recommendedPriorities,
+    ] = await Promise.all([
+      this.platformActionRepository.listByStatusSince(businessId, ['SUCCEEDED'], sinceIso),
+      this.platformActionRepository.listByStatusSince(businessId, ['FAILED'], sinceIso),
+      this.platformActionRepository.listPendingApprovals(businessId),
+      this.securityAuditLogRepository.listByTypeSince(businessId, 'message_risk_flagged', sinceIso),
+      this.chatRepository.listNeedingHumanTakeover(businessId),
+      this.scheduledMeetingsRepository.listCreatedSince(businessId, sinceIso),
+      this.leadRepository.listCreatedSince(businessId, sinceIso),
+      this.invoiceRepository.list(businessId, { status: 'OVERDUE' }),
+      this.getNextBestActions(businessId),
+    ]);
+
+    return {
+      sinceIso, completedActions, failedActions, pendingApprovals, riskFlags,
+      chatsNeedingHuman, newAppointments, newLeads, overdueInvoices, recommendedPriorities,
+    };
+  }
+
+  /**
+   * Section 56 (Appointment System): every real meeting this business has
+   * ever booked, across both providers - the first time this data has ever
+   * been surfaced anywhere in the UI (previously only reachable per-chat,
+   * via listByChat, with no business-wide view at all).
+   */
+  async listAppointments(businessId: string): Promise<ScheduledMeetingRecord[]> {
+    return this.scheduledMeetingsRepository.listForBusiness(businessId);
+  }
+
+  /**
+   * Section 56's lifecycle: a real human action, not automatic - cancels a
+   * still-confirmed meeting. Does not attempt to also cancel the event on
+   * the provider's own calendar (Google/Zoom) - that is a separate, real
+   * integration surface this pass does not touch; this only updates our
+   * own record of it. Returns null for anything not currently confirmed
+   * (already cancelled/completed/etc.), which the caller reports as 404.
+   */
+  async cancelAppointment(businessId: string, id: string): Promise<ScheduledMeetingRecord | null> {
+    return this.scheduledMeetingsRepository.markCancelled(businessId, id);
+  }
+
+  /** Only a human can know whether someone actually attended - never inferred. */
+  async markAppointmentNoShow(businessId: string, id: string): Promise<ScheduledMeetingRecord | null> {
+    return this.scheduledMeetingsRepository.markNoShow(businessId, id);
+  }
+
+  /**
+   * Section 67 (CRM Data Export): every real CRM contact and lead this
+   * business owns, capped generously (never truly "unlimited" - a runaway
+   * query is a real operational risk) rather than paginated, since export
+   * is inherently a "give me everything" request. Serialization to
+   * CSV/JSON is the caller's concern (server/index.ts) - this method only
+   * ever returns real, already-persisted rows.
+   */
+  async exportCrmData(businessId: string): Promise<{ contacts: CrmContactWithContactInfo[]; leads: LeadWithContactInfo[] }> {
+    const CRM_EXPORT_LIMIT = 50_000;
+    const [contacts, leads] = await Promise.all([
+      this.crmContactRepository.listByBusiness(businessId, CRM_EXPORT_LIMIT),
+      this.leadRepository.listByBusiness(businessId, CRM_EXPORT_LIMIT),
+    ]);
+    return { contacts, leads };
   }
 
   async getBusinessProfile(businessId: string): Promise<BusinessRecord> {
@@ -1248,9 +1394,25 @@ export class WorkspaceService {
     const plan = await this.planRepository.findById(subscription.planId);
     if (!plan) return { plan: null, subscription: subscriptionSummary, entitlements: [] };
 
+    // Every count here mirrors the exact real source entitlementService
+    // itself checks (same method, same repository) - previously only
+    // max_ai_agents/max_whatsapp_accounts were wired up, so a business
+    // could hit its campaign/funnel/document limit with zero warning on
+    // its own billing page, only finding out from the create action's own
+    // rejection.
     const countByKey: Record<string, () => Promise<number>> = {
       max_ai_agents: () => this.agentRepository.countActiveByBusiness(businessId),
       max_whatsapp_accounts: () => this.accountRepository.countByBusiness(businessId),
+      max_active_campaigns: () => this.campaignRepository.countInFlightByBusiness(businessId),
+      max_active_funnels: () => this.funnelRepository.countActiveByBusiness(businessId),
+      max_knowledge_base_documents: () => this.knowledgeBaseRepository.countByBusiness(businessId),
+      max_business_documents: () => this.businessDocumentRepository.countByBusiness(businessId),
+      // Section 34-40 (Token economy): the same monthly total
+      // entitlementService.canUseAiThisMonth() checks before every real
+      // Gemini call - a business can now see the number that will
+      // eventually hand their conversations off to a human, not just find
+      // out when it happens.
+      max_ai_tokens_per_month: () => this.aiUsageRepository.getMonthlyTotalForBusiness(businessId),
     };
 
     const entitlementRows = await this.planRepository.listEntitlements(plan.id);
@@ -1330,6 +1492,7 @@ export class WorkspaceService {
       whatsappContactId: row.whatsappContactId,
       displayName: row.whatsappJid
         ? resolveDisplayName({
+            manualDisplayName: row.manualDisplayName,
             verifiedName: row.contactVerifiedName,
             businessName: row.contactBusinessName,
             displayName: row.contactDisplayName,
@@ -1338,7 +1501,7 @@ export class WorkspaceService {
             phoneNumber: row.phoneNumber,
             whatsappJid: row.whatsappJid,
           })
-        : 'Unknown contact',
+        : row.manualDisplayName ?? 'Unknown contact',
       phoneNumber: row.phoneNumber,
       source: row.source,
       email: row.email,
@@ -1350,6 +1513,11 @@ export class WorkspaceService {
       isHidden: row.isHidden,
       syncExcluded: row.syncExcluded,
       aiExcluded: row.aiExcluded,
+      verifiedName: row.contactVerifiedName,
+      businessName: row.contactBusinessName,
+      pushName: row.contactPushName,
+      shortName: row.contactShortName,
+      manualDisplayName: row.manualDisplayName,
     };
   }
 
@@ -1379,6 +1547,7 @@ export class WorkspaceService {
       crmContactId: row.crmContactId,
       displayName: row.whatsappJid
         ? resolveDisplayName({
+            manualDisplayName: row.contactManualDisplayName,
             verifiedName: row.contactVerifiedName,
             businessName: row.contactBusinessName,
             displayName: row.contactDisplayName,
@@ -1387,7 +1556,7 @@ export class WorkspaceService {
             phoneNumber: row.phoneNumber,
             whatsappJid: row.whatsappJid,
           })
-        : 'Unknown contact',
+        : row.contactManualDisplayName ?? 'Unknown contact',
       phoneNumber: row.phoneNumber,
       source: row.source,
       stage: row.stage,

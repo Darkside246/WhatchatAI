@@ -27,6 +27,20 @@ const TOGGLEABLE_TOOLS: { name: string; label: string }[] = [
   { name: 'check_property_status', label: 'Check property/incident status' },
 ];
 
+/**
+ * Every level here maps to a real, distinct backend behaviour - never
+ * cosmetic slider positions over one boolean. See aiReplyService.ts's
+ * buildReplyTools/createPendingApprovalAction/notifyAutonomousAction and
+ * agentGuard.ts's guardToolInvocation for where each is actually enforced.
+ */
+const AUTONOMY_LEVELS: { level: number; label: string; description: string }[] = [
+  { level: 1, label: 'Read-only', description: 'This agent can answer questions but never takes a real action - no meetings booked, nothing saved to memory. Every action-tool is withheld entirely.' },
+  { level: 2, label: 'Manual', description: 'Real actions (like booking a meeting) always wait for a teammate to approve in the Approvals queue before they happen.' },
+  { level: 3, label: 'Balanced', description: 'This agent takes real actions immediately - the default. No approval step, no extra notification.' },
+  { level: 4, label: 'Trusted', description: 'Same as Balanced - actions happen immediately - but your team gets a real notification every time this agent acts on its own, so nothing slips by unnoticed.' },
+  { level: 5, label: 'Fully autonomous', description: 'This agent acts immediately with no approval step and no extra notification - full trust, no oversight overhead.' },
+];
+
 const CATEGORY_LABEL: Record<AgentCategory, string> = {
   general: 'General',
   sales: 'Sales',
@@ -69,7 +83,7 @@ interface AgentForm {
   escalateToAgentId: string;
   allowedToolsEnabled: boolean;
   allowedTools: string[];
-  requiresApprovalForActions: boolean;
+  autonomyLevel: number;
   sourceTemplateKey: string | null;
   sourceTemplateVersion: number | null;
 }
@@ -97,7 +111,7 @@ const EMPTY_FORM: AgentForm = {
   escalateToAgentId: '',
   allowedToolsEnabled: false,
   allowedTools: TOGGLEABLE_TOOLS.map((t) => t.name),
-  requiresApprovalForActions: false,
+  autonomyLevel: 3,
   sourceTemplateKey: null,
   sourceTemplateVersion: null,
 };
@@ -126,7 +140,7 @@ function toForm(agent: AiAgentSummary): AgentForm {
     escalateToAgentId: agent.escalateToAgentId ?? '',
     allowedToolsEnabled: agent.allowedToolsEnabled,
     allowedTools: agent.allowedToolsEnabled ? agent.allowedTools : TOGGLEABLE_TOOLS.map((t) => t.name),
-    requiresApprovalForActions: agent.requiresApprovalForActions,
+    autonomyLevel: agent.autonomyLevel,
     sourceTemplateKey: agent.sourceTemplateKey,
     sourceTemplateVersion: agent.sourceTemplateVersion,
   };
@@ -164,7 +178,7 @@ function toBody(form: AgentForm): CreateAgentBody {
     escalateToAgentId: form.escalateToAgentId || null,
     allowedToolsEnabled: form.allowedToolsEnabled,
     allowedTools: form.allowedTools,
-    requiresApprovalForActions: form.requiresApprovalForActions,
+    autonomyLevel: form.autonomyLevel,
     sourceTemplateKey: form.sourceTemplateKey,
     sourceTemplateVersion: form.sourceTemplateVersion,
   };
@@ -460,22 +474,33 @@ function AgentEditor({
       </section>
 
       <section className="space-y-4 rounded-xl border border-border-subtle bg-surface-1 p-5">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-body font-semibold text-fg">Autonomy</h2>
-            <p className="text-caption text-fg-muted">Whether this agent can act on its own, or must ask a teammate first.</p>
-          </div>
-          <ToggleSwitch
-            checked={form.requiresApprovalForActions}
-            onChange={() => setForm({ ...form, requiresApprovalForActions: !form.requiresApprovalForActions })}
-            label="Ask before acting"
-          />
+        <div>
+          <h2 className="text-body font-semibold text-fg">Autonomy</h2>
+          <p className="text-caption text-fg-muted">How much this agent can do on its own before a teammate needs to step in.</p>
         </div>
-        <p className="text-meta text-fg-muted">
-          {form.requiresApprovalForActions
-            ? 'On: instead of booking a meeting immediately, this agent asks the customer to hold while a teammate confirms in Approvals - the same review queue used elsewhere in AURA.'
-            : 'Off: this agent books meetings and takes other real-world actions immediately, the same as today.'}
-        </p>
+        <div className="px-1">
+          <input
+            type="range"
+            min={1}
+            max={5}
+            step={1}
+            value={form.autonomyLevel}
+            onChange={(e) => setForm({ ...form, autonomyLevel: Number(e.target.value) })}
+            className="w-full accent-accent"
+            aria-label="Autonomy level"
+          />
+          <div className="mt-1.5 flex justify-between text-meta text-fg-muted">
+            {AUTONOMY_LEVELS.map(({ level, label }) => (
+              <span key={level} className={level === form.autonomyLevel ? 'font-semibold text-accent' : ''}>{level}</span>
+            ))}
+          </div>
+        </div>
+        {AUTONOMY_LEVELS.filter((l) => l.level === form.autonomyLevel).map((l) => (
+          <div key={l.level} className="rounded-lg bg-surface-2 p-3">
+            <p className="text-caption font-semibold text-fg">{l.label}</p>
+            <p className="mt-1 text-meta text-fg-muted">{l.description}</p>
+          </div>
+        ))}
       </section>
 
       {form.sourceTemplateKey && (
@@ -612,7 +637,7 @@ export function AgentsPage() {
   async function handleDismissApprovalRequirement(suggestion: ApprovalPatternSuggestion) {
     setDismissingApprovalFor(suggestion.agentId);
     try {
-      await api.updateAgentRequiresApproval(suggestion.agentId, false);
+      await api.updateAgentAutonomyLevel(suggestion.agentId, 3);
       setApprovalSuggestions((current) => current.filter((s) => s.agentId !== suggestion.agentId));
       load();
     } catch (err) {

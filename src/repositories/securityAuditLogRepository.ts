@@ -59,7 +59,8 @@ export type SecurityEventType =
   | 'account_deletion_cancelled'
   | 'phone_number_changed'
   | 'ai_output_leak_blocked'
-  | 'ai_output_leak_check_unavailable';
+  | 'ai_output_leak_check_unavailable'
+  | 'message_risk_flagged';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 
@@ -134,6 +135,15 @@ export class SecurityAuditLogRepository {
     const { rows } = await this.db.query<SecurityAuditLogRow>(
       'SELECT * FROM security_audit_logs WHERE business_id = $1 ORDER BY created_at DESC LIMIT $2',
       [businessId, limit],
+    );
+    return rows.map(toRecord);
+  }
+
+  /** Section 48 (Autonomous Morning Briefing): real, already-recorded events of one type since a point in time - e.g. every message_risk_flagged event, never a fabricated "important discoveries" list. */
+  async listByTypeSince(businessId: string, eventType: SecurityEventType, sinceIso: string, limit = 50): Promise<SecurityAuditLogRecord[]> {
+    const { rows } = await this.db.query<SecurityAuditLogRow>(
+      'SELECT * FROM security_audit_logs WHERE business_id = $1 AND event_type = $2 AND created_at >= $3 ORDER BY created_at DESC LIMIT $4',
+      [businessId, eventType, sinceIso, limit],
     );
     return rows.map(toRecord);
   }

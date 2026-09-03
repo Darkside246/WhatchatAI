@@ -3,10 +3,12 @@ import { gatherAiHandoffContext } from '../aiContextGathererService.js';
 import { generateAiReply } from '../aiReplyService.js';
 import { runOutboundLeakGuard } from '../../security/sentinel/outboundLeakGuard.js';
 import { SecurityAuditLogRepository } from '../../repositories/securityAuditLogRepository.js';
+import { EntitlementService } from '../entitlementService.js';
 import { pool } from '../../db/pool.js';
 import type { AiAgentRecord } from '../../repositories/aiAgentRepository.js';
 
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
+const entitlementService = new EntitlementService(pool);
 
 export interface OrchestrateAiReplyInput {
   businessId: string;
@@ -112,6 +114,35 @@ export async function orchestrateAiReply(input: OrchestrateAiReplyInput): Promis
   }
 
   const agent = decision.agent;
+
+  // Real cost-control gate (Section 34-40) - checked once per inbound
+  // message, right before the one real Gemini call that actually costs
+  // money, never after. 'unavailable' is the same honest hand-off-to-human
+  // outcome an out-of-credentials or provider-down failure already
+  // produces (see generateAiReply's own 'unavailable' branch) - the worker
+  // that consumes this outcome already hands the chat to a human and
+  // notifies the business with zero further wiring needed here.
+  //
+  // Blocks on NO_ACTIVE_SUBSCRIPTION too, consistent with every other real
+  // entitlement check (canCreateAgent, canConnectWhatsAppAccount, etc.) -
+  // in production a business always has one the moment it exists
+  // (ensureDefaultBusinessProvisioned / trialOnboardingService.ts's own
+  // subscription insert), so this only fires for a genuinely-expired,
+  // never-converted trial once subscriptionExpiryService.ts's sweep marks
+  // it EXPIRED. Before Section 72's sweep existed, a TRIALING subscription
+  // never actually expired in practice, so this case was untested and
+  // easy to get wrong by exempting it - it no longer is.
+  const budget = await entitlementService.canUseAiThisMonth(input.businessId);
+  if (!budget.allowed) {
+    const reason =
+      budget.reason === 'ENTITLEMENT_LIMIT_REACHED'
+        ? `This business has used its full AI reply allowance for this billing month (limit: ${budget.limit ?? 'unknown'} tokens).`
+        : budget.reason === 'ENTITLEMENT_DISABLED'
+          ? 'This plan does not include AI replies.'
+          : 'This business has no active subscription.';
+    return { kind: 'unavailable', agent, reason };
+  }
+
   const reply = await generateAiReply(agent, context);
 
   if (reply.status === 'generated') {

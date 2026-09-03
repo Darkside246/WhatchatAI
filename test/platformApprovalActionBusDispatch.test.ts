@@ -1,12 +1,29 @@
+import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { initializePlatformFoundation } from '../src/services/platform/platformBootstrap.js';
 import { actionBusService } from '../src/services/platform/actionBusService.js';
-import { actionRowToRequest, humanApprovalCapability } from '../src/server/platformApprovalRouter.js';
+import { actionRowToRequest, humanApprovalCapability, runPostApprovalSideEffects } from '../src/server/platformApprovalRouter.js';
 import { MAINTENANCE_CREATE_WORK_ORDER_ACTION_TYPE } from '../src/services/property/maintenanceWorkOrderExecutor.js';
+import { SCHEDULE_GOOGLE_MEET_ACTION_TYPE } from '../src/services/meeting/googleMeetBookingExecutor.js';
 import { PropertyOperationsRepository } from '../src/repositories/propertyOperationsRepository.js';
-import { createTestBusiness } from './helpers.js';
+import { GoogleMeetingRepository } from '../src/repositories/googleMeetingRepository.js';
+import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
+import { createTestAccount, createTestBusiness, createTestUser } from './helpers.js';
 import type { PlatformActionRow } from '../src/repositories/platformActionRepository.js';
+import type { AuthContext } from '../src/server/authMiddleware.js';
+
+function fakeAuth(overrides: Partial<AuthContext>): AuthContext {
+  return {
+    userId: 'user-1',
+    businessId: 'business-1',
+    role: 'OWNER' as AuthContext['role'],
+    platformRole: 'CLIENT' as AuthContext['platformRole'],
+    sessionId: 'session-1',
+    user: {} as AuthContext['user'],
+    ...overrides,
+  };
+}
 
 async function createTestProperty(businessId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>('INSERT INTO property_properties (business_id, name) VALUES ($1, $2) RETURNING id', [businessId, 'Test Villa']);
@@ -144,5 +161,67 @@ describe('ActionBus real production dispatch (real bootstrap registration, real 
     const request = actionRowToRequest(row);
     const result = await actionBusService.execute(request, humanApprovalCapability(request), { tenantId: otherBusinessId, actorId: 'approver-user-1' });
     expect(result.status).toBe('DENIED');
+  });
+});
+
+describe('runPostApprovalSideEffects (Sections 43-44/46-47: an approved action whose real execution fails must never look like a plain success)', () => {
+  it('a FAILED dispatch gets an honest "failed to execute" notification, never the generic "approved" one', async () => {
+    initializePlatformFoundation();
+    const businessId = await createTestBusiness();
+    await createTestUser(businessId); // notifyBusiness only reaches real active members
+
+    // No Google connection exists at all - the cheapest real way to force
+    // GoogleMeetBookingExecutor to a genuine FAILED (reason: not_connected),
+    // no mocked fetch needed.
+    const row = fakeApprovedRow({
+      businessId,
+      id: randomUUID(), // notifyBusiness's targetId flows into a real UUID column - a real action row's id is always a genuine UUID
+      type: SCHEDULE_GOOGLE_MEET_ACTION_TYPE,
+      idempotencyKey: `e2e-idem-failed-${businessId}`,
+      payload: {
+        chatId: 'irrelevant-chat-id',
+        contactId: null,
+        businessTimezone: 'UTC',
+        attendeeEmail: 'customer@example.com',
+        title: 'Never connected',
+        startDateTimeIso: '2030-06-01T15:00:00.000Z',
+      },
+    });
+
+    await runPostApprovalSideEffects(row, fakeAuth({ businessId, userId: 'approver-user-1' }), undefined);
+
+    const { rows: notifications } = await pool.query<{ type: string; title: string; body: string | null }>(
+      `SELECT type, title, body FROM notifications WHERE business_id = $1 ORDER BY created_at ASC`,
+      [businessId],
+    );
+    expect(notifications).toHaveLength(1); // never both - the misleading "approved" one must not also fire
+    expect(notifications[0]?.type).toBe('AUTOMATION_FAILURE');
+    expect(notifications[0]?.title).toMatch(/failed to execute/i);
+    expect(notifications[0]?.body).toContain('not_connected');
+    expect(notifications[0]?.body).not.toMatch(/^Action request approved/i);
+  });
+
+  it('a genuinely SUCCEEDED dispatch still gets the ordinary "approved" notification', async () => {
+    initializePlatformFoundation();
+    const businessId = await createTestBusiness();
+    await createTestUser(businessId);
+    const propertyId = await createTestProperty(businessId);
+
+    const row = fakeApprovedRow({
+      businessId,
+      id: 'e2e-action-succeeded-1',
+      idempotencyKey: `e2e-idem-succeeded-${businessId}`,
+      payload: { propertyId, category: 'PLUMBING', urgency: 'URGENT', summary: 'Leak' },
+    });
+
+    await runPostApprovalSideEffects(row, fakeAuth({ businessId, userId: 'approver-user-1' }), undefined);
+
+    const { rows: notifications } = await pool.query<{ type: string; title: string }>(
+      `SELECT type, title FROM notifications WHERE business_id = $1`,
+      [businessId],
+    );
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.type).toBe('HUMAN_HANDOFF');
+    expect(notifications[0]?.title).toMatch(/approved/i);
   });
 });

@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { pool } from '../db/pool.js';
 import { ScheduledStatusRepository, type ScheduledStatusRecord, type ScheduledStatusType } from '../repositories/scheduledStatusRepository.js';
+import { WhatsAppMessageRepository, type WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
 import { enqueueScheduledStatus } from '../queue/queues/scheduledStatusesQueue.js';
 import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 import { storeMedia } from '../media/mediaStorage.js';
 
 const scheduledStatusRepository = new ScheduledStatusRepository(pool);
+const messageRepository = new WhatsAppMessageRepository(pool);
 
 export class ScheduledStatusNotFoundError extends Error {}
 export class InvalidScheduledStatusError extends Error {}
@@ -71,6 +73,20 @@ export async function listScheduledStatuses(businessId: string): Promise<Schedul
 
 export async function getScheduledStatus(businessId: string, id: string): Promise<ScheduledStatusRecord> {
   return requireOwn(businessId, id);
+}
+
+/**
+ * "Status comments" feature: every real reply WhatsApp delivered to this
+ * one published status - never a public comment thread (WhatsApp Status
+ * has no such thing; a "reply" is a private message to the poster that
+ * happens to carry a real reference back to which status it replied to).
+ * Only ever returns something for a status that actually published
+ * (unpublished ones have no publishedWhatsappMessageId for a reply to
+ * reference in the first place).
+ */
+export async function listStatusReplies(businessId: string, id: string): Promise<WhatsAppMessageRecord[]> {
+  await requireOwn(businessId, id);
+  return messageRepository.listRepliesToStatus(businessId, id);
 }
 
 /** DRAFT -> SCHEDULED, and the real BullMQ delayed job that will actually fire the publish. */

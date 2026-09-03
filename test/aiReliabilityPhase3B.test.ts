@@ -9,7 +9,7 @@ import { register } from '../src/services/authService.js';
 import { classifyAiError } from '../src/services/ai/aiErrorClassification.js';
 import { getGeminiCircuitBreaker, getGeminiConfigCircuitBreaker, resetAllGeminiCircuitBreakers } from '../src/services/aiCircuitBreaker.js';
 import { buildTimeContext } from '../src/services/time/timeContext.js';
-import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
+import { createTestAccount, createTestBusiness, createTestSubscription, resetDatabase } from './helpers.js';
 import type { IngestedWhatsAppMessage } from '../src/services/whatsappMessageIngestionService.js';
 import type { AiAgentRecord } from '../src/repositories/aiAgentRepository.js';
 import type { AiHandoffContext } from '../src/services/aiContextGathererService.js';
@@ -523,6 +523,13 @@ describe('AI debounce - bursts, ordering, duplicate/stale jobs, crash safety, cr
 
   async function setupBusinessWithAgent(): Promise<{ businessId: string; accountId: string; accountJid: string }> {
     const businessId = await createTestBusiness();
+    // A real reply (aiReplyGenerateContentMock being called at all) now
+    // requires a real subscription - orchestrateAiReply's Section 34-40
+    // budget gate blocks on NO_ACTIVE_SUBSCRIPTION the same way every other
+    // entitlement check already did, and a bare createTestBusiness() alone
+    // never gets one (production always does, via ensureDefaultBusinessProvisioned/
+    // trialOnboardingService.ts's own subscription insert).
+    await createTestSubscription(businessId, 'starter');
     const accountJid = `1555000${Math.floor(Math.random() * 9000 + 1000)}@s.whatsapp.net`;
     const accountId = await createTestAccount(businessId, accountJid);
     await new AiAgentRepository(pool).create({ businessId, name: 'Reception Agent' });
@@ -796,6 +803,13 @@ describe('Group-chat participation gate wiring (real BullMQ worker + real Postgr
 
   async function setupBusinessWithAgent(): Promise<{ businessId: string; accountId: string; accountJid: string }> {
     const businessId = await createTestBusiness();
+    // A real reply (aiReplyGenerateContentMock being called at all) now
+    // requires a real subscription - orchestrateAiReply's Section 34-40
+    // budget gate blocks on NO_ACTIVE_SUBSCRIPTION the same way every other
+    // entitlement check already did, and a bare createTestBusiness() alone
+    // never gets one (production always does, via ensureDefaultBusinessProvisioned/
+    // trialOnboardingService.ts's own subscription insert).
+    await createTestSubscription(businessId, 'starter');
     const accountJid = `1555000${Math.floor(Math.random() * 9000 + 1000)}@s.whatsapp.net`;
     const accountId = await createTestAccount(businessId, accountJid);
     await new AiAgentRepository(pool).create({ businessId, name: 'Reception Agent' });

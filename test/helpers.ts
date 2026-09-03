@@ -71,6 +71,24 @@ export async function resetDatabase(): Promise<void> {
   await pool.query(`TRUNCATE TABLE ${TABLES.join(', ')} RESTART IDENTITY CASCADE`);
 }
 
+/**
+ * A throwaway plan row for tests that need to mutate a plan or its
+ * entitlements (e.g. planAdmin.test.ts's write-path coverage). Never reuse
+ * the real seeded plans ('starter'/'growth'/etc.) for this - resetDatabase()
+ * deliberately does not truncate plans/plan_entitlements (see the NOTE
+ * above), so a test that edits 'starter' in place would leak that change
+ * into every other test in the same process for the rest of the run.
+ */
+export async function createTestPlan(planKey = `test-plan-${Math.random().toString(36).slice(2)}`): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO plans (plan_key, name, price_monthly_cents) VALUES ($1, $2, 1000) RETURNING id`,
+    [planKey, planKey],
+  );
+  const row = rows[0];
+  if (!row) throw new Error('failed to create test plan');
+  return row.id;
+}
+
 export async function createTestBusiness(name = 'Test Business'): Promise<string> {
   const { rows } = await pool.query<{ id: string }>('INSERT INTO businesses (name) VALUES ($1) RETURNING id', [name]);
   const row = rows[0];

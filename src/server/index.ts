@@ -34,6 +34,7 @@ import { WhatsAppAccountRepository } from '../repositories/whatsappAccountReposi
 import { CrmContactRepository } from '../repositories/crmContactRepository.js';
 import { UserPreferenceRepository } from '../repositories/userPreferenceRepository.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
+import { toCsv } from '../services/export/csvExport.js';
 import { checkDatabaseHealth, pool } from '../db/pool.js';
 import { checkRedisHealth } from '../redis/client.js';
 import { checkQueueHealth } from '../queue/queueHealth.js';
@@ -201,6 +202,7 @@ import {
   createScheduledStatus,
   listScheduledStatuses,
   getScheduledStatus,
+  listStatusReplies,
   scheduleStatus,
   cancelScheduledStatus,
   deleteScheduledStatus,
@@ -1292,6 +1294,18 @@ app.get('/api/workspace/scheduled-statuses/:id', requireWorkspaceContext, async 
   }
 });
 
+/** "Status comments" - real replies WhatsApp delivered to this status, see scheduledStatusService.ts's listStatusReplies. */
+app.get('/api/workspace/scheduled-statuses/:id/replies', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    const replies = await listStatusReplies(businessId, String(req.params.id ?? ''));
+    return res.status(200).json({ replies });
+  } catch (error) {
+    if (isScheduledStatusNotFoundError(error)) return res.status(404).json({ error: 'SCHEDULED_STATUS_NOT_FOUND' });
+    throw error;
+  }
+});
+
 function scheduledStatusActionHandler(action: (businessId: string, id: string) => Promise<unknown>) {
   return async (req: Request, res: Response) => {
     const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
@@ -2072,6 +2086,39 @@ app.get('/api/workspace/next-best-actions', requireWorkspaceContext, async (_req
   return res.status(200).json({ actions });
 });
 
+const DEFAULT_BRIEFING_LOOKBACK_HOURS = 12;
+
+/** Section 48 (Autonomous Morning Briefing). `sinceHours` lets the client ask for a different lookback window than the default overnight one; never a fabricated "since you went to sleep" precision this system has no real way to know. */
+app.get('/api/workspace/morning-briefing', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsedHours = Number(req.query.sinceHours);
+  const sinceHours = Number.isFinite(parsedHours) && parsedHours > 0 && parsedHours <= 168 ? parsedHours : DEFAULT_BRIEFING_LOOKBACK_HOURS;
+  const sinceIso = new Date(Date.now() - sinceHours * 60 * 60 * 1000).toISOString();
+  const briefing = await workspaceService.getMorningBriefing(businessId, sinceIso);
+  return res.status(200).json(briefing);
+});
+
+/** Section 56 (Appointment System) - every real meeting this business has booked, across both providers. */
+app.get('/api/workspace/appointments', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const appointments = await workspaceService.listAppointments(businessId);
+  return res.status(200).json({ appointments });
+});
+
+app.post('/api/workspace/appointments/:id/cancel', requireWorkspaceContext, requirePermission('crm.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const appointment = await workspaceService.cancelAppointment(businessId, String(req.params.id ?? ''));
+  if (!appointment) return res.status(404).json({ error: 'APPOINTMENT_NOT_FOUND', message: 'Not found, or not currently confirmed.' });
+  return res.status(200).json({ appointment });
+});
+
+app.post('/api/workspace/appointments/:id/no-show', requireWorkspaceContext, requirePermission('crm.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const appointment = await workspaceService.markAppointmentNoShow(businessId, String(req.params.id ?? ''));
+  if (!appointment) return res.status(404).json({ error: 'APPOINTMENT_NOT_FOUND', message: 'Not found, or not currently confirmed.' });
+  return res.status(200).json({ appointment });
+});
+
 app.get('/api/workspace/business', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const business = await workspaceService.getBusinessProfile(businessId);
@@ -2294,7 +2341,7 @@ const createAgentSchema = z.object({
   allowedTools: z.array(z.string().trim().min(1)).max(50).optional(),
   forbiddenTools: z.array(z.string().trim().min(1)).max(50).optional(),
   allowedToolsEnabled: z.boolean().optional(),
-  requiresApprovalForActions: z.boolean().optional(),
+  autonomyLevel: z.number().int().min(1).max(5).optional(),
   sourceTemplateKey: z.string().trim().min(1).nullish(),
   sourceTemplateVersion: z.number().int().min(1).nullish(),
 });
@@ -2518,17 +2565,17 @@ app.patch('/api/workspace/agents/:agentId/status', requireWorkspaceContext, requ
   }
 });
 
-const updateAgentRequiresApprovalSchema = z.object({ requiresApprovalForActions: z.boolean() });
+const updateAgentAutonomyLevelSchema = z.object({ autonomyLevel: z.number().int().min(1).max(5) });
 
-/** The narrow action an approval-pattern suggestion acts on - see updateAgentRequiresApproval's own doc comment. */
-app.patch('/api/workspace/agents/:agentId/requires-approval', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
+/** The narrow action an approval-pattern suggestion acts on - see updateAgentAutonomyLevel's own doc comment. */
+app.patch('/api/workspace/agents/:agentId/autonomy-level', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
-  const parsed = updateAgentRequiresApprovalSchema.safeParse(req.body);
+  const parsed = updateAgentAutonomyLevelSchema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ error: 'INVALID_REQUIRES_APPROVAL', details: parsed.error.flatten() });
+    return res.status(400).json({ error: 'INVALID_AUTONOMY_LEVEL', details: parsed.error.flatten() });
   }
   try {
-    const agent = await workspaceService.updateAgentRequiresApproval(businessId, String(req.params.agentId ?? ''), parsed.data.requiresApprovalForActions);
+    const agent = await workspaceService.updateAgentAutonomyLevel(businessId, String(req.params.agentId ?? ''), parsed.data.autonomyLevel);
     return res.status(200).json({ agent });
   } catch (error) {
     if (isChatNotFoundError(error)) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });
@@ -2660,6 +2707,8 @@ const updateCrmContactSchema = z.object({
   tags: z.array(z.string().trim().min(1)),
   /** Omit to leave the stored address alone; null clears it. */
   email: z.string().trim().max(320).nullish(),
+  /** Section 23: omit to leave the manual name override alone; null clears it. */
+  manualDisplayName: z.string().trim().min(1).max(200).nullish(),
 });
 
 app.patch('/api/workspace/crm-contacts/:id', requireWorkspaceContext, requirePermission('crm.edit'), async (req, res) => {
@@ -2699,6 +2748,64 @@ app.patch('/api/workspace/crm-contacts/:id/privacy', requireWorkspaceContext, re
     rawMetadata: { contactId, flags: parsed.data },
   });
   return res.status(200).json({ crmContact: updated });
+});
+
+/**
+ * Section 67 (CRM Data Export): every real contact and lead this business
+ * owns, as a real downloadable file - never a truncated preview dressed up
+ * as an export. CSV is the default (the common "open in a spreadsheet"
+ * case); ?format=json returns the same real rows unformatted.
+ */
+app.get('/api/workspace/crm/export', requireWorkspaceContext, requirePermission('reports.export'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const format = req.query.format === 'json' ? 'json' : 'csv';
+  const { contacts, leads } = await workspaceService.exportCrmData(businessId);
+  const stamp = new Date().toISOString().slice(0, 10);
+
+  if (format === 'json') {
+    res.setHeader('Content-Disposition', `attachment; filename="crm-export-${stamp}.json"`);
+    return res.status(200).json({ contacts, leads });
+  }
+
+  const contactRows = contacts.map((c) => ({
+    ...c,
+    displayName: c.contactDisplayName ?? c.contactVerifiedName ?? c.contactBusinessName ?? c.contactPushName ?? c.contactShortName ?? (c.whatsappJid ? c.whatsappJid : 'Unknown contact'),
+    tags: c.tags.join('; '),
+  }));
+  const contactsCsv = toCsv(contactRows, [
+    { key: 'id', header: 'Contact ID' },
+    { key: 'displayName', header: 'Name' },
+    { key: 'phoneNumber', header: 'Phone' },
+    { key: 'email', header: 'Email' },
+    { key: 'stage', header: 'Stage' },
+    { key: 'leadStatus', header: 'Lead Status' },
+    { key: 'tags', header: 'Tags' },
+    { key: 'notes', header: 'Notes' },
+    { key: 'customerValue', header: 'Customer Value' },
+    { key: 'optedOutOfCampaigns', header: 'Opted Out Of Campaigns' },
+    { key: 'createdAt', header: 'Created At' },
+  ]);
+
+  const leadRows = leads.map((l) => ({
+    ...l,
+    contactDisplayName: l.contactDisplayName ?? l.contactVerifiedName ?? l.contactBusinessName ?? l.contactPushName ?? l.contactShortName ?? 'Unknown contact',
+  }));
+  const leadsCsv = toCsv(leadRows, [
+    { key: 'id', header: 'Lead ID' },
+    { key: 'contactDisplayName', header: 'Contact Name' },
+    { key: 'phoneNumber', header: 'Phone' },
+    { key: 'stage', header: 'Stage' },
+    { key: 'status', header: 'Status' },
+    { key: 'score', header: 'Score' },
+    { key: 'value', header: 'Value' },
+    { key: 'nextAction', header: 'Next Action' },
+    { key: 'createdAt', header: 'Created At' },
+  ]);
+
+  const csv = `CONTACTS\r\n${contactsCsv}\r\n\r\nLEADS\r\n${leadsCsv}\r\n`;
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="crm-export-${stamp}.csv"`);
+  return res.status(200).send(csv);
 });
 
 app.get('/api/workspace/leads', requireWorkspaceContext, async (_req, res) => {

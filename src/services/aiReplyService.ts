@@ -10,7 +10,7 @@ import { CustomerMemoryRepository } from '../repositories/customerMemoryReposito
 import { describeTimeContext } from './time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME, getCurrentTimeFunctionDeclaration } from './time/getCurrentTimeTool.js';
 import { UPDATE_CONVERSATION_STATE_TOOL_NAME, updateConversationStateFunctionDeclaration, type UpdateConversationStateToolArgs } from './state/updateConversationStateTool.js';
-import { applyConversationStateUpdate, applyCustomerMemoryUpdate } from './state/conversationStateWriter.js';
+import { applyConversationStateUpdate, applyCustomerMemoryUpdate, recordNameUsed } from './state/conversationStateWriter.js';
 import { randomUUID } from 'node:crypto';
 import { SCHEDULE_MEETING_TOOL_NAME, scheduleMeetingFunctionDeclaration, type ScheduleMeetingToolArgs } from './meeting/scheduleMeetingTool.js';
 import { SCHEDULE_ZOOM_MEETING_TOOL_NAME, scheduleZoomMeetingFunctionDeclaration, type ScheduleZoomMeetingToolArgs } from './meeting/scheduleZoomMeetingTool.js';
@@ -33,6 +33,9 @@ import { detectCommitmentPhrase } from './commitmentDetector.js';
 import { mediaFallbackText, type InlineMediaPart } from './ai/mediaContext.js';
 import { classifyAiError } from './ai/aiErrorClassification.js';
 import { notifyBusiness } from './notificationService.js';
+import { classifyMessage } from './ai/conversationIntentClassifier.js';
+import { resolveNameEvidence, shouldUseName, replyUsesName } from './ai/identityEngine.js';
+import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 
 const conversationStateRepository = new ConversationStateRepository(pool);
 const customerMemoryRepository = new CustomerMemoryRepository(pool);
@@ -55,11 +58,91 @@ async function recordCommitmentIfDetected(replyText: string, context: AiHandoffC
       console.error('[aiReplyService] Failed to record a detected commitment:', error instanceof Error ? error.message : error);
     });
 }
-const approvalService = new ApprovalService(pool);
 
 /**
- * The "ask before acting" path for a SEND-tier tool (agent.
- * requiresApprovalForActions, migration 955): instead of executing
+ * Section 19 (Name Repetition Protection) - same deterministic-detection,
+ * never-throws pattern as recordCommitmentIfDetected above. Resolves the
+ * exact same name evidence buildSystemInstruction offered the model, then
+ * checks the REAL reply text rather than trusting the model to self-report
+ * that it used the name.
+ */
+async function recordNameUsageIfDetected(replyText: string, context: AiHandoffContext): Promise<void> {
+  const evidence = resolveNameEvidence({
+    staffConfirmedName: context.contactNameSources?.staffConfirmedName,
+    confirmedPreferredName: context.conversationState?.preferredName,
+    verifiedName: context.contactNameSources?.verifiedName,
+    businessName: context.contactNameSources?.businessName,
+    pushName: context.contactNameSources?.pushName,
+    username: context.contactNameSources?.username,
+    shortName: context.contactNameSources?.shortName,
+  });
+  if (!replyUsesName(replyText, evidence)) return;
+  await recordNameUsed(conversationStateRepository, context.businessId, context.chatId).catch((error) => {
+    console.error('[aiReplyService] Failed to record name usage:', error instanceof Error ? error.message : error);
+  });
+}
+const approvalService = new ApprovalService(pool);
+const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
+
+/**
+ * Section 04's first pipeline stage, run before the Gemini call. Never
+ * throws and never blocks the reply - a classification miss must not cost
+ * a customer their reply, the same "best-effort, reply always wins"
+ * principle as recordCommitmentIfDetected above. Only writes a real audit
+ * event for what's actually noteworthy (riskLevel >= 2 or sensitive info
+ * detected) - a security_audit_logs row per greeting would be pure noise,
+ * not observability. The row itself never stores the raw message text -
+ * only the classification (intent/entities-by-type-count/risk) - so a
+ * flagged "sensitive info detected" event doesn't itself become a place an
+ * SSN or card number ends up persisted in plaintext.
+ */
+async function classifyAndAuditInboundMessage(agent: AiAgentRecord, context: AiHandoffContext): Promise<void> {
+  const latestInbound = [...context.conversationHistory].reverse().find((m) => m.direction === 'inbound');
+  const text = latestInbound?.textContent ?? latestInbound?.caption;
+  if (!text) return;
+  try {
+    const classification = classifyMessage(text);
+    if (classification.riskLevel < 2 && !classification.sensitiveInfoDetected) return;
+    await securityAuditLogRepository.record({
+      businessId: context.businessId,
+      whatsappAccountId: null,
+      eventType: 'message_risk_flagged',
+      severity: classification.riskLevel >= 3 ? 'warning' : 'info',
+      reason: `Inbound message classified as "${classification.intent}" (risk ${classification.riskLevel})`,
+      rawMetadata: {
+        chatId: context.chatId,
+        agentId: agent.id,
+        intent: classification.intent,
+        riskLevel: classification.riskLevel,
+        sensitiveInfoDetected: classification.sensitiveInfoDetected,
+        entityTypes: classification.entities.map((e) => e.type),
+      },
+    });
+  } catch (error) {
+    console.error('[aiReplyService] Failed to classify/audit an inbound message:', error instanceof Error ? error.message : error);
+  }
+}
+
+/**
+ * Autonomy level 4 ("trusted", migration 961): the action already executed
+ * immediately - this only tells the business it happened, via the real,
+ * pre-existing notification fan-out (notifyBusiness), never a fabricated
+ * or logged-only event. Level 3 and 5 execute identically but skip this
+ * call entirely - 3 because that's the unchanged pre-961 default, 5
+ * because "fully autonomous" means no extra oversight overhead either.
+ * Best-effort: a notification failure must never turn an already-real
+ * booking into a failed reply the customer never receives.
+ */
+async function notifyAutonomousAction(agent: AiAgentRecord, businessId: string, title: string, body: string): Promise<void> {
+  if (agent.autonomyLevel !== 4) return;
+  await notifyBusiness({ businessId, type: 'STATUS', severity: 'info', title, body }).catch((error) => {
+    console.error('[aiReplyService] Failed to notify business of an autonomous action:', error instanceof Error ? error.message : error);
+  });
+}
+
+/**
+ * The "ask before acting" path for a SEND-tier tool, reached at autonomy
+ * levels 1-2 (agent.autonomyLevel, migration 961): instead of executing
  * immediately, persists a real pending action into the same
  * platform_action_requests/approval queue the property vertical already
  * uses, dispatched later by GoogleMeetBookingExecutor/
@@ -187,6 +270,14 @@ function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: Ai
     functionDeclarations = functionDeclarations.filter((declaration) => !!declaration.name && allowedTools.includes(declaration.name));
   }
   functionDeclarations = functionDeclarations.filter((declaration) => !declaration.name || !forbiddenTools.includes(declaration.name));
+  // Autonomy level 1 ("read-only", migration 961) - same READ-only filter
+  // as the business-wide aiActionsPaused kill switch below, just scoped to
+  // this one agent. Purely an efficiency filter so Gemini's one round of
+  // tool calls per reply isn't wasted on a guaranteed denial - the
+  // authoritative enforcement lives in agentGuard.ts's guardToolInvocation.
+  if (agent.autonomyLevel === 1) {
+    functionDeclarations = functionDeclarations.filter((declaration) => getToolPolicy(declaration.name ?? '')?.risk === 'READ');
+  }
   if (aiActionsPaused) {
     functionDeclarations = functionDeclarations.filter((declaration) => getToolPolicy(declaration.name ?? '')?.risk === 'READ');
   }
@@ -324,6 +415,38 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
   if (state?.openQuestions.some((question) => !question.resolvedAt)) {
     const open = state.openQuestions.filter((question) => !question.resolvedAt).map((question) => question.question);
     lines.push(`Open questions not yet answered: ${open.join('; ')}.`);
+  }
+  // Section 06/10: your own last read of where this conversation sits and
+  // how ready the customer seemed - internal tracking only, never mention
+  // either to the customer. Fed back here so a later turn can build on the
+  // last assessment instead of re-deriving it from scratch every message.
+  if (state?.funnelStage) {
+    lines.push(`(Internal only, never mention this) Conversation stage as of your last assessment: ${state.funnelStage}.`);
+  }
+  if (state?.customerReadiness) {
+    lines.push(`(Internal only, never mention this) Customer readiness as of your last assessment: ${state.customerReadiness}.`);
+  }
+  // Sections 14-24 (Identity & Name Discovery Engine): real, evidence-based
+  // guidance on whether to use the customer's name this turn - never a
+  // guess dressed up as instruction, and never forced when there's no real
+  // evidence (see identityEngine.ts). The decision itself is deterministic;
+  // only whether/what name to consider using is computed here.
+  const nameEvidence = resolveNameEvidence({
+    staffConfirmedName: context.contactNameSources?.staffConfirmedName,
+    confirmedPreferredName: state?.preferredName,
+    verifiedName: context.contactNameSources?.verifiedName,
+    businessName: context.contactNameSources?.businessName,
+    pushName: context.contactNameSources?.pushName,
+    username: context.contactNameSources?.username,
+    shortName: context.contactNameSources?.shortName,
+  });
+  if (nameEvidence && shouldUseName({ evidence: nameEvidence, lastNameUsedAt: state?.lastNameUsedAt ?? null }) === 'USE_NAME_NATURALLY') {
+    lines.push(
+      `You may naturally address the customer as "${nameEvidence.name}" if it fits this reply - not in every reply, ` +
+        `and never more than once per message.`,
+    );
+  } else if (nameEvidence) {
+    lines.push(`You already used the customer's name recently in this conversation - do not use it again this reply, keep it natural.`);
   }
   if (toolsAvailable) {
     lines.push(
@@ -530,6 +653,7 @@ async function tryFallbackProviders(
     });
     const fallbackText = response.text.slice(0, MAX_REPLY_CHARS);
     await recordCommitmentIfDetected(fallbackText, context);
+    await recordNameUsageIfDetected(fallbackText, context);
     return { status: 'generated', text: fallbackText };
   } catch (error) {
     return {
@@ -632,7 +756,7 @@ async function executeOneToolCall(
       // honestly rather than send a malformed request to Google or crash.
       return { booked: false, reason: 'missing_required_fields' };
     }
-    if (agent.requiresApprovalForActions) {
+    if (agent.autonomyLevel <= 2) {
       return createPendingApprovalAction(SCHEDULE_GOOGLE_MEET_ACTION_TYPE, agent, context, {
         chatId: context.chatId,
         contactId: context.crmContact?.id ?? null,
@@ -643,7 +767,7 @@ async function executeOneToolCall(
         ...(args.durationMinutes !== undefined ? { durationMinutes: args.durationMinutes } : {}),
       });
     }
-    return bookGoogleMeeting({
+    const googleResult = await bookGoogleMeeting({
       businessId: context.businessId,
       chatId: context.chatId,
       contactId: context.crmContact?.id ?? null,
@@ -654,6 +778,10 @@ async function executeOneToolCall(
       startDateTimeIso: args.startDateTimeIso,
       ...(args.durationMinutes !== undefined ? { durationMinutes: args.durationMinutes } : {}),
     });
+    if (googleResult.booked) {
+      await notifyAutonomousAction(agent, context.businessId, 'AI booked a Google Meet automatically', `${args.title} - the AI agent booked this without waiting for approval.`);
+    }
+    return googleResult;
   }
 
   if (call.name === SCHEDULE_ZOOM_MEETING_TOOL_NAME) {
@@ -664,7 +792,7 @@ async function executeOneToolCall(
     if (!args.title || !args.startDateTimeIso) {
       return { booked: false, reason: 'missing_required_fields' };
     }
-    if (agent.requiresApprovalForActions) {
+    if (agent.autonomyLevel <= 2) {
       return createPendingApprovalAction(SCHEDULE_ZOOM_MEETING_ACTION_TYPE, agent, context, {
         chatId: context.chatId,
         contactId: context.crmContact?.id ?? null,
@@ -675,7 +803,7 @@ async function executeOneToolCall(
         ...(args.durationMinutes !== undefined ? { durationMinutes: args.durationMinutes } : {}),
       });
     }
-    return bookZoomMeeting({
+    const zoomResult = await bookZoomMeeting({
       businessId: context.businessId,
       chatId: context.chatId,
       contactId: context.crmContact?.id ?? null,
@@ -686,6 +814,10 @@ async function executeOneToolCall(
       startDateTimeIso: args.startDateTimeIso,
       ...(args.durationMinutes !== undefined ? { durationMinutes: args.durationMinutes } : {}),
     });
+    if (zoomResult.booked) {
+      await notifyAutonomousAction(agent, context.businessId, 'AI booked a Zoom meeting automatically', `${args.title} - the AI agent booked this without waiting for approval.`);
+    }
+    return zoomResult;
   }
 
   if (call.name === LIST_PROPERTIES_TOOL_NAME) {
@@ -790,6 +922,10 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
     return { status: 'unavailable', reason: 'No real message text to reply to', skipEscalation: true };
   }
 
+  // Section 04 pipeline stage - fire-and-forget, never gates or delays the
+  // reply itself (see classifyAndAuditInboundMessage's own doc comment).
+  void classifyAndAuditInboundMessage(agent, context);
+
   const geminiCircuitBreaker = getGeminiCircuitBreaker(agent.businessId);
   const geminiConfigCircuitBreaker = getGeminiConfigCircuitBreaker(agent.businessId);
 
@@ -881,6 +1017,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
 
     const finalText = text.slice(0, MAX_REPLY_CHARS);
     await recordCommitmentIfDetected(finalText, context);
+    await recordNameUsageIfDetected(finalText, context);
     return { status: 'generated', text: finalText };
   } catch (error) {
     const classified = classifyAiError(error);

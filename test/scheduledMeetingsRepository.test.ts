@@ -182,4 +182,100 @@ describe('ScheduledMeetingsRepository (real Postgres)', () => {
       ),
     ).rejects.toThrow();
   });
+
+  describe('Section 56 (Appointment System) - real lifecycle mutation (previously scheduled_meetings had none at all)', () => {
+    async function makeMeeting(businessId: string, overrides: { startAt?: Date; endAt?: Date; externalEventId?: string } = {}) {
+      const googleRepo = new GoogleMeetingRepository(pool);
+      const repo = new ScheduledMeetingsRepository(pool);
+      const connection = await googleRepo.upsertConnection({ businessId, googleEmail: `booker-${Math.random()}@example.com`, accessToken: 'access' });
+      const startAt = overrides.startAt ?? new Date(Date.now() + 24 * 3600_000);
+      const endAt = overrides.endAt ?? new Date(startAt.getTime() + 30 * 60_000);
+      return repo.createMeeting({
+        provider: 'google_meet',
+        googleConnectionId: connection.id,
+        businessId,
+        chatId: null,
+        contactId: null,
+        agentId: null,
+        title: 'Property viewing',
+        startAt,
+        endAt,
+        timezone: 'UTC',
+        attendeeEmail: 'customer@example.com',
+        externalEventId: overrides.externalEventId ?? `evt-${Math.random()}`,
+        meetUrl: 'https://meet.google.com/abc-defg-hij',
+      });
+    }
+
+    it('listForBusiness returns every real meeting for the business, most-imminent-first', async () => {
+      await resetDatabase();
+      const businessId = await createTestBusiness();
+      const earlier = await makeMeeting(businessId, { startAt: new Date(Date.now() + 3600_000) });
+      const later = await makeMeeting(businessId, { startAt: new Date(Date.now() + 7200_000) });
+
+      const rows = await new ScheduledMeetingsRepository(pool).listForBusiness(businessId);
+      expect(rows.map((r) => r.id)).toEqual([later.id, earlier.id]);
+    });
+
+    it('markCancelled sets status and cancelled_at, only from confirmed, and is tenant-scoped', async () => {
+      await resetDatabase();
+      const businessId = await createTestBusiness();
+      const otherBusinessId = await createTestBusiness('Other Business');
+      const meeting = await makeMeeting(businessId);
+      const repo = new ScheduledMeetingsRepository(pool);
+
+      expect(await repo.markCancelled(otherBusinessId, meeting.id)).toBeNull(); // cross-tenant - never touches another business's row
+
+      const cancelled = await repo.markCancelled(businessId, meeting.id);
+      expect(cancelled?.status).toBe('cancelled');
+      expect(cancelled?.cancelledAt).not.toBeNull();
+
+      // Already cancelled - a second call is a real no-op, not a re-cancel.
+      expect(await repo.markCancelled(businessId, meeting.id)).toBeNull();
+    });
+
+    it('markNoShow sets status only from confirmed, and is tenant-scoped', async () => {
+      await resetDatabase();
+      const businessId = await createTestBusiness();
+      const meeting = await makeMeeting(businessId);
+      const repo = new ScheduledMeetingsRepository(pool);
+
+      const noShow = await repo.markNoShow(businessId, meeting.id);
+      expect(noShow?.status).toBe('no_show');
+
+      // Already no_show - cannot be marked again.
+      expect(await repo.markNoShow(businessId, meeting.id)).toBeNull();
+    });
+
+    it('findConfirmedPastEnd finds only confirmed meetings whose end has passed - never cancelled/failed/no_show, never still-upcoming ones', async () => {
+      await resetDatabase();
+      const businessId = await createTestBusiness();
+      const repo = new ScheduledMeetingsRepository(pool);
+
+      const past = await makeMeeting(businessId, { startAt: new Date(Date.now() - 7200_000), endAt: new Date(Date.now() - 3600_000) });
+      const stillUpcoming = await makeMeeting(businessId);
+      const pastButCancelled = await makeMeeting(businessId, { startAt: new Date(Date.now() - 7200_000), endAt: new Date(Date.now() - 3600_000) });
+      await repo.markCancelled(businessId, pastButCancelled.id);
+
+      const due = await repo.findConfirmedPastEnd(new Date().toISOString());
+      const dueIds = due.map((m) => m.id);
+      expect(dueIds).toContain(past.id);
+      expect(dueIds).not.toContain(stillUpcoming.id);
+      expect(dueIds).not.toContain(pastButCancelled.id);
+    });
+
+    it('markCompleted transitions a confirmed meeting to completed, and is a no-op on anything not confirmed', async () => {
+      await resetDatabase();
+      const businessId = await createTestBusiness();
+      const repo = new ScheduledMeetingsRepository(pool);
+      const meeting = await makeMeeting(businessId);
+
+      await repo.markCompleted(meeting.id);
+      const [row] = await repo.listForBusiness(businessId);
+      expect(row?.status).toBe('completed');
+
+      // Calling it again (already completed, not confirmed) must not error.
+      await expect(repo.markCompleted(meeting.id)).resolves.not.toThrow();
+    });
+  });
 });

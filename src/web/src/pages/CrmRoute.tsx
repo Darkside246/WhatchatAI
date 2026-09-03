@@ -3,14 +3,15 @@ import { useSearchParams } from 'react-router-dom';
 import {
   api,
   ApiError,
+  downloadCrmExport,
   type WorkspaceCrmContactSummary,
   type WorkspaceLeadSummary,
   type LeadStatusValue,
 } from '../lib/api.js';
+import { PIPELINE_STATUSES, nextPipelineOptions } from '../lib/pipelineStages.js';
 
 const STAGE_OPTIONS = ['new_enquiry', 'qualified', 'proposal_sent', 'negotiation', 'customer', 'lost'];
 const LEAD_STATUS_OPTIONS = ['open', 'nurturing', 'unresponsive', 'closed'];
-const PIPELINE_STATUSES: LeadStatusValue[] = ['NEW', 'QUALIFIED', 'ENGAGED', 'WON', 'LOST'];
 
 const PIPELINE_LABEL: Record<LeadStatusValue, string> = {
   NEW: 'New',
@@ -33,6 +34,46 @@ function formatMoney(value: number | null): string {
   return `$${value.toLocaleString()}`;
 }
 
+/**
+ * Section 66: makes visible what identityEngine.ts already uses internally
+ * to decide how the AI addresses this customer - a "verified name" (real
+ * WhatsApp identity confirmation) and a "push name" (whatever the
+ * customer's own phone happens to be set to, which can be a nickname, an
+ * emoji, or a shared family device's name) are very different in
+ * trustworthiness, and staff had no way to see which one a given contact
+ * actually has before this. Read-only - the underlying source fields come
+ * from WhatsApp itself, not something staff edit here.
+ */
+function IdentitySourcesPanel({ contact }: { contact: WorkspaceCrmContactSummary }) {
+  const sources: { label: string; value: string | null; hint: string }[] = [
+    { label: 'Verified name', value: contact.verifiedName, hint: 'Confirmed by WhatsApp itself - the most trustworthy source' },
+    { label: 'Business name', value: contact.businessName, hint: 'Set on a WhatsApp Business account' },
+    { label: 'Push name', value: contact.pushName, hint: "Whatever this contact's own phone is set to - can be a nickname or shared device name" },
+    { label: 'Short name', value: contact.shortName, hint: 'A shorter variant WhatsApp sometimes supplies alongside the push name' },
+  ];
+  const anyKnown = sources.some((s) => s.value);
+
+  return (
+    <div className="mt-4 rounded-lg border border-border-subtle bg-surface-2 p-3">
+      <p className="text-caption font-medium text-fg-secondary">Identity sources</p>
+      {anyKnown ? (
+        <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5">
+          {sources.map((s) => (
+            <div key={s.label} className={s.value ? '' : 'opacity-40'}>
+              <dt className="text-meta text-fg-muted" title={s.hint}>
+                {s.label}
+              </dt>
+              <dd className="text-caption text-fg">{s.value ?? '—'}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="mt-1 text-caption text-fg-muted">WhatsApp has not supplied any name information for this contact yet.</p>
+      )}
+    </div>
+  );
+}
+
 function ContactDetailCard({
   contact,
   onSaved,
@@ -44,6 +85,7 @@ function ContactDetailCard({
   const [leadStatus, setLeadStatus] = useState(contact.leadStatus ?? '');
   const [notes, setNotes] = useState(contact.notes ?? '');
   const [email, setEmail] = useState(contact.email ?? '');
+  const [manualDisplayName, setManualDisplayName] = useState(contact.manualDisplayName ?? '');
   const [tagsInput, setTagsInput] = useState(contact.tags.join(', '));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +100,7 @@ function ContactDetailCard({
     setLeadStatus(contact.leadStatus ?? '');
     setNotes(contact.notes ?? '');
     setEmail(contact.email ?? '');
+    setManualDisplayName(contact.manualDisplayName ?? '');
     setTagsInput(contact.tags.join(', '));
     setLeadCreated(false);
     setIsHidden(contact.isHidden);
@@ -102,6 +145,7 @@ function ContactDetailCard({
         notes: notes.trim() || null,
         tags,
         email: email.trim() || null,
+        manualDisplayName: manualDisplayName.trim() || null,
       });
       onSaved(crmContact);
     } catch (err) {
@@ -128,7 +172,24 @@ function ContactDetailCard({
         </button>
       </div>
 
+      <IdentitySourcesPanel contact={contact} />
+
       <div className="mt-5 space-y-3 max-w-md">
+        <div>
+          <label className="text-caption font-medium text-fg-secondary" htmlFor="crm-manual-name">
+            Confirmed name
+          </label>
+          <input
+            id="crm-manual-name"
+            value={manualDisplayName}
+            onChange={(e) => setManualDisplayName(e.target.value)}
+            placeholder="Leave blank to use the automatic sources above"
+            className="mt-1 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg outline-none focus:border-accent"
+          />
+          <p className="mt-1 text-meta text-fg-muted">
+            A correction you enter here outranks every automatic source, including what the customer told the AI directly - use it when you know the real name and WhatsApp's own sources got it wrong.
+          </p>
+        </div>
         <div>
           <label className="text-caption font-medium text-fg-secondary" htmlFor="crm-stage">
             Stage
@@ -349,7 +410,7 @@ function LeadCard({
         {lead.score !== null && <span>Score {lead.score}</span>}
       </div>
       <div className="mt-2 flex flex-wrap gap-1">
-        {PIPELINE_STATUSES.filter((s) => s !== lead.status).map((s) => (
+        {nextPipelineOptions(lead.status).map((s) => (
           <button
             key={s}
             type="button"
@@ -418,9 +479,23 @@ export function CrmRoute() {
   const tab: 'contacts' | 'leads' = searchParams.get('tab') === 'leads' ? 'leads' : 'contacts';
   const focusContactId = searchParams.get('contactId');
   const focusLeadId = searchParams.get('leadId');
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   function setTab(value: 'contacts' | 'leads') {
     setSearchParams(value === 'contacts' ? {} : { tab: value });
+  }
+
+  async function handleExport() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      await downloadCrmExport('csv');
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Export failed.');
+    } finally {
+      setExporting(false);
+    }
   }
 
   return (
@@ -439,6 +514,17 @@ export function CrmRoute() {
             {value === 'contacts' ? 'Contacts' : 'Pipeline'}
           </button>
         ))}
+        <div className="ml-auto flex items-center gap-2">
+          {exportError && <span className="text-caption text-error">{exportError}</span>}
+          <button
+            type="button"
+            disabled={exporting}
+            onClick={() => void handleExport()}
+            className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-2 disabled:opacity-50"
+          >
+            {exporting ? 'Exporting…' : 'Export CSV'}
+          </button>
+        </div>
       </div>
       {tab === 'contacts' ? <ContactsTab focusContactId={focusContactId} /> : <LeadsTab focusLeadId={focusLeadId} />}
     </div>

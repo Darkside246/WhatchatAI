@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import {
   ConversationStateConflictError,
+  CONVERSATION_FUNNEL_STAGES,
+  CUSTOMER_READINESS_LEVELS,
   type ConversationStateRepository,
   type ConversationFact,
   type ConversationOpenQuestion,
@@ -79,6 +81,30 @@ function buildPatch(current: { confirmedFacts: ConversationFact[]; openQuestions
     patch.openQuestions = questions;
   }
 
+  // Current-state snapshots, not accumulating history - overwritten
+  // outright, unlike confirmedFacts/openQuestions above. A value outside
+  // the known set is silently ignored rather than thrown - the schema's
+  // own enum constraint should prevent this, but a tool call is never
+  // fully trusted just because the schema says so (same rule as every
+  // other tool arg in this codebase).
+  if (args.funnelStage !== undefined && (CONVERSATION_FUNNEL_STAGES as readonly string[]).includes(args.funnelStage)) {
+    patch.funnelStage = args.funnelStage;
+  }
+  if (args.customerReadiness !== undefined && (CUSTOMER_READINESS_LEVELS as readonly string[]).includes(args.customerReadiness)) {
+    patch.customerReadiness = args.customerReadiness;
+  }
+
+  // Section 15 Tier 2 evidence - same clear-on-empty-string convention as
+  // goal above. A generous but real cap (a "preferred name" is a word or
+  // two, never a paragraph) - never trusted at face value just because
+  // it's short, but nothing here validates it's plausible as a name
+  // beyond that; identityEngine.ts's caller is still the one deciding
+  // whether/how to actually use it.
+  if (args.preferredName !== undefined) {
+    const trimmed = args.preferredName.trim().slice(0, 100);
+    patch.preferredName = trimmed ? trimmed : null;
+  }
+
   return patch;
 }
 
@@ -112,6 +138,26 @@ export async function applyConversationStateUpdate(
 
     try {
       await repository.update(businessId, chatId, current.version, patch);
+      return;
+    } catch (error) {
+      if (error instanceof ConversationStateConflictError && attempt < MAX_CONFLICT_RETRIES - 1) continue;
+      throw error;
+    }
+  }
+}
+
+/**
+ * Section 19 (Name Repetition Protection): a system-set write, never a
+ * model-reported one - called only after deterministically confirming
+ * (identityEngine.ts's replyUsesName) that a reply actually contained the
+ * resolved name. Same bounded-retry shape as applyConversationStateUpdate,
+ * simplified since there is exactly one field to set.
+ */
+export async function recordNameUsed(repository: ConversationStateRepository, businessId: string, chatId: string): Promise<void> {
+  for (let attempt = 0; attempt < MAX_CONFLICT_RETRIES; attempt++) {
+    const current = await repository.getOrCreate(businessId, chatId);
+    try {
+      await repository.update(businessId, chatId, current.version, { lastNameUsedAt: new Date().toISOString() });
       return;
     } catch (error) {
       if (error instanceof ConversationStateConflictError && attempt < MAX_CONFLICT_RETRIES - 1) continue;

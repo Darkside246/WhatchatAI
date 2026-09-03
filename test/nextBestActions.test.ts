@@ -7,6 +7,7 @@ import { AiCommitmentRepository } from '../src/repositories/aiCommitmentReposito
 import { PlatformActionRepository } from '../src/repositories/platformActionRepository.js';
 import { InvoiceRepository } from '../src/repositories/invoiceRepository.js';
 import { AiAgentRepository } from '../src/repositories/aiAgentRepository.js';
+import { ConversationStateRepository } from '../src/repositories/conversationStateRepository.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 
 const chatRepo = new WhatsAppChatRepository(pool);
@@ -14,8 +15,9 @@ const commitmentRepo = new AiCommitmentRepository(pool);
 const actionRepo = new PlatformActionRepository(pool);
 const invoiceRepo = new InvoiceRepository(pool);
 const agentRepo = new AiAgentRepository(pool);
+const conversationStateRepo = new ConversationStateRepository(pool);
 
-describe('workspaceService.getNextBestActions (real Postgres, real aggregation across 4 real signal sources)', () => {
+describe('workspaceService.getNextBestActions (real Postgres, real aggregation across 6 real signal sources)', () => {
   let businessId: string;
   let accountId: string;
 
@@ -76,10 +78,40 @@ describe('workspaceService.getNextBestActions (real Postgres, real aggregation a
     expect(actions[0]?.description).toContain('50.00');
   });
 
+  it('surfaces a real conversation the AI flagged as URGENT/READY_TO_ACT', async () => {
+    const chat = await chatRepo.upsertFromWhatsApp({ businessId, whatsappAccountId: accountId, chatJid: '15550006666@s.whatsapp.net', jidKind: 'individual', chatType: 'individual', name: 'Urgent Customer' });
+    const state = await conversationStateRepo.getOrCreate(businessId, chat.id);
+    await conversationStateRepo.update(businessId, chat.id, state.version, { customerReadiness: 'URGENT' });
+
+    const actions = await workspaceService.getNextBestActions(businessId);
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ type: 'high_readiness_conversation', priority: 'action_needed', link: `/chats/${chat.id}` });
+    expect(actions[0]?.title).toContain('Urgent Customer');
+  });
+
+  it('does not double-surface a high-readiness conversation the AI already escalated to a human', async () => {
+    const chat = await chatRepo.upsertFromWhatsApp({ businessId, whatsappAccountId: accountId, chatJid: '15550007777@s.whatsapp.net', jidKind: 'individual', chatType: 'individual', name: 'Escalated Customer' });
+    await chatRepo.setAiMode(chat.id, 'HUMAN_TAKEOVER', 'manual_reply_detected');
+    const state = await conversationStateRepo.getOrCreate(businessId, chat.id);
+    await conversationStateRepo.update(businessId, chat.id, state.version, { customerReadiness: 'READY_TO_ACT' });
+
+    const actions = await workspaceService.getNextBestActions(businessId);
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.type).toBe('chat_needs_human'); // the escalation signal, not a second readiness signal for the same chat
+  });
+
+  it('does not surface a high-readiness conversation that has already converted (BOOKED/CUSTOMER)', async () => {
+    const chat = await chatRepo.upsertFromWhatsApp({ businessId, whatsappAccountId: accountId, chatJid: '15550008888@s.whatsapp.net', jidKind: 'individual', chatType: 'individual' });
+    const state = await conversationStateRepo.getOrCreate(businessId, chat.id);
+    await conversationStateRepo.update(businessId, chat.id, state.version, { customerReadiness: 'READY_TO_ACT', funnelStage: 'BOOKED' });
+
+    expect(await workspaceService.getNextBestActions(businessId)).toEqual([]);
+  });
+
   it('ranks action_needed items before suggestion items, and by age within a tier - oldest first', async () => {
     // A real approval-pattern suggestion (priority: suggestion).
     process.env.APPROVAL_PATTERN_THRESHOLD = '2';
-    const agent = await agentRepo.create({ businessId, name: 'Streak Agent', requiresApprovalForActions: true });
+    const agent = await agentRepo.create({ businessId, name: 'Streak Agent', autonomyLevel: 2 });
     for (let i = 0; i < 2; i += 1) {
       const row = await actionRepo.create({
         id: randomUUID(), businessId, type: 'meeting.schedule_google_meet', payload: {}, requestedByKind: 'AGENT', requestedById: agent.id,

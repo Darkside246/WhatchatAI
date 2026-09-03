@@ -54,15 +54,15 @@ describe('AiAgentRepository', () => {
     expect(updated?.forbiddenTools).toEqual(['schedule_zoom_meeting']);
   });
 
-  it('defaults to requiresApprovalForActions: false, and round-trips a real change through create and update', async () => {
+  it('defaults to autonomyLevel: 3, and round-trips a real change through create and update', async () => {
     const defaultAgent = await agents.create({ businessId, name: 'Default Agent' });
-    expect(defaultAgent.requiresApprovalForActions).toBe(false);
+    expect(defaultAgent.autonomyLevel).toBe(3);
 
-    const created = await agents.create({ businessId, name: 'Cautious Agent', requiresApprovalForActions: true });
-    expect(created.requiresApprovalForActions).toBe(true);
+    const created = await agents.create({ businessId, name: 'Cautious Agent', autonomyLevel: 2 });
+    expect(created.autonomyLevel).toBe(2);
 
-    const updated = await agents.update(created.id, { name: 'Cautious Agent', requiresApprovalForActions: false });
-    expect(updated?.requiresApprovalForActions).toBe(false);
+    const updated = await agents.update(created.id, { name: 'Cautious Agent', autonomyLevel: 3 });
+    expect(updated?.autonomyLevel).toBe(3);
   });
 
   it('defaults to null source template provenance, and round-trips a real value through create and update', async () => {

@@ -47,6 +47,38 @@ describe('workspaceService CRM & Leads (real display-name resolution + tenant is
       const contacts = await workspaceService.listCrmContacts(otherBusinessId);
       expect(contacts).toEqual([]);
     });
+
+    it('Section 66: surfaces the real underlying name-source breakdown, not just the collapsed display name', async () => {
+      const contactRepo = new WhatsAppContactRepository(pool);
+      await contactRepo.upsertFromWhatsApp({
+        businessId,
+        whatsappAccountId: accountId,
+        whatsappJid: '15550008888@s.whatsapp.net',
+        jidKind: 'individual',
+        phoneNumber: '+15550008888',
+        pushName: 'Johnny',
+        verifiedName: 'John Smith',
+        businessName: 'Smith Contracting',
+        shortName: 'John',
+      });
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO crm_contacts (business_id, whatsapp_contact_id, source) VALUES ($1, (SELECT id FROM whatsapp_contacts WHERE whatsapp_jid = '15550008888@s.whatsapp.net' AND business_id = $1), 'whatsapp_inbound') RETURNING id`,
+        [businessId],
+      );
+      expect(rows[0]?.id).toBeTruthy();
+
+      const contacts = await workspaceService.listCrmContacts(businessId);
+      const richContact = contacts.find((c) => c.pushName === 'Johnny');
+      expect(richContact?.verifiedName).toBe('John Smith');
+      expect(richContact?.businessName).toBe('Smith Contracting');
+      expect(richContact?.shortName).toBe('John');
+      // The original fixture contact only ever had a push name - every
+      // other source must stay honestly null, never fabricated.
+      const sparseContact = contacts.find((c) => c.pushName === 'Real Prospect');
+      expect(sparseContact?.verifiedName).toBeNull();
+      expect(sparseContact?.businessName).toBeNull();
+      expect(sparseContact?.shortName).toBeNull();
+    });
   });
 
   describe('updateCrmContact', () => {

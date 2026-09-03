@@ -127,6 +127,23 @@ export class ScheduledStatusRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /**
+   * "Status comments" feature: WhatsApp's own reply-to-status carries the
+   * original status's real WhatsApp message id via contextInfo.stanzaId
+   * (see whatsappMessagePersistenceService.ts) - this resolves that id back
+   * to the real scheduled_statuses row it replied to, the same way an
+   * ordinary quoted-message reply resolves against whatsapp_messages.
+   * Business-scoped so one tenant's status id space can never be probed
+   * from another's inbound message.
+   */
+  async findByPublishedWhatsappMessageId(businessId: string, whatsappMessageId: string): Promise<ScheduledStatusRecord | null> {
+    const { rows } = await this.db.query<ScheduledStatusRow>(
+      'SELECT * FROM scheduled_statuses WHERE business_id = $1 AND published_whatsapp_message_id = $2',
+      [businessId, whatsappMessageId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
   async listForBusiness(businessId: string): Promise<ScheduledStatusRecord[]> {
     const { rows } = await this.db.query<ScheduledStatusRow>(
       'SELECT * FROM scheduled_statuses WHERE business_id = $1 ORDER BY scheduled_at DESC',

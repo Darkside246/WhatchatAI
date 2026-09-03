@@ -246,6 +246,28 @@ export class WhatsAppOutboundMessageRepository {
   }
 
   /**
+   * The emergency-stop primitive: pulls every still-'queued' message for a
+   * set of ids out of the send path in one statement, the same way a
+   * message already 'sent'/'indeterminate' is already excluded in
+   * outboundDispatchWorker's own guard. Only ever matches 'queued' -
+   * a message already 'sending' (send_attempted_at set, or genuinely
+   * mid-flight) is deliberately left alone rather than raced, since
+   * whether WhatsApp already has it is exactly the thing that state means
+   * "we don't know yet." Returns the ids actually cancelled.
+   */
+  async cancelQueuedByIds(businessId: string, ids: string[]): Promise<string[]> {
+    if (ids.length === 0) return [];
+    const { rows } = await this.db.query<{ id: string }>(
+      `UPDATE whatsapp_outbound_messages
+       SET status = 'cancelled', updated_at = now()
+       WHERE id = ANY($1) AND business_id = $2 AND status = 'queued'
+       RETURNING id`,
+      [ids, businessId],
+    );
+    return rows.map((row) => row.id);
+  }
+
+  /**
    * True when this exact WhatsApp message ID was sent through our own
    * outbound pipeline (AI, a human via the dashboard, Operator Mode, a
    * campaign/funnel - anything that calls WhatsAppOutboundMessageService),

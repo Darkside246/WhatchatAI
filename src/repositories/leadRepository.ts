@@ -70,6 +70,8 @@ export interface LeadWithContactInfo extends LeadRecord {
   contactVerifiedName: string | null;
   contactBusinessName: string | null;
   contactShortName: string | null;
+  /** Section 23: a staff member's manual correction/confirmation on the underlying CRM contact - outranks every other source when displaying this lead. */
+  contactManualDisplayName: string | null;
 }
 
 interface LeadWithContactInfoRow extends LeadRow {
@@ -80,6 +82,7 @@ interface LeadWithContactInfoRow extends LeadRow {
   contact_verified_name: string | null;
   contact_business_name: string | null;
   contact_short_name: string | null;
+  contact_manual_display_name: string | null;
 }
 
 function toRecordWithContactInfo(row: LeadWithContactInfoRow): LeadWithContactInfo {
@@ -92,6 +95,7 @@ function toRecordWithContactInfo(row: LeadWithContactInfoRow): LeadWithContactIn
     contactVerifiedName: row.contact_verified_name,
     contactBusinessName: row.contact_business_name,
     contactShortName: row.contact_short_name,
+    contactManualDisplayName: row.contact_manual_display_name,
   };
 }
 
@@ -170,7 +174,7 @@ export class LeadRepository {
               wc.whatsapp_jid, wc.phone_number,
               wc.display_name AS contact_display_name, wc.push_name AS contact_push_name,
               wc.verified_name AS contact_verified_name, wc.business_name AS contact_business_name,
-              wc.short_name AS contact_short_name
+              wc.short_name AS contact_short_name, c.manual_display_name AS contact_manual_display_name
        FROM leads l
        JOIN crm_contacts c ON c.id = l.crm_contact_id
        LEFT JOIN whatsapp_contacts wc ON wc.id = c.whatsapp_contact_id
@@ -178,6 +182,25 @@ export class LeadRepository {
        ORDER BY l.updated_at DESC
        LIMIT $2`,
       [businessId, limit],
+    );
+    return rows.map(toRecordWithContactInfo);
+  }
+
+  /** Section 48 (Autonomous Morning Briefing): real leads actually created since a point in time - never a fabricated "new leads overnight" count. Same real contact join as listByBusiness. */
+  async listCreatedSince(businessId: string, sinceIso: string, limit = 50): Promise<LeadWithContactInfo[]> {
+    const { rows } = await this.db.query<LeadWithContactInfoRow>(
+      `SELECT l.*,
+              wc.whatsapp_jid, wc.phone_number,
+              wc.display_name AS contact_display_name, wc.push_name AS contact_push_name,
+              wc.verified_name AS contact_verified_name, wc.business_name AS contact_business_name,
+              wc.short_name AS contact_short_name, c.manual_display_name AS contact_manual_display_name
+       FROM leads l
+       JOIN crm_contacts c ON c.id = l.crm_contact_id
+       LEFT JOIN whatsapp_contacts wc ON wc.id = c.whatsapp_contact_id
+       WHERE l.business_id = $1 AND l.deleted_at IS NULL AND l.created_at >= $2
+       ORDER BY l.created_at DESC
+       LIMIT $3`,
+      [businessId, sinceIso, limit],
     );
     return rows.map(toRecordWithContactInfo);
   }

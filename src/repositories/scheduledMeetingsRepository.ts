@@ -10,7 +10,7 @@ export type ScheduledMeetingRecord = {
   googleConnectionId: string | null;
   zoomConnectionId: string | null;
   provider: MeetingProvider;
-  status: 'confirmed' | 'cancelled' | 'failed';
+  status: 'confirmed' | 'cancelled' | 'failed' | 'completed' | 'no_show';
   title: string;
   startAt: string;
   endAt: string;
@@ -98,6 +98,67 @@ export class ScheduledMeetingsRepository {
     return result.rows.map((r) => this.mapMeeting(r as Record<string, unknown>));
   }
 
+  /** Section 48 (Autonomous Morning Briefing): real meetings actually booked since a point in time - never a fabricated appointment count. */
+  async listCreatedSince(businessId: string, sinceIso: string, limit = 50): Promise<ScheduledMeetingRecord[]> {
+    const result = await this.db.query(
+      `SELECT * FROM scheduled_meetings WHERE business_id = $1 AND created_at >= $2 ORDER BY created_at DESC LIMIT $3`,
+      [businessId, sinceIso, limit],
+    );
+    return result.rows.map((r) => this.mapMeeting(r as Record<string, unknown>));
+  }
+
+  /** Section 56 (Appointment System) - every real meeting for this business, most-imminent-first, the real material for a dedicated Appointments page (none existed anywhere in the UI before this). */
+  async listForBusiness(businessId: string, limit = 200): Promise<ScheduledMeetingRecord[]> {
+    const result = await this.db.query(
+      `SELECT * FROM scheduled_meetings WHERE business_id = $1 ORDER BY start_at DESC LIMIT $2`,
+      [businessId, limit],
+    );
+    return result.rows.map((r) => this.mapMeeting(r as Record<string, unknown>));
+  }
+
+  /**
+   * Section 56's lifecycle: until this method, scheduled_meetings had
+   * literally no UPDATE statement anywhere in the codebase - a meeting's
+   * status never changed after creation, despite cancelled/failed already
+   * being declared types. This is the first real mutation of this table.
+   * 'completed' is set only by the real sweep below (endAt has genuinely
+   * passed), never by this generic setter with an arbitrary status - use
+   * the dedicated methods below for that and for no_show.
+   */
+  async markCancelled(businessId: string, id: string): Promise<ScheduledMeetingRecord | null> {
+    const result = await this.db.query(
+      `UPDATE scheduled_meetings SET status = 'cancelled', cancelled_at = now(), updated_at = now()
+       WHERE id = $1 AND business_id = $2 AND status = 'confirmed'
+       RETURNING *`,
+      [id, businessId],
+    );
+    return result.rows[0] ? this.mapMeeting(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  /** Only a human can know whether someone actually attended - never set automatically. */
+  async markNoShow(businessId: string, id: string): Promise<ScheduledMeetingRecord | null> {
+    const result = await this.db.query(
+      `UPDATE scheduled_meetings SET status = 'no_show', updated_at = now()
+       WHERE id = $1 AND business_id = $2 AND status = 'confirmed'
+       RETURNING *`,
+      [id, businessId],
+    );
+    return result.rows[0] ? this.mapMeeting(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  /** Real, computable fact for the completion sweep: a confirmed meeting whose end has genuinely already passed. Never includes cancelled/failed/no_show rows - those are terminal in a different direction. */
+  async findConfirmedPastEnd(beforeIso: string, limit = 500): Promise<ScheduledMeetingRecord[]> {
+    const result = await this.db.query(
+      `SELECT * FROM scheduled_meetings WHERE status = 'confirmed' AND end_at < $1 LIMIT $2`,
+      [beforeIso, limit],
+    );
+    return result.rows.map((r) => this.mapMeeting(r as Record<string, unknown>));
+  }
+
+  async markCompleted(id: string): Promise<void> {
+    await this.db.query(`UPDATE scheduled_meetings SET status = 'completed', updated_at = now() WHERE id = $1 AND status = 'confirmed'`, [id]);
+  }
+
   // Timestamp columns come back as plain ISO strings, not Date objects - the
   // pool's global TIMESTAMPTZ type parser (src/db/pool.ts) already converts
   // them - same convention as googleMeetingRepository.ts's own mapConnection().
@@ -111,7 +172,7 @@ export class ScheduledMeetingsRepository {
       googleConnectionId: row['google_connection_id'] as string | null,
       zoomConnectionId: row['zoom_connection_id'] as string | null,
       provider: row['provider'] as MeetingProvider,
-      status: row['status'] as 'confirmed' | 'cancelled' | 'failed',
+      status: row['status'] as 'confirmed' | 'cancelled' | 'failed' | 'completed' | 'no_show',
       title: row['title'] as string,
       startAt: row['start_at'] as string,
       endAt: row['end_at'] as string,

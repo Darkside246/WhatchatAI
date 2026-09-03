@@ -282,13 +282,13 @@ describe('schedule_google_meet tool (real Postgres + real guardToolInvocation, m
     return followUpContents?.at(-1)?.parts[0]?.functionResponse?.response;
   }
 
-  it('an agent with requiresApprovalForActions on never books immediately - it creates a real pending action in the approval queue instead', async () => {
+  it('an agent at autonomy level 2 never books immediately - it creates a real pending action in the approval queue instead', async () => {
     await connectGoogleMeeting();
     generateContentMock
       .mockResolvedValueOnce({ text: undefined, functionCalls: [{ name: SCHEDULE_MEETING_TOOL_NAME, args: toolCallArgs() }] })
       .mockResolvedValueOnce({ text: "Let me check with the team and confirm shortly." });
 
-    await generateAiReply(fakeAgent({ id: agentId, businessId, requiresApprovalForActions: true }), fakeContext({ businessId, chatId }));
+    await generateAiReply(fakeAgent({ id: agentId, businessId, autonomyLevel: 2 }), fakeContext({ businessId, chatId }));
 
     // Never calls the real Calendar API - nothing is booked yet.
     expect(fetchMock).not.toHaveBeenCalled();

@@ -1,0 +1,11 @@
+-- Section 23 (Identity & Name Discovery Engine): manually-saved contact
+-- names, deliberately deferred from the original 14-24 pass (see
+-- identityEngine.ts's own header comment) - "needs its own schema and
+-- page, not a side effect of this pass." This is that schema.
+--
+-- A staff member correcting or confirming a contact's real name (they
+-- misheard/misspelled it, or know it from an external source like a
+-- lease) outranks every automatic source identityEngine.ts already
+-- resolves - even the customer's own self-reported preferred name, since
+-- staff can catch something the automatic sources got wrong.
+ALTER TABLE crm_contacts ADD COLUMN manual_display_name TEXT;

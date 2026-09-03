@@ -10,7 +10,7 @@ import { GoogleMeetingRepository } from '../src/repositories/googleMeetingReposi
 import { ZoomMeetingRepository } from '../src/repositories/zoomMeetingRepository.js';
 import { AiAgentRepository } from '../src/repositories/aiAgentRepository.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
-import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
+import { createTestAccount, createTestBusiness, createTestUser, resetDatabase } from './helpers.js';
 import type { PlatformActionRow } from '../src/repositories/platformActionRepository.js';
 
 const fetchMock = vi.fn<typeof fetch>();
@@ -59,7 +59,7 @@ function fakeApprovedRow(overrides: Partial<PlatformActionRow> = {}): PlatformAc
 /**
  * These executors are only ever reachable once an operator approves a
  * pending action aiReplyService.ts's createPendingApprovalAction created
- * (see the "requiresApprovalForActions" tests in scheduleMeetingTool.test.ts
+ * (see the "autonomy level 2" tests in scheduleMeetingTool.test.ts
  * / scheduleZoomMeetingTool.test.ts) - this file proves the other half:
  * that approving one of these actions really does book the real meeting,
  * the same way platformApprovalActionBusDispatch.test.ts already proves
@@ -167,5 +167,137 @@ describe('GoogleMeetBookingExecutor / ZoomMeetBookingExecutor (real ActionBus di
 
     const rows = await pool.query('SELECT id FROM scheduled_meetings WHERE business_id = $1', [businessId]);
     expect(rows.rows).toHaveLength(1);
+  });
+
+  it('a dead Google refresh token (revoked/expired) reports FAILED and notifies the business to reconnect - not just a silent tool-call failure', async () => {
+    await createTestUser(businessId); // notifyBusiness only reaches real active members
+    const connection = await new GoogleMeetingRepository(pool).upsertConnection({
+      businessId,
+      googleEmail: 'connected@example.com',
+      accessToken: 'stale-access-token',
+      refreshToken: 'dead-refresh-token',
+      tokenExpiresAt: new Date(Date.now() - 1000), // already expired, forces the refresh path
+    });
+    // The one fetch call this makes is the token refresh itself - Google
+    // rejects a revoked refresh_token with a real non-2xx response.
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'invalid_grant' }, 400));
+
+    const row = fakeApprovedRow({
+      businessId,
+      requestedById: agentId,
+      type: SCHEDULE_GOOGLE_MEET_ACTION_TYPE,
+      payload: {
+        chatId: await createTestChat(businessId),
+        contactId: null,
+        businessTimezone: 'UTC',
+        attendeeEmail: 'customer@example.com',
+        title: 'Dead connection',
+        startDateTimeIso: '2030-06-01T15:00:00.000Z',
+      },
+    });
+    const request = actionRowToRequest(row);
+    const result = await actionBusService.execute(request, humanApprovalCapability(request), { tenantId: businessId, actorId: 'approver-user-1' });
+
+    expect(result.status).toBe('FAILED');
+    expect(result.error).toContain('token_invalid');
+
+    const { rows: notifications } = await pool.query<{ title: string; target_id: string }>(
+      `SELECT title, target_id FROM notifications WHERE business_id = $1 AND type = 'AUTOMATION_FAILURE'`,
+      [businessId],
+    );
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.title).toMatch(/Google Meet needs to be reconnected/i);
+    expect(notifications[0]?.target_id).toBe(connection.id);
+  });
+
+  it('a dead Zoom refresh token reports FAILED and notifies the business to reconnect', async () => {
+    await createTestUser(businessId); // notifyBusiness only reaches real active members
+    const connection = await new ZoomMeetingRepository(pool).upsertConnection({
+      businessId,
+      zoomEmail: 'connected@example.com',
+      zoomUserId: 'zoom-user-1',
+      accessToken: 'stale-access-token',
+      refreshToken: 'dead-refresh-token',
+      tokenExpiresAt: new Date(Date.now() - 1000),
+    });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'invalid_grant' }, 400));
+
+    const row = fakeApprovedRow({
+      businessId,
+      requestedById: agentId,
+      type: SCHEDULE_ZOOM_MEETING_ACTION_TYPE,
+      payload: { chatId: await createTestChat(businessId), contactId: null, businessTimezone: 'UTC', title: 'Dead Zoom connection', startDateTimeIso: '2030-06-01T15:00:00.000Z' },
+    });
+    const request = actionRowToRequest(row);
+    const result = await actionBusService.execute(request, humanApprovalCapability(request), { tenantId: businessId, actorId: 'approver-user-1' });
+
+    expect(result.status).toBe('FAILED');
+    expect(result.error).toContain('token_invalid');
+
+    const { rows: notifications } = await pool.query<{ title: string; target_id: string }>(
+      `SELECT title, target_id FROM notifications WHERE business_id = $1 AND type = 'AUTOMATION_FAILURE'`,
+      [businessId],
+    );
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.title).toMatch(/Zoom needs to be reconnected/i);
+    expect(notifications[0]?.target_id).toBe(connection.id);
+  });
+
+  it('an approval that sat long enough for its own proposed Google Meet time to pass is refused, never silently booked for a moment already gone', async () => {
+    await new GoogleMeetingRepository(pool).upsertConnection({
+      businessId,
+      googleEmail: 'connected@example.com',
+      accessToken: 'valid-access-token',
+      refreshToken: 'valid-refresh-token',
+      tokenExpiresAt: new Date(Date.now() + 3600_000),
+    });
+
+    const row = fakeApprovedRow({
+      businessId,
+      requestedById: agentId,
+      type: SCHEDULE_GOOGLE_MEET_ACTION_TYPE,
+      payload: {
+        chatId: await createTestChat(businessId),
+        contactId: null,
+        businessTimezone: 'UTC',
+        attendeeEmail: 'customer@example.com',
+        title: 'Approved too late',
+        startDateTimeIso: '2020-01-01T15:00:00.000Z', // long past by the time this "approval" happens
+      },
+    });
+    const request = actionRowToRequest(row);
+    const result = await actionBusService.execute(request, humanApprovalCapability(request), { tenantId: businessId, actorId: 'approver-user-1' });
+
+    expect(result.status).toBe('FAILED');
+    expect(result.error).toContain('start_time_already_passed');
+    expect(fetchMock).not.toHaveBeenCalled(); // never even attempts the real Calendar call
+    const rows = await pool.query('SELECT id FROM scheduled_meetings WHERE business_id = $1', [businessId]);
+    expect(rows.rows).toHaveLength(0);
+  });
+
+  it('an approval that sat long enough for its own proposed Zoom time to pass is refused, never silently booked', async () => {
+    await new ZoomMeetingRepository(pool).upsertConnection({
+      businessId,
+      zoomEmail: 'connected@example.com',
+      zoomUserId: 'zoom-user-1',
+      accessToken: 'valid-access-token',
+      refreshToken: 'valid-refresh-token',
+      tokenExpiresAt: new Date(Date.now() + 3600_000),
+    });
+
+    const row = fakeApprovedRow({
+      businessId,
+      requestedById: agentId,
+      type: SCHEDULE_ZOOM_MEETING_ACTION_TYPE,
+      payload: { chatId: await createTestChat(businessId), contactId: null, businessTimezone: 'UTC', title: 'Approved too late', startDateTimeIso: '2020-01-01T15:00:00.000Z' },
+    });
+    const request = actionRowToRequest(row);
+    const result = await actionBusService.execute(request, humanApprovalCapability(request), { tenantId: businessId, actorId: 'approver-user-1' });
+
+    expect(result.status).toBe('FAILED');
+    expect(result.error).toContain('start_time_already_passed');
+    expect(fetchMock).not.toHaveBeenCalled();
+    const rows = await pool.query('SELECT id FROM scheduled_meetings WHERE business_id = $1', [businessId]);
+    expect(rows.rows).toHaveLength(0);
   });
 });

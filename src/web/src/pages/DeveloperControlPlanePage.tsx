@@ -4,8 +4,9 @@ import {
   Activity, Bot, CreditCard, Database, Gauge, KeyRound, Radio, ShieldCheck, Users,
   Building2, CookingPot, ShoppingBag, Scissors, Car, Stethoscope, Scale, Hotel,
   HardHat, Package, ChevronDown, ChevronRight, LayoutGrid, Check, HeartPulse, X, Coins,
+  Wallet, Save,
 } from 'lucide-react';
-import { api } from '../lib/api.js';
+import { api, type DeveloperPlan, type PlanEntitlement } from '../lib/api.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -61,6 +62,19 @@ const VERTICAL_COLOURS: Record<string, string> = {
   hospitality:  'bg-amber-500/15 text-amber-600 dark:text-amber-400',
   construction: 'bg-yellow-500/15 text-yellow-700 dark:text-yellow-400',
   logistics:    'bg-teal-500/15 text-teal-600 dark:text-teal-400',
+};
+
+/** Mirrors BILLING_ENTITLEMENT_LABELS (workspaceService.ts) - display-only, so kept as a plain local map rather than round-tripping through the API. */
+const ENTITLEMENT_LABELS: Record<string, string> = {
+  max_ai_agents: 'AI Agents',
+  max_whatsapp_accounts: 'WhatsApp Accounts',
+  max_users: 'Team Members',
+  advanced_analytics: 'Advanced Analytics',
+  max_active_campaigns: 'Active Campaigns',
+  max_active_funnels: 'Active Funnels',
+  max_knowledge_base_documents: 'Knowledge Base Documents',
+  max_business_documents: 'Business Documents',
+  max_ai_tokens_per_month: 'AI Tokens / Month',
 };
 
 // ── Sub-components ─────────────────────────────────────────────────────────
@@ -244,6 +258,156 @@ function AccountRow({
   );
 }
 
+/**
+ * One editable limit row - "unlimited" is a real, distinct state (empty
+ * field, matching plan_entitlements.limit_value = NULL's own documented
+ * meaning), not just "a very large number", so the input is deliberately
+ * left blank rather than defaulting to 0 when limitValue is null.
+ */
+function EntitlementRow({
+  entitlement, onSave,
+}: {
+  entitlement: PlanEntitlement;
+  onSave: (key: string, input: { limitValue: number | null; isEnabled: boolean }) => Promise<void>;
+}) {
+  const [limitText, setLimitText] = useState(entitlement.limitValue === null ? '' : String(entitlement.limitValue));
+  const [isEnabled, setIsEnabled] = useState(entitlement.isEnabled);
+  const [busy, setBusy] = useState(false);
+  const dirty = isEnabled !== entitlement.isEnabled || limitText !== (entitlement.limitValue === null ? '' : String(entitlement.limitValue));
+
+  const handleSave = async () => {
+    const trimmed = limitText.trim();
+    const limitValue = trimmed === '' ? null : Number(trimmed);
+    if (limitValue !== null && (!Number.isFinite(limitValue) || limitValue < 0)) return;
+    setBusy(true);
+    try {
+      await onSave(entitlement.entitlementKey, { limitValue, isEnabled });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-border-subtle bg-surface-2 px-3 py-2">
+      <span className="min-w-0 flex-1 truncate text-caption font-medium text-fg">
+        {ENTITLEMENT_LABELS[entitlement.entitlementKey] ?? entitlement.entitlementKey}
+      </span>
+      <label className="flex items-center gap-1.5 text-meta text-fg-secondary">
+        <input type="checkbox" checked={isEnabled} onChange={(e) => setIsEnabled(e.target.checked)} disabled={busy} />
+        Enabled
+      </label>
+      <input
+        type="number"
+        min={0}
+        placeholder="Unlimited"
+        value={limitText}
+        onChange={(e) => setLimitText(e.target.value)}
+        disabled={busy}
+        className="w-28 rounded-md border border-border-subtle bg-surface-1 px-2 py-1 text-meta text-fg focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
+      />
+      <button
+        type="button"
+        onClick={() => void handleSave()}
+        disabled={busy || !dirty}
+        className="flex items-center gap-1 rounded-md bg-accent-soft px-2 py-1 text-meta font-medium text-accent transition hover:bg-accent/20 disabled:opacity-40"
+      >
+        <Save size={12} /> Save
+      </button>
+    </div>
+  );
+}
+
+function PlanCard({
+  plan, onUpdatePlan, onUpdateEntitlement,
+}: {
+  plan: DeveloperPlan;
+  onUpdatePlan: (planId: string, input: { priceMonthlyCents?: number; priceYearlyCents?: number | null; isActive?: boolean }) => Promise<void>;
+  onUpdateEntitlement: (planId: string, key: string, input: { limitValue: number | null; isEnabled: boolean }) => Promise<void>;
+}) {
+  const [monthly, setMonthly] = useState(String(plan.priceMonthlyCents / 100));
+  const [yearly, setYearly] = useState(plan.priceYearlyCents === null ? '' : String(plan.priceYearlyCents / 100));
+  const [isActive, setIsActive] = useState(plan.isActive);
+  const [busy, setBusy] = useState(false);
+  const priceDirty =
+    monthly !== String(plan.priceMonthlyCents / 100) ||
+    yearly !== (plan.priceYearlyCents === null ? '' : String(plan.priceYearlyCents / 100)) ||
+    isActive !== plan.isActive;
+
+  const handleSavePrice = async () => {
+    const monthlyCents = Math.round(Number(monthly) * 100);
+    if (!Number.isFinite(monthlyCents) || monthlyCents < 0) return;
+    const yearlyTrimmed = yearly.trim();
+    const yearlyCents = yearlyTrimmed === '' ? null : Math.round(Number(yearlyTrimmed) * 100);
+    if (yearlyCents !== null && (!Number.isFinite(yearlyCents) || yearlyCents < 0)) return;
+    setBusy(true);
+    try {
+      await onUpdatePlan(plan.id, { priceMonthlyCents: monthlyCents, priceYearlyCents: yearlyCents, isActive });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-1 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-title font-semibold">{plan.name}</p>
+          <p className="text-caption text-fg-muted">{plan.planKey}</p>
+        </div>
+        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-meta font-medium ${isActive ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'}`}>
+          {isActive ? <Check size={11} /> : null}
+          {isActive ? 'Active' : 'Retired'}
+        </span>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <label className="text-meta text-fg-secondary">
+          Monthly ({plan.currency})
+          <input
+            type="number" min={0} step="0.01" value={monthly} disabled={busy}
+            onChange={(e) => setMonthly(e.target.value)}
+            className="mt-1 w-full rounded-md border border-border-subtle bg-surface-2 px-2 py-1 text-caption text-fg focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
+          />
+        </label>
+        <label className="text-meta text-fg-secondary">
+          Yearly ({plan.currency})
+          <input
+            type="number" min={0} step="0.01" placeholder="—" value={yearly} disabled={busy}
+            onChange={(e) => setYearly(e.target.value)}
+            className="mt-1 w-full rounded-md border border-border-subtle bg-surface-2 px-2 py-1 text-caption text-fg focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
+          />
+        </label>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between">
+        <label className="flex items-center gap-1.5 text-meta text-fg-secondary">
+          <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} disabled={busy} />
+          Plan is active (visible for new signups)
+        </label>
+        <button
+          type="button"
+          onClick={() => void handleSavePrice()}
+          disabled={busy || !priceDirty}
+          className="flex items-center gap-1 rounded-md bg-accent-soft px-2 py-1 text-meta font-medium text-accent transition hover:bg-accent/20 disabled:opacity-40"
+        >
+          <Save size={12} /> Save pricing
+        </button>
+      </div>
+
+      <div className="mt-4 space-y-1.5">
+        <p className="text-meta font-medium text-fg-secondary">Entitlements</p>
+        {plan.entitlements.map((entitlement) => (
+          <EntitlementRow
+            key={entitlement.entitlementKey}
+            entitlement={entitlement}
+            onSave={(key, input) => onUpdateEntitlement(plan.id, key, input)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────
 
 export function DeveloperControlPlanePage() {
@@ -252,10 +416,12 @@ export function DeveloperControlPlanePage() {
   const [aiUsage, setAiUsage] = useState<AiUsageOverview | null>(null);
   const [verticals, setVerticals] = useState<Vertical[]>([]);
   const [accounts, setAccounts] = useState<ProductAccount[]>([]);
+  const [plans, setPlans] = useState<DeveloperPlan[]>([]);
   const [catalogOpen, setCatalogOpen] = useState(true);
   const [accountsOpen, setAccountsOpen] = useState(true);
   const [healthOpen, setHealthOpen] = useState(true);
   const [aiUsageOpen, setAiUsageOpen] = useState(true);
+  const [plansOpen, setPlansOpen] = useState(true);
 
   useEffect(() => {
     api.getControlPlaneStats().then((r) => setStats(r.stats)).catch(() => undefined);
@@ -263,11 +429,28 @@ export function DeveloperControlPlanePage() {
     api.getAiUsageOverview().then(setAiUsage).catch(() => undefined);
     api.listVerticals().then((r) => setVerticals(r.verticals)).catch(() => undefined);
     api.listAllProductAccountsDev().then((r) => setAccounts(r.accounts)).catch(() => undefined);
+    api.listPlans().then((r) => setPlans(r.plans)).catch(() => undefined);
   }, []);
 
   const handleAssign = (businessId: string, productKey: string) => {
     setAccounts((prev) =>
       prev.map((a) => (a.businessId === businessId ? { ...a, productKey } : a)),
+    );
+  };
+
+  const handleUpdatePlan = async (planId: string, input: { priceMonthlyCents?: number; priceYearlyCents?: number | null; isActive?: boolean }) => {
+    const { plan } = await api.updatePlan(planId, input);
+    setPlans((prev) => prev.map((p) => (p.id === planId ? { ...p, ...plan } : p)));
+  };
+
+  const handleUpdateEntitlement = async (planId: string, entitlementKey: string, input: { limitValue: number | null; isEnabled: boolean }) => {
+    const { entitlement } = await api.upsertPlanEntitlement(planId, entitlementKey, input);
+    setPlans((prev) =>
+      prev.map((p) =>
+        p.id !== planId
+          ? p
+          : { ...p, entitlements: p.entitlements.some((e) => e.entitlementKey === entitlementKey) ? p.entitlements.map((e) => (e.entitlementKey === entitlementKey ? entitlement : e)) : [...p.entitlements, entitlement] },
+      ),
     );
   };
 
@@ -342,6 +525,38 @@ export function DeveloperControlPlanePage() {
           {aiUsageOpen && (
             <div className="border-t border-border-subtle px-6 pb-6 pt-4">
               <AiUsageSection usage={aiUsage} />
+            </div>
+          )}
+        </section>
+
+        {/* ── Plan management — collapsible hamburger group ── */}
+        <section className="rounded-2xl border border-border-subtle bg-surface-1 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setPlansOpen((o) => !o)}
+            className="flex w-full items-center gap-3 px-6 py-4 text-left hover:bg-surface-2 transition-colors"
+          >
+            <Wallet size={18} className="shrink-0 text-accent" />
+            <span className="flex-1 text-title font-semibold">Plan Management</span>
+            <span className="text-caption text-fg-muted">{plans.length} plans</span>
+            {plansOpen
+              ? <ChevronDown size={16} className="shrink-0 text-fg-muted" />
+              : <ChevronRight size={16} className="shrink-0 text-fg-muted" />}
+          </button>
+          {plansOpen && (
+            <div className="border-t border-border-subtle px-6 pb-6 pt-4">
+              <p className="mb-4 text-caption text-fg-secondary">
+                Edit pricing and per-tier limits directly - changes apply to every business on that plan immediately. Leave a limit blank for unlimited.
+              </p>
+              {plans.length === 0 ? (
+                <p className="text-caption text-fg-muted">Loading…</p>
+              ) : (
+                <div className="grid gap-4 lg:grid-cols-2">
+                  {plans.map((plan) => (
+                    <PlanCard key={plan.id} plan={plan} onUpdatePlan={handleUpdatePlan} onUpdateEntitlement={handleUpdateEntitlement} />
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </section>

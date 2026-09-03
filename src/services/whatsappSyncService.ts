@@ -284,6 +284,26 @@ export class WhatsAppSyncService {
     return { processed, failed };
   }
 
+  /**
+   * Section 25 of the AURA master directive ("sync from the point of the
+   * last successful logoff/disconnect/completed sync, not by
+   * reprocessing the entire history"): the socket requests
+   * syncFullHistory on every connection (see whatsappTenantConnection.ts),
+   * not only the first pairing, and real-world Baileys sessions can and do
+   * resend a full messaging-history.set batch on an ordinary reconnect -
+   * not only on a genuinely new device pairing. Before this guard, that
+   * resend was fully reprocessed every time: every contact, chat, and
+   * historical message run back through ingestContacts/ingestChats/
+   * ingestHistoryMessages again. Never corrupted data (every write below
+   * is an idempotent upsert), but real, unnecessary, potentially large
+   * reprocessing work on every reconnect. An account that has already
+   * completed its initial sync has no reason to redo it - any genuinely
+   * new message arrives through the live messages.upsert ('notify') path
+   * instead. A future explicit "request a backfill" action is a
+   * deliberately separate code path from this passive event handler, not
+   * blocked by this guard. 'failed'/'in_progress'/'not_started' all still
+   * proceed normally below, so resuming after a real failure keeps working.
+   */
   async ingestHistorySet(
     businessId: string,
     whatsappAccountId: string,
@@ -291,6 +311,12 @@ export class WhatsAppSyncService {
     payload: HistorySetPayload,
     ingestionService: WhatsAppMessageIngestionService,
   ): Promise<void> {
+    const accountBeforeSync = await this.accountRepository.findById(whatsappAccountId);
+    if (accountBeforeSync?.syncStatus === 'completed') {
+      console.log(`[Sync] Skipping a resent history-sync batch for account ${whatsappAccountId} - initial sync already completed.`);
+      return;
+    }
+
     await this.startInitialSync(businessId, whatsappAccountId);
     const jobId = this.activeSyncJobs.get(whatsappAccountId);
 

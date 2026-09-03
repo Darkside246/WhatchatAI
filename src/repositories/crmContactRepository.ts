@@ -6,6 +6,8 @@ export interface CrmContactRecord {
   whatsappContactId: string | null;
   /** Only ever a real address someone entered - WhatsApp does not provide one, and nothing here derives it. */
   email: string | null;
+  /** Section 23: a staff member's manual correction/confirmation of this contact's real name - outranks every automatic source in identityEngine.ts's hierarchy, including the customer's own self-reported preferred name. */
+  manualDisplayName: string | null;
   source: string | null;
   stage: string | null;
   leadStatus: string | null;
@@ -30,6 +32,7 @@ interface CrmContactRow {
   business_id: string;
   whatsapp_contact_id: string | null;
   email: string | null;
+  manual_display_name: string | null;
   source: string | null;
   stage: string | null;
   lead_status: string | null;
@@ -55,6 +58,7 @@ function toRecord(row: CrmContactRow): CrmContactRecord {
     businessId: row.business_id,
     whatsappContactId: row.whatsapp_contact_id,
     email: row.email,
+    manualDisplayName: row.manual_display_name,
     source: row.source,
     stage: row.stage,
     leadStatus: row.lead_status,
@@ -123,6 +127,8 @@ export interface UpdateCrmContactInput {
   tags: string[];
   /** undefined leaves the stored address untouched; null clears it. */
   email?: string | null | undefined;
+  /** undefined leaves the stored name untouched; null clears the manual override, reverting identityEngine.ts to its next-best automatic source. */
+  manualDisplayName?: string | null | undefined;
 }
 
 export class CrmContactRepository {
@@ -189,6 +195,7 @@ export class CrmContactRepository {
       `UPDATE crm_contacts SET
          stage = $3, lead_status = $4, notes = $5, tags = $6::jsonb,
          email = CASE WHEN $8 THEN $7 ELSE email END,
+         manual_display_name = CASE WHEN $10 THEN $9 ELSE manual_display_name END,
          updated_at = now()
        WHERE id = $1 AND business_id = $2 AND deleted_at IS NULL
        RETURNING *`,
@@ -201,6 +208,8 @@ export class CrmContactRepository {
         JSON.stringify(input.tags),
         input.email ?? null,
         input.email !== undefined,
+        input.manualDisplayName ?? null,
+        input.manualDisplayName !== undefined,
       ],
     );
     return rows[0] ? toRecord(rows[0]) : null;

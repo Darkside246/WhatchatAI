@@ -100,7 +100,7 @@ async function processOutboundMessage(job: Job<OutboundMessageJobData>): Promise
     console.error(`[OutboundDispatchWorker] No such outbound message ${outboundMessageId}`);
     return;
   }
-  if (record.status === 'sent' || record.status === 'indeterminate') return; // Already resolved on a prior delivery of this job.
+  if (record.status === 'sent' || record.status === 'indeterminate' || record.status === 'cancelled') return; // Already resolved on a prior delivery of this job, or stopped by a real cancel.
 
   if (record.sendAttemptedAt) {
     const reason =

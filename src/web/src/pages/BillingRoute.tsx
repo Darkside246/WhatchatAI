@@ -43,7 +43,7 @@ function formatPrice(cents: number, currency: string): string {
 /** Renders a real entitlement limit. null means genuinely unlimited on that plan, not "unknown". */
 function limitText(limit: number | null, isEnabled: boolean): string {
   if (!isEnabled) return 'Not included';
-  return limit === null ? 'Unlimited' : String(limit);
+  return limit === null ? 'Unlimited' : limit.toLocaleString();
 }
 
 /**
@@ -57,7 +57,7 @@ function UsageMeter({ label, current, limit }: { label: string; current: number;
     return (
       <div className="flex items-baseline justify-between gap-3">
         <span className="min-w-0-safe text-body text-fg">{label}</span>
-        <span className="shrink-0 text-caption text-fg-muted">{current} used · unlimited</span>
+        <span className="shrink-0 text-caption text-fg-muted">{current.toLocaleString()} used · unlimited</span>
       </div>
     );
   }
@@ -71,7 +71,7 @@ function UsageMeter({ label, current, limit }: { label: string; current: number;
       <div className="flex items-baseline justify-between gap-3">
         <span className="min-w-0-safe text-body text-fg">{label}</span>
         <span className="shrink-0 tabular-nums text-caption text-fg-secondary">
-          <span className="font-semibold text-fg">{current}</span> / {limit}
+          <span className="font-semibold text-fg">{current.toLocaleString()}</span> / {limit.toLocaleString()}
         </span>
       </div>
       <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-surface-3">

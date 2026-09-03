@@ -159,4 +159,56 @@ describe('WhatsAppSyncService (real Phase 3 sync, real Postgres)', () => {
     expect(job?.chatsProcessed).toBe(1);
     expect(job?.messagesProcessed).toBe(1);
   });
+
+  it('Section 25: skips reprocessing a resent history-sync batch once the account has already completed its initial sync', async () => {
+    // Complete the initial sync first, exactly as the previous test does.
+    await sync.ingestHistorySet(businessId, accountId, accountJid, {
+      chats: [{ id: '15550004444@s.whatsapp.net' } as Chat],
+      contacts: [{ id: '15550004444@s.whatsapp.net', name: 'History Contact' }],
+      messages: [],
+      progress: 100,
+      isLatest: true,
+    }, ingestionService);
+
+    const accountRepo = new WhatsAppAccountRepository(pool);
+    expect((await accountRepo.findById(accountId))?.syncStatus).toBe('completed');
+
+    // Baileys/WhatsApp resends a full history-sync batch on a later
+    // reconnect (real-world behavior, not hypothetical) - this must be
+    // skipped entirely, not reprocessed, even though reprocessing it would
+    // be harmless (idempotent upserts) rather than corrupting.
+    await sync.ingestHistorySet(businessId, accountId, accountJid, {
+      chats: [{ id: '15550005555@s.whatsapp.net' } as Chat],
+      contacts: [{ id: '15550005555@s.whatsapp.net', name: 'Should Not Be Ingested' }],
+      messages: [],
+      progress: 100,
+      isLatest: true,
+    }, ingestionService);
+
+    const neverIngested = await new WhatsAppContactRepository(pool).findByJid(businessId, accountId, '15550005555@s.whatsapp.net');
+    expect(neverIngested).toBeNull(); // never ingested - the resend was skipped before any writes
+
+    // Only the one real sync job from the original completed sync exists -
+    // the resend never created a second one.
+    const { rows } = await pool.query('SELECT id FROM whatsapp_sync_jobs WHERE whatsapp_account_id = $1', [accountId]);
+    expect(rows).toHaveLength(1);
+  });
+
+  it('Section 25: a history-sync batch after a genuine prior FAILURE still gets processed, not skipped (resume, not permanently stuck)', async () => {
+    const accountRepo = new WhatsAppAccountRepository(pool);
+    await accountRepo.markSyncFailed(accountId, 'simulated transient failure');
+    expect((await accountRepo.findById(accountId))?.syncStatus).toBe('failed');
+
+    await sync.ingestHistorySet(businessId, accountId, accountJid, {
+      chats: [{ id: '15550006666@s.whatsapp.net' } as Chat],
+      contacts: [{ id: '15550006666@s.whatsapp.net', name: 'Resumed Contact' }],
+      messages: [],
+      progress: 100,
+      isLatest: true,
+    }, ingestionService);
+
+    const contactRepo = new WhatsAppContactRepository(pool);
+    expect(await contactRepo.findByJid(businessId, accountId, '15550006666@s.whatsapp.net')).not.toBeNull();
+    expect((await accountRepo.findById(accountId))?.syncStatus).toBe('completed');
+  });
 });

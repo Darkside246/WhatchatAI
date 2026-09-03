@@ -98,6 +98,24 @@ export class SubscriptionRepository {
     return existing;
   }
 
+  /**
+   * Section 72 (billing preservation / cost control): every TRIALING
+   * subscription whose trial_ends_at has already passed and was never
+   * converted to a real paying status - the real population
+   * subscriptionExpiryService.ts's sweep acts on. Before this existed,
+   * trial_ends_at was set correctly at signup (both the 48-hour trial
+   * flow and the 14-day interim bootstrap) and even displayed to the
+   * business, but nothing ever read it back to actually enforce it -
+   * a trial never expired in practice.
+   */
+  async findExpiredTrials(now = new Date()): Promise<SubscriptionRecord[]> {
+    const { rows } = await this.db.query<SubscriptionRow>(
+      `SELECT * FROM subscriptions WHERE status = 'TRIALING' AND trial_ends_at IS NOT NULL AND trial_ends_at < $1`,
+      [now.toISOString()],
+    );
+    return rows.map(toRecord);
+  }
+
   async updateStatus(id: string, status: SubscriptionStatus): Promise<void> {
     const cancelledAtClause = status === 'CANCELLED' ? ', cancelled_at = now()' : '';
     await this.db.query(`UPDATE subscriptions SET status = $2, updated_at = now()${cancelledAtClause} WHERE id = $1`, [

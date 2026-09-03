@@ -38,7 +38,23 @@ describe('ConversationStateRepository', () => {
     expect(state.confirmedFacts).toEqual([]);
     expect(state.openQuestions).toEqual([]);
     expect(state.pendingActions).toEqual([]);
+    expect(state.funnelStage).toBeNull();
+    expect(state.customerReadiness).toBeNull();
     expect(state.version).toBe(1);
+  });
+
+  it('update() persists funnelStage and customerReadiness as a current-state snapshot', async () => {
+    const state = await repo.getOrCreate(businessId, chatId);
+    const updated = await repo.update(businessId, chatId, state.version, { funnelStage: 'QUALIFIED', customerReadiness: 'INTERESTED' });
+    expect(updated.funnelStage).toBe('QUALIFIED');
+    expect(updated.customerReadiness).toBe('INTERESTED');
+  });
+
+  it('the real database CHECK constraint rejects a funnel_stage value outside the known set, defense-in-depth below the application layer', async () => {
+    await repo.getOrCreate(businessId, chatId);
+    await expect(
+      pool.query(`UPDATE conversation_states SET funnel_stage = 'NOT_A_REAL_STAGE' WHERE business_id = $1 AND chat_id = $2`, [businessId, chatId]),
+    ).rejects.toThrow();
   });
 
   it('getOrCreate returns the same row on repeated calls, never duplicating', async () => {

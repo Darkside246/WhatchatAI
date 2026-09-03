@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CheckCircle2, Clock3, CookingPot, MapPin, PackageCheck, Phone, Plus, Search, Truck } from 'lucide-react';
+import { CheckCircle2, Clock3, CookingPot, MapPin, PackageCheck, Phone, Plus, Search, Truck, Eye } from 'lucide-react';
 
 type OrderStatus = 'New' | 'Preparing' | 'Ready' | 'Out for delivery';
 
@@ -49,6 +49,24 @@ export function FoodOperationsPage() {
   return (
     <div className="min-h-0 flex-1 overflow-auto bg-surface-0 p-5 sm:p-8">
       <div className="mx-auto max-w-7xl space-y-6">
+        {/*
+          Real gap, not yet a real feature: this whole page is local React
+          state (initialOrders/menuItems above) with no api.* call anywhere
+          - "Advance" mutates the mock order in memory, nothing is
+          persisted, and no real WhatsApp order ever reaches it. Shown as a
+          convincing, fully-styled UI without this banner, it reads as a
+          working feature to anyone previewing the food vertical (a real
+          risk flagged directly: showing this in a live demo would be
+          actively misleading). Every other unbuilt vertical already says
+          so honestly via PlaceholderPage's "Not built yet" badge; Food
+          just never got the same treatment because it looks real instead
+          of blank.
+        */}
+        <div className="flex items-start gap-3 rounded-xl border border-warning/30 bg-warning/10 px-4 py-3 text-caption text-fg-secondary">
+          <Eye size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden />
+          <p><span className="font-semibold text-fg">Preview only.</span> Orders and menu items below are sample data for illustration - this page isn't yet connected to real WhatsApp orders. Not built yet, same as the other in-progress verticals.</p>
+        </div>
+
         <section className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div><p className="text-meta font-semibold tracking-widest text-accent">FOOD OPERATIONS</p><h1 className="mt-1 text-3xl font-semibold tracking-tight">Run the day from WhatsApp</h1><p className="mt-2 text-body text-fg-secondary">Orders, kitchen progress, menu availability and fulfilment in one workspace.</p></div>
           <div className="flex flex-wrap gap-2"><Link to="/chats" className="rounded-lg border border-border-subtle px-4 py-2 text-body font-medium hover:bg-surface-2">Open conversations</Link><button type="button" onClick={() => setFilter('New')} className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-body font-semibold text-white hover:bg-accent-dim"><Plus size={17} /> New order</button></div>
@@ -66,7 +84,7 @@ export function FoodOperationsPage() {
 
           <aside className="space-y-6">
             <div className="rounded-2xl border border-border-subtle bg-surface-1 p-5"><div className="flex items-center justify-between"><div><h2 className="text-title font-semibold">Menu availability</h2><p className="mt-1 text-caption text-fg-muted">What the Food Agent should offer now.</p></div><button type="button" className="rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium hover:bg-surface-2">Manage menu</button></div><div className="mt-5 space-y-3">{menuItems.map((item) => <div key={item.name} className="flex items-center justify-between rounded-xl bg-surface-2 px-3 py-3"><div><p className="text-caption font-medium">{item.name}</p><p className="text-meta text-fg-muted">{item.price}</p></div><span className={`rounded-full px-2.5 py-1 text-meta ${item.available ? 'bg-success/15 text-success' : 'bg-surface-3 text-fg-muted'}`}>{item.available ? 'Available' : 'Paused'}</span></div>)}</div></div>
-            <div className="rounded-2xl border border-border-subtle bg-surface-1 p-5"><h2 className="text-title font-semibold">Customer handoff</h2><p className="mt-2 text-caption leading-6 text-fg-secondary">Buzz and the Food Agent stay behind the conversation. Your team only sees the order, customer context and next action.</p><div className="mt-4 grid gap-2 text-caption"><button type="button" className="flex items-center gap-2 rounded-lg border border-border-subtle px-3 py-2 text-left hover:bg-surface-2"><Phone size={15} className="text-accent" /> Review customer contact</button><button type="button" className="flex items-center gap-2 rounded-lg border border-border-subtle px-3 py-2 text-left hover:bg-surface-2"><CheckCircle2 size={15} className="text-success" /> Escalate to human</button></div></div>
+            <div className="rounded-2xl border border-border-subtle bg-surface-1 p-5"><h2 className="text-title font-semibold">Customer handoff</h2><p className="mt-2 text-caption leading-6 text-fg-secondary">Your AI agent stays behind the conversation. Your team only sees the order, customer context and next action.</p><div className="mt-4 grid gap-2 text-caption"><button type="button" className="flex items-center gap-2 rounded-lg border border-border-subtle px-3 py-2 text-left hover:bg-surface-2"><Phone size={15} className="text-accent" /> Review customer contact</button><button type="button" className="flex items-center gap-2 rounded-lg border border-border-subtle px-3 py-2 text-left hover:bg-surface-2"><CheckCircle2 size={15} className="text-success" /> Escalate to human</button></div></div>
           </aside>
         </section>
       </div>

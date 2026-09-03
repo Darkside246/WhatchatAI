@@ -66,7 +66,7 @@ router.get('/pending', requirePermission('property.approve'), async (_req, res) 
  * dispatch as approving one action at a time, not a second, thinner
  * code path that quietly skips them.
  */
-async function runPostApprovalSideEffects(action: PlatformActionRow, auth: AuthContext, reason: string | undefined): Promise<void> {
+export async function runPostApprovalSideEffects(action: PlatformActionRow, auth: AuthContext, reason: string | undefined): Promise<void> {
   try {
     const p = action.payload as Record<string, unknown>;
     if (typeof p.messageText === 'string' && typeof p.aiCategory === 'string') {
@@ -98,8 +98,28 @@ async function runPostApprovalSideEffects(action: PlatformActionRow, auth: AuthC
     });
     if (dispatch.status === 'FAILED') {
       console.error(`[PlatformApprovalRouter] ActionBus dispatch failed for action ${action.id} (${action.type}):`, dispatch.error);
+      // Before this, every approval - including one whose real side effect
+      // (a Calendar booking, a work order) just failed - got the exact same
+      // generic "Action request approved" notification below, with the
+      // real failure reason going only to a server log nobody watches. That
+      // told staff the opposite of what happened: the approval succeeded,
+      // but the thing they approved never actually occurred.
+      await notifyBusiness({
+        businessId: auth.businessId,
+        type: 'AUTOMATION_FAILURE',
+        severity: 'warning',
+        title: 'An approved action failed to execute',
+        body: `This was approved, but the real action did not go through: ${dispatch.error ?? 'unknown error'}.`,
+        targetType: 'platform_action_request',
+        targetId: action.id,
+      });
+      return;
     }
 
+    // DENIED here (distinct from FAILED) is the expected, benign case for
+    // an action type with no registered executor (see the comment above) -
+    // still gets the ordinary "approved" notification, since nothing was
+    // actually supposed to execute.
     // Notify the team - generic wording since this router is not
     // property-maintenance-specific, even though that is the only real
     // action type flowing through it today.

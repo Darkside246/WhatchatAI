@@ -154,6 +154,27 @@ describe('funnelService (real step execution, real backend actions only)', () =>
     expect(rows[0]!.tags).not.toContain('not-qualified');
   });
 
+  it('Section 92 (loop protection): a CONDITION cycle with no WAIT/MESSAGE in it is caught and reconciled to FAILED, never hangs the enrollment call forever', async () => {
+    const funnel = await createFunnel(businessId, accountId, ownerId, 'Accidental Cycle', null);
+    // Neither step's condition ever matches (the tag is never added), so
+    // both always take elseStepPosition - step 0 routes to step 1, step 1
+    // routes right back to step 0, forever, with nothing in between to
+    // ever pause or complete the run.
+    await replaceFunnelSteps(businessId, funnel.id, [
+      { nodeType: 'CONDITION', config: { field: 'tag', equals: 'never-added', matchStepPosition: 0, elseStepPosition: 1 } },
+      { nodeType: 'CONDITION', config: { field: 'tag', equals: 'never-added', matchStepPosition: 0, elseStepPosition: 0 } },
+    ]);
+    await setFunnelActive(businessId, funnel.id, true);
+
+    const crmContactId = await makeContactWithChat(businessId, accountId, '15559991005@s.whatsapp.net');
+
+    // The real assertion is that this resolves at all (a hang would time
+    // out the whole test) - the terminal state confirms it resolved honestly.
+    const instance = await enrollContact(businessId, funnel.id, crmContactId);
+    expect(instance.status).toBe('FAILED');
+    expect(instance.lastError).toMatch(/exceeded.*steps|CONDITION cycle/i);
+  });
+
   it('validates the new WAIT-until-local-time shape without breaking the original minutes-based validation', async () => {
     const funnel = await createFunnel(businessId, accountId, ownerId, 'Time-based wait', null);
 

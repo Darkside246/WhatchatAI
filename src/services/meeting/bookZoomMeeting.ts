@@ -3,6 +3,7 @@ import { ZoomMeetingRepository } from '../../repositories/zoomMeetingRepository.
 import { ScheduledMeetingsRepository } from '../../repositories/scheduledMeetingsRepository.js';
 import { getValidAccessToken as getValidZoomMeetingAccessToken } from '../zoomMeetingOAuthService.js';
 import { createZoomMeeting } from '../zoomMeetingClient.js';
+import { notifyBusiness } from '../notificationService.js';
 
 const zoomMeetingRepository = new ZoomMeetingRepository(pool);
 const scheduledMeetingsRepository = new ScheduledMeetingsRepository(pool);
@@ -39,12 +40,34 @@ export async function bookZoomMeeting(input: BookZoomMeetingInput): Promise<Book
 
   const accessToken = await getValidZoomMeetingAccessToken(input.businessId);
   if (!accessToken) {
+    // Same class of gap as bookGoogleMeeting.ts's identical check: a dead
+    // refresh token fails identically on every future attempt with nothing
+    // else in the system to ever surface it to staff.
+    await notifyBusiness({
+      businessId: input.businessId,
+      type: 'AUTOMATION_FAILURE',
+      severity: 'warning',
+      title: 'Zoom needs to be reconnected',
+      body: 'A booking attempt failed because the Zoom connection is no longer valid (likely revoked or expired). Reconnect it in Settings to resume booking Zoom meetings.',
+      targetType: 'zoom_meeting_connection',
+      targetId: connection.id,
+    }).catch((error) => {
+      console.error('[bookZoomMeeting] Failed to dispatch AUTOMATION_FAILURE notification:', error);
+    });
     return { booked: false, reason: 'token_invalid' };
   }
 
   const startAt = new Date(input.startDateTimeIso);
   if (Number.isNaN(startAt.getTime())) {
     return { booked: false, reason: 'invalid_start_time' };
+  }
+  // Same gap as bookGoogleMeeting.ts's identical check: this function is
+  // also reached from the approval-executor path, where approval has no
+  // deadline - a request sitting long enough for its own proposed time to
+  // pass would otherwise still create a real Zoom meeting for a moment
+  // that's already gone.
+  if (startAt.getTime() < Date.now() - 60_000) {
+    return { booked: false, reason: 'start_time_already_passed' };
   }
   const durationMinutes = input.durationMinutes && input.durationMinutes > 0 ? input.durationMinutes : 30;
   const endAt = new Date(startAt.getTime() + durationMinutes * 60_000);

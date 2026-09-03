@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { ConversationStateRepository, ConversationStateConflictError } from '../src/repositories/conversationStateRepository.js';
-import { applyConversationStateUpdate } from '../src/services/state/conversationStateWriter.js';
+import { applyConversationStateUpdate, recordNameUsed } from '../src/services/state/conversationStateWriter.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 
@@ -127,6 +127,47 @@ describe('applyConversationStateUpdate', () => {
     const final = await repo.find(businessId, chatId);
     expect(final?.currentGoal?.description).toBe('concurrent writer'); // the concurrent writer's goal survived
     expect(final?.confirmedFacts).toEqual([expect.objectContaining({ key: 'k', value: 'v' })]); // and this write still landed
+  });
+
+  it('sets funnelStage and customerReadiness, and overwrites rather than merging on a later write', async () => {
+    await applyConversationStateUpdate(repo, businessId, chatId, { funnelStage: 'INTENT_IDENTIFIED', customerReadiness: 'BROWSING' });
+    let state = await repo.find(businessId, chatId);
+    expect(state?.funnelStage).toBe('INTENT_IDENTIFIED');
+    expect(state?.customerReadiness).toBe('BROWSING');
+
+    await applyConversationStateUpdate(repo, businessId, chatId, { funnelStage: 'QUALIFIED' });
+    state = await repo.find(businessId, chatId);
+    expect(state?.funnelStage).toBe('QUALIFIED');
+    expect(state?.customerReadiness).toBe('BROWSING'); // untouched by the funnelStage-only write
+  });
+
+  it('ignores a funnelStage or customerReadiness value outside the known set rather than throwing or writing it', async () => {
+    await applyConversationStateUpdate(repo, businessId, chatId, {
+      // @ts-expect-error - deliberately an invalid value, simulating a tool call that bypassed the schema's own enum constraint
+      funnelStage: 'NOT_A_REAL_STAGE',
+      goal: 'still writes the rest of the patch',
+    });
+    const state = await repo.find(businessId, chatId);
+    expect(state?.funnelStage).toBeNull();
+    expect(state?.currentGoal?.description).toBe('still writes the rest of the patch');
+  });
+
+  it('Section 15: sets preferredName, and an empty string clears it - same convention as goal', async () => {
+    await applyConversationStateUpdate(repo, businessId, chatId, { preferredName: 'Mike' });
+    let state = await repo.find(businessId, chatId);
+    expect(state?.preferredName).toBe('Mike');
+
+    await applyConversationStateUpdate(repo, businessId, chatId, { preferredName: '   ' });
+    state = await repo.find(businessId, chatId);
+    expect(state?.preferredName).toBeNull();
+  });
+
+  it('Section 19: recordNameUsed sets lastNameUsedAt to a real, current timestamp, creating the row if needed', async () => {
+    const before = Date.now();
+    await recordNameUsed(repo, businessId, chatId);
+    const state = await repo.find(businessId, chatId);
+    expect(state?.lastNameUsedAt).not.toBeNull();
+    expect(new Date(state!.lastNameUsedAt!).getTime()).toBeGreaterThanOrEqual(before);
   });
 
   it('gives up and throws after exhausting retries against a permanently stale version', async () => {

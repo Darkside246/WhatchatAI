@@ -21,6 +21,9 @@ import {
 import { whatsappOutboundMessageService } from '../src/services/whatsappOutboundMessageService.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 import { isEntitlementDeniedError } from '../src/services/workspaceService.js';
+import { WhatsAppOutboundMessageRepository } from '../src/repositories/whatsappOutboundMessageRepository.js';
+import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
+import { processMessageStatus } from '../src/queue/workers/incomingMessagesWorker.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
 const crmContactRepository = new CrmContactRepository(pool);
@@ -173,17 +176,134 @@ describe('campaignService (real eligibility, real status machine, real send pipe
     expect(detail.counts.total).toBe(1);
   });
 
-  it('cancel works before send, but is refused once a campaign has already started running', async () => {
+  it('Section 26: recipient status genuinely reaches delivered and read as real WhatsApp acks arrive - counts are live-computed, never stuck at 0', async () => {
+    const chatJid = '15559990010@s.whatsapp.net';
+    const contactId = await makeEligibleContact(businessId, accountId, chatJid, 'Contact');
+    const { campaign } = await createCampaign(businessId, accountId, ownerId, { name: 'Delivery Test', messageText: 'Hello there', crmContactIds: [contactId] });
+    await submitCampaignForReview(businessId, campaign.id);
+    await approveCampaign(businessId, campaign.id, ownerId);
+    await sendCampaign(businessId, campaign.id);
+
+    const beforeAck = await getCampaign(businessId, campaign.id);
+    expect(beforeAck.counts.delivered).toBe(0);
+    expect(beforeAck.counts.read).toBe(0);
+    const recipient = beforeAck.recipients[0];
+    const outboundMessageId = recipient?.outboundMessageId;
+    expect(outboundMessageId).toBeTruthy();
+
+    // Simulate what really happens next, end to end, using the real
+    // production code paths rather than reimplementing them:
+    // 1. The real send actually reaches WhatsApp - markSent records the
+    //    real WhatsApp message id the send call returned.
+    const whatsappMessageId = 'WAMSG-DELIVERY-TEST-1';
+    await new WhatsAppOutboundMessageRepository(pool).markSent(outboundMessageId as string, whatsappMessageId);
+
+    // 2. Baileys echoes our own sent message back through the normal
+    //    messages.upsert path (fromMe: true) - this is what actually
+    //    creates the whatsapp_messages row in production.
+    const messageRepo = new WhatsAppMessageRepository(pool);
+    const persisted = await messageRepo.insert({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId: recipient!.chatId,
+      whatsappMessageId,
+      remoteJid: chatJid,
+      senderJid: '15550001111@s.whatsapp.net',
+      direction: 'outbound',
+      messageType: 'text',
+      textContent: 'Hello there',
+      timestamp: new Date().toISOString(),
+      fromMe: true,
+      isHistorical: false,
+    });
+
+    // 3. incomingMessagesWorker links the echoed message back to the send
+    //    request that triggered it (real linkPersistedMessage call).
+    await new WhatsAppOutboundMessageRepository(pool).linkPersistedMessage(accountId, whatsappMessageId, persisted.id);
+
+    const afterLink = await getCampaign(businessId, campaign.id);
+    expect(afterLink.counts.sent).toBe(1);
+    expect(afterLink.counts.delivered).toBe(0);
+
+    // 4. A real delivery ack arrives from WhatsApp - processMessageStatus
+    //    is the exact real handler a live socket event dispatches to.
+    await processMessageStatus({ businessId, whatsappAccountId: accountId, whatsappMessageId, status: 'delivered' });
+
+    const afterDelivered = await getCampaign(businessId, campaign.id);
+    expect(afterDelivered.counts.delivered).toBe(1);
+    expect(afterDelivered.counts.sent).toBe(0); // delivered supersedes sent, never double-counted
+    expect(afterDelivered.recipients[0]?.status).toBe('delivered');
+
+    // 5. A later real read ack arrives.
+    await processMessageStatus({ businessId, whatsappAccountId: accountId, whatsappMessageId, status: 'read' });
+
+    const afterRead = await getCampaign(businessId, campaign.id);
+    expect(afterRead.counts.read).toBe(1);
+    expect(afterRead.counts.delivered).toBe(0);
+    expect(afterRead.recipients[0]?.status).toBe('read');
+  });
+
+  it('cancel works before send', async () => {
     const contactId = await makeEligibleContact(businessId, accountId, '15559990007@s.whatsapp.net', 'Contact');
     const { campaign } = await createCampaign(businessId, accountId, ownerId, { name: 'x', messageText: 'y', crmContactIds: [contactId] });
     const cancelled = await cancelCampaign(businessId, campaign.id);
     expect(cancelled.status).toBe('CANCELLED');
+  });
 
-    const { campaign: second } = await createCampaign(businessId, accountId, ownerId, { name: 'x2', messageText: 'y', crmContactIds: [contactId] });
-    await submitCampaignForReview(businessId, second.id);
-    await approveCampaign(businessId, second.id, ownerId);
-    await sendCampaign(businessId, second.id);
-    await expect(cancelCampaign(businessId, second.id)).rejects.toThrow();
+  it('is refused once a campaign has already reached a real terminal state', async () => {
+    const contactId = await makeEligibleContact(businessId, accountId, '15559990007@s.whatsapp.net', 'Contact');
+    const { campaign } = await createCampaign(businessId, accountId, ownerId, { name: 'x2', messageText: 'y', crmContactIds: [contactId] });
+    await submitCampaignForReview(businessId, campaign.id);
+    await approveCampaign(businessId, campaign.id, ownerId);
+    await cancelCampaign(businessId, campaign.id);
+    await expect(cancelCampaign(businessId, campaign.id)).rejects.toThrow(); // already CANCELLED
+  });
+
+  it('Section 49 (emergency stop): cancelling a RUNNING campaign stops every recipient still queued, without touching one already sent', async () => {
+    const stillQueued = await makeEligibleContact(businessId, accountId, '15559990010@s.whatsapp.net', 'Still Queued');
+    const alreadySent = await makeEligibleContact(businessId, accountId, '15559990011@s.whatsapp.net', 'Already Sent');
+    const { campaign } = await createCampaign(businessId, accountId, ownerId, {
+      name: 'Mistake spotted mid-send',
+      messageText: 'Oops, wrong price',
+      crmContactIds: [alreadySent, stillQueued],
+    });
+    await submitCampaignForReview(businessId, campaign.id);
+    await approveCampaign(businessId, campaign.id, ownerId);
+    await sendCampaign(businessId, campaign.id);
+
+    const beforeCancel = await getCampaign(businessId, campaign.id);
+    const sentRecipient = beforeCancel.recipients.find((r) => r.crmContactId === alreadySent);
+    expect(sentRecipient?.outboundMessageId).toBeTruthy();
+    // Real production behaviour: the row genuinely sat in a real outbound
+    // pipeline with no live WhatsApp connection to dispatch to in this test
+    // environment, so it is still 'queued' - exactly the window the fix
+    // targets. Simulate the one recipient that a live socket had already
+    // gotten to before the operator noticed the mistake and clicked stop.
+    const outboundRepo = new WhatsAppOutboundMessageRepository(pool);
+    await pool.query(`UPDATE whatsapp_outbound_messages SET status = 'sent', sent_at = now() WHERE id = $1`, [sentRecipient!.outboundMessageId]);
+
+    const cancelled = await cancelCampaign(businessId, campaign.id);
+    expect(cancelled.status).toBe('CANCELLED');
+
+    const afterCancel = await getCampaign(businessId, campaign.id);
+    expect(afterCancel.recipients.find((r) => r.crmContactId === stillQueued)?.status).toBe('cancelled');
+    expect(afterCancel.recipients.find((r) => r.crmContactId === alreadySent)?.status).toBe('sent');
+    expect(afterCancel.counts.cancelled).toBe(1);
+    expect(afterCancel.counts.queued).toBe(0);
+
+    const stillQueuedRow = await outboundRepo.findById(afterCancel.recipients.find((r) => r.crmContactId === stillQueued)!.outboundMessageId!);
+    expect(stillQueuedRow?.status).toBe('cancelled');
+  });
+
+  it('cancelling a RUNNING campaign twice is safe - the second call finds nothing left queued to stop', async () => {
+    const contactId = await makeEligibleContact(businessId, accountId, '15559990012@s.whatsapp.net', 'Contact');
+    const { campaign } = await createCampaign(businessId, accountId, ownerId, { name: 'x3', messageText: 'y', crmContactIds: [contactId] });
+    await submitCampaignForReview(businessId, campaign.id);
+    await approveCampaign(businessId, campaign.id, ownerId);
+    await sendCampaign(businessId, campaign.id);
+
+    await cancelCampaign(businessId, campaign.id);
+    await expect(cancelCampaign(businessId, campaign.id)).rejects.toThrow(); // already CANCELLED, a real terminal state
   });
 
   it('a recipient whose dispatch throws (e.g. their chat vanished) reaches an honest FAILED state, never stuck as "queued" forever, and the business is notified', async () => {
