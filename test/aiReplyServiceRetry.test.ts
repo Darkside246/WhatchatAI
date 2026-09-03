@@ -16,6 +16,7 @@ import { getGeminiCircuitBreaker, resetAllGeminiCircuitBreakers } from '../src/s
 import { register } from '../src/services/authService.js';
 import { aiGateway } from '../src/services/ai/aiGateway.js';
 import { PropertyOperationsRepository } from '../src/repositories/propertyOperationsRepository.js';
+import { PropertyConversationBindingRepository } from '../src/repositories/propertyConversationBindingRepository.js';
 import { AiUsageRepository } from '../src/repositories/aiUsageRepository.js';
 import { AiCommitmentRepository } from '../src/repositories/aiCommitmentRepository.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
@@ -513,6 +514,112 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
     expect(response?.openIncidents).toHaveLength(1);
     expect(response?.openIncidents[0]?.title).toBe('Leaking pipe');
     expect(response?.openIncidents[0]?.workOrders).toEqual([{ status: 'SCHEDULED', priority: 'PRIORITY', scheduledFor: null }]);
+  });
+
+  /**
+   * Section 75-91 (privacy/probing safeguard) - the real gap: this business
+   * manages two properties, and findPropertiesByNameForBusiness only ever
+   * scoped by businessId, never by whether the chat asking has any
+   * relationship to the matched property. Before the fix, a customer whose
+   * chat was bound (property_conversation_bindings) to Property A could name
+   * Property B - a different tenant's address, in the same business - and
+   * get back Property B's real open incident details. These two tests prove
+   * a bound chat can never see another property's data regardless of what
+   * name it supplies, and that an unbound chat's honest free-text lookup
+   * keeps working exactly as before.
+   */
+  describe('check_property_status is scoped by the chat\'s property binding, never by free text alone', () => {
+    async function createIncidentFor(propertyId: string, title: string) {
+      return new PropertyOperationsRepository(pool).createIncident({
+        id: randomUUID(), businessId: realBusinessId, propertyId, sourceChannel: 'WHATSAPP', title, category: 'PLUMBING', severity: 'PRIORITY', status: 'OPEN',
+      });
+    }
+
+    // property_conversation_bindings.chat_id is a real uuid FK to
+    // whatsapp_chats - unlike most of this file's tests, which use the
+    // fake 'chat-1' string because it never touches a DB-enforced
+    // constraint, a binding row needs a real chat.
+    async function createBoundChat(): Promise<string> {
+      const accountId = await createTestAccount(realBusinessId);
+      const chat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+        businessId: realBusinessId,
+        whatsappAccountId: accountId,
+        chatJid: `${randomUUID()}@s.whatsapp.net`,
+        jidKind: 'individual',
+        chatType: 'individual',
+      });
+      return chat.id;
+    }
+
+    it('a chat bound to Property A never leaks Property B\'s incidents, even when the customer names Property B by its real address', async () => {
+      const propertyAId = await createTestProperty(realBusinessId, 'Oakwood Villa');
+      const propertyBId = await createTestProperty(realBusinessId, 'Maple Cottage');
+      await createIncidentFor(propertyAId, 'Oakwood leaking pipe');
+      await createIncidentFor(propertyBId, 'Maple Cottage break-in - alarm disabled');
+      const chatId = await createBoundChat();
+      await new PropertyConversationBindingRepository(pool).upsert({ businessId: realBusinessId, chatId, propertyId: propertyAId });
+
+      generateContentMock
+        .mockResolvedValueOnce({
+          text: undefined,
+          // The customer (or a manipulated model) explicitly asks about the OTHER property.
+          functionCalls: [{ name: CHECK_PROPERTY_STATUS_TOOL_NAME, args: { propertyReference: 'Maple Cottage' } }],
+        })
+        .mockResolvedValueOnce({ text: 'ok' });
+
+      await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), fakeContext({ businessId: realBusinessId, chatId }));
+
+      const followUpContents = generateContentMock.mock.calls[1]?.[0]?.contents as Array<{
+        parts: Array<{ functionResponse?: { response: { found: boolean; property: { name: string }; openIncidents: Array<{ title: string }> } } }>;
+      }>;
+      const response = followUpContents.at(-1)?.parts[0]?.functionResponse?.response;
+
+      // Scoped to the bound property (Oakwood), not the requested one (Maple Cottage).
+      expect(response?.property.name).toBe('Oakwood Villa');
+      expect(response?.openIncidents.map((i) => i.title)).toEqual(['Oakwood leaking pipe']);
+      const serialized = JSON.stringify(response);
+      expect(serialized).not.toContain('Maple Cottage');
+      expect(serialized).not.toContain('break-in');
+    });
+
+    it('a chat bound to a property is resolved from the binding even when the model supplies no propertyReference at all', async () => {
+      const propertyId = await createTestProperty(realBusinessId, 'Oakwood Villa');
+      await createIncidentFor(propertyId, 'Oakwood leaking pipe');
+      const chatId = await createBoundChat();
+      await new PropertyConversationBindingRepository(pool).upsert({ businessId: realBusinessId, chatId, propertyId });
+
+      generateContentMock
+        .mockResolvedValueOnce({ text: undefined, functionCalls: [{ name: CHECK_PROPERTY_STATUS_TOOL_NAME, args: {} }] })
+        .mockResolvedValueOnce({ text: 'ok' });
+
+      await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), fakeContext({ businessId: realBusinessId, chatId }));
+
+      const followUpContents = generateContentMock.mock.calls[1]?.[0]?.contents as Array<{
+        parts: Array<{ functionResponse?: { response: { found: boolean; property: { name: string } } } }>;
+      }>;
+      const response = followUpContents.at(-1)?.parts[0]?.functionResponse?.response;
+      expect(response?.found).toBe(true);
+      expect(response?.property.name).toBe('Oakwood Villa');
+    });
+
+    it('an unbound chat keeps the existing free-text lookup behavior unchanged', async () => {
+      const propertyId = await createTestProperty(realBusinessId, 'Oakwood Villa');
+      await createIncidentFor(propertyId, 'Oakwood leaking pipe');
+      // No binding upserted for this chat - the pre-existing, unbound path.
+
+      generateContentMock
+        .mockResolvedValueOnce({ text: undefined, functionCalls: [{ name: CHECK_PROPERTY_STATUS_TOOL_NAME, args: { propertyReference: 'oakwood' } }] })
+        .mockResolvedValueOnce({ text: 'ok' });
+
+      await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), fakeContext({ businessId: realBusinessId, chatId: 'chat-1' }));
+
+      const followUpContents = generateContentMock.mock.calls[1]?.[0]?.contents as Array<{
+        parts: Array<{ functionResponse?: { response: { found: boolean; property: { name: string } } } }>;
+      }>;
+      const response = followUpContents.at(-1)?.parts[0]?.functionResponse?.response;
+      expect(response?.found).toBe(true);
+      expect(response?.property.name).toBe('Oakwood Villa');
+    });
   });
 
   it('records real AI usage telemetry from Gemini\'s own usageMetadata on a successful reply', async () => {

@@ -24,6 +24,7 @@ import type { MeetingProvider } from './meeting/meetingProvider.js';
 import { LIST_PROPERTIES_TOOL_NAME, listPropertiesFunctionDeclaration } from './property/listPropertiesTool.js';
 import { CHECK_PROPERTY_STATUS_TOOL_NAME, checkPropertyStatusFunctionDeclaration, type CheckPropertyStatusToolArgs } from './property/checkPropertyStatusTool.js';
 import { PropertyOperationsRepository } from '../repositories/propertyOperationsRepository.js';
+import { PropertyConversationBindingRepository } from '../repositories/propertyConversationBindingRepository.js';
 import { getGeminiCircuitBreaker, getGeminiConfigCircuitBreaker } from './aiCircuitBreaker.js';
 import { guardToolInvocation } from './ai/agentGuard.js';
 import { getToolPolicy } from './ai/aiToolPolicy.js';
@@ -40,6 +41,7 @@ import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepo
 const conversationStateRepository = new ConversationStateRepository(pool);
 const customerMemoryRepository = new CustomerMemoryRepository(pool);
 const propertyOperationsRepository = new PropertyOperationsRepository(pool);
+const propertyConversationBindingRepository = new PropertyConversationBindingRepository(pool);
 const aiUsageRepository = new AiUsageRepository(pool);
 const aiCommitmentRepository = new AiCommitmentRepository(pool);
 
@@ -838,19 +840,45 @@ async function executeOneToolCall(
   // the customer's free-text reference via the same ILIKE lookup Operator
   // Mode already uses, then reports real incidents - never guesses which
   // property was meant when the match is ambiguous or absent.
+  //
+  // Section 75-91 (privacy/probing safeguard): a business manages many
+  // properties, and findPropertiesByNameForBusiness only scopes by
+  // businessId - free text alone, with no check that THIS chat has any
+  // relationship to the matched property. Without the binding check below,
+  // any customer could name or guess a different tenant's address and read
+  // back that tenant's real open-incident details. When staff have bound
+  // this chat to a property (property_conversation_bindings, the same
+  // mechanism propertyConversationBindingRouter.ts/PropertyContextService
+  // already use for operator-side context), that binding is this
+  // conversation's only legitimate scope - the free-text reference is
+  // never allowed to widen it to a different property, matched name or not.
   const statusArgs = (call.args ?? {}) as unknown as CheckPropertyStatusToolArgs;
-  if (!statusArgs.propertyReference) {
-    return { found: false, reason: 'missing_property_reference' };
-  }
-  const matches = await propertyOperationsRepository.findPropertiesByNameForBusiness(context.businessId, statusArgs.propertyReference);
-  if (matches.length === 0) {
-    return { found: false, reason: 'no_match' };
-  }
-  if (matches.length > 1) {
-    return { found: false, reason: 'ambiguous', candidates: matches.map((property) => property.name) };
-  }
+  // A real chatId is always a whatsapp_chats UUID in production, but this
+  // lookup must never be the reason a tool call - and the whole reply -
+  // fails; same fail-safe-to-null pattern as guardToolInvocation's own
+  // businessRepository.findById(...).catch(() => null) above.
+  const binding = await propertyConversationBindingRepository.get(context.businessId, context.chatId).catch(() => null);
 
-  const property = matches[0]!;
+  let property: { id: string; name: string; status: string } | null = null;
+  if (binding) {
+    const boundProperty = await propertyOperationsRepository.getProperty(context.businessId, binding.propertyId);
+    if (!boundProperty) {
+      return { found: false, reason: 'no_match' };
+    }
+    property = boundProperty;
+  } else {
+    if (!statusArgs.propertyReference) {
+      return { found: false, reason: 'missing_property_reference' };
+    }
+    const matches = await propertyOperationsRepository.findPropertiesByNameForBusiness(context.businessId, statusArgs.propertyReference);
+    if (matches.length === 0) {
+      return { found: false, reason: 'no_match' };
+    }
+    if (matches.length > 1) {
+      return { found: false, reason: 'ambiguous', candidates: matches.map((candidate) => candidate.name) };
+    }
+    property = matches[0]!;
+  }
   const incidents = await propertyOperationsRepository.listIncidents(context.businessId, property.id);
   const openIncidents = incidents.filter((incident) => incident.status !== 'RESOLVED' && incident.status !== 'CANCELLED');
 
