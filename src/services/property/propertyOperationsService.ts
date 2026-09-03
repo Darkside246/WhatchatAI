@@ -30,7 +30,9 @@ export class PropertyOperationsService {
   listVendors(businessId: string, category?: string): Promise<VendorRecord[]> { return this.repository.listVendors(businessId, category); }
   createVendor(input: Parameters<PropertyOperationsRepository['createVendor']>[0]): Promise<VendorRecord> { return this.repository.createVendor(input); }
   listIncidents(businessId: string, propertyId?: string): Promise<IncidentRecord[]> { return this.repository.listIncidents(businessId, propertyId); }
+  updateIncidentStatus(businessId: string, incidentId: string, status: 'OPEN' | 'ESCALATED' | 'RESOLVED' | 'CLOSED', options?: { vendorId?: string | undefined }): Promise<IncidentRecord | null> { return this.repository.updateIncidentStatus(businessId, incidentId, status, options); }
   listWorkOrders(businessId: string, incidentId?: string): Promise<WorkOrderRecord[]> { return this.repository.listWorkOrders(businessId, incidentId); }
+  updateWorkOrder(businessId: string, workOrderId: string, input: Parameters<PropertyOperationsRepository['updateWorkOrder']>[2]): Promise<WorkOrderRecord | null> { return this.repository.updateWorkOrder(businessId, workOrderId, input); }
   listKnowledge(businessId: string, propertyId?: string, assetId?: string): Promise<KnowledgeItemRecord[]> { return this.repository.listKnowledge(businessId, propertyId, assetId); }
 
   async intakeMaintenance(input: MaintenanceIntake): Promise<{ incident: IncidentRecord; classification: ReturnType<typeof classifyMaintenanceMessage>; workOrderDraft: WorkOrderRecord | null }> {

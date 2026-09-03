@@ -385,6 +385,18 @@ Checked each named sub-category against real code rather than assuming full cove
 
 **Verified**: 5 new tests in `workspaceServiceCrm.test.ts` (resolves real facts / null customerId for an unresolved contact / empty facts for a resolved customer with no memory yet / cross-tenant 404 / tenant isolation on a same-shaped lookup). All 24 tests across the 2 touched files pass. Typecheck clean both sides.
 
+## Section 60-62 — Property ops strengthening (real, significant gap found and fixed)
+
+**Real gap found**, same shape as Section 56's original discovery: `PropertyOperationsRepository` has real, live `createIncident()`/`createWorkOrder()` (called from `maintenanceWorkOrderExecutor.ts` and `propertyOperationsService.ts`'s `intakeMaintenance()`, both real production paths triggered from actual guest/tenant WhatsApp conversations) - but of its 18 methods, not one was ever an UPDATE. Every incident created stayed `OPEN` forever; every work order stayed `PENDING_APPROVAL` forever, no matter what actually happened with the vendor in real life. `PropertyOperationsPage.tsx` (1006 lines, a genuinely real, wired-up dashboard - not a mockup) already had a full Incidents tab showing both, complete with a `StatusBadge` component that already anticipated `RESOLVED`/`CLOSED`/`APPROVED`/`COMPLETED` as real values - but zero buttons anywhere to ever reach them. An incident reported at 2am about a broken AC stays "OPEN" in the dashboard forever, even after a vendor fixes it, because there was no code path that could ever change that.
+
+**Fix**:
+- `PropertyOperationsRepository.updateIncidentStatus()` - transitions `OPEN → ESCALATED/RESOLVED/CLOSED`, optionally assigns a vendor in the same call, stamps `resolved_at` once for a terminal status (never overwritten by a later call to the same terminal status - same "advances forward only" reasoning as Section 56's `markCompleted`).
+- `PropertyOperationsRepository.updateWorkOrder()` - each field (`status`, `vendorId`, `approvedCostCents`, `scheduledFor`, `completionNotes`) is independently optional, so approving a cost and later recording completion are two separate, real calls that never have to guess or re-send the other's current value; `completed_at` stamps once, same as `resolved_at`.
+- New `PATCH /api/property-operations/incidents/:id` and `PATCH /api/property-operations/work-orders/:id` routes, same `requirePermission('property.manage')` gate every other mutation on this router already uses.
+- Real UI: "Mark resolved"/"Close" buttons on the incident detail panel; a new `WorkOrderCard` component with "Approve" (optional real cost input), "Mark completed" (optional notes), and "Cancel" - the first actionable controls this page has ever had for either table.
+
+**Verified**: 8 new tests in `propertyOperationsLifecycle.test.ts` (resolved_at stamps once/never for non-terminal status/vendor-assign-with-status-change/cross-tenant 404 for incidents; approve-then-complete-preserves-earlier-field/undefined-means-untouched/completed_at-stamps-once/cross-tenant 404 for work orders), all passing alongside the existing 6-test `maintenanceWorkOrderExecutor.test.ts` suite. Typecheck clean both sides.
+
 ## Section checklist
 
 ```
@@ -415,7 +427,7 @@ Checked each named sub-category against real code rather than assuming full cove
 [X] 49      - Emergency controls (kill switches) - per-agent/per-conversation already real and complete; real gap found in campaign mid-send stop and fixed, verified
 [ ] 50-55   - Agent builder, personas, permissions, 3-min setup, sliders, business-specific agents
 [X] 57-59   - Zoom/Google booking + AI booking agent - real gap found (dead OAuth connection failed silently, no staff notification) and fixed, verified
-[ ] 60-62   - Property ops strengthening, task/productivity intelligence, smart scheduling
+[~] 60-62   - Property ops strengthening - real gap found and fixed (incident/work order lifecycle), verified; task/productivity intelligence, smart scheduling still open
 [ ] 63-65   - MCP/tool architecture, AI safety, prompt injection defence
 [X] 66      - CRM identity profile fields on the contact view - real gap found (source fields queried but discarded) and fixed, verified
 [X] 56      - Appointment System - real lifecycle mutation + completion sweep + dedicated page built (none existed before), verified

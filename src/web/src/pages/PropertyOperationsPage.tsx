@@ -41,6 +41,10 @@ function post<T>(path: string, body: unknown): Promise<T> {
   return api<T>(path, { method: 'POST', body: JSON.stringify(body) });
 }
 
+function patch<T>(path: string, body: unknown): Promise<T> {
+  return api<T>(path, { method: 'PATCH', body: JSON.stringify(body) });
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 function severityRank(s: string) { return s === 'EMERGENCY' ? 0 : s === 'PRIORITY' ? 1 : 2; }
@@ -552,14 +556,60 @@ function IncidentsTab({ incidents, properties, onIncidentsChange }: { incidents:
     if (selectedId && !filtered.some((i) => i.id === selectedId)) setSelectedId(null);
   }, [filtered, selectedId]);
 
-  useEffect(() => {
-    if (!selected) { setWorkOrders([]); return; }
+  const refetchWorkOrders = useCallback((incidentId: string) => {
     setLoadingOrders(true);
-    api<{ workOrders: WorkOrderRec[] }>(`/work-orders?incidentId=${selected.id}`)
+    return api<{ workOrders: WorkOrderRec[] }>(`/work-orders?incidentId=${incidentId}`)
       .then((d) => setWorkOrders(d.workOrders))
       .catch(() => setWorkOrders([]))
       .finally(() => setLoadingOrders(false));
-  }, [selected?.id]);
+  }, []);
+
+  useEffect(() => {
+    if (!selected) { setWorkOrders([]); return; }
+    void refetchWorkOrders(selected.id);
+  }, [selected?.id, refetchWorkOrders]);
+
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
+
+  async function handleIncidentStatus(incidentId: string, status: 'RESOLVED' | 'CLOSED') {
+    setActionBusyId(incidentId); setActionError(null);
+    try {
+      await patch(`/incidents/${incidentId}`, { status });
+      onIncidentsChange();
+    } catch (err) { setActionError(err instanceof Error ? err.message : 'Failed to update incident'); }
+    finally { setActionBusyId(null); }
+  }
+
+  async function handleApproveWorkOrder(workOrderId: string, incidentId: string, costInput: string) {
+    const trimmed = costInput.trim();
+    const approvedCostCents = trimmed ? Math.round(Number(trimmed) * 100) : undefined;
+    if (trimmed && (!Number.isFinite(approvedCostCents) || (approvedCostCents ?? 0) < 0)) { setActionError('Enter a valid approved cost.'); return; }
+    setActionBusyId(workOrderId); setActionError(null);
+    try {
+      await patch(`/work-orders/${workOrderId}`, { status: 'APPROVED', ...(approvedCostCents !== undefined ? { approvedCostCents } : {}) });
+      await refetchWorkOrders(incidentId);
+    } catch (err) { setActionError(err instanceof Error ? err.message : 'Failed to approve work order'); }
+    finally { setActionBusyId(null); }
+  }
+
+  async function handleCompleteWorkOrder(workOrderId: string, incidentId: string, notes: string) {
+    setActionBusyId(workOrderId); setActionError(null);
+    try {
+      await patch(`/work-orders/${workOrderId}`, { status: 'COMPLETED', ...(notes.trim() ? { completionNotes: notes.trim() } : {}) });
+      await refetchWorkOrders(incidentId);
+    } catch (err) { setActionError(err instanceof Error ? err.message : 'Failed to complete work order'); }
+    finally { setActionBusyId(null); }
+  }
+
+  async function handleCancelWorkOrder(workOrderId: string, incidentId: string) {
+    setActionBusyId(workOrderId); setActionError(null);
+    try {
+      await patch(`/work-orders/${workOrderId}`, { status: 'CANCELLED' });
+      await refetchWorkOrders(incidentId);
+    } catch (err) { setActionError(err instanceof Error ? err.message : 'Failed to cancel work order'); }
+    finally { setActionBusyId(null); }
+  }
 
   async function handleIntake(e: FormEvent) {
     e.preventDefault(); setSubmitting(true); setIntakeError(null); setIntakeResult(null);
@@ -721,10 +771,25 @@ function IncidentsTab({ incidents, properties, onIncidentsChange }: { incidents:
           ? <EmptyState icon={Wrench} text="Select an incident to review details." />
           : (
             <div className="space-y-5 overflow-y-auto p-4">
-              <div className="flex flex-wrap gap-2">
-                <SeverityBadge label={selected.severity} />
-                <StatusBadge label={selected.status} />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap gap-2">
+                  <SeverityBadge label={selected.severity} />
+                  <StatusBadge label={selected.status} />
+                </div>
+                {!['RESOLVED', 'CLOSED'].includes(selected.status) && (
+                  <div className="flex gap-2">
+                    <button type="button" disabled={actionBusyId === selected.id} onClick={() => void handleIncidentStatus(selected.id, 'RESOLVED')}
+                      className="rounded-lg border border-success/30 px-3 py-1.5 text-caption font-medium text-success hover:bg-success/10 disabled:opacity-50">
+                      Mark resolved
+                    </button>
+                    <button type="button" disabled={actionBusyId === selected.id} onClick={() => void handleIncidentStatus(selected.id, 'CLOSED')}
+                      className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-2 disabled:opacity-50">
+                      Close
+                    </button>
+                  </div>
+                )}
               </div>
+              {actionError && <p className="text-caption text-error">{actionError}</p>}
 
               <div className="grid grid-cols-2 gap-3">
                 <FieldRow label="Category" value={selected.category} />
@@ -764,25 +829,83 @@ function IncidentsTab({ incidents, properties, onIncidentsChange }: { incidents:
                 {loadingOrders && <p className="text-caption text-fg-muted">Loading…</p>}
                 {!loadingOrders && workOrders.length === 0 && <p className="text-caption text-fg-muted">No work orders for this incident.</p>}
                 {workOrders.map((wo) => (
-                  <div key={wo.id} className="mb-2 rounded-lg border border-border-subtle bg-surface-0 p-3 space-y-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <StatusBadge label={wo.status} />
-                      <SeverityBadge label={wo.priority} />
-                    </div>
-                    <p className="text-caption text-fg">{wo.description}</p>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-meta text-fg-muted">
-                      {wo.scheduledFor && <span className="flex items-center gap-1"><Clock size={11} />{fmtDate(wo.scheduledFor)}</span>}
-                      {wo.estimatedCostCents != null && <span className="flex items-center gap-1"><DollarSign size={11} />Est. {fmtCents(wo.estimatedCostCents)}</span>}
-                      {wo.approvedCostCents != null && <span className="flex items-center gap-1"><DollarSign size={11} />Approved {fmtCents(wo.approvedCostCents)}</span>}
-                    </div>
-                    {wo.completionNotes && <p className="text-meta text-fg-muted">Notes: {wo.completionNotes}</p>}
-                  </div>
+                  <WorkOrderCard key={wo.id} workOrder={wo} busy={actionBusyId === wo.id}
+                    onApprove={(cost) => handleApproveWorkOrder(wo.id, selected.id, cost)}
+                    onComplete={(notes) => handleCompleteWorkOrder(wo.id, selected.id, notes)}
+                    onCancel={() => handleCancelWorkOrder(wo.id, selected.id)}
+                  />
                 ))}
               </div>
             </div>
           )
         }
       </aside>
+    </div>
+  );
+}
+
+/**
+ * Section 60-62: work orders (and incidents, above) had zero mutation
+ * path anywhere before this - createWorkOrder was the only write this
+ * table ever had, so a work order stayed PENDING_APPROVAL forever no
+ * matter what actually happened with the vendor. These three buttons are
+ * the whole real lifecycle: approve (optionally with a real cost),
+ * complete (optionally with real notes), or cancel.
+ */
+function WorkOrderCard({
+  workOrder, busy, onApprove, onComplete, onCancel,
+}: {
+  workOrder: WorkOrderRec;
+  busy: boolean;
+  onApprove: (costInput: string) => void;
+  onComplete: (notes: string) => void;
+  onCancel: () => void;
+}) {
+  const [costInput, setCostInput] = useState('');
+  const [notesInput, setNotesInput] = useState('');
+  const actionable = !['COMPLETED', 'CANCELLED'].includes(workOrder.status);
+
+  return (
+    <div className="mb-2 rounded-lg border border-border-subtle bg-surface-0 p-3 space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <StatusBadge label={workOrder.status} />
+        <SeverityBadge label={workOrder.priority} />
+      </div>
+      <p className="text-caption text-fg">{workOrder.description}</p>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-meta text-fg-muted">
+        {workOrder.scheduledFor && <span className="flex items-center gap-1"><Clock size={11} />{fmtDate(workOrder.scheduledFor)}</span>}
+        {workOrder.estimatedCostCents != null && <span className="flex items-center gap-1"><DollarSign size={11} />Est. {fmtCents(workOrder.estimatedCostCents)}</span>}
+        {workOrder.approvedCostCents != null && <span className="flex items-center gap-1"><DollarSign size={11} />Approved {fmtCents(workOrder.approvedCostCents)}</span>}
+      </div>
+      {workOrder.completionNotes && <p className="text-meta text-fg-muted">Notes: {workOrder.completionNotes}</p>}
+
+      {actionable && (
+        <div className="space-y-2 border-t border-border-subtle pt-2">
+          {workOrder.status === 'PENDING_APPROVAL' || workOrder.status === 'PENDING_POLICY' ? (
+            <div className="flex items-center gap-2">
+              <input type="number" min={0} step="0.01" placeholder="Approved cost (optional)" value={costInput} onChange={(e) => setCostInput(e.target.value)}
+                className="w-32 rounded-md border border-border-subtle bg-surface-1 px-2 py-1 text-meta text-fg focus:outline-none focus:ring-1 focus:ring-accent" />
+              <button type="button" disabled={busy} onClick={() => onApprove(costInput)}
+                className="rounded-md bg-success/10 px-2 py-1 text-meta font-medium text-success hover:bg-success/20 disabled:opacity-50">
+                Approve
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <input type="text" placeholder="Completion notes (optional)" value={notesInput} onChange={(e) => setNotesInput(e.target.value)}
+                className="w-40 rounded-md border border-border-subtle bg-surface-1 px-2 py-1 text-meta text-fg focus:outline-none focus:ring-1 focus:ring-accent" />
+              <button type="button" disabled={busy} onClick={() => onComplete(notesInput)}
+                className="rounded-md bg-success/10 px-2 py-1 text-meta font-medium text-success hover:bg-success/20 disabled:opacity-50">
+                Mark completed
+              </button>
+            </div>
+          )}
+          <button type="button" disabled={busy} onClick={onCancel}
+            className="text-meta font-medium text-error hover:underline disabled:opacity-50">
+            Cancel work order
+          </button>
+        </div>
+      )}
     </div>
   );
 }
