@@ -33,6 +33,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/property-operations', label: 'Maintenance',        icon: Building2 },
     { to: '/invoices',            label: 'Invoices',           icon: Receipt },
     { to: '/crm',                 label: 'Tenants',            icon: UsersRound },
+    { to: '/marketing',           label: 'Marketing',          icon: Megaphone },
     { to: '/agents',              label: 'Property Agent',     icon: Bot },
     { to: '/activity-log',        label: 'Activity Log',       icon: History },
     { to: '/settings',            label: 'Settings',           icon: Settings },
