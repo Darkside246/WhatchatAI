@@ -80,20 +80,13 @@ GOOSE_UPSTREAM_PORT=3285
 
 Do not commit the real key. `.env` is already ignored by Git.
 
-Workspace-level Goose settings are persisted by `IntegrationSettingsRepository`. When a workspace has a stored Goose configuration, that configuration is used by the real agent failover path and by the workspace engine-health display.
+## Provisioning (developer-controlled, global - not a workspace setting)
 
-## Workspace settings and activation
+Goose is provisioned exactly like Gemini: a single global secret set by whoever deploys the platform, never a per-business setting. There is no workspace-facing "Goose settings" screen and no per-business override.
 
-The Settings page saves:
+This was a deliberate correction (Section 117-122, security review): an earlier version let any business owner store their own `serviceUrl`/API key via `business_goose_settings` (`IntegrationSettingsRepository`'s now-removed `getGooseResolved`/`upsertGoose`/etc.), and `providerAdapters.ts`'s `GooseProvider` would use that override in preference to the global env var. That meant any business could point the failover engine - which receives real customer conversation text as its prompt - at an arbitrary third-party URL of their own choosing. `GooseProvider.generate()` and `aiEngineStatusService.ts`'s engine-status check now read only `GOOSE_SERVICE_URL`/`GOOSE_SERVICE_API_KEY` from the process environment, with no tenant lookup at all. The `business_goose_settings` table itself was left in place (no destructive migration) but no application code reads or writes it any more.
 
-- `isEnabled`
-- `serviceUrl`
-- optional API key
-- last real health-test timestamp/result/error
-
-The service URL must be a valid `http` or `https` URL before the failover can be enabled. The API key is optional, matching the adapter contract.
-
-The engine-status service now reads the workspace's stored configuration rather than relying only on process environment variables. This fixes the previous situation where the Settings page could contain a valid enabled Goose configuration while the Reply Engine strip still reported Goose as not configured.
+The workspace-facing Reply Engine strip (`AiEngineStrip.tsx`, shown on the Dashboard/Agents pages) still shows Goose's live status - read-only, sourced from the same global health check - so a business can see whether AI replies are currently possible, without being able to configure where that fallback points.
 
 ## Testing
 

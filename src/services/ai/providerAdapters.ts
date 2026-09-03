@@ -2,8 +2,6 @@ import type { Content } from '@google/genai';
 import { ApiError } from '@google/genai';
 import { getGeminiClient } from '../geminiClient.js';
 import * as gooseService from '../gooseService.js';
-import { IntegrationSettingsRepository } from '../../repositories/integrationSettingsRepository.js';
-import { pool } from '../../db/pool.js';
 import type { RegisteredAiProvider, GatewayMedia, GatewayToolDefinition, GatewayToolCall, GatewayToolResponse } from './aiGateway.js';
 import { aiGateway, ProviderConfigRejectedError } from './aiGateway.js';
 import { looksLikeRawReasoningTrace } from './reasoningLeakGuard.js';
@@ -360,30 +358,29 @@ export class OpenRouterProvider extends OpenAICompatibleProvider {
  * framing) - a last-resort fallback, deliberately lowest priority in the
  * chain, for when every real provider has failed.
  *
- * Goose's configuration is NOT a single global secret like the other three
- * providers - it is per-business, resolved from IntegrationSettingsRepository
- * (a workspace can supply its own serviceUrl/apiKey, or turn failover off
- * entirely even when a global GOOSE_SERVICE_URL fallback exists). capabilities()
- * has no tenantId to check that with, so it reports only the coarse global
- * fallback signal - the same limitation OpenAI/OpenRouter's capabilities()
- * already has (a static env-var check, not a guarantee). generate() does the
- * real per-tenant lookup and is the actual source of truth; a business with
- * only per-tenant Goose config and no global GOOSE_SERVICE_URL will not be
- * offered this provider by AiGateway's eligibility filter today - a known,
- * narrow gap, not a silent one.
+ * A single global secret, exactly like Gemini/OpenAI/OpenRouter -
+ * GOOSE_SERVICE_URL/GOOSE_SERVICE_API_KEY, developer-controlled only. This
+ * used to also resolve a per-business override from
+ * IntegrationSettingsRepository, letting any business owner point their
+ * own Goose failover at an arbitrary third-party URL that would receive
+ * real customer conversation text - a genuine data-exfiltration surface,
+ * not just an inconsistency with how every other provider is configured.
+ * Removed entirely (Section 117-122 security review): Goose is now
+ * provisioned the same way as every other provider, and capabilities()'s
+ * static env-var check is now the real source of truth too, not just a
+ * coarse approximation of a per-tenant lookup generate() used to also do.
  *
  * Never claims 'generated' without a real response: gooseService.generateResponse
  * already fails closed to {status:'unavailable', reason} on any missing
- * config, disabled workspace setting, network error, HTTP error, or empty
- * body - this adapter surfaces that reason as a thrown Error, exactly like
- * every other provider's failure path, so AiGateway's own failure log and
- * failover behavior treat it identically.
+ * config, network error, HTTP error, or empty body - this adapter surfaces
+ * that reason as a thrown Error, exactly like every other provider's
+ * failure path, so AiGateway's own failure log and failover behavior treat
+ * it identically.
  */
 export class GooseProvider implements RegisteredAiProvider {
   readonly name = 'goose';
   readonly model = 'goose-failover';
   readonly priority: number;
-  private readonly settingsRepository = new IntegrationSettingsRepository(pool);
 
   constructor(priority = 40) {
     this.priority = priority;
@@ -397,19 +394,7 @@ export class GooseProvider implements RegisteredAiProvider {
   async generate(input: ProviderGenerateInput) {
     if (input.media?.length) throw new Error('Goose provider is text-only and cannot process media');
     if (input.tools?.length) throw new Error('Goose provider does not support tool calling');
-
-    // Workspace settings win over the global env fallback - a workspace
-    // that has explicitly turned failover off must be honoured even when a
-    // global GOOSE_SERVICE_URL is configured. This precedence used to live
-    // in aiReplyService.ts's own tryGooseFallback; now that aiReplyService's
-    // fallback routes through AiGateway instead of calling Goose directly,
-    // this is the one place that logic needs to exist.
-    const settings = await this.settingsRepository.getGooseResolved(input.tenantId).catch(() => null);
-    if (settings && !settings.isEnabled) {
-      throw new Error('Goose failover is turned off for this workspace');
-    }
-    const endpoint = settings?.isEnabled && settings.serviceUrl ? { serviceUrl: settings.serviceUrl, apiKey: settings.apiKey } : undefined;
-    if (!endpoint && !gooseService.getCapabilities().configured) {
+    if (!gooseService.getCapabilities().configured) {
       throw new Error('Goose failover is not configured');
     }
 
@@ -422,7 +407,6 @@ export class GooseProvider implements RegisteredAiProvider {
         role: message.role === 'assistant' ? ('model' as const) : ('user' as const),
         parts: [{ text: message.content }],
       })),
-      endpoint,
     });
 
     if (result.status === 'unavailable') throw new Error(result.reason);

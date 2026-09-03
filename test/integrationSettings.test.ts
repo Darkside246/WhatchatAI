@@ -2,7 +2,6 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { IntegrationSettingsRepository } from '../src/repositories/integrationSettingsRepository.js';
 import { resolveTransport } from '../src/services/emailService.js';
-import { updateGooseSettings, getGooseSettings } from '../src/services/gooseSettingsService.js';
 import { createTestBusiness, resetDatabase } from './helpers.js';
 
 /**
@@ -134,23 +133,5 @@ describe('integration settings (encrypted secrets, honest precedence)', () => {
 
     const settings = await repository.getEmailResolved(businessId);
     expect(await resolveTransport(settings)).toBeNull();
-  });
-
-  it('refuses to enable the Goose failover without a service URL', async () => {
-    await expect(updateGooseSettings(businessId, 'tester', { isEnabled: true, serviceUrl: null })).rejects.toThrow(/service URL/i);
-  });
-
-  it('stores Goose settings and reports them without the api key', async () => {
-    await updateGooseSettings(businessId, 'tester', {
-      isEnabled: true,
-      serviceUrl: 'https://goose.internal',
-      apiKey: 'goose-secret',
-    });
-
-    const settings = await getGooseSettings(businessId);
-    expect(settings.isEnabled).toBe(true);
-    expect(settings.serviceUrl).toBe('https://goose.internal');
-    expect(settings.apiKeySet).toBe(true);
-    expect(JSON.stringify(settings)).not.toContain('goose-secret');
   });
 });

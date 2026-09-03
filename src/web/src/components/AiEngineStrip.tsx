@@ -59,10 +59,19 @@ export function AiEngineStrip() {
           ? { status: 'ok', detail: r.detail }
           : { status: 'failed', reason: r.reason };
       } else {
-        const r = await api.testGooseSettings();
-        result = r.status === 'ok'
-          ? { status: 'ok', detail: r.detail }
-          : { status: 'failed', reason: r.reason };
+        // Goose (Section 117-122: a developer-provisioned global secret,
+        // just like Gemini - never a per-business setting a business owner
+        // could point at their own third-party URL) has no dedicated test
+        // endpoint of its own: getAiEngineStatus already live-probes it on
+        // every load (checkedBy: 'live_probe'), unlike Gemini's coarse
+        // presence-only check - so "testing" Goose again is just refetching
+        // that same already-live result.
+        const refreshed = await api.getAiEngines();
+        setStatus(refreshed);
+        const engine = refreshed.engines.find((e) => e.id === id);
+        result = engine?.state === 'available'
+          ? { status: 'ok', detail: 'Goose answered a real health check.' }
+          : { status: 'failed', reason: engine?.reason ?? 'Not reachable.' };
       }
       setResults((p) => ({ ...p, [id]: result }));
     } catch (err) {

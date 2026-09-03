@@ -678,15 +678,6 @@ export interface EmailSettingsDto {
   lastTestError: string | null;
 }
 
-export interface GooseSettingsDto {
-  isEnabled: boolean;
-  serviceUrl: string | null;
-  apiKeySet: boolean;
-  lastTestAt: string | null;
-  lastTestOk: boolean | null;
-  lastTestError: string | null;
-}
-
 export interface ScheduledStatusDto {
   id: string;
   businessId: string;
@@ -1528,13 +1519,6 @@ export const api = {
       body: JSON.stringify({ toEmail }),
     }),
 
-  getGooseSettings: () => request<GooseSettingsDto>('/workspace/integrations/goose'),
-  updateGooseSettings: (input: { isEnabled: boolean; serviceUrl?: string | null; apiKey?: string }) =>
-    request<GooseSettingsDto>('/workspace/integrations/goose', { method: 'PUT', body: JSON.stringify(input) }),
-  testGooseSettings: () =>
-    request<{ status: 'ok'; detail: string } | { status: 'failed'; reason: string }>('/workspace/integrations/goose/test', {
-      method: 'POST',
-    }),
   listEmails: (status?: EmailStatus) =>
     request<{ emails: EmailMessageDto[] }>(`/workspace/email${status ? `?status=${status}` : ''}`),
   createEmailDraft: (input: {

@@ -210,7 +210,6 @@ import {
   isInvalidScheduledStatusError,
 } from '../services/scheduledStatusService.js';
 import { getAiEngineStatus, testGeminiConnection } from '../services/aiEngineStatusService.js';
-import { getGooseSettings, updateGooseSettings, testGooseSettings } from '../services/gooseSettingsService.js';
 import {
   createDraft as createEmailDraft,
   listEmails,
@@ -1505,36 +1504,6 @@ app.post('/api/workspace/email/test', expensiveActionLimiter, requirePermission(
     if (handled) return handled;
     throw error;
   }
-});
-
-app.get('/api/workspace/integrations/goose', requirePermission('settings.manage'), async (_req, res) => {
-  const { businessId } = res.locals.auth as AuthContext;
-  return res.status(200).json(await getGooseSettings(businessId));
-});
-
-const gooseSettingsSchema = z.object({
-  isEnabled: z.boolean(),
-  serviceUrl: z.string().trim().max(500).nullish(),
-  apiKey: z.string().max(500).optional(),
-});
-
-app.put('/api/workspace/integrations/goose', requirePermission('settings.manage'), async (req, res) => {
-  const auth = res.locals.auth as AuthContext;
-  const parsed = gooseSettingsSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'INVALID_GOOSE_SETTINGS', details: parsed.error.flatten() });
-  try {
-    return res.status(200).json(await updateGooseSettings(auth.businessId, auth.userId, parsed.data));
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('INVALID:')) {
-      return res.status(400).json({ error: 'INVALID_GOOSE_SETTINGS', message: error.message.replace('INVALID:', '').trim() });
-    }
-    throw error;
-  }
-});
-
-app.post('/api/workspace/integrations/goose/test', expensiveActionLimiter, requirePermission('settings.manage'), async (_req, res) => {
-  const auth = res.locals.auth as AuthContext;
-  return res.status(200).json(await testGooseSettings(auth.businessId, auth.userId));
 });
 
 app.get('/api/workspace/knowledge-base', requirePermission('settings.manage'), async (_req, res) => {

@@ -48,11 +48,6 @@ describe('aiEngineStatusService (honest engine reporting, never a fabricated gre
   beforeEach(async () => {
     delete process.env.GEMINI_API_KEY;
     delete process.env.GOOSE_SERVICE_URL;
-    // getAiEngineStatus() with no businessId reads business_goose_settings
-    // across every tenant to decide whether exactly one workspace has Goose
-    // configured - without this, a row left behind by an unrelated test
-    // file earlier in a full suite run makes this test's outcome depend on
-    // what else happened to run first.
     await resetDatabase();
   });
 

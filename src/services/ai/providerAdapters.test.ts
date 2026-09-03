@@ -2,10 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@google/genai';
 import { GooseProvider, GeminiProvider, OpenAIProvider } from './providerAdapters.js';
 import { AiGateway, ProviderConfigRejectedError } from './aiGateway.js';
-import { IntegrationSettingsRepository } from '../../repositories/integrationSettingsRepository.js';
 import { pool } from '../../db/pool.js';
 
-const settingsRepository = new IntegrationSettingsRepository(pool);
 const originalGooseServiceUrl = process.env.GOOSE_SERVICE_URL;
 
 const generateContentMock = vi.fn();
@@ -73,39 +71,42 @@ describe('GooseProvider', () => {
     await expect(provider.generate(baseRequest(businessId))).rejects.toThrow('not configured');
   });
 
-  it('generate() throws when the workspace has explicitly disabled failover, even if globally configured', async () => {
+  /**
+   * Section 117-122 (security review): GooseProvider used to resolve a
+   * per-business override from business_goose_settings, letting any
+   * business owner point their own Goose failover at an arbitrary
+   * third-party URL that would receive real customer conversation text -
+   * a data-exfiltration surface, and inconsistent with how every other
+   * provider (Gemini/OpenAI/OpenRouter) is provisioned, purely via a
+   * developer-controlled env var. Goose is now provisioned the same way:
+   * these two tests prove a stale per-business row - however it got there -
+   * is never consulted at all, whether it tries to disable Goose or to
+   * redirect it to a different URL. The table itself was left in place
+   * (never a destructive migration), just no application code reads it
+   * anymore.
+   */
+  it('a stale per-business row explicitly disabling Goose has no effect - the global env var is the only source of truth', async () => {
     process.env.GOOSE_SERVICE_URL = 'http://127.0.0.1:3284';
-    await settingsRepository.upsertGoose({ businessId, isEnabled: false, serviceUrl: null });
-    const provider = new GooseProvider();
-    await expect(provider.generate(baseRequest(businessId))).rejects.toThrow('turned off for this workspace');
-  });
-
-  it('generate() succeeds via a real per-workspace configured endpoint', async () => {
-    await settingsRepository.upsertGoose({
-      businessId,
-      isEnabled: true,
-      serviceUrl: 'http://127.0.0.1:3284',
-      apiKey: 'workspace-secret',
-    });
-    const fetchMock = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(new Response(JSON.stringify({ text: 'The AC issue has been logged.' }), { status: 200 }));
+    await pool.query(`INSERT INTO business_goose_settings (business_id, is_enabled, service_url) VALUES ($1, false, NULL)`, [businessId]);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ text: 'ok' }), { status: 200 }));
 
     const provider = new GooseProvider();
     const result = await provider.generate(baseRequest(businessId));
+    expect(result.text).toBe('ok');
+  });
 
-    expect(result).toEqual({ provider: 'goose', text: 'The AC issue has been logged.' });
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:3284/generate',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({ authorization: 'Bearer workspace-secret' }),
-      }),
+  it('a stale per-business row pointing at an attacker-controlled URL is never used - falls through to the global env var (or fails honestly if none)', async () => {
+    await pool.query(
+      `INSERT INTO business_goose_settings (business_id, is_enabled, service_url) VALUES ($1, true, $2)`,
+      [businessId, 'https://attacker-controlled.example/exfiltrate'],
     );
-    const [, requestInit] = fetchMock.mock.calls[0]!;
-    const body = JSON.parse((requestInit as RequestInit).body as string) as { systemInstruction: string; contents: unknown[] };
-    expect(body.systemInstruction).toBe('You are a helpful assistant.');
-    expect(body.contents).toEqual([{ role: 'user', parts: [{ text: 'The AC is not cooling.' }] }]);
+
+    const provider = new GooseProvider();
+    // No GOOSE_SERVICE_URL set (beforeEach deletes it) - if the stale row's
+    // URL were still consulted, this would instead attempt a real network
+    // call to the attacker-controlled host. It must fail exactly like the
+    // "nothing configured at all" case above.
+    await expect(provider.generate(baseRequest(businessId))).rejects.toThrow('not configured');
   });
 
   it('generate() falls back to the global env URL when no workspace row exists', async () => {
@@ -132,13 +133,7 @@ describe('GooseProvider', () => {
   });
 
   it('participates correctly in AiGateway failover: Gemini fails, Goose succeeds', async () => {
-    // capabilities() can only see the global fallback (no tenantId in that
-    // signature) - this represents the realistic case of a platform-wide
-    // Goose reference deployment with this one workspace overriding it with
-    // their own service, not the (documented, narrower) workspace-only-config
-    // case the earlier "falls back to the global env URL" test covers.
     process.env.GOOSE_SERVICE_URL = 'http://127.0.0.1:9999';
-    await settingsRepository.upsertGoose({ businessId, isEnabled: true, serviceUrl: 'http://127.0.0.1:3284', apiKey: null });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ text: 'Goose saved the day.' }), { status: 200 }));
 
     const gateway = new AiGateway();

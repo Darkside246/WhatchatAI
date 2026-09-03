@@ -42,25 +42,6 @@ export interface EmailSettingsPublic {
   lastTestError: string | null;
 }
 
-export interface GooseSettingsResolved {
-  businessId: string;
-  isEnabled: boolean;
-  serviceUrl: string | null;
-  apiKey: string | null;
-  lastTestAt: string | null;
-  lastTestOk: boolean | null;
-  lastTestError: string | null;
-}
-
-export interface GooseSettingsPublic {
-  isEnabled: boolean;
-  serviceUrl: string | null;
-  apiKeySet: boolean;
-  lastTestAt: string | null;
-  lastTestOk: boolean | null;
-  lastTestError: string | null;
-}
-
 interface EmailRow {
   business_id: string;
   provider: EmailProviderKind;
@@ -73,16 +54,6 @@ interface EmailRow {
   smtp_secure: boolean;
   smtp_username: string | null;
   smtp_password_encrypted: string | null;
-  last_test_at: string | null;
-  last_test_ok: boolean | null;
-  last_test_error: string | null;
-}
-
-interface GooseRow {
-  business_id: string;
-  is_enabled: boolean;
-  service_url: string | null;
-  api_key_encrypted: string | null;
   last_test_at: string | null;
   last_test_ok: boolean | null;
   last_test_error: string | null;
@@ -215,64 +186,6 @@ export class IntegrationSettingsRepository {
   async recordEmailTest(businessId: string, ok: boolean, error: string | null): Promise<void> {
     await this.db.query(
       `UPDATE business_email_settings
-         SET last_test_at = now(), last_test_ok = $2, last_test_error = $3, updated_at = now()
-       WHERE business_id = $1`,
-      [businessId, ok, error?.slice(0, 500) ?? null],
-    );
-  }
-
-  async getGooseResolved(businessId: string): Promise<GooseSettingsResolved | null> {
-    const { rows } = await this.db.query<GooseRow>('SELECT * FROM business_goose_settings WHERE business_id = $1', [businessId]);
-    const row = rows[0];
-    if (!row) return null;
-    return {
-      businessId: row.business_id,
-      isEnabled: row.is_enabled,
-      serviceUrl: row.service_url,
-      apiKey: await decryptSecret(businessId, row.api_key_encrypted),
-      lastTestAt: row.last_test_at,
-      lastTestOk: row.last_test_ok,
-      lastTestError: row.last_test_error,
-    };
-  }
-
-  async getGoosePublic(businessId: string): Promise<GooseSettingsPublic | null> {
-    const { rows } = await this.db.query<GooseRow>('SELECT * FROM business_goose_settings WHERE business_id = $1', [businessId]);
-    const row = rows[0];
-    if (!row) return null;
-    return {
-      isEnabled: row.is_enabled,
-      serviceUrl: row.service_url,
-      apiKeySet: row.api_key_encrypted !== null,
-      lastTestAt: row.last_test_at,
-      lastTestOk: row.last_test_ok,
-      lastTestError: row.last_test_error,
-    };
-  }
-
-  async upsertGoose(input: {
-    businessId: string;
-    isEnabled: boolean;
-    serviceUrl: string | null;
-    apiKey?: string | null | undefined;
-  }): Promise<void> {
-    const apiKeyEncrypted = input.apiKey === undefined ? undefined : await encryptSecret(input.businessId, input.apiKey);
-
-    await this.db.query(
-      `INSERT INTO business_goose_settings (business_id, is_enabled, service_url, api_key_encrypted)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (business_id) DO UPDATE SET
-         is_enabled = EXCLUDED.is_enabled,
-         service_url = EXCLUDED.service_url,
-         api_key_encrypted = CASE WHEN $5 THEN EXCLUDED.api_key_encrypted ELSE business_goose_settings.api_key_encrypted END,
-         updated_at = now()`,
-      [input.businessId, input.isEnabled, input.serviceUrl, apiKeyEncrypted ?? null, input.apiKey !== undefined],
-    );
-  }
-
-  async recordGooseTest(businessId: string, ok: boolean, error: string | null): Promise<void> {
-    await this.db.query(
-      `UPDATE business_goose_settings
          SET last_test_at = now(), last_test_ok = $2, last_test_error = $3, updated_at = now()
        WHERE business_id = $1`,
       [businessId, ok, error?.slice(0, 500) ?? null],
