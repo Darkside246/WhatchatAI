@@ -10,6 +10,7 @@ import {
 import { register, login, InvalidCredentialsError } from '../src/services/authService.js';
 import { registerTrial, TrialPhoneAlreadyUsedOnboardingError } from '../src/services/trialOnboardingService.js';
 import { WhatsAppAccountRepository } from '../src/repositories/whatsappAccountRepository.js';
+import { CustomerMemoryRepository } from '../src/repositories/customerMemoryRepository.js';
 import { createTestBusiness, createTestSubscription, resetDatabase } from './helpers.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
@@ -98,6 +99,53 @@ describe('accountDeletionService.sweepDueAccountDeletions (the real cascade-purg
 
     const membershipRows = await pool.query('SELECT id FROM business_memberships WHERE business_id = $1', [businessId]);
     expect(membershipRows.rows).toHaveLength(0);
+  });
+
+  /**
+   * Section 75-91: real regression test for a real bug found while
+   * building the account-deletion UI - customer_memory (migration 959)
+   * was created after migration 939's "fix every table blocking a real
+   * purge" sweep and was simply never included in it, the only table in
+   * the entire schema with this gap (confirmed via pg_constraint against
+   * the live schema, not just a migration-file read). Before migration
+   * 970's fix, this exact scenario - a business with any real customer
+   * memory, a routine occurrence the AI creates automatically for a
+   * returning customer - hit a foreign key violation on purgeBusiness()'s
+   * DELETE FROM businesses, silently failed every sweep retry forever,
+   * and the business was never actually deleted despite the UI (and the
+   * business's own database row) claiming a deletion was scheduled.
+   */
+  it('purges a business that has real customer memory - the exact real-world case that used to leave a stuck, never-deleted business behind', async () => {
+    await resetDatabase();
+    const owner = await register({ email: 'owner-with-memory@example.com', password: PASSWORD, displayName: 'Owner' }, device);
+    const businessId = owner.business.id;
+
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO customers (business_id, display_name) VALUES ($1, 'Real Customer') RETURNING id`,
+      [businessId],
+    );
+    const customerId = rows[0]!.id;
+    const memory = new CustomerMemoryRepository(pool);
+    const current = await memory.getOrCreate(businessId, customerId);
+    await memory.update(businessId, customerId, current.version, [
+      { key: 'preferred_time', value: 'evenings', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
+    ]);
+
+    await requestBusinessDeletion(businessId, owner.user.id);
+    await pool.query(`UPDATE businesses SET scheduled_purge_at = now() - interval '1 minute' WHERE id = $1`, [businessId]);
+
+    await sweepDueAccountDeletions();
+
+    // Before the fix, this row was still here - the purge silently failed
+    // and retried forever, never actually erasing anything.
+    const businessRow = await pool.query('SELECT id FROM businesses WHERE id = $1', [businessId]);
+    expect(businessRow.rows).toHaveLength(0);
+
+    const memoryRow = await pool.query('SELECT id FROM customer_memory WHERE business_id = $1', [businessId]);
+    expect(memoryRow.rows).toHaveLength(0);
+
+    const customerRow = await pool.query('SELECT id FROM customers WHERE id = $1', [customerId]);
+    expect(customerRow.rows).toHaveLength(0);
   });
 
   it('anonymizes the owner user row once they have zero remaining memberships anywhere', async () => {

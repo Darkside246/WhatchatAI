@@ -436,6 +436,12 @@ Checked each named sub-category against real code rather than assuming full cove
 
 **Still fully open**: the other 16 sections in this block - data minimisation audit, the actual memory architecture question (customer_memory/conversation_states already exist but their retention policy was never defined), a genuine learning-safeguards review, and the "privacy/probing engine" (resisting a customer trying to extract another customer's data or the system prompt itself) are all unstarted.
 
+**Second, more serious real gap found immediately after shipping the deletion UI above** - investigated whether the feature it exposes actually works end-to-end, rather than trusting the pre-existing "8 tests already pass" as proof by itself: `customer_memory` (migration 959) was created *after* migration 939's dedicated sweep to fix every table blocking a real business purge, and was simply never included in it. Confirmed against the live schema (`pg_constraint`, not just a migration-file read) that it is the **only** table anywhere in the database referencing `businesses(id)` without `ON DELETE CASCADE` - every other table, including its own sibling `customer_identities`, already cascades correctly. Left as-is, any business with real customer memory (a routine occurrence - the AI records this automatically for a returning customer) would hit a foreign key violation on `purgeBusiness()`'s `DELETE FROM businesses`, silently fail every sweep retry forever, and never actually be deleted - directly undermining the exact feature this section just built a UI for.
+
+**Fix**: migration 970 - `customer_memory.business_id`'s FK now cascades, matching every other table in the schema.
+
+**Verified**: new regression test in `accountDeletionService.test.ts` reproducing the exact broken scenario (a business with real, written customer memory) and confirming the business, its `customer_memory` row, and its `customers` row are all now genuinely erased by the sweep - 9/9 tests in that file pass. Typecheck clean.
+
 ## Section checklist
 
 ```
