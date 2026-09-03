@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { WritingTwinRepository } from '../src/repositories/writingTwinRepository.js';
-import { WritingTwinService, UnauthorizedActorError } from '../src/services/writingTwinService.js';
+import { WritingTwinService, UnauthorizedActorError, sweepExpiredWritingTwinRawEvents } from '../src/services/writingTwinService.js';
 import { businessExecutionContextForUser, businessExecutionContextForAiCell, businessExecutionContextForSystem } from '../src/domain/businessExecutionContext.js';
 import { createTestBusiness, createTestUser, resetDatabase } from './helpers.js';
 
@@ -124,6 +124,29 @@ describe('WritingTwinService (Phase W3 - fail-closed AI-attribution boundary, de
     const inputInterfaceMatch = source.match(/interface GatherAiHandoffContextInput \{([\s\S]*?)\n\}/);
     expect(inputInterfaceMatch).not.toBeNull();
     expect(inputInterfaceMatch?.[1]).not.toContain('userId');
+  });
+
+  describe('sweepExpiredWritingTwinRawEvents (Section 75-91 - the sweep repository.sweepExpiredRawEvents() had, but nothing ever called)', () => {
+    it('actually erases a real raw event past its documented retention window', async () => {
+      const repo = new WritingTwinRepository(pool);
+      await repo.recordRawEvent(businessId, userId, 'email', 'human_authored', 'Real message, past its 60-day window.', null, 'email_messages', crypto.randomUUID(), 60);
+      await pool.query(`UPDATE writing_twin_raw_events SET expires_at = now() - interval '1 hour' WHERE business_id = $1 AND user_id = $2`, [businessId, userId]);
+
+      await sweepExpiredWritingTwinRawEvents();
+
+      const { rows } = await pool.query('SELECT id FROM writing_twin_raw_events WHERE business_id = $1', [businessId]);
+      expect(rows).toHaveLength(0);
+    });
+
+    it('never touches a raw event still inside its retention window', async () => {
+      const repo = new WritingTwinRepository(pool);
+      await repo.recordRawEvent(businessId, userId, 'email', 'human_authored', 'Still within retention.', null, 'email_messages', crypto.randomUUID(), 60);
+
+      await sweepExpiredWritingTwinRawEvents();
+
+      const { rows } = await pool.query('SELECT id FROM writing_twin_raw_events WHERE business_id = $1', [businessId]);
+      expect(rows).toHaveLength(1);
+    });
   });
 });
 

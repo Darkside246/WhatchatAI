@@ -52,6 +52,7 @@ import { runSecurityScan } from '../../services/securityScanService.js';
 import { runSecurityWatcher } from '../../services/openclawSecurityWatcherService.js';
 import { sweepDueAccountDeletions } from '../../services/accountDeletionService.js';
 import { sweepExpiredTrials } from '../../services/billing/subscriptionExpiryService.js';
+import { sweepExpiredWritingTwinRawEvents } from '../../services/writingTwinService.js';
 import type { WhatsAppMessageRecord } from '../../repositories/whatsappMessageRepository.js';
 import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaRepository.js';
 import type { MediaDownloadErrorCategory } from '../../domain/whatsapp/types.js';
@@ -1334,6 +1335,12 @@ const ACCOUNT_DELETION_PURGE_SWEEP_INTERVAL_MS = 3_600_000;
 // minutes of trial access past its real expiry.
 const TRIAL_EXPIRY_SWEEP_INTERVAL_MS = 900_000;
 
+// Section 75-91: a raw writing sample already past its documented 60-day
+// retention window sitting around for a few extra hours is not
+// time-critical - same "not time-critical" cadence as the account-
+// deletion purge sweep above.
+const WRITING_TWIN_RETENTION_SWEEP_INTERVAL_MS = 3_600_000;
+
 export async function sweepStaleEmails(): Promise<void> {
   const stale = await emailMessageRepository.findStalePending(EMAIL_STALE_SECONDS);
   for (const email of stale) {
@@ -1407,6 +1414,8 @@ async function processRealtimeEventJob(
     await sweepCompletedMeetings();
   } else if (job.name === 'trial-expiry-sweep') {
     await sweepExpiredTrials();
+  } else if (job.name === 'writing-twin-raw-event-retention-sweep') {
+    await sweepExpiredWritingTwinRawEvents();
   } else if (job.name === 'media-download-timeout-sweep') {
     await sweepStaleDownloadingMedia();
   } else if (job.name === 'ai-handoff-sweep') {
@@ -1629,3 +1638,14 @@ void realtimeEventsQueue
   .upsertJobScheduler('trial-expiry-sweep', { every: TRIAL_EXPIRY_SWEEP_INTERVAL_MS }, { name: 'trial-expiry-sweep' })
   .then(() => console.log(`[RealtimeEventsWorker] Scheduled trial-expiry-sweep every ${TRIAL_EXPIRY_SWEEP_INTERVAL_MS}ms`))
   .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule trial-expiry-sweep:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler(
+    'writing-twin-raw-event-retention-sweep',
+    { every: WRITING_TWIN_RETENTION_SWEEP_INTERVAL_MS },
+    { name: 'writing-twin-raw-event-retention-sweep' },
+  )
+  .then(() =>
+    console.log(`[RealtimeEventsWorker] Scheduled writing-twin-raw-event-retention-sweep every ${WRITING_TWIN_RETENTION_SWEEP_INTERVAL_MS}ms`),
+  )
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule writing-twin-raw-event-retention-sweep:', error.message));

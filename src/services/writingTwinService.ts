@@ -247,4 +247,25 @@ export class WritingTwinService {
 }
 
 export const writingTwinService = new WritingTwinService();
+
+/**
+ * Section 75-91 (data privacy/retention - "learning safeguards"): a real,
+ * significant gap found - writingTwinRepository.ts's own
+ * sweepExpiredRawEvents() has existed since this feature was built
+ * (real DELETE FROM writing_twin_raw_events WHERE expires_at < now()),
+ * with expires_at correctly computed at insert time from the documented
+ * 60-day Tier C retention window - but nothing anywhere ever called it.
+ * These rows hold real, encrypted human-authored/AI-edited writing
+ * samples (up to 20,000 chars each) drawn from real email/WhatsApp
+ * messages, meant by this feature's own design to expire after 60 days;
+ * without this sweep they sat in the database forever. Wired in exactly
+ * like every other real sweep (see incomingMessagesWorker.ts).
+ */
+export async function sweepExpiredWritingTwinRawEvents(): Promise<void> {
+  const repository = new WritingTwinRepository(pool);
+  const deleted = await repository.sweepExpiredRawEvents();
+  if (deleted > 0) {
+    console.log(`[RealtimeEventsWorker] Purged ${deleted} expired writing-twin raw event(s) past their 60-day retention window`);
+  }
+}
 export { getMaxExamplesPerChannel, getRawEventRetentionDays };

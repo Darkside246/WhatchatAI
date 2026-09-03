@@ -446,6 +446,12 @@ Checked each named sub-category against real code rather than assuming full cove
 
 **Verified**: 3 new tests in `workspaceServiceCrm.test.ts` (bundles real profile/memory/conversation-state data / honest empty arrays for a contact with none / cross-tenant 404), 3 new tests in `conversationStateRepository.test.ts` for the new join query (returns real linked states / empty for a contact with a chat but no state / never leaks another contact's state). Typecheck clean both sides.
 
+**Fourth slice - the "learning" theme, and another real retention gap**: `writingTwinRepository.ts`'s `sweepExpiredRawEvents()` has existed since the Writing Twin feature was built (Phase W3) - a real `DELETE FROM writing_twin_raw_events WHERE expires_at < now()`, with `expires_at` correctly computed at insert time from a documented 60-day Tier C retention window (`WRITING_TWIN_RAW_EVENT_RETENTION_DAYS`, environment-overridable) - but nothing anywhere ever called it. These rows hold real, encrypted human-authored/AI-edited writing samples (up to 20,000 chars each, drawn from real email/WhatsApp messages) - meant by this feature's own design to expire after 60 days, sitting in the database forever without this sweep. Same exact shape as Section 72's trial-expiry gap: a retention policy correctly computed and stored, never enforced.
+
+**Fix**: new `sweepExpiredWritingTwinRawEvents()` in `writingTwinService.ts`, wired in as a real scheduled job (`writing-twin-raw-event-retention-sweep`, hourly - not time-critical) in `incomingMessagesWorker.ts`, matching every other real sweep already running.
+
+**Verified**: 2 new tests in `writingTwinService.test.ts` (actually erases a real event past its window / never touches one still inside it), alongside the existing 15-test `writingTwinRepository.test.ts` suite (including its own pre-existing direct test of the underlying SQL) - 25/25 pass. Typecheck clean both sides.
+
 ## Section checklist
 
 ```
