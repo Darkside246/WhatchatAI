@@ -80,3 +80,52 @@ describe('WhatsAppOutboundMessageService.send() conversation event emission', ()
     expect(events).toEqual([]);
   });
 });
+
+describe('WhatsAppOutboundMessageService.send() - mediaStorageReference bypass (Section 27-30)', () => {
+  let businessId: string;
+  let accountId: string;
+  let chatId: string;
+  const toJid = '15550008888@s.whatsapp.net';
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId);
+    const chat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: toJid,
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+    chatId = chat.id;
+    enqueueOutboundMessageMock.mockClear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('accepts a pre-stored mediaStorageReference directly, with no mediaBase64 at all - the real path sendCampaign() in campaignService.ts relies on', async () => {
+    const record = await whatsappOutboundMessageService.send({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      messageType: 'image',
+      caption: 'From a real campaign',
+      mediaStorageReference: 'businesses/fake/media/already-stored-reference',
+      mediaMimeType: 'image/png',
+      mediaFileName: 'promo.png',
+    });
+
+    expect(record.messageType).toBe('image');
+    expect(record.mediaStorageReference).toBe('businesses/fake/media/already-stored-reference');
+    expect(record.caption).toBe('From a real campaign');
+  });
+
+  it('still requires mediaBase64 or mediaStorageReference for a non-text message - neither is not a silent no-op', async () => {
+    await expect(
+      whatsappOutboundMessageService.send({ businessId, whatsappAccountId: accountId, chatId, messageType: 'image' }),
+    ).rejects.toThrow('requires mediaBase64 or mediaStorageReference');
+  });
+});

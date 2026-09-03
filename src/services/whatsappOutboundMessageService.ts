@@ -28,10 +28,19 @@ export interface SendOutboundMessageInput {
   messageType: OutboundMessageType;
   text?: string;
   caption?: string;
-  /** Base64-encoded raw file bytes. Required for every messageType except 'text'. */
+  /** Base64-encoded raw file bytes. Required for every messageType except 'text', unless mediaStorageReference is supplied directly instead. */
   mediaBase64?: string;
-  mediaMimeType?: string;
-  mediaFileName?: string;
+  /**
+   * A reference already returned by a prior storeMedia() call - bypasses
+   * the decode/hash/store step entirely. The one real caller: campaignService.ts's
+   * sendCampaign(), which stores a campaign's attachment exactly once and
+   * reuses this same reference for every recipient, rather than
+   * re-decoding and re-hashing the identical bytes on every one of
+   * potentially 100 real sends.
+   */
+  mediaStorageReference?: string | undefined;
+  mediaMimeType?: string | undefined;
+  mediaFileName?: string | undefined;
   /** Defaults to 'human' when omitted - set explicitly to 'ai' by the AI reply pipeline. */
   requestedBy?: string;
   /** Staggers real dispatch (BullMQ job delay) - set by campaign sends, never by a normal composer send. */
@@ -66,32 +75,36 @@ export class WhatsAppOutboundMessageService {
     let mediaDurationSeconds: number | null = null;
 
     if (input.messageType !== 'text') {
-      if (!input.mediaBase64) throw new Error(`messageType "${input.messageType}" requires mediaBase64`);
-      let buffer = Buffer.from(input.mediaBase64, 'base64');
-      if (buffer.length === 0) throw new Error('Decoded media is empty');
-      if (buffer.length > MAX_MEDIA_BYTES) {
-        throw new Error(`Media exceeds the ${MAX_MEDIA_BYTES} byte limit`);
-      }
+      if (input.mediaStorageReference) {
+        mediaStorageReference = input.mediaStorageReference;
+      } else {
+        if (!input.mediaBase64) throw new Error(`messageType "${input.messageType}" requires mediaBase64 or mediaStorageReference`);
+        let buffer = Buffer.from(input.mediaBase64, 'base64');
+        if (buffer.length === 0) throw new Error('Decoded media is empty');
+        if (buffer.length > MAX_MEDIA_BYTES) {
+          throw new Error(`Media exceeds the ${MAX_MEDIA_BYTES} byte limit`);
+        }
 
-      /*
-       * A voice note is converted to Ogg/Opus BEFORE the row exists, so an
-       * unplayable voice note can never be persisted or queued. Browsers
-       * record WebM/Opus (Chrome, Android) or MP4/AAC (Safari); WhatsApp
-       * voice notes are Ogg/Opus, and sending anything else uploads happily
-       * and then fails to play for the recipient. Failing loudly here is the
-       * honest outcome - the alternative is a feature that looks like it
-       * works and silently does not.
-       */
-      if (input.messageType === 'voice_note') {
-        const converted = await transcodeToVoiceNote(buffer);
-        if (converted.status === 'failed') throw new Error(converted.reason);
-        buffer = converted.buffer;
-        mediaMimeType = converted.mimeType;
-        mediaDurationSeconds = converted.durationSeconds;
-      }
+        /*
+         * A voice note is converted to Ogg/Opus BEFORE the row exists, so an
+         * unplayable voice note can never be persisted or queued. Browsers
+         * record WebM/Opus (Chrome, Android) or MP4/AAC (Safari); WhatsApp
+         * voice notes are Ogg/Opus, and sending anything else uploads happily
+         * and then fails to play for the recipient. Failing loudly here is the
+         * honest outcome - the alternative is a feature that looks like it
+         * works and silently does not.
+         */
+        if (input.messageType === 'voice_note') {
+          const converted = await transcodeToVoiceNote(buffer);
+          if (converted.status === 'failed') throw new Error(converted.reason);
+          buffer = converted.buffer;
+          mediaMimeType = converted.mimeType;
+          mediaDurationSeconds = converted.durationSeconds;
+        }
 
-      const sha256Hex = createHash('sha256').update(buffer).digest('hex');
-      mediaStorageReference = await storeMedia(input.businessId, sha256Hex, buffer);
+        const sha256Hex = createHash('sha256').update(buffer).digest('hex');
+        mediaStorageReference = await storeMedia(input.businessId, sha256Hex, buffer);
+      }
     } else if (!input.text?.trim()) {
       throw new Error('messageType "text" requires non-empty text');
     }

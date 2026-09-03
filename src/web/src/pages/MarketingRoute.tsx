@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type MouseEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Megaphone, Send, Check, X, Users, CalendarClock, Image as ImageIcon, Sparkles, Trash2, Ban } from 'lucide-react';
+import { ArrowLeft, Megaphone, Send, Check, X, Users, CalendarClock, Image as ImageIcon, Sparkles, Trash2, Ban, Paperclip } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -123,11 +123,18 @@ function formatDate(iso: string | null): string {
   return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
+function attachmentMessageType(file: File): 'image' | 'video' | 'document' {
+  if (file.type.startsWith('image/')) return 'image';
+  if (file.type.startsWith('video/')) return 'video';
+  return 'document';
+}
+
 function NewCampaignForm({ onCreated, onCancel }: { onCreated: (campaignId: string) => void; onCancel: () => void }) {
   const [name, setName] = useState('');
   const [messageText, setMessageText] = useState('');
   const [recipients, setRecipients] = useState<EligibleRecipientDto[] | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -161,7 +168,10 @@ function NewCampaignForm({ onCreated, onCancel }: { onCreated: (campaignId: stri
     setBusy(true);
     setError(null);
     try {
-      const result = await api.createCampaign({ name: name.trim(), messageText: messageText.trim(), crmContactIds: Array.from(selectedIds) });
+      const attachment = attachmentFile
+        ? { messageType: attachmentMessageType(attachmentFile), mediaBase64: await fileToBase64(attachmentFile), mediaMimeType: attachmentFile.type || 'application/octet-stream', mediaFileName: attachmentFile.name }
+        : undefined;
+      const result = await api.createCampaign({ name: name.trim(), messageText: messageText.trim(), crmContactIds: Array.from(selectedIds), ...(attachment ? { attachment } : {}) });
       onCreated(result.campaign.id);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not create that campaign.');
@@ -206,6 +216,24 @@ function NewCampaignForm({ onCreated, onCancel }: { onCreated: (campaignId: stri
             onChange={(event) => setMessageText(event.target.value)}
             className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-body text-fg outline-none focus:border-accent"
           />
+        </label>
+
+        <label className="flex flex-col gap-1 text-body text-fg-secondary">
+          Attachment (optional)
+          <input
+            type="file"
+            accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx"
+            onChange={(event) => setAttachmentFile(event.target.files?.[0] ?? null)}
+            className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-caption text-fg outline-none focus:border-accent"
+          />
+          {attachmentFile && (
+            <span className="flex items-center gap-2 text-caption text-fg-muted">
+              {attachmentFile.name} ({attachmentMessageType(attachmentFile)})
+              <button type="button" onClick={() => setAttachmentFile(null)} className="text-error hover:underline">
+                Remove
+              </button>
+            </span>
+          )}
         </label>
 
         <div>
@@ -332,6 +360,12 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
         <span className={`rounded-full px-2.5 py-1 text-caption font-medium ${STATUS_COLOR[campaign.status]}`}>{STATUS_LABEL[campaign.status]}</span>
       </div>
       <p className="mt-2 whitespace-pre-wrap rounded-lg border border-border-subtle bg-surface-2 p-3 text-body text-fg-secondary">{campaign.messageText}</p>
+      {campaign.messageType !== 'text' && (
+        <p className="mt-2 flex items-center gap-1.5 text-caption text-fg-muted">
+          <Paperclip size={13} />
+          {campaign.mediaFileName ?? `${campaign.messageType} attachment`} ({campaign.messageType})
+        </p>
+      )}
 
       <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-6">
         {(['total', 'queued', 'sent', 'delivered', 'read', 'failed'] as const).map((key) => (

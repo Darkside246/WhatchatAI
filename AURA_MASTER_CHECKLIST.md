@@ -397,6 +397,21 @@ Checked each named sub-category against real code rather than assuming full cove
 
 **Verified**: 8 new tests in `propertyOperationsLifecycle.test.ts` (resolved_at stamps once/never for non-terminal status/vendor-assign-with-status-change/cross-tenant 404 for incidents; approve-then-complete-preserves-earlier-field/undefined-means-untouched/completed_at-stamps-once/cross-tenant 404 for work orders), all passing alongside the existing 6-test `maintenanceWorkOrderExecutor.test.ts` suite. Typecheck clean both sides.
 
+## Sections 27-30 — Campaign attachments (real feature built, not a from-scratch invention)
+
+**Investigated expecting a from-zero build**; found the actual gap was narrower and far more tractable than it looked: campaigns were text-only by schema (`campaigns.message_text` the only content column), but the exact real, working outbound-media pipeline every campaign send already reuses (`whatsappOutboundMessageService.send()` - real base64 upload, real encrypted storage via `storeMedia()`, real MIME/filename tracking) has supported image/video/document/audio attachments since it was built for the ordinary 1:1 composer. The gap was specifically "never wired into campaigns," not "media handling doesn't exist."
+
+**Fix**:
+- Migration 969: `campaigns` gains `message_type` (`text`/`image`/`video`/`document`), `media_storage_reference`, `media_mime_type`, `media_file_name`.
+- `campaignService.ts`'s new `storeCampaignAttachment()` - stores a campaign's attachment exactly **once**, at creation or draft-edit time, never per recipient. This is the one real design decision this section needed: `whatsappOutboundMessageService.send()` previously required fresh `mediaBase64` on every call, which would mean re-decoding and re-hashing the identical bytes on every one of up to 100 real sends per campaign. Extended `send()` with an optional `mediaStorageReference` bypass instead - the one real caller being `sendCampaign()`, which now reuses the single stored reference across every recipient.
+- `createCampaign()`/`updateDraftCampaign()` accept an optional `attachment` (or `removeAttachment` on the update path); `sendCampaign()` passes `messageType`/`caption`/the stored reference through instead of always sending `messageType: 'text'`.
+- New `campaignAttachmentSchema` (image/video/document, real base64 size-limited the same as the composer's own limit) on both the create and update routes.
+- Real UI: a file input on the campaign composer (reusing `MarketingRoute.tsx`'s own already-existing `fileToBase64` helper, originally built for Status uploads), and attachment metadata shown on the campaign detail view.
+
+**Deliberately scoped out of this pass**: an inline preview/streaming route for a campaign's attached file - the raw `mediaStorageReference` isn't independently fetchable without server-side business-id scoping regardless, so this is a real, safe, but not-yet-built nicety, not a security gap. Storage *limits* (a per-plan cap on total media storage) and an AI content generator (drafting campaign copy from a prompt) remain fully unbuilt - separate, larger scope from what this pass addressed.
+
+**Verified**: 6 new tests in `campaignService.test.ts` (stores once at creation / defaults to text-only when omitted / sends the stored reference to every recipient with no re-encoded `mediaBase64` in the call / draft can add an attachment later / `removeAttachment` reverts to text-only / an invalid attachment never leaves a partial campaign behind), 2 new tests in `whatsappOutboundMessageService.test.ts` for the `mediaStorageReference` bypass itself. All 21+5 tests across the touched files pass. Typecheck clean both sides.
+
 ## Section checklist
 
 ```
@@ -416,7 +431,7 @@ Checked each named sub-category against real code rather than assuming full cove
 [~] 14-24   - Identity & Name Discovery Engine - within-conversation resolution + usage/repetition + manual contact-name UI (23) shipped and verified; cross-conversation carry-over (20), "important moment" cooldown override (19) still deferred
 [X] 25      - Chat sync incremental resume - real bug found and fixed, verified
 [X] 26      - Message delivery status reconciliation - real bug found and fixed (see notes), verified
-[ ] 27-30   - Campaign attachments, private storage, storage limits, AI content generator
+[~] 27-30   - Campaign attachments - real, working feature built and verified; storage limits, AI content generator still open
 [ ] 31-33   - Marketing research, timing engine, contact availability intelligence
 [~] 34-40   - Token economy, budgets, display, cost control - real gap found and fixed, verified; approval/override flow and deeper analytics deferred
 [!] 41-42   - Autonomous operations modes / work loop - BLOCKED, APPROVAL REQUIRED (product-policy decision, see approval queue)

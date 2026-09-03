@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import { pool } from '../db/pool.js';
 import {
   CampaignRepository,
   type CampaignRecord,
   type CampaignRecipientRecord,
   type CampaignStatus,
+  type CampaignMessageType,
 } from '../repositories/campaignRepository.js';
 import { whatsappOutboundMessageService } from './whatsappOutboundMessageService.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
@@ -11,6 +13,7 @@ import { EntitlementService } from './entitlementService.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { notifyBusiness } from './notificationService.js';
 import { type EntitlementDeniedError } from './workspaceService.js';
+import { storeMedia } from '../media/mediaStorage.js';
 
 const campaignRepository = new CampaignRepository(pool);
 const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
@@ -45,10 +48,42 @@ function requireStatus(campaign: CampaignRecord, allowed: CampaignStatus[]): voi
   }
 }
 
+/** Same real limit whatsappOutboundMessageService.ts enforces for the ordinary 1:1 composer - not exported from there, so kept as its own constant here rather than reaching into that module's internals. */
+const MAX_MEDIA_BYTES = 16 * 1024 * 1024;
+
+export interface CampaignAttachmentInput {
+  messageType: Exclude<CampaignMessageType, 'text'>;
+  mediaBase64: string;
+  mediaMimeType: string;
+  mediaFileName?: string | undefined;
+}
+
 export interface CreateCampaignInput {
   name: string;
   messageText: string;
   crmContactIds: string[];
+  attachment?: CampaignAttachmentInput | undefined;
+}
+
+/**
+ * Stores a campaign's attachment exactly once (at creation or draft-edit
+ * time), never per recipient - sendCampaign() below reuses the resulting
+ * storage reference for every real send, the same "process the bytes
+ * once" reasoning MAX_RECIPIENTS_PER_CAMPAIGN's own cap already assumes.
+ * Mirrors whatsappOutboundMessageService.send()'s own decode/hash/store
+ * steps exactly, since it's storing into the same real encrypted media
+ * backend.
+ */
+async function storeCampaignAttachment(
+  businessId: string,
+  attachment: CampaignAttachmentInput,
+): Promise<{ messageType: CampaignMessageType; mediaStorageReference: string; mediaMimeType: string; mediaFileName: string | undefined }> {
+  const buffer = Buffer.from(attachment.mediaBase64, 'base64');
+  if (buffer.length === 0) throw new Error('Decoded media is empty');
+  if (buffer.length > MAX_MEDIA_BYTES) throw new Error(`Media exceeds the ${MAX_MEDIA_BYTES} byte limit`);
+  const sha256Hex = createHash('sha256').update(buffer).digest('hex');
+  const mediaStorageReference = await storeMedia(businessId, sha256Hex, buffer);
+  return { messageType: attachment.messageType, mediaStorageReference, mediaMimeType: attachment.mediaMimeType, mediaFileName: attachment.mediaFileName };
 }
 
 export interface CreateCampaignResult {
@@ -94,7 +129,17 @@ export async function createCampaign(
 
   if (toAdd.length === 0) throw new NoEligibleRecipientsError('None of the selected contacts have an existing conversation to send to.');
 
-  const campaign = await campaignRepository.create({ businessId, whatsappAccountId, createdBy, name: input.name.trim(), messageText: input.messageText });
+  const stored = input.attachment ? await storeCampaignAttachment(businessId, input.attachment) : null;
+  const campaign = await campaignRepository.create({
+    businessId,
+    whatsappAccountId,
+    createdBy,
+    name: input.name.trim(),
+    messageText: input.messageText,
+    ...(stored
+      ? { messageType: stored.messageType, mediaStorageReference: stored.mediaStorageReference, mediaMimeType: stored.mediaMimeType, mediaFileName: stored.mediaFileName }
+      : {}),
+  });
   await campaignRepository.createRecipients(
     campaign.id,
     toAdd.map((id) => {
@@ -161,10 +206,24 @@ async function maybeCompleteRunningCampaign(campaign: CampaignRecord): Promise<C
   return updated ?? campaign;
 }
 
-export async function updateDraftCampaign(businessId: string, campaignId: string, input: { name: string; messageText: string }): Promise<CampaignRecord> {
+export async function updateDraftCampaign(
+  businessId: string,
+  campaignId: string,
+  input: { name: string; messageText: string; attachment?: CampaignAttachmentInput | undefined; removeAttachment?: boolean | undefined },
+): Promise<CampaignRecord> {
   const campaign = await requireOwnCampaign(businessId, campaignId);
   requireStatus(campaign, ['DRAFT']);
-  const updated = await campaignRepository.updateDraft(campaignId, input.name.trim(), input.messageText);
+
+  const stored = input.attachment ? await storeCampaignAttachment(businessId, input.attachment) : null;
+  const updated = await campaignRepository.updateDraft(campaignId, {
+    name: input.name.trim(),
+    messageText: input.messageText,
+    ...(stored
+      ? { messageType: stored.messageType, mediaStorageReference: stored.mediaStorageReference, mediaMimeType: stored.mediaMimeType, mediaFileName: stored.mediaFileName }
+      : input.removeAttachment
+        ? { messageType: 'text' as const, mediaStorageReference: null, mediaMimeType: null, mediaFileName: null }
+        : {}),
+  });
   if (!updated) throw new CampaignNotFoundError('Campaign not found.');
   return updated;
 }
@@ -218,14 +277,22 @@ export async function sendCampaign(businessId: string, campaignId: string): Prom
   let failedCount = 0;
   for (const recipient of pending) {
     try {
+      const isText = campaign.messageType === 'text';
       const outboundMessage = await whatsappOutboundMessageService.send({
         businessId,
         whatsappAccountId: campaign.whatsappAccountId,
         chatId: recipient.chatId,
-        messageType: 'text',
-        text: campaign.messageText,
+        messageType: campaign.messageType,
         requestedBy: 'campaign',
         delayMs: index * SEND_STAGGER_MS,
+        ...(isText
+          ? { text: campaign.messageText }
+          : {
+              caption: campaign.messageText,
+              mediaStorageReference: campaign.mediaStorageReference ?? undefined,
+              mediaMimeType: campaign.mediaMimeType ?? undefined,
+              mediaFileName: campaign.mediaFileName ?? undefined,
+            }),
       });
       await campaignRepository.linkOutboundMessage(recipient.id, outboundMessage.id);
     } catch (error) {

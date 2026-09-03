@@ -13,6 +13,10 @@ export const CAMPAIGN_STATUSES = [
 ] as const;
 export type CampaignStatus = (typeof CAMPAIGN_STATUSES)[number];
 
+/** Section 27-30: the same real, non-text OutboundMessageType values the ordinary 1:1 composer already supports - voice_note/audio deliberately excluded, a recorded voice clip or raw audio file isn't a natural broadcast asset. */
+export const CAMPAIGN_MESSAGE_TYPES = ['text', 'image', 'video', 'document'] as const;
+export type CampaignMessageType = (typeof CAMPAIGN_MESSAGE_TYPES)[number];
+
 export interface CampaignRecord {
   id: string;
   businessId: string;
@@ -21,6 +25,11 @@ export interface CampaignRecord {
   name: string;
   messageText: string;
   status: CampaignStatus;
+  messageType: CampaignMessageType;
+  /** Set once, at creation/draft-edit time - never re-derived per recipient. null for a text-only campaign. */
+  mediaStorageReference: string | null;
+  mediaMimeType: string | null;
+  mediaFileName: string | null;
   approvedBy: string | null;
   approvedAt: string | null;
   sentAt: string | null;
@@ -37,6 +46,10 @@ interface CampaignRow {
   name: string;
   message_text: string;
   status: CampaignStatus;
+  message_type: CampaignMessageType;
+  media_storage_reference: string | null;
+  media_mime_type: string | null;
+  media_file_name: string | null;
   approved_by: string | null;
   approved_at: string | null;
   sent_at: string | null;
@@ -54,6 +67,10 @@ function toCampaignRecord(row: CampaignRow): CampaignRecord {
     name: row.name,
     messageText: row.message_text,
     status: row.status,
+    messageType: row.message_type,
+    mediaStorageReference: row.media_storage_reference,
+    mediaMimeType: row.media_mime_type,
+    mediaFileName: row.media_file_name,
     approvedBy: row.approved_by,
     approvedAt: row.approved_at,
     sentAt: row.sent_at,
@@ -127,6 +144,20 @@ export interface CreateCampaignInput {
   createdBy: string;
   name: string;
   messageText: string;
+  messageType?: CampaignMessageType | undefined;
+  mediaStorageReference?: string | undefined;
+  mediaMimeType?: string | undefined;
+  mediaFileName?: string | undefined;
+}
+
+export interface UpdateCampaignDraftInput {
+  name: string;
+  messageText: string;
+  /** Omit to leave the stored attachment (or lack of one) untouched; pass 'text' with no media fields to remove an existing attachment. */
+  messageType?: CampaignMessageType | undefined;
+  mediaStorageReference?: string | null | undefined;
+  mediaMimeType?: string | null | undefined;
+  mediaFileName?: string | null | undefined;
 }
 
 /**
@@ -167,10 +198,20 @@ export class CampaignRepository {
 
   async create(input: CreateCampaignInput): Promise<CampaignRecord> {
     const { rows } = await this.db.query<CampaignRow>(
-      `INSERT INTO campaigns (business_id, whatsapp_account_id, created_by, name, message_text)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO campaigns (business_id, whatsapp_account_id, created_by, name, message_text, message_type, media_storage_reference, media_mime_type, media_file_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [input.businessId, input.whatsappAccountId, input.createdBy, input.name, input.messageText],
+      [
+        input.businessId,
+        input.whatsappAccountId,
+        input.createdBy,
+        input.name,
+        input.messageText,
+        input.messageType ?? 'text',
+        input.mediaStorageReference ?? null,
+        input.mediaMimeType ?? null,
+        input.mediaFileName ?? null,
+      ],
     );
     const row = rows[0];
     if (!row) throw new Error('campaigns insert returned no row');
@@ -197,10 +238,27 @@ export class CampaignRepository {
     return Number(rows[0]?.count ?? 0);
   }
 
-  async updateDraft(id: string, name: string, messageText: string): Promise<CampaignRecord | null> {
+  async updateDraft(id: string, input: UpdateCampaignDraftInput): Promise<CampaignRecord | null> {
+    const attachmentTouched = input.messageType !== undefined;
     const { rows } = await this.db.query<CampaignRow>(
-      `UPDATE campaigns SET name = $2, message_text = $3, updated_at = now() WHERE id = $1 RETURNING *`,
-      [id, name, messageText],
+      `UPDATE campaigns SET
+         name = $2, message_text = $3,
+         message_type = CASE WHEN $8 THEN $4 ELSE message_type END,
+         media_storage_reference = CASE WHEN $8 THEN $5 ELSE media_storage_reference END,
+         media_mime_type = CASE WHEN $8 THEN $6 ELSE media_mime_type END,
+         media_file_name = CASE WHEN $8 THEN $7 ELSE media_file_name END,
+         updated_at = now()
+       WHERE id = $1 RETURNING *`,
+      [
+        id,
+        input.name,
+        input.messageText,
+        input.messageType ?? null,
+        input.mediaStorageReference ?? null,
+        input.mediaMimeType ?? null,
+        input.mediaFileName ?? null,
+        attachmentTouched,
+      ],
     );
     return rows[0] ? toCampaignRecord(rows[0]) : null;
   }

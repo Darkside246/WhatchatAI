@@ -6,6 +6,7 @@ import { WhatsAppChatRepository } from '../src/repositories/whatsappChatReposito
 import { CrmContactRepository } from '../src/repositories/crmContactRepository.js';
 import {
   createCampaign,
+  updateDraftCampaign,
   listCampaigns,
   getCampaign,
   submitCampaignForReview,
@@ -174,6 +175,115 @@ describe('campaignService (real eligibility, real status machine, real send pipe
     expect(detail.recipients[0]?.outboundMessageId).not.toBeNull();
     // A real outbound row was actually created and queued - never fabricated.
     expect(detail.counts.total).toBe(1);
+  });
+
+  describe('Section 27-30: real attachments, reusing the exact pipeline the 1:1 composer already uses', () => {
+    // A real, minimal 1x1 transparent PNG - small enough to keep these tests fast, real enough to exercise storeMedia()'s actual decode/hash/store path.
+    const onePixelPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+    it('stores a real attachment once at creation and returns it on the campaign', async () => {
+      const contactId = await makeEligibleContact(businessId, accountId, '15559990020@s.whatsapp.net', 'Contact');
+      const { campaign } = await createCampaign(businessId, accountId, ownerId, {
+        name: 'Photo Promo',
+        messageText: 'Check out our new menu!',
+        crmContactIds: [contactId],
+        attachment: { messageType: 'image', mediaBase64: onePixelPngBase64, mediaMimeType: 'image/png', mediaFileName: 'menu.png' },
+      });
+
+      expect(campaign.messageType).toBe('image');
+      expect(campaign.mediaStorageReference).toBeTruthy();
+      expect(campaign.mediaMimeType).toBe('image/png');
+      expect(campaign.mediaFileName).toBe('menu.png');
+    });
+
+    it('defaults to a text-only campaign when no attachment is given, unchanged from before this feature existed', async () => {
+      const contactId = await makeEligibleContact(businessId, accountId, '15559990021@s.whatsapp.net', 'Contact');
+      const { campaign } = await createCampaign(businessId, accountId, ownerId, { name: 'Text Only', messageText: 'Hi', crmContactIds: [contactId] });
+
+      expect(campaign.messageType).toBe('text');
+      expect(campaign.mediaStorageReference).toBeNull();
+    });
+
+    it('sends the real stored attachment to every recipient - the send call itself never re-encodes fresh base64', async () => {
+      const contactId = await makeEligibleContact(businessId, accountId, '15559990022@s.whatsapp.net', 'Contact');
+      const { campaign } = await createCampaign(businessId, accountId, ownerId, {
+        name: 'Photo Promo 2',
+        messageText: 'New arrivals!',
+        crmContactIds: [contactId],
+        attachment: { messageType: 'image', mediaBase64: onePixelPngBase64, mediaMimeType: 'image/png', mediaFileName: 'arrivals.png' },
+      });
+      await submitCampaignForReview(businessId, campaign.id);
+      await approveCampaign(businessId, campaign.id, ownerId);
+
+      const sendSpy = vi.spyOn(whatsappOutboundMessageService, 'send');
+      await sendCampaign(businessId, campaign.id);
+
+      expect(sendSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageType: 'image',
+          caption: 'New arrivals!',
+          mediaStorageReference: campaign.mediaStorageReference,
+          mediaMimeType: 'image/png',
+          mediaFileName: 'arrivals.png',
+        }),
+      );
+      expect(sendSpy.mock.calls[0]?.[0]).not.toHaveProperty('mediaBase64');
+      sendSpy.mockRestore();
+
+      const outbound = new WhatsAppOutboundMessageRepository(pool);
+      const detail = await getCampaign(businessId, campaign.id);
+      const record = await outbound.findByIdForBusiness(detail.recipients[0]!.outboundMessageId!, businessId);
+      expect(record?.messageType).toBe('image');
+      expect(record?.mediaStorageReference).toBe(campaign.mediaStorageReference);
+    });
+
+    it('a draft can have an attachment added later, via updateDraftCampaign', async () => {
+      const contactId = await makeEligibleContact(businessId, accountId, '15559990023@s.whatsapp.net', 'Contact');
+      const { campaign } = await createCampaign(businessId, accountId, ownerId, { name: 'x', messageText: 'y', crmContactIds: [contactId] });
+      expect(campaign.messageType).toBe('text');
+
+      const updated = await updateDraftCampaign(businessId, campaign.id, {
+        name: 'x',
+        messageText: 'y',
+        attachment: { messageType: 'document', mediaBase64: onePixelPngBase64, mediaMimeType: 'application/pdf', mediaFileName: 'flyer.pdf' },
+      });
+
+      expect(updated.messageType).toBe('document');
+      expect(updated.mediaStorageReference).toBeTruthy();
+      expect(updated.mediaFileName).toBe('flyer.pdf');
+    });
+
+    it('removeAttachment reverts a draft back to text-only', async () => {
+      const contactId = await makeEligibleContact(businessId, accountId, '15559990024@s.whatsapp.net', 'Contact');
+      const { campaign } = await createCampaign(businessId, accountId, ownerId, {
+        name: 'x',
+        messageText: 'y',
+        crmContactIds: [contactId],
+        attachment: { messageType: 'image', mediaBase64: onePixelPngBase64, mediaMimeType: 'image/png' },
+      });
+      expect(campaign.messageType).toBe('image');
+
+      const updated = await updateDraftCampaign(businessId, campaign.id, { name: 'x', messageText: 'y', removeAttachment: true });
+
+      expect(updated.messageType).toBe('text');
+      expect(updated.mediaStorageReference).toBeNull();
+      expect(updated.mediaMimeType).toBeNull();
+    });
+
+    it('never leaves a partially-created campaign behind when the attachment itself is invalid (empty decoded bytes)', async () => {
+      const contactId = await makeEligibleContact(businessId, accountId, '15559990025@s.whatsapp.net', 'Contact');
+      await expect(
+        createCampaign(businessId, accountId, ownerId, {
+          name: 'Bad Attachment',
+          messageText: 'y',
+          crmContactIds: [contactId],
+          attachment: { messageType: 'image', mediaBase64: '', mediaMimeType: 'image/png' },
+        }),
+      ).rejects.toThrow();
+
+      const campaigns = await listCampaigns(businessId);
+      expect(campaigns.find((c) => c.name === 'Bad Attachment')).toBeUndefined();
+    });
   });
 
   it('Section 26: recipient status genuinely reaches delivered and read as real WhatsApp acks arrive - counts are live-computed, never stuck at 0', async () => {

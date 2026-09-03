@@ -1127,10 +1127,19 @@ app.get('/api/workspace/campaigns', requireWorkspaceContext, async (_req, res) =
   return res.status(200).json({ campaigns });
 });
 
+/** Section 27-30: same real limit whatsappOutboundMessageService.ts enforces for the ordinary composer's base64 upload. */
+const campaignAttachmentSchema = z.object({
+  messageType: z.enum(['image', 'video', 'document']),
+  mediaBase64: z.string().min(1),
+  mediaMimeType: z.string().trim().min(1).max(200),
+  mediaFileName: z.string().trim().max(300).optional(),
+});
+
 const createCampaignSchema = z.object({
   name: z.string().trim().min(1).max(200),
   messageText: z.string().trim().min(1).max(4000),
   crmContactIds: z.array(z.string().uuid()).min(1),
+  attachment: campaignAttachmentSchema.optional(),
 });
 
 app.post('/api/workspace/campaigns', requireWorkspaceContext, requirePermission('marketing.create'), async (req, res) => {
@@ -1170,7 +1179,13 @@ app.get('/api/workspace/campaigns/:campaignId', requireWorkspaceContext, async (
   }
 });
 
-const updateCampaignSchema = z.object({ name: z.string().trim().min(1).max(200), messageText: z.string().trim().min(1).max(4000) });
+const updateCampaignSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  messageText: z.string().trim().min(1).max(4000),
+  attachment: campaignAttachmentSchema.optional(),
+  /** Ignored when attachment is also present (a new attachment always wins). */
+  removeAttachment: z.boolean().optional(),
+});
 
 app.patch('/api/workspace/campaigns/:campaignId', requireWorkspaceContext, requirePermission('marketing.create'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };

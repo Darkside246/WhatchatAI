@@ -530,6 +530,8 @@ export interface CampaignCounts {
   cancelled: number;
 }
 
+export type CampaignMessageType = 'text' | 'image' | 'video' | 'document';
+
 export interface CampaignDto {
   id: string;
   businessId: string;
@@ -538,6 +540,9 @@ export interface CampaignDto {
   name: string;
   messageText: string;
   status: CampaignStatus;
+  messageType: CampaignMessageType;
+  mediaMimeType: string | null;
+  mediaFileName: string | null;
   approvedBy: string | null;
   approvedAt: string | null;
   sentAt: string | null;
@@ -1433,11 +1438,23 @@ export const api = {
 
   listEligibleCampaignRecipients: () => request<{ recipients: EligibleRecipientDto[] }>('/workspace/campaigns/eligible-recipients'),
   listCampaigns: () => request<{ campaigns: CampaignDto[] }>('/workspace/campaigns'),
-  createCampaign: (input: { name: string; messageText: string; crmContactIds: string[] }) =>
-    request<CreateCampaignResultDto>('/workspace/campaigns', { method: 'POST', body: JSON.stringify(input) }),
+  createCampaign: (input: {
+    name: string;
+    messageText: string;
+    crmContactIds: string[];
+    /** Section 27-30: an optional real WhatsApp attachment (image/video/document), sent via the same real pipeline the 1:1 composer already uses. */
+    attachment?: { messageType: Exclude<CampaignMessageType, 'text'>; mediaBase64: string; mediaMimeType: string; mediaFileName?: string };
+  }) => request<CreateCampaignResultDto>('/workspace/campaigns', { method: 'POST', body: JSON.stringify(input) }),
   getCampaign: (campaignId: string) => request<CampaignDetailDto>(`/workspace/campaigns/${campaignId}`),
-  updateCampaign: (campaignId: string, input: { name: string; messageText: string }) =>
-    request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  updateCampaign: (
+    campaignId: string,
+    input: {
+      name: string;
+      messageText: string;
+      attachment?: { messageType: Exclude<CampaignMessageType, 'text'>; mediaBase64: string; mediaMimeType: string; mediaFileName?: string };
+      removeAttachment?: boolean;
+    },
+  ) => request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}`, { method: 'PATCH', body: JSON.stringify(input) }),
   submitCampaignForReview: (campaignId: string) =>
     request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/submit-review`, { method: 'POST' }),
   approveCampaign: (campaignId: string) => request<{ campaign: CampaignDto }>(`/workspace/campaigns/${campaignId}/approve`, { method: 'POST' }),
