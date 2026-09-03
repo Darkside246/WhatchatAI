@@ -204,6 +204,12 @@ export interface UpdateCrmContactBody {
   manualDisplayName?: string | null;
 }
 
+/** Section 13: the same cross-conversation facts the AI already draws on for this customer, made visible to staff. Read-only. */
+export interface WorkspaceCustomerMemory {
+  customerId: string | null;
+  confirmedFacts: { key: string; value: string; origin: string; confirmedAt: string }[];
+}
+
 export type LeadStatusValue = 'NEW' | 'QUALIFIED' | 'ENGAGED' | 'WON' | 'LOST';
 
 export interface WorkspaceLeadSummary {
@@ -1333,6 +1339,7 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(flags),
     }),
+  getCrmContactMemory: (id: string) => request<{ memory: WorkspaceCustomerMemory }>(`/workspace/crm-contacts/${id}/memory`),
   listLeads: () => request<{ leads: WorkspaceLeadSummary[] }>('/workspace/leads'),
   createLead: (body: CreateLeadBody) =>
     request<{ lead: WorkspaceLeadSummary }>('/workspace/leads', { method: 'POST', body: JSON.stringify(body) }),

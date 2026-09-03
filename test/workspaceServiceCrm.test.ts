@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { WhatsAppContactRepository } from '../src/repositories/whatsappContactRepository.js';
+import { CustomerIdentityRepository } from '../src/repositories/customerIdentityRepository.js';
+import { CustomerMemoryRepository } from '../src/repositories/customerMemoryRepository.js';
 import { workspaceService, isCrmContactNotFoundError, isLeadNotFoundError } from '../src/services/workspaceService.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 
@@ -146,6 +148,74 @@ describe('workspaceService CRM & Leads (real display-name resolution + tenant is
 
       const updated = await workspaceService.updateLeadStatus(businessId, lead.id, 'WON');
       expect(updated.status).toBe('WON');
+    });
+  });
+
+  describe('getCrmContactMemory (Section 13 - the same cross-conversation facts the AI already reads, made visible to staff)', () => {
+    it('resolves the linked customer and returns their real confirmed facts', async () => {
+      const identities = new CustomerIdentityRepository(pool);
+      const customerId = await identities.getOrCreateForWhatsAppContact(businessId, whatsappContactId, 'Real Prospect');
+      const memory = new CustomerMemoryRepository(pool);
+      const current = await memory.getOrCreate(businessId, customerId);
+      await memory.update(businessId, customerId, current.version, [
+        { key: 'preferred_time', value: 'evenings', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
+      ]);
+
+      const result = await workspaceService.getCrmContactMemory(businessId, crmContactId);
+      expect(result.customerId).toBe(customerId);
+      expect(result.confirmedFacts).toEqual([
+        expect.objectContaining({ key: 'preferred_time', value: 'evenings' }),
+      ]);
+    });
+
+    it('returns a null customerId (not an error) when this contact has never been resolved to a customer', async () => {
+      const result = await workspaceService.getCrmContactMemory(businessId, crmContactId);
+      expect(result.customerId).toBeNull();
+      expect(result.confirmedFacts).toEqual([]);
+    });
+
+    it('returns empty facts (not an error) for a real customer with no memory row yet', async () => {
+      const identities = new CustomerIdentityRepository(pool);
+      const customerId = await identities.getOrCreateForWhatsAppContact(businessId, whatsappContactId, 'Real Prospect');
+
+      const result = await workspaceService.getCrmContactMemory(businessId, crmContactId);
+      expect(result.customerId).toBe(customerId);
+      expect(result.confirmedFacts).toEqual([]);
+    });
+
+    it('throws CrmContactNotFoundError for a cross-tenant or nonexistent contact', async () => {
+      const otherBusinessId = await createTestBusiness('Other Business');
+      await expect(
+        workspaceService.getCrmContactMemory(otherBusinessId, crmContactId),
+      ).rejects.toSatisfy((error: unknown) => isCrmContactNotFoundError(error));
+    });
+
+    it('never leaks another customer\'s memory for a same-shaped lookup (tenant isolation)', async () => {
+      const identities = new CustomerIdentityRepository(pool);
+      const customerId = await identities.getOrCreateForWhatsAppContact(businessId, whatsappContactId, 'Real Prospect');
+      const memory = new CustomerMemoryRepository(pool);
+      const current = await memory.getOrCreate(businessId, customerId);
+      await memory.update(businessId, customerId, current.version, [
+        { key: 'secret', value: 'do not leak', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
+      ]);
+
+      const otherBusinessId = await createTestBusiness('Other Business');
+      const otherAccountId = await createTestAccount(otherBusinessId, '15550009999@s.whatsapp.net');
+      const otherContactRepo = new WhatsAppContactRepository(pool);
+      const otherContact = await otherContactRepo.upsertFromWhatsApp({
+        businessId: otherBusinessId,
+        whatsappAccountId: otherAccountId,
+        whatsappJid: '15550009999@s.whatsapp.net',
+        jidKind: 'individual',
+      });
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO crm_contacts (business_id, whatsapp_contact_id, source) VALUES ($1, $2, 'whatsapp_inbound') RETURNING id`,
+        [otherBusinessId, otherContact.id],
+      );
+      const otherCrmContactId = rows[0]!.id;
+
+      const result = await workspaceService.getCrmContactMemory(otherBusinessId, otherCrmContactId);
+      expect(result.confirmedFacts).toEqual([]);
     });
   });
 });

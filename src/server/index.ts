@@ -2726,6 +2726,17 @@ app.patch('/api/workspace/crm-contacts/:id', requireWorkspaceContext, requirePer
   }
 });
 
+app.get('/api/workspace/crm-contacts/:id/memory', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    const memory = await workspaceService.getCrmContactMemory(businessId, String(req.params.id ?? ''));
+    return res.status(200).json({ memory });
+  } catch (error) {
+    if (isCrmContactNotFoundError(error)) return res.status(404).json({ error: 'CRM_CONTACT_NOT_FOUND' });
+    throw error;
+  }
+});
+
 app.patch('/api/workspace/crm-contacts/:id/privacy', requireWorkspaceContext, requirePermission('crm.edit'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const privacySchema = z.object({

@@ -1,5 +1,3 @@
-import type { ProductAccountStatus } from '../domain/platform/productAccounts.js';
-
 export const TRIAL_DURATION_MS = 48 * 60 * 60 * 1000;
 export const TRIAL_EXPIRING_THRESHOLD_MS = 6 * 60 * 60 * 1000;
 
@@ -37,11 +35,4 @@ export function deriveTrialState(trial: TrialTiming, now = new Date()): TrialSta
   if (now.getTime() >= trial.endsAt.getTime()) return 'EXPIRED';
   if (trial.endsAt.getTime() - now.getTime() <= TRIAL_EXPIRING_THRESHOLD_MS) return 'EXPIRING';
   return 'ACTIVE';
-}
-
-export function canUseProductAccount(state: TrialState, accountStatus: ProductAccountStatus, now = new Date(), endsAt?: Date | null): boolean {
-  if (accountStatus !== 'ACTIVE') return false;
-  if (state === 'CONVERTED') return true;
-  if (state !== 'ACTIVE' && state !== 'EXPIRING') return false;
-  return Boolean(endsAt && endsAt.getTime() > now.getTime());
 }

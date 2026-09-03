@@ -7,6 +7,7 @@ import {
   type WorkspaceCrmContactSummary,
   type WorkspaceLeadSummary,
   type LeadStatusValue,
+  type WorkspaceCustomerMemory,
 } from '../lib/api.js';
 import { PIPELINE_STATUSES, nextPipelineOptions } from '../lib/pipelineStages.js';
 
@@ -69,6 +70,56 @@ function IdentitySourcesPanel({ contact }: { contact: WorkspaceCrmContactSummary
         </dl>
       ) : (
         <p className="mt-1 text-caption text-fg-muted">WhatsApp has not supplied any name information for this contact yet.</p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Section 13: customer_memory has been real, written-through, and read
+ * back into every AI reply's prompt for a while - a returning customer
+ * doesn't have to restate a fact from a past, unrelated conversation.
+ * It was never visible to a human anywhere before this - staff had no
+ * way to see what the AI actually remembers about a customer across
+ * their history. Read-only, fetched on demand per contact (not
+ * preloaded into the list) since it's a second real query beyond what
+ * listCrmContacts already returns.
+ */
+function CustomerMemoryPanel({ contactId }: { contactId: string }) {
+  const [memory, setMemory] = useState<WorkspaceCustomerMemory | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api
+      .getCrmContactMemory(contactId)
+      .then((res) => { if (!cancelled) setMemory(res.memory); })
+      .catch(() => { if (!cancelled) setMemory(null); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => {
+      cancelled = true;
+    };
+  }, [contactId]);
+
+  return (
+    <div className="mt-3 rounded-lg border border-border-subtle bg-surface-2 p-3">
+      <p className="text-caption font-medium text-fg-secondary">What the AI remembers (across all conversations)</p>
+      {loading ? (
+        <p className="mt-1 text-caption text-fg-muted">Loading…</p>
+      ) : !memory?.customerId ? (
+        <p className="mt-1 text-caption text-fg-muted">No customer identity resolved for this contact yet.</p>
+      ) : memory.confirmedFacts.length === 0 ? (
+        <p className="mt-1 text-caption text-fg-muted">Nothing confirmed yet - facts appear here once the customer states something worth remembering in any conversation.</p>
+      ) : (
+        <dl className="mt-2 space-y-1.5">
+          {memory.confirmedFacts.map((fact) => (
+            <div key={fact.key} className="flex items-baseline justify-between gap-3">
+              <dt className="text-meta text-fg-muted">{fact.key}</dt>
+              <dd className="text-caption text-fg text-right">{fact.value}</dd>
+            </div>
+          ))}
+        </dl>
       )}
     </div>
   );
@@ -173,6 +224,7 @@ function ContactDetailCard({
       </div>
 
       <IdentitySourcesPanel contact={contact} />
+      <CustomerMemoryPanel contactId={contact.id} />
 
       <div className="mt-5 space-y-3 max-w-md">
         <div>

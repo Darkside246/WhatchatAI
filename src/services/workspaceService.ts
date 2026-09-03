@@ -7,6 +7,9 @@ import { WhatsAppContactRepository } from '../repositories/whatsappContactReposi
 import { WhatsAppMessageRepository } from '../repositories/whatsappMessageRepository.js';
 import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobRepository.js';
 import { CrmContactRepository, type UpdateCrmContactInput, type CrmContactWithContactInfo } from '../repositories/crmContactRepository.js';
+import { CustomerMemoryRepository, emptyCustomerMemory } from '../repositories/customerMemoryRepository.js';
+import { CustomerIdentityRepository } from '../repositories/customerIdentityRepository.js';
+import type { ConversationFact } from '../repositories/conversationStateRepository.js';
 import { LeadRepository, type UpdateLeadInput, type LeadRecord, type LeadWithContactInfo } from '../repositories/leadRepository.js';
 import { AiAgentRepository, type AiAgentRecord, type AgentCategory } from '../repositories/aiAgentRepository.js';
 import { AgentTemplateRepository, type AgentTemplateRecord } from '../repositories/agentTemplateRepository.js';
@@ -228,6 +231,12 @@ export interface WorkspaceCrmContactSummary {
   manualDisplayName: string | null;
 }
 
+/** Section 13: the same cross-conversation facts customer_memory already feeds into every AI reply, made visible to staff. null customerId means no customer identity has been resolved for this contact yet (a group message, or a contact never linked to a customer). */
+export interface WorkspaceCustomerMemory {
+  customerId: string | null;
+  confirmedFacts: ConversationFact[];
+}
+
 export interface WorkspaceLeadSummary {
   id: string;
   crmContactId: string;
@@ -425,6 +434,8 @@ export class WorkspaceService {
   private readonly conversationStateRepository = new ConversationStateRepository(pool);
   private readonly scheduledMeetingsRepository = new ScheduledMeetingsRepository(pool);
   private readonly aiUsageRepository = new AiUsageRepository(pool);
+  private readonly customerMemoryRepository = new CustomerMemoryRepository(pool);
+  private readonly customerIdentityRepository = new CustomerIdentityRepository(pool);
   private readonly campaignRepository = new CampaignRepository(pool);
   private readonly funnelRepository = new FunnelRepository(pool);
   private readonly knowledgeBaseRepository = new KnowledgeBaseRepository(pool);
@@ -1539,6 +1550,35 @@ export class WorkspaceService {
     const row = rows.find((r) => r.id === crmContactId);
     if (!row) throw this.crmContactNotFound();
     return this.toCrmContactSummary(row);
+  }
+
+  /**
+   * Section 13 (Conversational memory): customer_memory (migration 959)
+   * has been real, written-through, and read back into every AI reply's
+   * prompt since it was built - see aiReplyService.ts's "Known facts
+   * about this customer from earlier conversations" line and
+   * conversationStateWriter.ts's applyCustomerMemoryUpdate(). It was
+   * never surfaced to a human anywhere, though - staff had no way to see
+   * what the AI actually remembers about a returning customer across
+   * their conversation history, the same gap Section 66 closed for
+   * identity sources. Read-only: this mirrors what the AI already
+   * resolves, never something staff edit directly here.
+   */
+  async getCrmContactMemory(businessId: string, crmContactId: string): Promise<WorkspaceCustomerMemory> {
+    const crmContact = await this.crmContactRepository.findByIdForBusiness(businessId, crmContactId);
+    if (!crmContact) throw this.crmContactNotFound();
+    if (!crmContact.whatsappContactId) return { customerId: null, confirmedFacts: [] };
+
+    const customerId = await this.customerIdentityRepository.findCustomerIdByIdentity(
+      businessId,
+      'whatsapp',
+      'whatsapp_contact_id',
+      crmContact.whatsappContactId,
+    );
+    if (!customerId) return { customerId: null, confirmedFacts: [] };
+
+    const memory = (await this.customerMemoryRepository.find(businessId, customerId)) ?? emptyCustomerMemory(businessId, customerId);
+    return { customerId, confirmedFacts: memory.confirmedFacts };
   }
 
   private toLeadSummary(row: Awaited<ReturnType<LeadRepository['listByBusiness']>>[number]): WorkspaceLeadSummary {
