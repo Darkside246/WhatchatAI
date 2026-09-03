@@ -1366,6 +1366,9 @@ export const api = {
     }),
   getCrmContactMemory: (id: string) => request<{ memory: WorkspaceCustomerMemory }>(`/workspace/crm-contacts/${id}/memory`),
   exportCrmContactData: (id: string) => request<WorkspaceCrmContactExport>(`/workspace/crm-contacts/${id}/export`),
+  /** Section 75-91: the erasure counterpart to the export above - permanently deletes this contact's cross-conversation and per-conversation AI memory, never the CRM contact record itself. */
+  eraseCrmContactMemory: (id: string) =>
+    request<{ erasedCustomerMemory: boolean; erasedConversationStates: number }>(`/workspace/crm-contacts/${id}/memory`, { method: 'DELETE' }),
   listLeads: () => request<{ leads: WorkspaceLeadSummary[] }>('/workspace/leads'),
   createLead: (body: CreateLeadBody) =>
     request<{ lead: WorkspaceLeadSummary }>('/workspace/leads', { method: 'POST', body: JSON.stringify(body) }),

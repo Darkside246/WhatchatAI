@@ -160,6 +160,8 @@ function ContactDetailCard({
   const [error, setError] = useState<string | null>(null);
   const [creatingLead, setCreatingLead] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [erasingMemory, setErasingMemory] = useState(false);
+  const [memoryVersion, setMemoryVersion] = useState(0);
   const [isHidden, setIsHidden] = useState(contact.isHidden);
   const [syncExcluded, setSyncExcluded] = useState(contact.syncExcluded);
   const [aiExcluded, setAiExcluded] = useState(contact.aiExcluded);
@@ -201,6 +203,22 @@ function ContactDetailCard({
       setError(err instanceof ApiError ? err.message : 'Failed to export this contact\'s data.');
     } finally {
       setExporting(false);
+    }
+  }
+
+  async function handleEraseMemory() {
+    if (!window.confirm(`Permanently erase what the AI remembers about ${contact.displayName}? This deletes their cross-conversation memory and per-conversation state - it never deletes this contact record, notes, or message history.`)) {
+      return;
+    }
+    setErasingMemory(true);
+    setError(null);
+    try {
+      await api.eraseCrmContactMemory(contact.id);
+      setMemoryVersion((v) => v + 1);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to erase this contact\'s memory.');
+    } finally {
+      setErasingMemory(false);
     }
   }
 
@@ -257,6 +275,15 @@ function ContactDetailCard({
           </button>
           <button
             type="button"
+            onClick={() => void handleEraseMemory()}
+            disabled={erasingMemory}
+            title="Permanently delete what the AI remembers about this contact across every conversation - never the contact record, notes, or message history"
+            className="rounded-lg border border-error/30 px-3 py-1.5 text-caption font-medium text-error hover:bg-error/10 disabled:opacity-50"
+          >
+            {erasingMemory ? 'Erasing…' : 'Erase memory'}
+          </button>
+          <button
+            type="button"
             onClick={() => void handleCreateLead()}
             disabled={creatingLead || leadCreated}
             className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-2 disabled:opacity-50"
@@ -267,7 +294,7 @@ function ContactDetailCard({
       </div>
 
       <IdentitySourcesPanel contact={contact} />
-      <CustomerMemoryPanel contactId={contact.id} />
+      <CustomerMemoryPanel key={memoryVersion} contactId={contact.id} />
 
       <div className="mt-5 space-y-3 max-w-md">
         <div>

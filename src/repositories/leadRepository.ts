@@ -167,8 +167,25 @@ export class LeadRepository {
     return rows.map(toRecord);
   }
 
-  /** The real pipeline view - joined through crm_contacts to the WhatsApp contact it's built around so a caller can render a real name, never a bare id. */
-  async listByBusiness(businessId: string, limit = 200): Promise<LeadWithContactInfo[]> {
+  /**
+   * The real pipeline view - joined through crm_contacts to the WhatsApp
+   * contact it's built around so a caller can render a real name, never a
+   * bare id. Also half of Section 67's bulk CRM export (alongside
+   * crmContactRepository.listByBusiness, see its doc comment) -
+   * `excludeSyncExcluded` exists for that caller: a lead tied to a contact
+   * staff marked "Exclude from sync" carries that same contact's PII
+   * through this join, so it needs the identical filter or the export
+   * leaks the excluded contact's data through the leads half instead. The
+   * everyday Pipeline view leaves this off.
+   *
+   * `c.is_hidden = false` is unconditional, unlike sync_excluded above -
+   * a contact staff hid via "Hide from CRM list" (crmContactRepository's
+   * own listByBusiness already enforces this on the contacts side) must
+   * never surface through a lead tied to them either, in the Pipeline
+   * view or the export - this was a real gap: the join here pulled the
+   * same contact PII with no such filter at all before this fix.
+   */
+  async listByBusiness(businessId: string, limit = 200, options?: { excludeSyncExcluded?: boolean }): Promise<LeadWithContactInfo[]> {
     const { rows } = await this.db.query<LeadWithContactInfoRow>(
       `SELECT l.*,
               wc.whatsapp_jid, wc.phone_number,
@@ -178,15 +195,23 @@ export class LeadRepository {
        FROM leads l
        JOIN crm_contacts c ON c.id = l.crm_contact_id
        LEFT JOIN whatsapp_contacts wc ON wc.id = c.whatsapp_contact_id
-       WHERE l.business_id = $1 AND l.deleted_at IS NULL
+       WHERE l.business_id = $1 AND l.deleted_at IS NULL AND c.is_hidden = false
+         AND ($3::boolean IS NOT TRUE OR c.sync_excluded = false)
        ORDER BY l.updated_at DESC
        LIMIT $2`,
-      [businessId, limit],
+      [businessId, limit, options?.excludeSyncExcluded ?? false],
     );
     return rows.map(toRecordWithContactInfo);
   }
 
-  /** Section 48 (Autonomous Morning Briefing): real leads actually created since a point in time - never a fabricated "new leads overnight" count. Same real contact join as listByBusiness. */
+  /**
+   * Section 48 (Autonomous Morning Briefing): real leads actually created
+   * since a point in time - never a fabricated "new leads overnight"
+   * count. Same real contact join as listByBusiness, including the same
+   * `is_hidden = false` filter (Section 75-91 follow-up) - a contact
+   * staff hid via "Hide from CRM list" must never surface in the morning
+   * briefing's "new leads overnight" summary either.
+   */
   async listCreatedSince(businessId: string, sinceIso: string, limit = 50): Promise<LeadWithContactInfo[]> {
     const { rows } = await this.db.query<LeadWithContactInfoRow>(
       `SELECT l.*,
@@ -197,7 +222,7 @@ export class LeadRepository {
        FROM leads l
        JOIN crm_contacts c ON c.id = l.crm_contact_id
        LEFT JOIN whatsapp_contacts wc ON wc.id = c.whatsapp_contact_id
-       WHERE l.business_id = $1 AND l.deleted_at IS NULL AND l.created_at >= $2
+       WHERE l.business_id = $1 AND l.deleted_at IS NULL AND l.created_at >= $2 AND c.is_hidden = false
        ORDER BY l.created_at DESC
        LIMIT $3`,
       [businessId, sinceIso, limit],

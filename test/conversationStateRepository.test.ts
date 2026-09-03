@@ -212,3 +212,52 @@ describe('ConversationStateRepository.listByWhatsAppContact (Section 75-91 - the
     expect(await repo.listByWhatsAppContact(businessId, contactId)).toEqual([]);
   });
 });
+
+describe('ConversationStateRepository.deleteByWhatsAppContact (Section 75-91 - single-subject erasure, the counterpart to listByWhatsAppContact)', () => {
+  let businessId: string;
+  let accountId: string;
+  let contactId: string;
+  let repo: ConversationStateRepository;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId);
+    const contact = await new WhatsAppContactRepository(pool).upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      whatsappJid: '15550007777@s.whatsapp.net',
+      jidKind: 'individual',
+      pushName: 'Real Contact',
+    });
+    contactId = contact.id;
+    repo = new ConversationStateRepository(pool);
+  });
+
+  it('deletes every real conversation state row for chats linked to this contact and reports the real count', async () => {
+    const chat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, chatJid: '15550007777@s.whatsapp.net', jidKind: 'individual', chatType: 'individual', contactId,
+    });
+    await repo.getOrCreate(businessId, chat.id);
+
+    expect(await repo.deleteByWhatsAppContact(businessId, contactId)).toBe(1);
+    expect(await repo.find(businessId, chat.id)).toBeNull();
+  });
+
+  it('is idempotent - returns 0 (not an error) for a contact with no conversation state to erase', async () => {
+    expect(await repo.deleteByWhatsAppContact(businessId, contactId)).toBe(0);
+  });
+
+  it('never deletes another contact\'s conversation state (tenant/contact isolation)', async () => {
+    const otherContact = await new WhatsAppContactRepository(pool).upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, whatsappJid: '15550008888@s.whatsapp.net', jidKind: 'individual',
+    });
+    const otherChat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, chatJid: '15550008888@s.whatsapp.net', jidKind: 'individual', chatType: 'individual', contactId: otherContact.id,
+    });
+    await repo.getOrCreate(businessId, otherChat.id);
+
+    expect(await repo.deleteByWhatsAppContact(businessId, contactId)).toBe(0);
+    expect(await repo.find(businessId, otherChat.id)).not.toBeNull();
+  });
+});

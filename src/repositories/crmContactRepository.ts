@@ -171,8 +171,24 @@ export class CrmContactRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
-  /** The real CRM list view - joined with the WhatsApp contact it's built around so a caller can render a real name, never a bare id. */
-  async listByBusiness(businessId: string, limit = 200): Promise<CrmContactWithContactInfo[]> {
+  /**
+   * The real CRM list view - joined with the WhatsApp contact it's built
+   * around so a caller can render a real name, never a bare id. Also the
+   * one query behind Section 67's bulk CRM export (workspaceService.ts's
+   * exportCrmData) - `excludeSyncExcluded` exists for exactly that second
+   * caller (Section 75-91 - consent granularity): "Exclude from sync" is a
+   * real, staff-facing, audited toggle (crm_contacts.sync_excluded,
+   * migration 912) that previously had zero enforcement anywhere - a
+   * contact staff had explicitly marked excluded still went out in every
+   * bulk CSV/JSON export unchanged. The everyday CRM list view leaves this
+   * false - is_hidden already governs in-app visibility, and hiding a
+   * sync-excluded contact from staff's own view is not what the flag
+   * promises. A single contact's own deliberate data-subject export
+   * (exportCrmContactData) also leaves this false - that is a distinct,
+   * intentional action for one named person, not the bulk sync this flag
+   * is meant to stop.
+   */
+  async listByBusiness(businessId: string, limit = 200, options?: { excludeSyncExcluded?: boolean }): Promise<CrmContactWithContactInfo[]> {
     const { rows } = await this.db.query<CrmContactWithContactInfoRow>(
       `SELECT c.*,
               wc.whatsapp_jid, wc.phone_number,
@@ -182,9 +198,10 @@ export class CrmContactRepository {
        FROM crm_contacts c
        LEFT JOIN whatsapp_contacts wc ON wc.id = c.whatsapp_contact_id
        WHERE c.business_id = $1 AND c.deleted_at IS NULL AND c.is_hidden = false
+         AND ($3::boolean IS NOT TRUE OR c.sync_excluded = false)
        ORDER BY c.updated_at DESC
        LIMIT $2`,
-      [businessId, limit],
+      [businessId, limit, options?.excludeSyncExcluded ?? false],
     );
     return rows.map(toRecordWithContactInfo);
   }

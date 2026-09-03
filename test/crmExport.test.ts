@@ -45,6 +45,35 @@ describe('workspaceService.exportCrmData (Section 67 - real Postgres)', () => {
     expect(contacts).toEqual([]);
   });
 
+  it('excludes a contact staff marked "Exclude from sync" - the flag was stored, audited, and toggleable in the UI, but nothing enforced it anywhere before this fix', async () => {
+    const waContact = await waContactRepo.upsertFromWhatsApp({ businessId, whatsappAccountId: accountId, whatsappJid: '15550002233@s.whatsapp.net', jidKind: 'individual', displayName: 'Sync Excluded Contact' });
+    const crmContact = await crmContactRepo.upsertForWhatsAppContact({ businessId, whatsappContactId: waContact.id });
+    await crmContactRepo.setPrivacyFlags(businessId, crmContact.id, { syncExcluded: true });
+
+    const { contacts } = await workspaceService.exportCrmData(businessId);
+    expect(contacts).toEqual([]);
+
+    // The everyday CRM list (not an export) must still show it - "Exclude
+    // from sync" only promises the contact never leaves the system via
+    // export, never that staff lose visibility inside the product itself.
+    const listed = await workspaceService.listCrmContacts(businessId);
+    expect(listed).toHaveLength(1);
+  });
+
+  it('excludes a lead whose contact is marked "Exclude from sync" - the same PII flows through the leads join, so it needs the identical filter', async () => {
+    const waContact = await waContactRepo.upsertFromWhatsApp({ businessId, whatsappAccountId: accountId, whatsappJid: '15550002244@s.whatsapp.net', jidKind: 'individual', displayName: 'Sync Excluded Lead Contact' });
+    const crmContact = await crmContactRepo.upsertForWhatsAppContact({ businessId, whatsappContactId: waContact.id });
+    await crmContactRepo.setPrivacyFlags(businessId, crmContact.id, { syncExcluded: true });
+    await leadRepo.create({ businessId, crmContactId: crmContact.id, source: 'whatsapp', stage: 'qualified' });
+
+    const { leads } = await workspaceService.exportCrmData(businessId);
+    expect(leads).toEqual([]);
+
+    // The everyday Pipeline view (not an export) must still show it.
+    const listed = await workspaceService.listLeads(businessId);
+    expect(listed).toHaveLength(1);
+  });
+
   it('exports a real lead with its real contact name joined in', async () => {
     const waContact = await waContactRepo.upsertFromWhatsApp({ businessId, whatsappAccountId: accountId, whatsappJid: '15550003333@s.whatsapp.net', jidKind: 'individual', displayName: 'Lead Contact' });
     const crmContact = await crmContactRepo.upsertForWhatsAppContact({ businessId, whatsappContactId: waContact.id });

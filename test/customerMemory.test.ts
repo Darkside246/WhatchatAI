@@ -51,6 +51,34 @@ describe('CustomerMemoryRepository (real Postgres - migration 959, layer 2 of la
     ]);
     expect(await repo.find(otherBusinessId, otherCustomerId)).toBeNull();
   });
+
+  describe('deleteByCustomer (Section 75-91 - single-subject erasure, the counterpart to exportCrmContactData)', () => {
+    it('actually erases a real memory row and reports true', async () => {
+      await repo.update(businessId, customerId, (await repo.getOrCreate(businessId, customerId)).version, [
+        { key: 'k', value: 'v', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
+      ]);
+      expect(await repo.deleteByCustomer(businessId, customerId)).toBe(true);
+      expect(await repo.find(businessId, customerId)).toBeNull();
+    });
+
+    it('is idempotent - reports false (not an error) for a customer with no memory row', async () => {
+      expect(await repo.deleteByCustomer(businessId, customerId)).toBe(false);
+    });
+
+    it('never erases another business\'s customer memory for a colliding customerId', async () => {
+      const otherBusinessId = await createTestBusiness('Other Business');
+      const { rows } = await pool.query<{ id: string }>('INSERT INTO customers (business_id) VALUES ($1) RETURNING id', [otherBusinessId]);
+      const otherCustomerId = rows[0]!.id;
+      await repo.update(businessId, customerId, (await repo.getOrCreate(businessId, customerId)).version, [
+        { key: 'secret', value: 'must-survive', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
+      ]);
+
+      await repo.deleteByCustomer(otherBusinessId, otherCustomerId);
+
+      const stillThere = await repo.find(businessId, customerId);
+      expect(stillThere?.confirmedFacts).toEqual([expect.objectContaining({ key: 'secret', value: 'must-survive' })]);
+    });
+  });
 });
 
 describe('applyCustomerMemoryUpdate (real Postgres write-through)', () => {

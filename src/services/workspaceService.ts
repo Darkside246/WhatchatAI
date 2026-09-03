@@ -1315,12 +1315,20 @@ export class WorkspaceService {
    * is inherently a "give me everything" request. Serialization to
    * CSV/JSON is the caller's concern (server/index.ts) - this method only
    * ever returns real, already-persisted rows.
+   *
+   * Section 75-91 (consent granularity): excludeSyncExcluded: true - a
+   * contact staff have explicitly marked "Exclude from sync" must never
+   * leave the system through this bulk export, the one real mechanism in
+   * this codebase that hands a contact's structured PII to staff as a
+   * portable file. See crmContactRepository.ts's listByBusiness doc
+   * comment for why the everyday CRM list view and a single contact's own
+   * deliberate export both leave this filter off.
    */
   async exportCrmData(businessId: string): Promise<{ contacts: CrmContactWithContactInfo[]; leads: LeadWithContactInfo[] }> {
     const CRM_EXPORT_LIMIT = 50_000;
     const [contacts, leads] = await Promise.all([
-      this.crmContactRepository.listByBusiness(businessId, CRM_EXPORT_LIMIT),
-      this.leadRepository.listByBusiness(businessId, CRM_EXPORT_LIMIT),
+      this.crmContactRepository.listByBusiness(businessId, CRM_EXPORT_LIMIT, { excludeSyncExcluded: true }),
+      this.leadRepository.listByBusiness(businessId, CRM_EXPORT_LIMIT, { excludeSyncExcluded: true }),
     ]);
     return { contacts, leads };
   }
@@ -1668,6 +1676,45 @@ export class WorkspaceService {
       conversationStates,
       exportedAt: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Section 75-91 (single-subject erasure - the counterpart to
+   * exportCrmContactData above): before this, the only way to erase a
+   * customer's memory was accountDeletionService.ts's whole-business
+   * purge - a business honoring one end-customer's "forget me" request had
+   * no way to do that without deleting its entire WhatsApp account. Same
+   * resolution and scope as the export above (customer_memory's cross-
+   * conversation facts, conversation_states' per-conversation facts/goal/
+   * funnel state) - deliberately leaves the CRM contact record itself
+   * (name, email, notes, tags) untouched, since that is the business's own
+   * record of the relationship, not AI-derived conversational memory.
+   */
+  async eraseCrmContactMemory(businessId: string, crmContactId: string): Promise<{ erasedCustomerMemory: boolean; erasedConversationStates: number }> {
+    const crmContact = await this.crmContactRepository.findByIdForBusiness(businessId, crmContactId);
+    if (!crmContact) throw this.crmContactNotFound();
+    if (!crmContact.whatsappContactId) return { erasedCustomerMemory: false, erasedConversationStates: 0 };
+
+    let erasedCustomerMemory = false;
+    const customerId = await this.customerIdentityRepository.findCustomerIdByIdentity(
+      businessId,
+      'whatsapp',
+      'whatsapp_contact_id',
+      crmContact.whatsappContactId,
+    );
+    if (customerId) {
+      erasedCustomerMemory = await this.customerMemoryRepository.deleteByCustomer(businessId, customerId);
+    }
+
+    const erasedConversationStates = await this.conversationStateRepository.deleteByWhatsAppContact(businessId, crmContact.whatsappContactId);
+
+    await this.securityAuditLogRepository.record({
+      businessId,
+      eventType: 'crm_contact_memory_erased',
+      rawMetadata: { crmContactId, erasedCustomerMemory, erasedConversationStates },
+    });
+
+    return { erasedCustomerMemory, erasedConversationStates };
   }
 
   private toLeadSummary(row: Awaited<ReturnType<LeadRepository['listByBusiness']>>[number]): WorkspaceLeadSummary {

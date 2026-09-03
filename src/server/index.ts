@@ -2774,6 +2774,22 @@ app.get('/api/workspace/crm-contacts/:id/export', requireWorkspaceContext, async
   }
 });
 
+// Section 75-91 (single-subject erasure): the counterpart to the export
+// route above - see workspaceService.ts's eraseCrmContactMemory doc
+// comment for scope (customer_memory + conversation_states, never the CRM
+// contact record itself). Same crm.edit gate as the sibling privacy PATCH
+// route above, since this is a permanent, irreversible mutation.
+app.delete('/api/workspace/crm-contacts/:id/memory', requireWorkspaceContext, requirePermission('crm.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    const result = await workspaceService.eraseCrmContactMemory(businessId, String(req.params.id ?? ''));
+    return res.status(200).json(result);
+  } catch (error) {
+    if (isCrmContactNotFoundError(error)) return res.status(404).json({ error: 'CRM_CONTACT_NOT_FOUND' });
+    throw error;
+  }
+});
+
 app.patch('/api/workspace/crm-contacts/:id/privacy', requireWorkspaceContext, requirePermission('crm.edit'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const privacySchema = z.object({

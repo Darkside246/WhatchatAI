@@ -219,5 +219,40 @@ describe('CRM contacts and leads', () => {
       const allowedResult = await leads.updateStatusForBusiness(businessId, lead.id, 'WON');
       expect(allowedResult?.status).toBe('WON');
     });
+
+    /**
+     * Section 75-91 follow-up: crmContactRepository.listByBusiness already
+     * filters is_hidden = false on the contacts side (see crmExport.test.ts),
+     * but leadRepository.listByBusiness pulled the same contact's PII
+     * through its own join with no such filter at all - a lead tied to a
+     * contact staff hid via "Hide from CRM list" still surfaced in the
+     * Pipeline view and Section 67's bulk export.
+     */
+    it('never returns a lead whose contact is hidden via "Hide from CRM list" (is_hidden)', async () => {
+      const crmContact = await crmContacts.upsertForWhatsAppContact({ businessId, whatsappContactId });
+      await leads.create({ businessId, crmContactId: crmContact.id });
+      await crmContacts.setPrivacyFlags(businessId, crmContact.id, { isHidden: true });
+
+      expect(await leads.listByBusiness(businessId)).toEqual([]);
+    });
+
+    it('listCreatedSince also honors is_hidden - the morning briefing must never surface a hidden contact\'s lead', async () => {
+      const crmContact = await crmContacts.upsertForWhatsAppContact({ businessId, whatsappContactId });
+      await leads.create({ businessId, crmContactId: crmContact.id });
+      await crmContacts.setPrivacyFlags(businessId, crmContact.id, { isHidden: true });
+
+      const since = new Date(Date.now() - 60_000).toISOString();
+      expect(await leads.listCreatedSince(businessId, since)).toEqual([]);
+    });
+
+    it('listCreatedSince returns a real, non-hidden lead created since the given time', async () => {
+      const crmContact = await crmContacts.upsertForWhatsAppContact({ businessId, whatsappContactId });
+      await leads.create({ businessId, crmContactId: crmContact.id, source: 'whatsapp_inbound' });
+
+      const since = new Date(Date.now() - 60_000).toISOString();
+      const results = await leads.listCreatedSince(businessId, since);
+      expect(results).toHaveLength(1);
+      expect(results[0]?.contactDisplayName).toBe('Prospective Customer');
+    });
   });
 });

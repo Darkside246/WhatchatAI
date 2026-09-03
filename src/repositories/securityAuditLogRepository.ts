@@ -54,6 +54,7 @@ export type SecurityEventType =
   | 'writing_twin_profile_reset'
   | 'writing_twin_example_removed'
   | 'contact_privacy_updated'
+  | 'crm_contact_memory_erased'
   | 'handover_auto_reverted'
   | 'account_deletion_requested'
   | 'account_deletion_cancelled'

@@ -183,6 +183,24 @@ export class ConversationStateRepository {
     return rows.map(toRecord);
   }
 
+  /**
+   * Section 75-91 (single-subject erasure): the counterpart to
+   * listByWhatsAppContact above - deletes every real conversation_states
+   * row for chats linked to one WhatsApp contact, the per-conversation
+   * half of erasing one end-customer's memory (customerMemoryRepository's
+   * deleteByCustomer is the cross-conversation half). Idempotent - a
+   * contact with no conversation state rows is not an error.
+   */
+  async deleteByWhatsAppContact(businessId: string, whatsappContactId: string): Promise<number> {
+    const result = await this.db.query(
+      `DELETE FROM conversation_states cs
+       USING whatsapp_chats wc
+       WHERE cs.chat_id = wc.id AND cs.business_id = $1 AND wc.contact_id = $2`,
+      [businessId, whatsappContactId],
+    );
+    return result.rowCount ?? 0;
+  }
+
   /** Idempotent: a conversation that already has state gets it back unchanged; one that doesn't gets a fresh, empty row. Never overwrites an existing row. */
   async getOrCreate(businessId: string, chatId: string): Promise<ConversationStateRecord> {
     const existing = await this.find(businessId, chatId);

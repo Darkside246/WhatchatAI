@@ -267,4 +267,82 @@ describe('workspaceService CRM & Leads (real display-name resolution + tenant is
       ).rejects.toSatisfy((error: unknown) => isCrmContactNotFoundError(error));
     });
   });
+
+  describe('eraseCrmContactMemory (Section 75-91 - the erasure counterpart to the export above)', () => {
+    it('permanently erases customer_memory and every conversation_states row for this contact, leaving the CRM contact record itself untouched', async () => {
+      const chat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+        businessId,
+        whatsappAccountId: accountId,
+        chatJid: '15550007777@s.whatsapp.net',
+        jidKind: 'individual',
+        chatType: 'individual',
+        contactId: whatsappContactId,
+      });
+      const stateRepo = new ConversationStateRepository(pool);
+      const state = await stateRepo.getOrCreate(businessId, chat.id);
+      await stateRepo.update(businessId, chat.id, state.version, { funnelStage: 'APPOINTMENT_OFFERED' });
+
+      const identities = new CustomerIdentityRepository(pool);
+      const customerId = await identities.getOrCreateForWhatsAppContact(businessId, whatsappContactId, 'Real Prospect');
+      const memory = new CustomerMemoryRepository(pool);
+      const current = await memory.getOrCreate(businessId, customerId);
+      await memory.update(businessId, customerId, current.version, [
+        { key: 'preferred_time', value: 'evenings', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
+      ]);
+
+      const result = await workspaceService.eraseCrmContactMemory(businessId, crmContactId);
+      expect(result).toEqual({ erasedCustomerMemory: true, erasedConversationStates: 1 });
+
+      expect(await memory.find(businessId, customerId)).toBeNull();
+      expect(await stateRepo.find(businessId, chat.id)).toBeNull();
+
+      // The CRM contact record itself - notes, tags, stage - is a business
+      // record, not AI memory, and must survive this erasure untouched.
+      const stillThere = await workspaceService.getCrmContactMemory(businessId, crmContactId).catch(() => null);
+      expect(stillThere).not.toBeNull();
+    });
+
+    it('is idempotent and honest (not an error) for a contact with no memory or conversation state to erase', async () => {
+      const result = await workspaceService.eraseCrmContactMemory(businessId, crmContactId);
+      expect(result).toEqual({ erasedCustomerMemory: false, erasedConversationStates: 0 });
+    });
+
+    it('never erases a different contact\'s memory - tenant isolation for the erasure path, same as the export path above', async () => {
+      const identities = new CustomerIdentityRepository(pool);
+      const customerId = await identities.getOrCreateForWhatsAppContact(businessId, whatsappContactId, 'Real Prospect');
+      const memory = new CustomerMemoryRepository(pool);
+      const current = await memory.getOrCreate(businessId, customerId);
+      await memory.update(businessId, customerId, current.version, [
+        { key: 'secret', value: 'do not erase', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
+      ]);
+
+      const otherBusinessId = await createTestBusiness('Other Business');
+      const otherAccountId = await createTestAccount(otherBusinessId, '15550009999@s.whatsapp.net');
+      const otherContactRepo = new WhatsAppContactRepository(pool);
+      const otherContact = await otherContactRepo.upsertFromWhatsApp({
+        businessId: otherBusinessId,
+        whatsappAccountId: otherAccountId,
+        whatsappJid: '15550009999@s.whatsapp.net',
+        jidKind: 'individual',
+      });
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO crm_contacts (business_id, whatsapp_contact_id, source) VALUES ($1, $2, 'whatsapp_inbound') RETURNING id`,
+        [otherBusinessId, otherContact.id],
+      );
+      const otherCrmContactId = rows[0]!.id;
+
+      // Erasing the OTHER business's (empty) contact must never touch this business's real memory.
+      await workspaceService.eraseCrmContactMemory(otherBusinessId, otherCrmContactId);
+
+      const stillIntact = await memory.find(businessId, customerId);
+      expect(stillIntact?.confirmedFacts).toEqual([expect.objectContaining({ key: 'secret', value: 'do not erase' })]);
+    });
+
+    it('throws CrmContactNotFoundError for a cross-tenant or nonexistent contact', async () => {
+      const otherBusinessId = await createTestBusiness('Other Business');
+      await expect(
+        workspaceService.eraseCrmContactMemory(otherBusinessId, crmContactId),
+      ).rejects.toSatisfy((error: unknown) => isCrmContactNotFoundError(error));
+    });
+  });
 });

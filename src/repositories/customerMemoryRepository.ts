@@ -96,4 +96,18 @@ export class CustomerMemoryRepository {
     if (!row) throw new CustomerMemoryConflictError(businessId, customerId, expectedVersion);
     return toRecord(row);
   }
+
+  /**
+   * Section 75-91 (single-subject erasure): the counterpart to the export
+   * this feature already has (workspaceService.ts's exportCrmContactData) -
+   * before this, the only way to erase a customer's cross-conversation
+   * memory was accountDeletionService.ts's whole-business purge. A
+   * business honoring one end-customer's "forget me" request had no way to
+   * do that without deleting its entire WhatsApp account. Idempotent -
+   * erasing a customer with no memory row is not an error.
+   */
+  async deleteByCustomer(businessId: string, customerId: string): Promise<boolean> {
+    const result = await this.db.query('DELETE FROM customer_memory WHERE business_id = $1 AND customer_id = $2', [businessId, customerId]);
+    return (result.rowCount ?? 0) > 0;
+  }
 }
