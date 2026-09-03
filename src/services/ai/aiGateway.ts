@@ -41,6 +41,28 @@ const MAX_MEDIA_ITEMS = 8;
 const MAX_MEDIA_BASE64_CHARS = 12_000_000;
 const MAX_OUTPUT_TOKENS = 16_384;
 
+/**
+ * Real, live-reproduced quirk (found 2026-09-02 debugging a "bad request"
+ * report from BuildAgentWizard's custom-description parsing): Gemini
+ * sometimes wraps JSON-mode output in a ```json ... ``` markdown fence
+ * even with responseMimeType explicitly set to 'application/json' - the
+ * documented API contract that's supposed to prevent exactly this. Worse,
+ * it showed up specifically on the *reduced* retry path
+ * (generateReduced(), used after the primary request got rejected with a
+ * bare, field-less 400 INVALID_ARGUMENT) - that path sends no JSON-mode
+ * config at all by design (see generateReduced's own doc comment: the
+ * literal bare-minimum shape every model must support), so a caller that
+ * asked for JSON got free-form prose back, unstripped, and JSON.parse()
+ * below threw. Applied here, centrally, to every provider's text on every
+ * path (not duplicated per-provider) so this protects whichever provider
+ * is eligible, present or future - a caller that never asked for JSON
+ * (responseFormat left as 'text') is never touched.
+ */
+function stripJsonMarkdownFence(text: string): string {
+  const fenced = text.match(/^```(?:json)?\s*\n([\s\S]*?)\n?```\s*$/i);
+  return fenced ? fenced[1]!.trim() : text;
+}
+
 function mediaRequires(capabilities: Awaited<ReturnType<RegisteredAiProvider['capabilities']>>, media: GatewayMedia[]): string | null {
   if (media.length > MAX_MEDIA_ITEMS) return `too many media items (maximum ${MAX_MEDIA_ITEMS})`;
   for (const item of media) {
@@ -117,12 +139,15 @@ export class AiGateway {
         if (request.pendingToolCalls !== undefined) providerInput.pendingToolCalls = request.pendingToolCalls;
         if (request.toolResponses !== undefined) providerInput.toolResponses = request.toolResponses;
         const response = await provider.generate(providerInput);
-        const text = response.text.trim();
+        let text = response.text.trim();
         const toolCalls = response.toolCalls?.length ? response.toolCalls : undefined;
         // A tool-call response legitimately has no text yet - the model is
         // asking for information before it can answer, not failing to answer.
         if (!text && !toolCalls) throw new Error('provider returned an empty response');
-        if (request.responseFormat === 'json' && text) { try { JSON.parse(text); } catch { throw new Error('provider returned invalid JSON for a JSON-formatted request'); } }
+        if (request.responseFormat === 'json' && text) {
+          text = stripJsonMarkdownFence(text);
+          try { JSON.parse(text); } catch { throw new Error('provider returned invalid JSON for a JSON-formatted request'); }
+        }
         const result: GatewayResponse = { provider: response.provider, model: provider.model, text, attemptedProviders };
         if (response.usage !== undefined) result.usage = response.usage;
         if (toolCalls) result.toolCalls = toolCalls;
@@ -141,8 +166,16 @@ export class AiGateway {
             const reducedInput: Parameters<NonNullable<AIProviderAdapter['generateReduced']>>[0] = { tenantId: request.tenantId, operation: request.operation, messages: request.messages };
             if (request.maxOutputTokens !== undefined) reducedInput.maxOutputTokens = request.maxOutputTokens;
             const reducedResponse = await provider.generateReduced(reducedInput);
-            const text = reducedResponse.text.trim();
+            let text = reducedResponse.text.trim();
             if (!text) throw new Error('provider returned an empty response on the reduced retry');
+            // generateReduced() sends no JSON-mode config at all by design
+            // (its own bare-minimum contract) - a caller that wanted JSON
+            // still needs this on the reduced path, arguably more than the
+            // primary one, since nothing told the model to skip markdown.
+            if (request.responseFormat === 'json') {
+              text = stripJsonMarkdownFence(text);
+              try { JSON.parse(text); } catch { throw new Error('provider returned invalid JSON for a JSON-formatted request on the reduced retry'); }
+            }
             const result: GatewayResponse = { provider: reducedResponse.provider, model: provider.model, text, attemptedProviders };
             if (reducedResponse.usage !== undefined) result.usage = reducedResponse.usage;
             return result;

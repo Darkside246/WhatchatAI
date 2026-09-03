@@ -2376,7 +2376,14 @@ app.post('/api/workspace/agents/parse-description', requireWorkspaceContext, req
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const parsed = parseAgentDescriptionSchema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ error: 'INVALID_DESCRIPTION', details: parsed.error.flatten() });
+    // A real gap this masked while debugging a "bad request" report:
+    // ApiError's frontend fallback is `body.message ?? response.statusText`
+    // - with no message field here, any validation failure surfaced as the
+    // literal, useless "Bad Request" (the raw HTTP status text) instead of
+    // why. The real cause turned out to be elsewhere (a Gemini quirk, see
+    // aiGateway.ts's stripJsonMarkdownFence), but this response would have
+    // hidden a genuine future validation failure the same way.
+    return res.status(400).json({ error: 'INVALID_DESCRIPTION', message: 'A description between 1 and 2000 characters is required.', details: parsed.error.flatten() });
   }
   try {
     const config = await parseAgentDescription(businessId, parsed.data.description);
