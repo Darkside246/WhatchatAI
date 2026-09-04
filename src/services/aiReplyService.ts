@@ -1057,11 +1057,17 @@ async function executeCheckRetailOrderStatus(call: FunctionCall, context: AiHand
     order.id.toLowerCase().includes(ref) ||
     order.items.some((item) => item.name.toLowerCase().includes(ref)),
   );
-  const candidates = matches.length > 0 ? matches : customerOrders;
-  if (candidates.length > 1 && matches.length !== 1) {
+  // A reference that matches none of THIS customer's own orders is an
+  // honest no_match, never a silent fallback to "whichever order they
+  // happen to have" - a customer with exactly one real order asking about
+  // something unrelated must never be told it's that order.
+  if (matches.length === 0) {
+    return { found: false, reason: 'no_match' };
+  }
+  if (matches.length > 1) {
     return { found: false, reason: 'ambiguous' };
   }
-  const order = candidates[0]!;
+  const order = matches[0]!;
   return {
     found: true,
     order: {

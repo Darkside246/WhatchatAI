@@ -12,6 +12,8 @@ import { SCHEDULE_MEETING_TOOL_NAME } from '../src/services/meeting/scheduleMeet
 import { SCHEDULE_ZOOM_MEETING_TOOL_NAME } from '../src/services/meeting/scheduleZoomMeetingTool.js';
 import { LIST_PROPERTIES_TOOL_NAME } from '../src/services/property/listPropertiesTool.js';
 import { CHECK_PROPERTY_STATUS_TOOL_NAME } from '../src/services/property/checkPropertyStatusTool.js';
+import { CHECK_RETAIL_ORDER_STATUS_TOOL_NAME } from '../src/services/retail/checkRetailOrderStatusTool.js';
+import { RetailOperationsRepository } from '../src/repositories/retailOperationsRepository.js';
 import { getGeminiCircuitBreaker, resetAllGeminiCircuitBreakers } from '../src/services/aiCircuitBreaker.js';
 import { register } from '../src/services/authService.js';
 import { aiGateway } from '../src/services/ai/aiGateway.js';
@@ -619,6 +621,99 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
       const response = followUpContents.at(-1)?.parts[0]?.functionResponse?.response;
       expect(response?.found).toBe(true);
       expect(response?.property.name).toBe('Oakwood Villa');
+    });
+  });
+
+  /**
+   * Section 99-101 follow-up: check_retail_order_status carries the
+   * identical anti-probing scoping requirement as check_property_status
+   * above (its own doc comment calls it out explicitly), but had zero
+   * behavioral test coverage before this - only its risk tier was
+   * asserted anywhere. Retail has no binding table (see
+   * retailOrderOrchestrator.ts's own domain-mapping note); it scopes by
+   * the chat's resolved customerId instead - these tests prove that
+   * scoping actually holds, the same way the property block above proves
+   * its binding-based scoping does.
+   */
+  describe('check_retail_order_status is scoped by the chat\'s resolved customerId, never by free text alone', () => {
+    // customer_contact_id is a real UUID FK column - unlike the fake
+    // 'chat-1' string ids elsewhere in this file, this one is DB-enforced.
+    const customerA = randomUUID();
+    const customerB = randomUUID();
+
+    async function createOrderFor(customerContactId: string, itemName: string): Promise<void> {
+      await new RetailOperationsRepository(pool).createOrder({
+        id: randomUUID(), businessId: realBusinessId, customerContactId, sourceChannel: 'WHATSAPP',
+        items: [{ productId: randomUUID(), name: itemName, quantity: 1, unitPriceCents: 1999 }], totalCents: 1999,
+      });
+    }
+
+    it('honestly reports no_customer_identity when no customer is resolved for this chat - never guesses', async () => {
+      generateContentMock
+        .mockResolvedValueOnce({ text: undefined, functionCalls: [{ name: CHECK_RETAIL_ORDER_STATUS_TOOL_NAME, args: { orderReference: 'shirt' } }] })
+        .mockResolvedValueOnce({ text: 'ok' });
+
+      await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), fakeContext({ businessId: realBusinessId, customerId: null }));
+
+      const followUpContents = generateContentMock.mock.calls[1]?.[0]?.contents as Array<{
+        parts: Array<{ functionResponse?: { response: { found: boolean; reason: string } } }>;
+      }>;
+      expect(followUpContents.at(-1)?.parts[0]?.functionResponse?.response).toEqual({ found: false, reason: 'no_customer_identity' });
+    });
+
+    it('reports real order status for a match within this customer\'s own orders', async () => {
+      await createOrderFor(customerA, 'Blue T-Shirt');
+      generateContentMock
+        .mockResolvedValueOnce({ text: undefined, functionCalls: [{ name: CHECK_RETAIL_ORDER_STATUS_TOOL_NAME, args: { orderReference: 'shirt' } }] })
+        .mockResolvedValueOnce({ text: 'ok' });
+
+      await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), fakeContext({ businessId: realBusinessId, customerId: customerA }));
+
+      const followUpContents = generateContentMock.mock.calls[1]?.[0]?.contents as Array<{
+        parts: Array<{ functionResponse?: { response: { found: boolean; order: { items: Array<{ name: string }> } } } }>;
+      }>;
+      const response = followUpContents.at(-1)?.parts[0]?.functionResponse?.response;
+      expect(response?.found).toBe(true);
+      expect(response?.order.items).toEqual([{ name: 'Blue T-Shirt', quantity: 1 }]);
+    });
+
+    it('never leaks a different customer\'s order, even when the reference matches it exactly', async () => {
+      await createOrderFor(customerA, 'Red Hoodie');
+      await createOrderFor(customerB, 'Blue T-Shirt');
+
+      generateContentMock
+        // customerA asking about a "shirt" - which belongs to customerB, not them.
+        .mockResolvedValueOnce({ text: undefined, functionCalls: [{ name: CHECK_RETAIL_ORDER_STATUS_TOOL_NAME, args: { orderReference: 'shirt' } }] })
+        .mockResolvedValueOnce({ text: 'ok' });
+
+      await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), fakeContext({ businessId: realBusinessId, customerId: customerA }));
+
+      const followUpContents = generateContentMock.mock.calls[1]?.[0]?.contents as Array<{
+        parts: Array<{ functionResponse?: { response: { found: boolean; reason?: string; order?: { items: Array<{ name: string }> } } } }>;
+      }>;
+      const response = followUpContents.at(-1)?.parts[0]?.functionResponse?.response;
+      // Scoped to customerA's own orders first - "shirt" never matches
+      // within that set, so this must be an honest no_match, never
+      // customerB's real "Blue T-Shirt" order.
+      expect(response?.found).toBe(false);
+      const serialized = JSON.stringify(response);
+      expect(serialized).not.toContain('Blue T-Shirt');
+    });
+
+    it('is ambiguous (not a guess) when more than one of this customer\'s own orders could match', async () => {
+      await createOrderFor(customerA, 'Blue T-Shirt');
+      await createOrderFor(customerA, 'Blue Jeans');
+
+      generateContentMock
+        .mockResolvedValueOnce({ text: undefined, functionCalls: [{ name: CHECK_RETAIL_ORDER_STATUS_TOOL_NAME, args: { orderReference: 'blue' } }] })
+        .mockResolvedValueOnce({ text: 'ok' });
+
+      await generateAiReply(fakeAgent({ id: realAgentId, businessId: realBusinessId }), fakeContext({ businessId: realBusinessId, customerId: customerA }));
+
+      const followUpContents = generateContentMock.mock.calls[1]?.[0]?.contents as Array<{
+        parts: Array<{ functionResponse?: { response: { found: boolean; reason: string } } }>;
+      }>;
+      expect(followUpContents.at(-1)?.parts[0]?.functionResponse?.response).toEqual({ found: false, reason: 'ambiguous' });
     });
   });
 
