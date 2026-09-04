@@ -14,6 +14,7 @@ import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepo
 import { notifyBusiness } from './notificationService.js';
 import { type EntitlementDeniedError } from './workspaceService.js';
 import { storeMedia } from '../media/mediaStorage.js';
+import { computeSendTimingDelayMs } from './contactAvailabilityService.js';
 
 const campaignRepository = new CampaignRepository(pool);
 const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
@@ -289,16 +290,25 @@ export async function sendCampaign(businessId: string, campaignId: string): Prom
 
   let index = 0;
   let failedCount = skippedForOptOut.length;
+  const now = new Date();
   for (const recipient of pending) {
     try {
       const isText = campaign.messageType === 'text';
+      // Section 32 (timing engine): real per-recipient send-time
+      // intelligence, not just anti-burst pacing - stacked on top of (not
+      // instead of) the existing stagger, so two recipients who share a
+      // best hour still don't land in the same instant. 0 when this
+      // recipient has no real activity history to go on (contactAvailabilityService.ts
+      // never fabricates a preference for a contact this business has
+      // barely heard from).
+      const timingDelayMs = await computeSendTimingDelayMs(pool, recipient.chatId, now);
       const outboundMessage = await whatsappOutboundMessageService.send({
         businessId,
         whatsappAccountId: campaign.whatsappAccountId,
         chatId: recipient.chatId,
         messageType: campaign.messageType,
         requestedBy: 'campaign',
-        delayMs: index * SEND_STAGGER_MS,
+        delayMs: timingDelayMs + index * SEND_STAGGER_MS,
         ...(isText
           ? { text: campaign.messageText }
           : {
