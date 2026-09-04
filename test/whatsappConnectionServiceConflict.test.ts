@@ -95,7 +95,7 @@ describe('WhatsAppTenantConnection - DisconnectReason.connectionReplaced handlin
     });
   });
 
-  it('still clears session state and reconnects immediately for loggedOut - regression check', async () => {
+  it('still clears session state and reconnects for loggedOut, but through the same backoff as any other disconnect - regression check', async () => {
     const firstSocket = fakeSocket();
     const secondSocket = fakeSocket();
     makeWASocketMock.mockReturnValueOnce(firstSocket).mockReturnValueOnce(secondSocket);
@@ -107,6 +107,20 @@ describe('WhatsAppTenantConnection - DisconnectReason.connectionReplaced handlin
       lastDisconnect: { error: { output: { statusCode: DisconnectReason.loggedOut } } },
     });
 
+    // A real, confirmed bug this asserts against: this branch used to call
+    // connect() with zero delay, so a session WhatsApp keeps rejecting as
+    // loggedOut (e.g. a stale duplicate linked device still holding the
+    // real device slot) hammered WhatsApp's servers in a tight loop -
+    // reconnecting many times per second and burning through fresh
+    // pairing codes/QRs almost as fast as they were issued. No timer
+    // advance yet: the second socket must NOT exist before the real
+    // backoff delay has elapsed.
+    await vi.waitFor(() => {
+      expect(connection.getSnapshot().status).toBe('RECONNECTING');
+    });
+    expect(makeWASocketMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
     await vi.waitFor(() => {
       expect(makeWASocketMock).toHaveBeenCalledTimes(2);
     });

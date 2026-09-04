@@ -169,6 +169,26 @@ export class WhatsAppConnectionManager {
     await this.get(businessId)?.logout();
   }
 
+  /**
+   * Full, permanent teardown for a business being deleted - unlike
+   * disconnect() (a temporary stop the business owner can resume from
+   * Settings without re-pairing), this removes the tenant from the map
+   * entirely. Without this, a purged business's WhatsAppTenantConnection
+   * instance stayed alive indefinitely: getPersistedContext() kept
+   * returning a whatsapp_account_id whose row purgeBusiness() had just
+   * cascade-deleted, and the instance itself remained reachable by
+   * businessId for any future connect() call that reused it. Real
+   * production evidence: a whatsapp_connection_events FK violation
+   * ("Key (whatsapp_account_id)=(...) is not present in table
+   * whatsapp_accounts") logged for exactly this scenario.
+   */
+  async remove(businessId: string): Promise<void> {
+    const tenant = this.get(businessId);
+    if (!tenant) return;
+    await tenant.disconnect();
+    this.tenants.delete(businessId);
+  }
+
   /** A reconnect of an already-tracked tenant must never be blocked by capacity - only a genuinely new tenant counts against the ceiling. */
   canProvisionNewTenant(businessId: string): boolean {
     if (this.tenants.has(businessId)) return true;

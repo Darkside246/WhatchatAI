@@ -134,8 +134,11 @@ export async function sweepDueAccountDeletions(): Promise<void> {
  * keeping the row id stable for any such reference.
  */
 async function purgeBusiness(businessId: string): Promise<void> {
-  await whatsappConnectionManager.disconnect(businessId).catch((error: unknown) => {
-    console.error(`[AccountDeletion] disconnect failed pre-purge for business ${businessId}:`, error);
+  // remove(), not disconnect() - this business's rows are about to be gone
+  // for good, so its in-memory connection must be too (see remove()'s own
+  // doc comment for the FK-violation bug leaving it behind caused).
+  await whatsappConnectionManager.remove(businessId).catch((error: unknown) => {
+    console.error(`[AccountDeletion] WhatsApp teardown failed pre-purge for business ${businessId}:`, error);
   });
 
   const client = await pool.connect();

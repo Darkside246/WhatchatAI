@@ -206,4 +206,27 @@ describe('WhatsAppConnectionManager (bookkeeping, via a fake tenant factory)', (
       expect(manager.getSnapshot('biz-2')).toEqual(DISCONNECTED_SNAPSHOT); // untouched
     });
   });
+
+  describe('remove (permanent teardown, e.g. for account deletion)', () => {
+    it('disconnects and fully untracks the tenant - unlike disconnect(), a later lookup allocates nothing stale', async () => {
+      const factory = vi.fn(makeFakeTenant);
+      const manager = makeManager(factory);
+      await manager.connect('biz-1');
+      expect(manager.activeTenantCount()).toBe(1);
+
+      await manager.remove('biz-1');
+
+      expect(manager.activeTenantCount()).toBe(0);
+      expect(manager.getPersistedContext('biz-1')).toBeNull();
+      // A subsequent connect() for the same id must allocate a genuinely
+      // fresh instance, not resurrect the removed one.
+      await manager.connect('biz-1');
+      expect(factory).toHaveBeenCalledTimes(2);
+    });
+
+    it('is a safe no-op for a business with no tracked connection', async () => {
+      const manager = makeManager(makeFakeTenant);
+      await expect(manager.remove('biz-never-connected')).resolves.toBeUndefined();
+    });
+  });
 });

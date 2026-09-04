@@ -767,6 +767,20 @@ export class WhatsAppTenantConnection {
     });
 
     socket.ev.on('connection.update', async (update) => {
+      // disconnect()/logout() null out this.socket synchronously before
+      // ending/logging out the real socket underneath - but Baileys still
+      // fires a 'close' update on THIS closure's captured socket once the
+      // teardown completes. Without this guard, that stale event fell
+      // through to the same handling a genuine unexpected drop gets:
+      // recordDisconnectEvent() (writing against a whatsapp_account_id that
+      // an in-flight account purge may have already deleted - a real FK
+      // violation seen in production logs) and scheduleReconnect(), which
+      // silently revives a connection the caller believed it had just torn
+      // down. A superseding connect() (reconnect, or a fresh manual retry)
+      // also repoints this.socket before this stale handler can fire, so
+      // this same check correctly ignores events from a socket a newer one
+      // has already replaced.
+      if (this.socket !== socket) return;
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
@@ -891,21 +905,30 @@ export class WhatsAppTenantConnection {
           // The credentials WhatsApp just rejected can never be resumed -
           // without clearing them, every future connect() would keep
           // retrying (and failing) the same dead session instead of
-          // requesting a genuine new pairing QR. Reconnecting immediately
-          // after, with a clean session, is what actually produces the
-          // fresh code the UI promises rather than leaving the account
-          // stuck on "Generating a new code..." forever.
+          // requesting a genuine new pairing QR.
           await this.clearSessionState();
-          void this.connect(this.lastPairingPhoneNumber ?? undefined).catch((error) => {
-            this.snapshot = {
-              ...this.snapshot,
-              status: 'ERROR',
-              lastError: error instanceof Error ? error.message : String(error),
-            };
-          });
+          // scheduleReconnect(), not an immediate connect(): a real,
+          // confirmed bug fixed here - this branch used to reconnect with
+          // zero delay. If WhatsApp keeps rejecting the session as
+          // loggedOut (e.g. a stale duplicate linked device still holding
+          // the real device slot), that produced an unbounded tight loop -
+          // connect() -> instant loggedOut close -> clear -> connect()
+          // again - hammering WhatsApp's servers many times per second and
+          // burning through fresh pairing codes/QRs almost as fast as they
+          // were issued. Routing through the same backoff every other
+          // reconnect path already uses caps and slows retries exactly
+          // like a genuine transient disconnect does.
+          this.scheduleReconnect();
           return;
         }
 
+        // The real Boom statusCode, not just Baileys' own free-text log
+        // line - without this, every ordinary-looking disconnect ("Connection
+        // Terminated", "Connection Failure") was indistinguishable from any
+        // other in this app's own logs, making a real WhatsApp-side rejection
+        // (e.g. a conflicting duplicate linked device) look identical to a
+        // routine network blip.
+        console.error(`[WhatsApp] Connection closed for business ${this.businessId} (code=${code ?? 'unknown'}) - reconnecting.`);
         this.recordDisconnectEvent('disconnected', 'DISCONNECTED');
         this.scheduleReconnect();
       }

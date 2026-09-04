@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Loader2, RefreshCw, ShieldCheck, Smartphone, AlertTriangle, Check, Eye, QrCode, Phone } from 'lucide-react';
+import { getCountries, getCountryCallingCode, type CountryCode } from 'libphonenumber-js/min';
 import { api, ApiError, type WhatsAppConnectionSnapshot } from '../lib/api.js';
+
+/** Every real ISO country libphonenumber-js knows a dial code for, with a real display name (Intl.DisplayNames - no hand-maintained country list to go stale), sorted for a select dropdown. */
+const COUNTRY_DIAL_OPTIONS: { code: CountryCode; name: string; dialCode: string }[] = (() => {
+  const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
+  return getCountries()
+    .map((code) => ({ code, name: regionNames.of(code) ?? code, dialCode: getCountryCallingCode(code) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+})();
 
 interface Props {
   connection: WhatsAppConnectionSnapshot | null;
@@ -170,6 +179,36 @@ function QrPanel({
  * always available, matching how the code can go silently stale with no
  * status change telling the UI.
  */
+/** U+1F1E6 is 127397 above 'A' - the standard two-letter-to-regional-indicator flag emoji trick. */
+function flagEmoji(countryCode: string): string {
+  return countryCode
+    .toUpperCase()
+    .replace(/./g, (char) => String.fromCodePoint(127397 + char.charCodeAt(0)));
+}
+
+/**
+ * WhatsApp's real "Link with phone number" code is server-issued with no
+ * expiry timestamp in Baileys' own response - only WhatsApp's servers know
+ * exactly when it stops working, so this can't show a precise countdown
+ * without risking telling the user a wrong number. What's reported
+ * consistently (Baileys' own community docs, and this app's own testing)
+ * is a real, short window of roughly a minute. Framed as an approximate
+ * countdown with escalating urgency rather than a false "0:00 = dead"
+ * claim, so the user knows to move fast without being told something that
+ * might not be exactly true.
+ */
+const APPROX_CODE_WINDOW_SECONDS = 60;
+
+function codeUrgency(generatedAtIso: string | null, now: number): { remaining: number; tier: 'fresh' | 'soon' | 'urgent' | 'expired' } | null {
+  if (!generatedAtIso) return null;
+  const elapsed = Math.max(0, Math.round((now - new Date(generatedAtIso).getTime()) / 1000));
+  const remaining = APPROX_CODE_WINDOW_SECONDS - elapsed;
+  if (remaining <= 0) return { remaining: 0, tier: 'expired' };
+  if (remaining <= 15) return { remaining, tier: 'urgent' };
+  if (remaining <= 30) return { remaining, tier: 'soon' };
+  return { remaining, tier: 'fresh' };
+}
+
 function PhonePairingPanel({
   connection,
   onSubmit,
@@ -177,11 +216,12 @@ function PhonePairingPanel({
   submitError,
 }: {
   connection: WhatsAppConnectionSnapshot | null;
-  onSubmit: (phoneNumber: string) => void;
+  onSubmit: (fullPhoneNumber: string) => void;
   submitting: boolean;
   submitError: string | null;
 }) {
-  const [phoneNumber, setPhoneNumber] = useState('');
+  const [country, setCountry] = useState<CountryCode | ''>('');
+  const [localNumber, setLocalNumber] = useState('');
   const status: Status = connection?.status ?? 'CONNECTING';
   const pairingCode = connection?.pairingCode ?? null;
   const copy = STATUS_COPY[status];
@@ -191,12 +231,14 @@ function PhonePairingPanel({
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
-  const ago = refreshedAgo(connection?.pairingCodeGeneratedAt ?? null, now);
+  const urgency = codeUrgency(connection?.pairingCodeGeneratedAt ?? null, now);
+
+  const dialCode = country ? getCountryCallingCode(country) : null;
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!phoneNumber.trim() || submitting) return;
-    onSubmit(phoneNumber.trim());
+    if (!country || !localNumber.trim() || submitting) return;
+    onSubmit(`+${getCountryCallingCode(country)}${localNumber.replace(/\D/g, '')}`);
   }
 
   return (
@@ -204,18 +246,43 @@ function PhonePairingPanel({
       {!pairingCode ? (
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           <label className="flex flex-col gap-1 text-body text-fg-secondary">
-            Phone number
-            <input
-              type="tel"
+            Country
+            <select
               required
               autoFocus
-              placeholder="+1 415 555 2671"
-              value={phoneNumber}
-              onChange={(event) => setPhoneNumber(event.target.value)}
+              value={country}
+              onChange={(event) => setCountry(event.target.value as CountryCode)}
               className="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-body text-fg outline-none focus:border-accent"
-            />
+            >
+              <option value="" disabled>
+                Select your country
+              </option>
+              {COUNTRY_DIAL_OPTIONS.map((option) => (
+                <option key={option.code} value={option.code}>
+                  {flagEmoji(option.code)} {option.name} (+{option.dialCode})
+                </option>
+              ))}
+            </select>
           </label>
-          <p className="text-meta text-fg-muted">Include your country code - this is the number WhatsApp is already linked to on your phone.</p>
+          <label className="flex flex-col gap-1 text-body text-fg-secondary">
+            Phone number
+            <div className="flex items-stretch gap-2">
+              {dialCode && (
+                <span className="flex items-center rounded-lg border border-border-subtle bg-surface-2 px-3 text-body text-fg-secondary">
+                  +{dialCode}
+                </span>
+              )}
+              <input
+                type="tel"
+                required
+                placeholder="246 245 1422"
+                value={localNumber}
+                onChange={(event) => setLocalNumber(event.target.value)}
+                className="min-w-0 flex-1 rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-body text-fg outline-none focus:border-accent"
+              />
+            </div>
+          </label>
+          <p className="text-meta text-fg-muted">This is the number WhatsApp is already linked to on your phone.</p>
           {submitError && <p className="text-caption text-error">{submitError}</p>}
           <button
             type="submit"
@@ -233,17 +300,34 @@ function PhonePairingPanel({
           </p>
           <p className="mt-3 text-body font-semibold text-fg">{copy.title}</p>
           <p className="mt-1 text-caption text-fg-secondary">Enter this code in WhatsApp on {connection?.pairingPhoneNumber ?? 'your phone'}.</p>
-          {ago && (
-            <p className="mt-2 flex items-center justify-center gap-1.5 text-meta text-fg-muted">
+          {urgency && (
+            <p
+              className={
+                'mt-2 flex items-center justify-center gap-1.5 text-meta font-medium ' +
+                (urgency.tier === 'expired' || urgency.tier === 'urgent'
+                  ? 'text-error'
+                  : urgency.tier === 'soon'
+                    ? 'text-warning'
+                    : 'text-fg-muted')
+              }
+            >
               <RefreshCw size={11} aria-hidden />
-              Code {ago} — request a new one if it stops working.
+              {urgency.tier === 'expired'
+                ? 'This code has likely expired — request a new one below.'
+                : `Enter it in the next ~${urgency.remaining}s, or request a new one.`}
             </p>
           )}
           {submitError && <p className="mt-2 text-caption text-error">{submitError}</p>}
           <button
             type="button"
-            onClick={() => onSubmit(connection?.pairingPhoneNumber ?? phoneNumber)}
-            disabled={submitting}
+            onClick={() => {
+              // pairingPhoneNumber is always set alongside a live pairingCode
+              // (see whatsappTenantConnection.ts's PAIRING_CODE_READY snapshot) -
+              // the dial-code+local-number form above isn't mounted at this
+              // point, so re-deriving from it isn't an option here.
+              if (connection?.pairingPhoneNumber) onSubmit(connection.pairingPhoneNumber);
+            }}
+            disabled={submitting || !connection?.pairingPhoneNumber}
             className="control-lg mt-5 w-full justify-center bg-accent font-medium text-white hover:bg-accent-dim disabled:opacity-50"
           >
             {submitting ? <Loader2 size={15} className="animate-spin" aria-hidden /> : <RefreshCw size={15} aria-hidden />}
