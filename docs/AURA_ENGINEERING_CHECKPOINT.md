@@ -154,19 +154,17 @@ implication), WSL2 (this session's dev/test execution environment).
 
 ## Last commit
 
-`e6ea5dc` — fix(test): automate BullMQ/Redis test isolation, fix real
-cross-test interference. (Sections 130-134's own documentation commit —
-this file, the final report, and the checklist update — is the next
-commit to be made from this checkpoint.)
+`0571167` — docs: close out the 135-section AURA master directive
+(Sections 130-134). Includes this file, the final report, and the master
+checklist update. Preceded by `e6ea5dc` (the BullMQ/Redis reliability
+fixes this checkpoint documents).
 
 ## Next action
 
-1. Commit this checkpoint + the final report + the updated master
-   checklist (not yet committed as of this file being written).
-2. Wait for the user to resolve one of the REQUIRES USER ACTION items
+1. Wait for the user to resolve one of the REQUIRES USER ACTION items
    (§"Known blockers" above) — no further numbered-section engineering
    work is currently unblocked without new information.
-3. If the user provides new direction unrelated to the above (a new
+2. If the user provides new direction unrelated to the above (a new
    feature, a new vertical, a bug report), treat it as new work outside
    the 135-section directive's now-closed scope, using this checkpoint
    and the final report as background context, not as a task list to
