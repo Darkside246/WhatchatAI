@@ -584,7 +584,7 @@ Investigated first (3 parallel Explore agents), then built a real, minimal, test
 [X] 01      - Repository and architecture audit
 [X] 02      - Existing feature inventory
 [X] 03      - Unified agent intelligence architecture - ALREADY IMPLEMENTED, VERIFIED
-[~] 04      - Conversational intelligence engine - first pipeline stage shipped (intent/entity/risk classifier)
+[~] 04      - Conversational intelligence engine - first pipeline stage shipped (intent/entity/risk classifier, conversationIntentClassifier.ts) and real: wired into aiReplyService.ts's classifyAndAuditInboundMessage, audits real message_risk_flagged events. Investigated directly for a concrete "stage 2": none exists anywhere in code (no stub, no TODO with a real signature) - "first pipeline stage" is an accurate label, not a half-finished pipeline. outboundLeakGuard.ts is real and shipped but serves a genuinely different purpose (checking an OUTBOUND reply against protected facts, not inbound intent/risk) - connecting the two would be a cosmetic pairing, not a real architectural gap, so left alone rather than force-built
 [X] 05      - Human-like conversation - real gap found and fixed: only naturalness guidance was a passthrough tone string; replies now vary phrasing against the actual last message sent, verified
 [X] 06      - Invisible conversational funnel - funnel_stage field, verified
 [X] 07      - Progressive information discovery - real gap found and fixed: open questions were one flat unordered list; now paced one-highest-priority-at-a-time, verified
