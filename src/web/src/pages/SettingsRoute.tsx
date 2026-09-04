@@ -2376,15 +2376,35 @@ function OperatorModeCard() {
     }
   }
 
+  /**
+   * Real bug found live (Section 102-104): this used to flip the UI to
+   * the new state unconditionally, even when setOperatorEnabled() itself
+   * failed - a transient network error would leave the toggle showing
+   * "Enabled" while the backend was still Disabled (or vice versa), for a
+   * security-relevant admin-command gate. AiActionsPauseCard's own
+   * handleToggle (above, same file) already gets this right - only
+   * update local state after a real success, surface a real failure
+   * instead of silently swallowing it.
+   */
   async function handleToggle() {
     if (!settings?.configured) return;
     const next = !settings.enabled;
-    await api.setOperatorEnabled(next).catch(() => undefined);
-    setSettings({ ...settings, enabled: next });
+    setErr(null);
+    try {
+      await api.setOperatorEnabled(next);
+      setSettings({ ...settings, enabled: next });
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Failed to update operator mode.');
+    }
   }
 
   async function handleKillSession() {
-    await api.killOperatorSession().catch(() => undefined);
+    setErr(null);
+    try {
+      await api.killOperatorSession();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Failed to end the active session.');
+    }
   }
 
   async function handleGenerateToken() {
@@ -2456,6 +2476,7 @@ function OperatorModeCard() {
               Kill active session
             </button>
           </div>
+          {err && <p className="text-caption text-error">{err}</p>}
         </div>
       ) : (
         <button
