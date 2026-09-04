@@ -109,6 +109,20 @@ describe('PropertyOperationsRepository - incident/work order lifecycle (real Pos
       expect(updated?.description).toBe('Fix leak');
     });
 
+    it('Section 60-62 follow-up: sets a real scheduledFor value, and a later update can move it', async () => {
+      const incident = await createTestIncident();
+      const workOrder = await repo.createWorkOrder({ id: randomUUID(), businessId, incidentId: incident.id, description: 'Fix leak' });
+      expect(workOrder.scheduledFor).toBeNull();
+
+      const firstSlot = new Date('2026-02-01T14:00:00.000Z');
+      const scheduled = await repo.updateWorkOrder(businessId, workOrder.id, { scheduledFor: firstSlot });
+      expect(new Date(scheduled!.scheduledFor as unknown as string).toISOString()).toBe(firstSlot.toISOString());
+
+      const secondSlot = new Date('2026-02-03T09:30:00.000Z');
+      const rescheduled = await repo.updateWorkOrder(businessId, workOrder.id, { scheduledFor: secondSlot });
+      expect(new Date(rescheduled!.scheduledFor as unknown as string).toISOString()).toBe(secondSlot.toISOString());
+    });
+
     it('never stamps completed_at twice with different timestamps', async () => {
       const incident = await createTestIncident();
       const workOrder = await repo.createWorkOrder({ id: randomUUID(), businessId, incidentId: incident.id, description: 'Fix leak' });

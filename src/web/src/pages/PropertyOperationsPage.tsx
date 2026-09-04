@@ -611,6 +611,28 @@ function IncidentsTab({ incidents, properties, onIncidentsChange }: { incidents:
     finally { setActionBusyId(null); }
   }
 
+  /**
+   * Section 60-62 follow-up: scheduledFor was a real, wired backend field
+   * (settable via this exact PATCH endpoint since the work-order lifecycle
+   * shipped) with zero UI to ever set it - this page only ever displayed
+   * it if some other caller had already set it, which nothing did. The
+   * <input type="datetime-local"> value has no timezone/seconds
+   * (e.g. "2026-01-15T14:30") - the backend's real z.string().datetime()
+   * validator requires a full ISO 8601 string, so this converts through a
+   * real Date rather than sending the raw local-time string.
+   */
+  async function handleScheduleWorkOrder(workOrderId: string, incidentId: string, scheduledForLocal: string) {
+    if (!scheduledForLocal) { setActionError('Choose a date and time first.'); return; }
+    const parsed = new Date(scheduledForLocal);
+    if (Number.isNaN(parsed.getTime())) { setActionError('Enter a valid date and time.'); return; }
+    setActionBusyId(workOrderId); setActionError(null);
+    try {
+      await patch(`/work-orders/${workOrderId}`, { scheduledFor: parsed.toISOString() });
+      await refetchWorkOrders(incidentId);
+    } catch (err) { setActionError(err instanceof Error ? err.message : 'Failed to schedule work order'); }
+    finally { setActionBusyId(null); }
+  }
+
   async function handleIntake(e: FormEvent) {
     e.preventDefault(); setSubmitting(true); setIntakeError(null); setIntakeResult(null);
     try {
@@ -833,6 +855,7 @@ function IncidentsTab({ incidents, properties, onIncidentsChange }: { incidents:
                     onApprove={(cost) => handleApproveWorkOrder(wo.id, selected.id, cost)}
                     onComplete={(notes) => handleCompleteWorkOrder(wo.id, selected.id, notes)}
                     onCancel={() => handleCancelWorkOrder(wo.id, selected.id)}
+                    onSchedule={(scheduledFor) => handleScheduleWorkOrder(wo.id, selected.id, scheduledFor)}
                   />
                 ))}
               </div>
@@ -853,16 +876,18 @@ function IncidentsTab({ incidents, properties, onIncidentsChange }: { incidents:
  * complete (optionally with real notes), or cancel.
  */
 function WorkOrderCard({
-  workOrder, busy, onApprove, onComplete, onCancel,
+  workOrder, busy, onApprove, onComplete, onCancel, onSchedule,
 }: {
   workOrder: WorkOrderRec;
   busy: boolean;
   onApprove: (costInput: string) => void;
   onComplete: (notes: string) => void;
   onCancel: () => void;
+  onSchedule: (scheduledForLocal: string) => void;
 }) {
   const [costInput, setCostInput] = useState('');
   const [notesInput, setNotesInput] = useState('');
+  const [scheduleInput, setScheduleInput] = useState('');
   const actionable = !['COMPLETED', 'CANCELLED'].includes(workOrder.status);
 
   return (
@@ -900,6 +925,14 @@ function WorkOrderCard({
               </button>
             </div>
           )}
+          <div className="flex items-center gap-2">
+            <input type="datetime-local" value={scheduleInput} onChange={(e) => setScheduleInput(e.target.value)}
+              className="rounded-md border border-border-subtle bg-surface-1 px-2 py-1 text-meta text-fg focus:outline-none focus:ring-1 focus:ring-accent" />
+            <button type="button" disabled={busy || !scheduleInput} onClick={() => onSchedule(scheduleInput)}
+              className="rounded-md border border-border-subtle px-2 py-1 text-meta font-medium text-fg-secondary hover:bg-surface-2 disabled:opacity-50">
+              {workOrder.scheduledFor ? 'Reschedule' : 'Schedule'}
+            </button>
+          </div>
           <button type="button" disabled={busy} onClick={onCancel}
             className="text-meta font-medium text-error hover:underline disabled:opacity-50">
             Cancel work order
