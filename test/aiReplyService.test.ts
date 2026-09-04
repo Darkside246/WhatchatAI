@@ -436,8 +436,48 @@ describe('Durable conversation state (Phase 3 - supplements raw history, never r
       ],
     };
     const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state }));
-    expect(instruction).toContain('Open questions not yet answered: What unit number?');
+    expect(instruction).toContain('most important open question to work toward next: What unit number?');
     expect(instruction).not.toContain('Already resolved question');
+  });
+
+  describe('Sections 07/08 (progressive information discovery, question priority engine)', () => {
+    it('surfaces the single HIGH-priority question as "next", regardless of insertion order, and the rest as lower-priority background', () => {
+      const state = {
+        ...emptyConversationState('business-1', 'chat-1'),
+        openQuestions: [
+          { id: 'q1', question: 'What color do they want?', priority: 'LOW' as const, openedAt: '2026-01-01T00:00:00.000Z', resolvedAt: null },
+          { id: 'q2', question: 'What is the delivery address?', priority: 'HIGH' as const, openedAt: '2026-01-01T00:00:01.000Z', resolvedAt: null },
+          { id: 'q3', question: 'Do they want a gift receipt?', priority: 'MEDIUM' as const, openedAt: '2026-01-01T00:00:02.000Z', resolvedAt: null },
+        ],
+      };
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state }));
+      expect(instruction).toContain('most important open question to work toward next: What is the delivery address?');
+      expect(instruction).toContain('Other open questions, lower priority for now');
+      expect(instruction).toContain('Do they want a gift receipt?');
+      expect(instruction).toContain('What color do they want?');
+      // The HIGH one is never repeated in the lower-priority list.
+      const lowerPriorityLine = instruction.split('\n\n').find((line) => line.startsWith('Other open questions'));
+      expect(lowerPriorityLine).not.toContain('What is the delivery address?');
+    });
+
+    it('treats a question with no priority set (an older row, written before this field existed) as MEDIUM, never as automatically highest', () => {
+      const state = {
+        ...emptyConversationState('business-1', 'chat-1'),
+        openQuestions: [
+          { id: 'q1', question: 'Undated legacy question', openedAt: '2026-01-01T00:00:00.000Z', resolvedAt: null },
+          { id: 'q2', question: 'A real HIGH priority question', priority: 'HIGH' as const, openedAt: '2026-01-01T00:00:01.000Z', resolvedAt: null },
+        ],
+      };
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state }));
+      expect(instruction).toContain('most important open question to work toward next: A real HIGH priority question');
+    });
+
+    it('instructs pacing (one new question per reply) only when more than one question is genuinely open', () => {
+      const single = { ...emptyConversationState('business-1', 'chat-1'), openQuestions: [{ id: 'q1', question: 'Only one thing to ask', priority: 'HIGH' as const, openedAt: new Date().toISOString(), resolvedAt: null }] };
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: single }));
+      expect(instruction).not.toContain('Other open questions');
+      expect(instruction).not.toContain('do not ask more than one new question per reply');
+    });
   });
 
   it('surfaces the funnel stage and customer readiness as internal-only, never-mention-to-customer context', () => {

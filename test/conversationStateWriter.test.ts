@@ -75,8 +75,8 @@ describe('applyConversationStateUpdate', () => {
   });
 
   it('opens a new question and never opens a duplicate of an already-open one', async () => {
-    await applyConversationStateUpdate(repo, businessId, chatId, { openQuestions: ['What unit number?'] });
-    await applyConversationStateUpdate(repo, businessId, chatId, { openQuestions: ['What unit number?', 'When did it start?'] });
+    await applyConversationStateUpdate(repo, businessId, chatId, { openQuestions: [{ question: 'What unit number?' }] });
+    await applyConversationStateUpdate(repo, businessId, chatId, { openQuestions: [{ question: 'What unit number?' }, { question: 'When did it start?' }] });
     const state = await repo.find(businessId, chatId);
     const openTexts = state?.openQuestions.filter((q) => !q.resolvedAt).map((q) => q.question);
     expect(openTexts).toEqual(['What unit number?', 'When did it start?']);
@@ -84,7 +84,7 @@ describe('applyConversationStateUpdate', () => {
 
   it('resolves an open question by matching text case-insensitively, leaving other open questions untouched', async () => {
     await applyConversationStateUpdate(repo, businessId, chatId, {
-      openQuestions: ['What unit number?', 'When did it start?'],
+      openQuestions: [{ question: 'What unit number?' }, { question: 'When did it start?' }],
     });
     await applyConversationStateUpdate(repo, businessId, chatId, { resolveQuestions: ['what unit number?'] });
 
@@ -99,13 +99,33 @@ describe('applyConversationStateUpdate', () => {
     await applyConversationStateUpdate(repo, businessId, chatId, {
       goal: 'Book a repair visit',
       confirmFacts: [{ key: 'address', value: '12 Main St' }],
-      openQuestions: ['Preferred time window?'],
+      openQuestions: [{ question: 'Preferred time window?' }],
     });
     const state = await repo.find(businessId, chatId);
     expect(state?.currentGoal?.description).toBe('Book a repair visit');
     expect(state?.confirmedFacts).toHaveLength(1);
     expect(state?.openQuestions).toHaveLength(1);
     expect(state?.version).toBe(2); // one getOrCreate insert (version 1) + one update (version 2)
+  });
+
+  describe('Section 08 (question priority engine)', () => {
+    it('stores the priority the model assigned when opening a question', async () => {
+      await applyConversationStateUpdate(repo, businessId, chatId, { openQuestions: [{ question: 'What is the delivery address?', priority: 'HIGH' }] });
+      const state = await repo.find(businessId, chatId);
+      expect(state?.openQuestions[0]?.priority).toBe('HIGH');
+    });
+
+    it('defaults to MEDIUM when the model omits priority', async () => {
+      await applyConversationStateUpdate(repo, businessId, chatId, { openQuestions: [{ question: 'No priority given' }] });
+      const state = await repo.find(businessId, chatId);
+      expect(state?.openQuestions[0]?.priority).toBe('MEDIUM');
+    });
+
+    it('never trusts an invalid priority value just because a tool call claims it - falls back to MEDIUM', async () => {
+      await applyConversationStateUpdate(repo, businessId, chatId, { openQuestions: [{ question: 'Bad priority', priority: 'URGENT!!' as never }] });
+      const state = await repo.find(businessId, chatId);
+      expect(state?.openQuestions[0]?.priority).toBe('MEDIUM');
+    });
   });
 
   it('retries through a genuine optimistic-concurrency conflict rather than losing the update', async () => {

@@ -1,6 +1,6 @@
 import { Type } from '@google/genai';
 import type { FunctionDeclaration } from '@google/genai';
-import { CONVERSATION_FUNNEL_STAGES, CUSTOMER_READINESS_LEVELS, type ConversationFunnelStage, type CustomerReadiness } from '../../repositories/conversationStateRepository.js';
+import { CONVERSATION_FUNNEL_STAGES, CUSTOMER_READINESS_LEVELS, OPEN_QUESTION_PRIORITIES, type ConversationFunnelStage, type CustomerReadiness, type OpenQuestionPriority } from '../../repositories/conversationStateRepository.js';
 
 export const UPDATE_CONVERSATION_STATE_TOOL_NAME = 'update_conversation_memory';
 
@@ -56,8 +56,20 @@ export const updateConversationStateFunctionDeclaration: FunctionDeclaration = {
       },
       openQuestions: {
         type: Type.ARRAY,
-        description: 'New questions this conversation still needs an answer to before it can be considered resolved.',
-        items: { type: Type.STRING },
+        description:
+          'New questions this conversation still needs an answer to before it can be considered resolved. For each ' +
+          'one, judge how important it is to get answered next: HIGH means you cannot meaningfully help further ' +
+          'without it (e.g. a required detail to book or quote), MEDIUM is a real gap that would help but is not ' +
+          'blocking, LOW is minor or nice-to-have. Only the single highest-priority open question is ever surfaced ' +
+          'to you as "the next thing to ask" - so rank honestly, not by whichever you happen to think of first.',
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            question: { type: Type.STRING, description: 'The question itself, in your own words.' },
+            priority: { type: Type.STRING, format: 'enum', enum: [...OPEN_QUESTION_PRIORITIES], description: 'How important this is to get answered next. Defaults to MEDIUM if omitted.' },
+          },
+          required: ['question'],
+        },
       },
       resolveQuestions: {
         type: Type.ARRAY,
@@ -99,7 +111,7 @@ export const updateConversationStateFunctionDeclaration: FunctionDeclaration = {
 export interface UpdateConversationStateToolArgs {
   goal?: string;
   confirmFacts?: Array<{ key: string; value: string }>;
-  openQuestions?: string[];
+  openQuestions?: Array<{ question: string; priority?: OpenQuestionPriority }>;
   resolveQuestions?: string[];
   funnelStage?: ConversationFunnelStage;
   customerReadiness?: CustomerReadiness;

@@ -5,7 +5,7 @@ import { aiGateway } from './ai/aiGateway.js';
 import { pool } from '../db/pool.js';
 import { ADVICE_RESTRICTED_CATEGORIES, type AiAgentRecord } from '../repositories/aiAgentRepository.js';
 import type { AiHandoffContext } from './aiContextGathererService.js';
-import { ConversationStateRepository } from '../repositories/conversationStateRepository.js';
+import { ConversationStateRepository, type OpenQuestionPriority } from '../repositories/conversationStateRepository.js';
 import { CustomerMemoryRepository } from '../repositories/customerMemoryRepository.js';
 import { describeTimeContext } from './time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME, getCurrentTimeFunctionDeclaration } from './time/getCurrentTimeTool.js';
@@ -419,9 +419,34 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
     const facts = state.confirmedFacts.map((fact) => `${fact.key}=${fact.value}`).join(', ');
     lines.push(`Confirmed facts about this conversation: ${facts}.`);
   }
-  if (state?.openQuestions.some((question) => !question.resolvedAt)) {
-    const open = state.openQuestions.filter((question) => !question.resolvedAt).map((question) => question.question);
-    lines.push(`Open questions not yet answered: ${open.join('; ')}.`);
+  /**
+   * Sections 07/08 (progressive information discovery, question priority
+   * engine): before this, every open question was dumped as one flat,
+   * unordered list with no guidance on which to ask or how many at once -
+   * the model was free to front-load all of them into a single reply. The
+   * model itself ranks priority when it opens a question (see
+   * updateConversationStateTool.ts - it has the context to judge which gap
+   * actually matters, this ranking is never invented here); this only
+   * orders what already exists and paces how it's surfaced: the single
+   * highest-priority question is named as the next thing to actually ask,
+   * the rest stay visible as background so the model knows they exist
+   * without treating them as equally urgent right now.
+   */
+  const openQuestions = state?.openQuestions.filter((question) => !question.resolvedAt) ?? [];
+  if (openQuestions.length > 0) {
+    const rank: Record<OpenQuestionPriority, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+    const sorted = [...openQuestions].sort((a, b) => {
+      const rankDiff = rank[a.priority ?? 'MEDIUM'] - rank[b.priority ?? 'MEDIUM'];
+      return rankDiff !== 0 ? rankDiff : a.openedAt.localeCompare(b.openedAt);
+    });
+    const [next, ...rest] = sorted;
+    lines.push(`The single most important open question to work toward next: ${next!.question}`);
+    if (rest.length > 0) {
+      lines.push(
+        `Other open questions, lower priority for now (do not ask more than one new question per reply - work ` +
+          `through these one at a time as the conversation naturally allows, never all at once): ${rest.map((question) => question.question).join('; ')}.`,
+      );
+    }
   }
   // Section 06/10: your own last read of where this conversation sits and
   // how ready the customer seemed - internal tracking only, never mention

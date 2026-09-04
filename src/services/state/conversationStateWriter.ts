@@ -3,6 +3,7 @@ import {
   ConversationStateConflictError,
   CONVERSATION_FUNNEL_STAGES,
   CUSTOMER_READINESS_LEVELS,
+  OPEN_QUESTION_PRIORITIES,
   type ConversationStateRepository,
   type ConversationFact,
   type ConversationOpenQuestion,
@@ -69,11 +70,12 @@ function buildPatch(current: { confirmedFacts: ConversationFact[]; openQuestions
       // grow this list unboundedly.
       const alreadyOpen = new Set(questions.filter((question) => !question.resolvedAt).map((question) => question.question.trim().toLowerCase()));
       const additions: ConversationOpenQuestion[] = [];
-      for (const text of args.openQuestions) {
-        const trimmed = text.trim();
+      for (const item of args.openQuestions) {
+        const trimmed = item.question?.trim();
         if (!trimmed || alreadyOpen.has(trimmed.toLowerCase())) continue;
         alreadyOpen.add(trimmed.toLowerCase());
-        additions.push({ id: randomUUID(), question: trimmed, openedAt: now, resolvedAt: null });
+        const priority = item.priority && OPEN_QUESTION_PRIORITIES.includes(item.priority) ? item.priority : 'MEDIUM';
+        additions.push({ id: randomUUID(), question: trimmed, priority, openedAt: now, resolvedAt: null });
       }
       if (additions.length > 0) questions = [...questions, ...additions];
     }

@@ -24,9 +24,23 @@ export interface ConversationGoal {
   setAt: string;
 }
 
+/**
+ * Section 08 (question priority engine): assigned by the model itself when
+ * it opens the question (see updateConversationStateTool.ts) - it has the
+ * conversational context to judge which missing piece of information
+ * actually matters most, this codebase's own ranking logic never would.
+ * Optional, not required, so a row written before this field existed
+ * deserialises exactly as before rather than failing - see
+ * questionPriorityRank() in aiReplyService.ts for how an absent value is
+ * treated (as MEDIUM, never as highest or lowest by omission).
+ */
+export type OpenQuestionPriority = 'HIGH' | 'MEDIUM' | 'LOW';
+export const OPEN_QUESTION_PRIORITIES: readonly OpenQuestionPriority[] = ['HIGH', 'MEDIUM', 'LOW'];
+
 export interface ConversationOpenQuestion {
   id: string;
   question: string;
+  priority?: OpenQuestionPriority;
   openedAt: string;
   resolvedAt: string | null;
 }
