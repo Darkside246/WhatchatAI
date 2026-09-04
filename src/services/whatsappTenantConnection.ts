@@ -441,6 +441,29 @@ export class WhatsAppTenantConnection {
         pairingPhoneNumber: null,
       };
 
+      // See pendingCredsSave's own doc comment - a reconnect must never
+      // start reading the session directory while the previous socket's
+      // creds.update write to that same directory is still in flight. This
+      // MUST run before the pre-pairing purge check below, not after: a
+      // real, confirmed bug fixed here - requestPairingCode() speculatively
+      // writes creds.me to disk (see the creds.update handler's own doc
+      // comment) the instant a code is requested, well before the user
+      // ever enters it. If that write was still in flight when a reconnect
+      // reached the purge below under the old ordering, the purge deleted
+      // the directory first and then this await let the stale write land
+      // AFTER it, silently re-creating the exact speculative creds.me file
+      // the purge exists to eliminate. Baileys then saw a truthy creds.me
+      // on the next read and took its login (resume) branch instead of a
+      // fresh registration - a login WhatsApp's servers correctly reject
+      // for a session that was never actually confirmed, observed in
+      // production as a repeating "pull:true" resume attempt immediately
+      // followed by DisconnectReason.connectionClosed (428) on every
+      // reconnect during an active, uncompleted phone-pairing attempt.
+      if (this.pendingCredsSave) {
+        await this.pendingCredsSave;
+        this.pendingCredsSave = null;
+      }
+
       // A business that has never successfully paired (no persisted
       // whatsapp_accounts row - that row is only ever created on a real
       // 'open' connection event, see persistConnectedAccount below) has no
@@ -462,14 +485,6 @@ export class WhatsAppTenantConnection {
         await purgeSessionDir(this.businessId).catch((error) => {
           console.error(`[WhatsApp] Failed to purge stale pre-pairing session state for business ${this.businessId}:`, error);
         });
-      }
-
-      // See pendingCredsSave's own doc comment - a reconnect must never
-      // start reading the session directory while the previous socket's
-      // creds.update write to that same directory is still in flight.
-      if (this.pendingCredsSave) {
-        await this.pendingCredsSave;
-        this.pendingCredsSave = null;
       }
 
       const sessionDir = await this.resolveSessionDir();
