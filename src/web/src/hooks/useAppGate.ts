@@ -131,23 +131,26 @@ export function useAppGate(): AppGateState {
       connection.status === 'QR_READY' ||
       connection.status === 'PAIRING_CODE_READY' ||
       connection.status === 'LOGGED_OUT' ||
-      // Real bug this excludes: WhatsApp's own multi-device protocol
-      // mandates one connection restart immediately after a pairing code
-      // is entered (Baileys surfaces this as "stream:error code 515,
-      // restart required" - see whatsappTenantConnection.ts's own
-      // hasPairedThisSession doc comment). That restart's real backend
-      // status is 'RECONNECTING', but it happens BEFORE the connection has
-      // ever reached a real 'open' event, so pairedOnce has not latched
-      // true yet either - without this exclusion, this same poll interval
-      // sees `!connected && !pairedOnce` and bounces a business that just
-      // successfully paired straight back to 'onboarding', which remounts
-      // OnboardingPage and resets its pairMethod/triggered state, firing a
-      // brand new QR connectWhatsApp() call on top of the real,
-      // already-succeeding phone-pairing socket. 'RECONNECTING' is only
-      // ever set by scheduleReconnect() after a real prior connection
-      // attempt existed for this business - it is never the status of a
-      // business that has genuinely never tried to connect.
-      (!connection.connected && !pairedOnce && connection.status !== 'RECONNECTING');
+      // Real, confirmed bug fixed here: this used to also exclude
+      // `connection.status !== 'RECONNECTING'`, on the theory that
+      // RECONNECTING only ever follows a real prior connection (true of
+      // the WhatsApp-mandated post-pairing restart - Baileys' "stream:error
+      // code 515, restart required" - see whatsappTenantConnection.ts's
+      // hasPairedThisSession doc comment). That's false in general:
+      // scheduleReconnect() sets RECONNECTING after ANY failed connection
+      // attempt, including one that has never once reached a real 'open'
+      // event (confirmed in production: a business with zero
+      // whatsapp_accounts rows still hit RECONNECTING after a Baileys
+      // DisconnectReason.connectionClosed failure mid-pairing). Excluding
+      // all of RECONNECTING sent that business straight to "Synchronizing
+      // your business data..." with no real connection ever made, before
+      // the user had a chance to see or enter the pairing code.
+      // `pairedOnce` is the actual correct signal for the one legitimate
+      // case (a real 'open' already happened this session, so a
+      // reconnect blip - post-pairing restart included - shouldn't bounce
+      // back to onboarding) - it's already required by this same clause,
+      // so no separate RECONNECTING carve-out is needed at all.
+      (!connection.connected && !pairedOnce);
 
     if (needsOnboarding) {
       phase = 'onboarding';
