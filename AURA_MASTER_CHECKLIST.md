@@ -541,7 +541,7 @@ The tool's own doc comment already assumed a bound chat was out of scope for thi
 [~] 50-55   - Agent builder, personas, permissions, 3-min setup, sliders, business-specific agents - 5/6 items confirmed real, tested, and already complete on verification; real gap found and fixed in the 6th (property template's system instruction contradicted the real property tools it was given), verified; "3-min setup" is a UX/speed claim, not independently verified
 [X] 57-59   - Zoom/Google booking + AI booking agent - real gap found (dead OAuth connection failed silently, no staff notification) and fixed, verified
 [~] 60-62   - Property ops strengthening - real gap found and fixed (incident/work order lifecycle), verified; task/productivity intelligence, smart scheduling still open
-[ ] 63-65   - MCP/tool architecture, AI safety, prompt injection defence
+[X] 63-65   - MCP/tool architecture, AI safety, prompt injection defence - thoroughly investigated, no new gap found: Sentinel (2-stage inbound heuristic+AI security gate) correctly wired into the single incoming-message path; MCP server auth matches the REST adapter's trust model with businessId/cellId excluded from caller-controllable args; untrusted-data wrapping checked across every AI entry point (main replies, property triage, reply suggestions), all correct; OpenClaw security watcher (real GitHub advisory monitoring against the pinned image) genuinely scheduled, not dead code. 9 dedicated test files back this up - a positive, already-complete result, not an absent-feature dead end
 [X] 66      - CRM identity profile fields on the contact view - real gap found (source fields queried but discarded) and fixed, verified
 [X] 56      - Appointment System - real lifecycle mutation + completion sweep + dedicated page built (none existed before), verified
 [X] 67      - CRM Data Export - real CSV/JSON export, verified
@@ -554,7 +554,7 @@ The tool's own doc comment already assumed a bound chat was out of scope for thi
 [X] 92      - Loop protection - agent/tool-call loops already solid; real gap found in funnel CONDITION cycles and fixed, verified
 [ ] 99-101  - Testing, adversarial testing, performance
 [ ] 102-104 - DB/migrations, API contracts, frontend experience
-[ ] 105-109 - Feature discovery, mobile-first, notification intelligence, morning experience
+[~] 105-109 - Feature discovery, mobile-first, notification intelligence, morning experience - investigated; morning experience already substantially covered by Section 48's Autonomous Morning Briefing; mobile-first (frontend has almost no responsive breakpoints in core layout) and notification intelligence (pure fan-out, no dedup/digest/priority layer) are genuinely absent features, not bugs in existing code - same "no code to fix" shape as the data-minimisation/hallucination-verification dead-ends; feature discovery not yet investigated
 [ ] 110-113 - Business automation wiring, follow-up intelligence, conversational fatigue, customer effort
 [ ] 114-116 - Ethical funnel, campaign ethics, audit logging
 [~] 117-122 - Security audit, deployment, env config, integration health centre, approval isolation, final approval queue - real gap found and fixed: Goose failover was a per-business setting letting any business redirect real customer conversation text to an arbitrary URL, now a global, developer-only secret like Gemini, verified; approval isolation/final approval queue investigated, no bug found (see write-up); deployment/env config docs not yet audited
