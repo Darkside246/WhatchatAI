@@ -53,13 +53,21 @@ describe('workspaceService.getBillingOverview (real plan/subscription/usage, nev
     expect(accountEntitlement?.limit).toBe(1);
   });
 
-  it('leaves current usage null for an entitlement with no real counted backing source (max_users)', async () => {
+  /**
+   * Section 93-98: max_users used to have no counted backing source at
+   * all here (a real gap - the billing page couldn't show a business its
+   * own seat usage, on top of createMember() never enforcing the limit).
+   * Now wired to the same real countForBusiness() the entitlement check
+   * itself uses.
+   */
+  it('reports real seat usage for max_users, not a fabricated null', async () => {
     await createTestSubscription(businessId, 'starter');
     const billing = await workspaceService.getBillingOverview(businessId);
 
     const usersEntitlement = billing.entitlements.find((e) => e.key === 'max_users');
     expect(usersEntitlement).toBeDefined();
-    expect(usersEntitlement?.current).toBeNull();
+    expect(usersEntitlement?.current).toBe(0);
+    expect(usersEntitlement?.limit).toBe(2);
   });
 
   it('reports real AI token usage against the plan\'s monthly budget (Section 34-40 cost control)', async () => {

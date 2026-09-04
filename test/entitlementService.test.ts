@@ -129,4 +129,56 @@ describe('EntitlementService (real backend enforcement, not UI-only)', () => {
       expect((await entitlements.canUseAiThisMonth(businessB)).allowed).toBe(true);
     });
   });
+
+  /**
+   * Section 93-98: max_users has been seeded since the very first plan
+   * migration (025) but had zero enforcement anywhere - every other
+   * entitlement already had a real canX() method. createTestBusiness()
+   * itself creates only the bare business row, no owner membership - the
+   * real count starts at 0, unlike a business created via the real
+   * register() signup flow (see workspaceMemberService.test.ts).
+   */
+  describe('canAddMember (real seat-limit enforcement)', () => {
+    async function addRealMember(businessId: string, email: string): Promise<void> {
+      await pool.query(
+        `INSERT INTO users (email, display_name, password_hash, password_salt, password_params) VALUES ($1, 'Extra Member', 'x', 'x', '{}')`,
+        [email],
+      );
+      const { rows } = await pool.query<{ id: string }>(`SELECT id FROM users WHERE email = $1`, [email]);
+      await pool.query(
+        `INSERT INTO business_memberships (business_id, user_id, role, status) VALUES ($1, $2, 'AGENT', 'active')`,
+        [businessId, rows[0]!.id],
+      );
+    }
+
+    it('enforces the real max_users limit from the starter plan (2 users)', async () => {
+      const businessId = await createTestBusiness();
+      await createTestSubscription(businessId, 'starter');
+
+      const first = await entitlements.canAddMember(businessId);
+      expect(first.allowed).toBe(true);
+      expect(first.limit).toBe(2);
+      expect(first.current).toBe(0);
+
+      await addRealMember(businessId, 'member-1@example.com');
+      const second = await entitlements.canAddMember(businessId);
+      expect(second.allowed).toBe(true);
+      expect(second.current).toBe(1);
+
+      await addRealMember(businessId, 'member-2@example.com');
+      const third = await entitlements.canAddMember(businessId);
+      expect(third.allowed).toBe(false);
+      expect(third.reason).toBe('ENTITLEMENT_LIMIT_REACHED');
+      expect(third.limit).toBe(2);
+      expect(third.current).toBe(2);
+    });
+
+    it('treats a NULL plan limit as genuinely unlimited seats (enterprise plan)', async () => {
+      const businessId = await createTestBusiness();
+      await createTestSubscription(businessId, 'enterprise');
+
+      const result = await entitlements.canAddMember(businessId);
+      expect(result.allowed).toBe(true);
+    });
+  });
 });

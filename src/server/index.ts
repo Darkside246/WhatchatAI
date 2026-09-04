@@ -624,6 +624,17 @@ app.post('/api/workspace/members', requireAuth, requirePermission('users.manage'
     return res.status(201).json(result);
   } catch (error) {
     if (isMemberEmailAlreadyRegisteredError(error)) return res.status(409).json({ error: 'EMAIL_ALREADY_REGISTERED', message: error.message });
+    if (isEntitlementDeniedError(error)) {
+      const message =
+        error.reason === 'NO_ACTIVE_SUBSCRIPTION'
+          ? 'This business has no active subscription.'
+          : error.reason === 'ENTITLEMENT_DISABLED'
+            ? 'Team members are not enabled on this plan.'
+            : `Team member limit reached for this plan (${error.current}/${error.limit}).`;
+      return res
+        .status(403)
+        .json({ error: 'ENTITLEMENT_DENIED', reason: error.reason, limit: error.limit, current: error.current, message });
+    }
     throw error;
   }
 });

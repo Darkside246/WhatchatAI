@@ -6,11 +6,14 @@ import { UserPreferenceRepository } from '../repositories/userPreferenceReposito
 import { hashPassword } from './passwordHashService.js';
 import type { BusinessRole } from '../domain/auth/permissions.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
+import { EntitlementService, type EntitlementDenialReason } from './entitlementService.js';
+import { type EntitlementDeniedError } from './workspaceService.js';
 
 const userRepository = new UserRepository(pool);
 const membershipRepository = new BusinessMembershipRepository(pool);
 const preferenceRepository = new UserPreferenceRepository(pool);
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
+const entitlementService = new EntitlementService(pool);
 
 export class EmailAlreadyRegisteredError extends Error {}
 export class MembershipNotFoundError extends Error {}
@@ -62,11 +65,29 @@ export interface CreateMemberInput {
   role: Exclude<BusinessRole, 'OWNER'>;
 }
 
+/**
+ * Real plan-entitlement enforcement (Section 93-98) - a business on a plan
+ * with max_users already reached (or no live subscription at all) gets an
+ * honest denial, never a silently-created member past its seat limit. See
+ * workspaceService.ts's createAgent() for the identical pattern this
+ * mirrors - EntitlementDeniedError/isEntitlementDeniedError are shared
+ * from there rather than duplicated.
+ */
 export async function createMember(
   businessId: string,
   invitedBy: string,
   input: CreateMemberInput,
 ): Promise<{ member: MemberSummary; temporaryPassword: string }> {
+  const check = await entitlementService.canAddMember(businessId);
+  if (!check.allowed) {
+    const error = new Error(`Member creation denied: ${check.reason}`) as EntitlementDeniedError;
+    error.code = 'ENTITLEMENT_DENIED';
+    error.reason = check.reason as EntitlementDenialReason;
+    error.limit = check.limit;
+    error.current = check.current;
+    throw error;
+  }
+
   const email = input.email.trim().toLowerCase();
   const existing = await userRepository.findByEmail(email);
   if (existing) throw new EmailAlreadyRegisteredError('An account with this email already exists.');

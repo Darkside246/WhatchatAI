@@ -1422,9 +1422,7 @@ export class WorkspaceService {
   /**
    * Real subscription/plan/usage state, not a fabricated billing dashboard.
    * `current` is only ever populated for entitlements that have a real,
-   * counted backing source (agents, WhatsApp accounts) - an entitlement
-   * like max_users has no user/auth system yet, so its usage stays null
-   * rather than inventing a number.
+   * counted backing source - every seeded entitlement key has one below.
    */
   async getBillingOverview(businessId: string): Promise<WorkspaceBillingOverview> {
     const subscription = await this.subscriptionRepository.findLiveByBusiness(businessId);
@@ -1454,6 +1452,10 @@ export class WorkspaceService {
       max_active_funnels: () => this.funnelRepository.countActiveByBusiness(businessId),
       max_knowledge_base_documents: () => this.knowledgeBaseRepository.countByBusiness(businessId),
       max_business_documents: () => this.businessDocumentRepository.countByBusiness(businessId),
+      // Section 93-98: max_users had no count source here at all - the
+      // billing page couldn't show a business its own seat usage, on top
+      // of createMember() itself never having enforced the limit.
+      max_users: () => this.membershipRepository.countForBusiness(businessId),
       // Section 34-40 (Token economy): the same monthly total
       // entitlementService.canUseAiThisMonth() checks before every real
       // Gemini call - a business can now see the number that will

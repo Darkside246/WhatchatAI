@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { pool } from '../src/db/pool.js';
 import { register } from '../src/services/authService.js';
 import {
   createMember,
@@ -11,6 +12,22 @@ import {
 } from '../src/services/workspaceMemberService.js';
 import { createTestBusiness, resetDatabase } from './helpers.js';
 
+/**
+ * register()'s default 'starter' plan caps max_users at 2 (Section 93-98:
+ * createMember now genuinely enforces this). Several tests below add a
+ * second/third member on top of the owner, which would otherwise trip the
+ * real seat limit and mask the specific behavior each test is isolating -
+ * moves the subscription to 'growth' (10 seats) so plenty of headroom
+ * exists; entitlementService.test.ts's own describe block is what actually
+ * proves the limit is enforced.
+ */
+async function giveRoomForMoreMembers(businessId: string): Promise<void> {
+  await pool.query(
+    `UPDATE subscriptions SET plan_id = (SELECT id FROM plans WHERE plan_key = 'growth') WHERE business_id = $1`,
+    [businessId],
+  );
+}
+
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
 
 describe('workspaceMemberService (real, admin-managed multi-user - no open self-registration)', () => {
@@ -22,6 +39,7 @@ describe('workspaceMemberService (real, admin-managed multi-user - no open self-
     const owner = await register({ email: 'owner@example.com', password: 'correcthorsebatterystaple', displayName: 'Owner' }, device);
     businessId = owner.business.id;
     ownerId = owner.user.id;
+    await giveRoomForMoreMembers(businessId);
   });
 
   it('creates a real member with a random one-time password and lists it back with a role', async () => {
@@ -42,6 +60,26 @@ describe('workspaceMemberService (real, admin-managed multi-user - no open self-
     } catch (error) {
       expect(isEmailAlreadyRegisteredError(error)).toBe(true);
     }
+  });
+
+  /**
+   * Section 93-98: the real gap - createMember() itself had zero
+   * entitlement check, so a business could invite unlimited team members
+   * regardless of their plan's max_users limit. Moves back down to the
+   * real 'starter' plan (2 seats) - beforeEach upgrades to 'growth' for
+   * every other test in this file so unrelated scenarios aren't tripped
+   * by the real limit.
+   */
+  it('refuses to create a member once the plan\'s real max_users limit is reached', async () => {
+    await pool.query(`UPDATE subscriptions SET plan_id = (SELECT id FROM plans WHERE plan_key = 'starter') WHERE business_id = $1`, [businessId]);
+
+    // Owner already counts as 1 of 2 seats - one real member fills the plan.
+    await createMember(businessId, ownerId, { email: 'agent@example.com', displayName: 'Agent', role: 'AGENT' });
+
+    await expect(createMember(businessId, ownerId, { email: 'one-too-many@example.com', displayName: 'Extra', role: 'AGENT' })).rejects.toThrow();
+
+    const members = await listMembers(businessId);
+    expect(members.find((m) => m.email === 'one-too-many@example.com')).toBeUndefined();
   });
 
   it('updates a non-owner member\'s role for real, and rejects a nonexistent membership', async () => {

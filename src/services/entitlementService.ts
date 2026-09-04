@@ -8,6 +8,7 @@ import { FunnelRepository } from '../repositories/funnelRepository.js';
 import { KnowledgeBaseRepository } from '../repositories/knowledgeBaseRepository.js';
 import { BusinessDocumentRepository } from '../repositories/businessDocumentRepository.js';
 import { AiUsageRepository } from '../repositories/aiUsageRepository.js';
+import { BusinessMembershipRepository } from '../repositories/businessMembershipRepository.js';
 
 export type EntitlementDenialReason = 'NO_ACTIVE_SUBSCRIPTION' | 'ENTITLEMENT_DISABLED' | 'ENTITLEMENT_LIMIT_REACHED';
 export interface EntitlementCheckResult { allowed: boolean; reason?: EntitlementDenialReason; limit?: number | null; current?: number; }
@@ -22,6 +23,7 @@ export class EntitlementService {
   private readonly knowledgeBaseRepository: KnowledgeBaseRepository;
   private readonly businessDocumentRepository: BusinessDocumentRepository;
   private readonly aiUsageRepository: AiUsageRepository;
+  private readonly membershipRepository: BusinessMembershipRepository;
 
   constructor(private readonly db: Queryable) {
     this.planRepository = new PlanRepository(db);
@@ -33,6 +35,7 @@ export class EntitlementService {
     this.knowledgeBaseRepository = new KnowledgeBaseRepository(db);
     this.businessDocumentRepository = new BusinessDocumentRepository(db);
     this.aiUsageRepository = new AiUsageRepository(db);
+    this.membershipRepository = new BusinessMembershipRepository(db);
   }
 
   async checkEntitlement(businessId: string, entitlementKey: string): Promise<EntitlementCheckResult> {
@@ -50,6 +53,18 @@ export class EntitlementService {
   async canActivateFunnel(businessId: string): Promise<EntitlementCheckResult> { return this.checkCountLimit(businessId, 'max_active_funnels', () => this.funnelRepository.countActiveByBusiness(businessId)); }
   async canCreateKnowledgeBaseDocument(businessId: string): Promise<EntitlementCheckResult> { return this.checkCountLimit(businessId, 'max_knowledge_base_documents', () => this.knowledgeBaseRepository.countByBusiness(businessId)); }
   async canCreateBusinessDocument(businessId: string): Promise<EntitlementCheckResult> { return this.checkCountLimit(businessId, 'max_business_documents', () => this.businessDocumentRepository.countByBusiness(businessId)); }
+  /**
+   * Section 93-98 (resource/cost mgmt): a real gap found - every other
+   * seeded entitlement (max_ai_agents, max_whatsapp_accounts,
+   * max_active_campaigns, max_active_funnels, the two document limits,
+   * max_ai_tokens_per_month) has had a real enforcement method since it
+   * was seeded, but max_users (seeded since the very first plan migration,
+   * 025) never did - workspaceMemberService.ts's createMember() invited
+   * team members with no entitlement check at all. countForBusiness()
+   * itself was already real (businessMembershipRepository.ts), just never
+   * called from anywhere outside authService.ts's own signup-time checks.
+   */
+  async canAddMember(businessId: string): Promise<EntitlementCheckResult> { return this.checkCountLimit(businessId, 'max_users', () => this.membershipRepository.countForBusiness(businessId)); }
 
   /**
    * Real cost-control gate - before this, no per-business ceiling on
