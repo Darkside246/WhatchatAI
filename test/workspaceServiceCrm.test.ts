@@ -159,9 +159,9 @@ describe('workspaceService CRM & Leads (real display-name resolution + tenant is
       const customerId = await identities.getOrCreateForWhatsAppContact(businessId, whatsappContactId, 'Real Prospect');
       const memory = new CustomerMemoryRepository(pool);
       const current = await memory.getOrCreate(businessId, customerId);
-      await memory.update(businessId, customerId, current.version, [
-        { key: 'preferred_time', value: 'evenings', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
-      ]);
+      await memory.update(businessId, customerId, current.version, {
+        confirmedFacts: [{ key: 'preferred_time', value: 'evenings', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }],
+      });
 
       const result = await workspaceService.getCrmContactMemory(businessId, crmContactId);
       expect(result.customerId).toBe(customerId);
@@ -197,9 +197,9 @@ describe('workspaceService CRM & Leads (real display-name resolution + tenant is
       const customerId = await identities.getOrCreateForWhatsAppContact(businessId, whatsappContactId, 'Real Prospect');
       const memory = new CustomerMemoryRepository(pool);
       const current = await memory.getOrCreate(businessId, customerId);
-      await memory.update(businessId, customerId, current.version, [
-        { key: 'secret', value: 'do not leak', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
-      ]);
+      await memory.update(businessId, customerId, current.version, {
+        confirmedFacts: [{ key: 'secret', value: 'do not leak', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }],
+      });
 
       const otherBusinessId = await createTestBusiness('Other Business');
       const otherAccountId = await createTestAccount(otherBusinessId, '15550009999@s.whatsapp.net');
@@ -239,9 +239,9 @@ describe('workspaceService CRM & Leads (real display-name resolution + tenant is
       const customerId = await identities.getOrCreateForWhatsAppContact(businessId, whatsappContactId, 'Real Prospect');
       const memory = new CustomerMemoryRepository(pool);
       const current = await memory.getOrCreate(businessId, customerId);
-      await memory.update(businessId, customerId, current.version, [
-        { key: 'preferred_time', value: 'evenings', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
-      ]);
+      await memory.update(businessId, customerId, current.version, {
+        confirmedFacts: [{ key: 'preferred_time', value: 'evenings', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }],
+      });
 
       const exportResult = await workspaceService.exportCrmContactData(businessId, crmContactId);
 
@@ -286,9 +286,9 @@ describe('workspaceService CRM & Leads (real display-name resolution + tenant is
       const customerId = await identities.getOrCreateForWhatsAppContact(businessId, whatsappContactId, 'Real Prospect');
       const memory = new CustomerMemoryRepository(pool);
       const current = await memory.getOrCreate(businessId, customerId);
-      await memory.update(businessId, customerId, current.version, [
-        { key: 'preferred_time', value: 'evenings', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
-      ]);
+      await memory.update(businessId, customerId, current.version, {
+        confirmedFacts: [{ key: 'preferred_time', value: 'evenings', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }],
+      });
 
       const result = await workspaceService.eraseCrmContactMemory(businessId, crmContactId);
       expect(result).toEqual({ erasedCustomerMemory: true, erasedConversationStates: 1 });
@@ -312,9 +312,9 @@ describe('workspaceService CRM & Leads (real display-name resolution + tenant is
       const customerId = await identities.getOrCreateForWhatsAppContact(businessId, whatsappContactId, 'Real Prospect');
       const memory = new CustomerMemoryRepository(pool);
       const current = await memory.getOrCreate(businessId, customerId);
-      await memory.update(businessId, customerId, current.version, [
-        { key: 'secret', value: 'do not erase', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
-      ]);
+      await memory.update(businessId, customerId, current.version, {
+        confirmedFacts: [{ key: 'secret', value: 'do not erase', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }],
+      });
 
       const otherBusinessId = await createTestBusiness('Other Business');
       const otherAccountId = await createTestAccount(otherBusinessId, '15550009999@s.whatsapp.net');
