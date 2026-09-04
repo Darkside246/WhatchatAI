@@ -1135,16 +1135,17 @@ export class WorkspaceService {
     const threshold = getApprovalPatternThreshold();
     const agents = (await this.agentRepository.listByBusiness(businessId)).filter((agent) => agent.autonomyLevel <= 2);
 
-    const suggestions = await Promise.all(
-      agents.map(async (agent): Promise<ApprovalPatternSuggestion | null> => {
-        const decisions = await this.platformActionRepository.getRecentDecisionsForAgent(businessId, agent.id, threshold);
-        if (decisions.length < threshold) return null;
-        const allApproved = decisions.every((decision) => decision.status === 'APPROVED');
-        if (!allApproved) return null;
-        return { agentId: agent.id, agentName: agent.name, approvedStreak: decisions.length };
-      }),
-    );
-    return suggestions.filter((suggestion): suggestion is ApprovalPatternSuggestion => suggestion !== null);
+    const decisionsByAgent = await this.platformActionRepository.getRecentDecisionsForAgents(businessId, agents.map((agent) => agent.id), threshold);
+
+    const suggestions: ApprovalPatternSuggestion[] = [];
+    for (const agent of agents) {
+      const decisions = decisionsByAgent.get(agent.id) ?? [];
+      if (decisions.length < threshold) continue;
+      const allApproved = decisions.every((decision) => decision.status === 'APPROVED');
+      if (!allApproved) continue;
+      suggestions.push({ agentId: agent.id, agentName: agent.name, approvedStreak: decisions.length });
+    }
+    return suggestions;
   }
 
   /**

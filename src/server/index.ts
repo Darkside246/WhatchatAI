@@ -2425,7 +2425,11 @@ const parseAgentDescriptionSchema = z.object({ description: z.string().trim().mi
  * separate creation path to keep in sync with entitlement/permission
  * logic.
  */
-app.post('/api/workspace/agents/parse-description', requireWorkspaceContext, requirePermission('ai.create'), async (req, res) => {
+// Section 99-101 (performance/adversarial testing): a real gap - this
+// route makes a real Gemini call (parseAgentDescription) exactly like
+// /email/ai-draft and /marketing/ai-suggest, both already under
+// expensiveActionLimiter, but this one had no rate limit at all.
+app.post('/api/workspace/agents/parse-description', expensiveActionLimiter, requireWorkspaceContext, requirePermission('ai.create'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const parsed = parseAgentDescriptionSchema.safeParse(req.body);
   if (!parsed.success) {

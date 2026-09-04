@@ -136,6 +136,45 @@ export class PlatformActionRepository {
     return rows;
   }
 
+  /**
+   * Section 99-101 (performance): the same real "most recent N decisions"
+   * query getRecentDecisionsForAgent runs, but for every candidate agent
+   * in one round trip instead of one query per agent - workspaceService.ts's
+   * getApprovalPatternSuggestions() used to call the singular version once
+   * per agent (parallelized via Promise.all, so never a correctness bug,
+   * just N real round trips on every dashboard/next-best-actions load for
+   * a business with N agents). ROW_NUMBER() PARTITION BY agent gives each
+   * agent its own independently-ranked "most recent decisions" window in
+   * a single query.
+   */
+  async getRecentDecisionsForAgents(
+    businessId: string,
+    agentIds: string[],
+    limit: number,
+  ): Promise<Map<string, { status: 'APPROVED' | 'REJECTED'; decidedAt: Date }[]>> {
+    const byAgent = new Map<string, { status: 'APPROVED' | 'REJECTED'; decidedAt: Date }[]>();
+    if (agentIds.length === 0) return byAgent;
+
+    const { rows } = await this.db.query<{ agentId: string; status: 'APPROVED' | 'REJECTED'; decidedAt: Date }>(
+      `SELECT agent_id AS "agentId", status, "decidedAt" FROM (
+         SELECT par.requested_by_id AS agent_id, pap.status, pap.decided_at AS "decidedAt",
+                ROW_NUMBER() OVER (PARTITION BY par.requested_by_id ORDER BY pap.decided_at DESC) AS rn
+           FROM platform_approvals pap
+           JOIN platform_action_requests par ON par.id = pap.action_request_id AND par.business_id = pap.business_id
+          WHERE pap.business_id = $1
+            AND par.requested_by_kind = 'AGENT' AND par.requested_by_id = ANY($2::text[])
+            AND pap.status IN ('APPROVED','REJECTED')
+       ) ranked
+       WHERE rn <= $3
+       ORDER BY agent_id, "decidedAt" DESC`,
+      [businessId, agentIds, limit],
+    );
+
+    for (const agentId of agentIds) byAgent.set(agentId, []);
+    for (const row of rows) byAgent.get(row.agentId)?.push({ status: row.status, decidedAt: row.decidedAt });
+    return byAgent;
+  }
+
   async updateExecution(businessId: string, idempotencyKey: string, status: 'SUCCEEDED' | 'FAILED', result: unknown, error: string | undefined): Promise<void> {
     await this.db.query(
       `UPDATE platform_action_requests SET status = $3, execution_result = $4::jsonb, execution_error = $5 WHERE business_id = $1 AND idempotency_key = $2`,
