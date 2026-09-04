@@ -241,6 +241,40 @@ export class LeadRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /**
+   * Section 11 (lead qualification): the one write leadScoringService.ts is
+   * allowed to make to `score` - only when it has never been set by
+   * anyone. There is no provenance flag distinguishing "staff typed this"
+   * from "the system computed this," so an unconditional overwrite on
+   * every recompute could silently clobber a real manual number - this
+   * DB-level guard (not a read-then-write check, which would race) makes
+   * that structurally impossible: it only ever fills a genuinely blank
+   * score, once.
+   */
+  async setScoreIfUnset(businessId: string, id: string, score: number): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      `UPDATE leads SET score = $3, updated_at = now() WHERE id = $1 AND business_id = $2 AND score IS NULL AND deleted_at IS NULL`,
+      [id, businessId, score],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Section 11: the one status transition leadScoringService.ts is allowed
+   * to make - NEW -> QUALIFIED only, and only from NEW specifically (never
+   * ENGAGED/WON/LOST, which are exclusively human decisions this system
+   * must never second-guess or reverse). Same DB-level guard as
+   * setScoreIfUnset - the WHERE clause is the only thing that decides
+   * whether this fires, not a prior read.
+   */
+  async autoQualifyIfNew(businessId: string, id: string): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      `UPDATE leads SET status = 'QUALIFIED', last_activity_at = now(), updated_at = now() WHERE id = $1 AND business_id = $2 AND status = 'NEW' AND deleted_at IS NULL`,
+      [id, businessId],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
   /** Tenant-scoped status transition - a lead id from another business is never editable through this. */
   async updateStatusForBusiness(businessId: string, id: string, status: LeadStatus): Promise<LeadRecord | null> {
     const { rows } = await this.db.query<LeadRow>(

@@ -26,6 +26,7 @@ import { CHECK_PROPERTY_STATUS_TOOL_NAME, checkPropertyStatusFunctionDeclaration
 import { LIST_RETAIL_PRODUCTS_TOOL_NAME, listRetailProductsFunctionDeclaration } from './retail/listRetailProductsTool.js';
 import { CHECK_RETAIL_ORDER_STATUS_TOOL_NAME, checkRetailOrderStatusFunctionDeclaration, type CheckRetailOrderStatusToolArgs } from './retail/checkRetailOrderStatusTool.js';
 import { RetailOperationsRepository } from '../repositories/retailOperationsRepository.js';
+import { recomputeLeadScoreForContact } from './leadScoringService.js';
 import { PropertyOperationsRepository } from '../repositories/propertyOperationsRepository.js';
 import { PropertyConversationBindingRepository } from '../repositories/propertyConversationBindingRepository.js';
 import { getGeminiCircuitBreaker, getGeminiConfigCircuitBreaker } from './aiCircuitBreaker.js';
@@ -807,6 +808,18 @@ async function executeOneToolCall(
       // its own separate one that could swallow a real problem silently.
       if (context.customerId) {
         await applyCustomerMemoryUpdate(customerMemoryRepository, context.businessId, context.customerId, args.confirmFacts);
+      }
+      // Section 11 (lead qualification): a fresh funnel_stage/customer_readiness
+      // signal is exactly when a lead's computed score can genuinely change -
+      // its own inner try/catch, separate from the outer one above, so a
+      // scoring failure can never turn an otherwise-successful state write
+      // into a false "saved: false" the model relays to the customer.
+      if ((args.funnelStage !== undefined || args.customerReadiness !== undefined) && context.crmContact) {
+        try {
+          await recomputeLeadScoreForContact(pool, context.businessId, context.crmContact.id);
+        } catch (error) {
+          console.error(`[aiReplyService] Failed to recompute lead score (chat ${context.chatId}):`, error instanceof Error ? error.message : error);
+        }
       }
       return { saved: true };
     } catch (error) {

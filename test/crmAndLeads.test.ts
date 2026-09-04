@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { WhatsAppContactRepository } from '../src/repositories/whatsappContactRepository.js';
+import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 import { CrmContactRepository } from '../src/repositories/crmContactRepository.js';
 import { LeadRepository } from '../src/repositories/leadRepository.js';
+import { ConversationStateRepository } from '../src/repositories/conversationStateRepository.js';
+import { recomputeLeadScoreForContact } from '../src/services/leadScoringService.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 
 describe('CRM contacts and leads', () => {
@@ -254,5 +257,100 @@ describe('CRM contacts and leads', () => {
       expect(results).toHaveLength(1);
       expect(results[0]?.contactDisplayName).toBe('Prospective Customer');
     });
+  });
+});
+
+describe('Section 11 (lead qualification): recomputeLeadScoreForContact (real Postgres)', () => {
+  let businessId: string;
+  let accountId: string;
+  let whatsappContactId: string;
+  let chatId: string;
+  let crmContacts: CrmContactRepository;
+  let leads: LeadRepository;
+  let conversationStates: ConversationStateRepository;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId);
+
+    const contactRepo = new WhatsAppContactRepository(pool);
+    const contact = await contactRepo.upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, whatsappJid: '15550005555@s.whatsapp.net', jidKind: 'individual', displayName: 'Real Prospect',
+    });
+    whatsappContactId = contact.id;
+
+    const chatRepo = new WhatsAppChatRepository(pool);
+    const chat = await chatRepo.upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, chatJid: '15550005555@s.whatsapp.net', jidKind: 'individual', chatType: 'individual', contactId: whatsappContactId,
+    });
+    chatId = chat.id;
+    await pool.query('UPDATE whatsapp_chats SET message_count = 12, last_message_at = now() WHERE id = $1', [chatId]);
+
+    crmContacts = new CrmContactRepository(pool);
+    leads = new LeadRepository(pool);
+    conversationStates = new ConversationStateRepository(pool);
+  });
+
+  it('fills a genuinely blank score from real readiness/funnel-stage/engagement signals', async () => {
+    const crmContact = await crmContacts.upsertForWhatsAppContact({ businessId, whatsappContactId });
+    const lead = await leads.create({ businessId, crmContactId: crmContact.id });
+    expect(lead.score).toBeNull();
+
+    const state = await conversationStates.getOrCreate(businessId, chatId);
+    await conversationStates.update(businessId, chatId, state.version, { customerReadiness: 'HIGHLY_INTERESTED', funnelStage: 'SOLUTION_MATCHED' });
+
+    await recomputeLeadScoreForContact(pool, businessId, crmContact.id);
+
+    const [updated] = await leads.listByCrmContact(crmContact.id);
+    expect(updated?.score).not.toBeNull();
+    expect(updated!.score!).toBeGreaterThan(0);
+  });
+
+  it('auto-qualifies a NEW lead once its computed score crosses the threshold', async () => {
+    const crmContact = await crmContacts.upsertForWhatsAppContact({ businessId, whatsappContactId });
+    const lead = await leads.create({ businessId, crmContactId: crmContact.id });
+
+    const state = await conversationStates.getOrCreate(businessId, chatId);
+    await conversationStates.update(businessId, chatId, state.version, { customerReadiness: 'URGENT', funnelStage: 'BOOKED' });
+
+    await recomputeLeadScoreForContact(pool, businessId, crmContact.id);
+
+    const [updated] = await leads.listByCrmContact(crmContact.id);
+    expect(updated?.status).toBe('QUALIFIED');
+  });
+
+  it('never overwrites a score staff already set manually', async () => {
+    const crmContact = await crmContacts.upsertForWhatsAppContact({ businessId, whatsappContactId });
+    const lead = await leads.create({ businessId, crmContactId: crmContact.id, score: 17 });
+
+    const state = await conversationStates.getOrCreate(businessId, chatId);
+    await conversationStates.update(businessId, chatId, state.version, { customerReadiness: 'URGENT', funnelStage: 'BOOKED' });
+
+    await recomputeLeadScoreForContact(pool, businessId, crmContact.id);
+
+    const [updated] = await leads.listByCrmContact(crmContact.id);
+    expect(updated?.score).toBe(17);
+  });
+
+  it('never auto-advances a lead already past NEW (ENGAGED, WON, LOST) - only ever fires from NEW', async () => {
+    const crmContact = await crmContacts.upsertForWhatsAppContact({ businessId, whatsappContactId });
+    const lead = await leads.create({ businessId, crmContactId: crmContact.id });
+    await leads.updateStatusForBusiness(businessId, lead.id, 'ENGAGED');
+
+    const state = await conversationStates.getOrCreate(businessId, chatId);
+    await conversationStates.update(businessId, chatId, state.version, { customerReadiness: 'URGENT', funnelStage: 'BOOKED' });
+
+    await recomputeLeadScoreForContact(pool, businessId, crmContact.id);
+
+    const [updated] = await leads.listByCrmContact(crmContact.id);
+    expect(updated?.status).toBe('ENGAGED');
+  });
+
+  it('does nothing (no error) for a contact with no real WhatsApp identity or chat yet', async () => {
+    const crmContact = await crmContacts.upsertForWhatsAppContact({ businessId, whatsappContactId: null as unknown as string });
+    await leads.create({ businessId, crmContactId: crmContact.id });
+
+    await expect(recomputeLeadScoreForContact(pool, businessId, crmContact.id)).resolves.toBeUndefined();
   });
 });
