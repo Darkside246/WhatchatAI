@@ -7,6 +7,7 @@ import { PaymentProviderSchema, type PaymentProvider } from '../domain/billing/p
 import { PlanRepository } from '../repositories/planRepository.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { PlatformSettingsRepository } from '../repositories/platformSettingsRepository.js';
+import { getTopupOffer, createTopupCheckout, verifyTopupPayment, NoTopupOfferError, TopupVerificationError } from '../services/billing/aiTokenTopupService.js';
 import { pool } from '../db/pool.js';
 
 const router = Router();
@@ -165,6 +166,62 @@ async function handleProviderEvent(providerKind: string, req: Request, res: Resp
 router.post('/providers/bimpay/bridge', async (req, res) => { await handleProviderEvent('bimpay', req, res); });
 
 router.post('/webhooks/:provider', async (req, res) => { await handleProviderEvent(req.params.provider, req, res); });
+
+/**
+ * Section 34-40's real budget-override flow: a self-serve AI-token top-up
+ * for a business that has exhausted its plan's monthly budget mid-month.
+ * A parallel, minimal webhook path - deliberately not reusing
+ * handleProviderEvent above (that one activates a product-account
+ * subscription; a top-up credits a token budget instead) - but the same
+ * provider-configured/enabled gates and the same verifyEvent() call every
+ * other provider webhook makes.
+ */
+router.get('/ai-token-topup/offer', requireAuth, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const offer = await getTopupOffer(auth.businessId);
+  return res.status(200).json({ offer });
+});
+
+const topupCheckoutSchema = z.object({ provider: PaymentProviderSchema.optional() });
+
+router.post('/ai-token-topup/checkout', requireAuth, async (req, res) => {
+  const parsed = topupCheckoutSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_TOPUP_CHECKOUT', details: parsed.error.flatten() });
+  const auth = res.locals.auth as AuthContext;
+  const providerKind = (parsed.data.provider ?? 'BIMPAY').toLowerCase();
+  if (!(await isProviderUsable(providerKind))) return res.status(503).json({ error: 'PAYMENT_PROVIDER_NOT_CONFIGURED' });
+  try {
+    const { purchase, instructions } = await createTopupCheckout(auth.businessId, providerKind);
+    return res.status(201).json({ purchase, instructions });
+  } catch (error) {
+    if (error instanceof NoTopupOfferError) return res.status(404).json({ error: 'NO_TOPUP_OFFER', message: error.message });
+    throw error;
+  }
+});
+
+router.post('/webhooks/:provider/ai-token-topup', async (req, res) => {
+  const providerKind = req.params.provider;
+  const provider = resolveProvider(providerKind);
+  if (!provider) return res.status(404).json({ error: 'UNKNOWN_PAYMENT_PROVIDER' });
+  if (!isProviderConfigured(providerKind) || !(await isProviderEnabled(providerKind))) return res.status(503).json({ error: 'PAYMENT_PROVIDER_NOT_CONFIGURED' });
+  const secret = resolveProviderSecret(providerKind);
+  if (!secret) return res.status(503).json({ error: 'PAYMENT_PROVIDER_NOT_CONFIGURED' });
+
+  const result = await provider.verifyEvent({ body: req.body, headers: req.headers, secret });
+  if (result.outcome === 'ignored') return res.status(200).json({ ok: true, ignored: result.reason });
+  if (result.outcome === 'rejected') {
+    const status = result.reason === 'INVALID_BIMPAY_SIGNATURE' || result.reason === 'INVALID_PAYPAL_SIGNATURE' ? 401 : 400;
+    return res.status(status).json({ error: result.reason });
+  }
+
+  try {
+    await verifyTopupPayment(result);
+    return res.status(200).json({ ok: true });
+  } catch (error) {
+    if (error instanceof TopupVerificationError) return res.status(409).json({ error: 'TOPUP_VERIFICATION_FAILED', message: error.message });
+    throw error;
+  }
+});
 
 /**
  * Section 73-74: the live Control Plane view of every registered payment

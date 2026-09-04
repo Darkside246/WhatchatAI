@@ -28,6 +28,8 @@ import { whatsappOutboundMessageService } from '../../services/whatsappOutboundM
 import { WhatsAppChatRepository } from '../../repositories/whatsappChatRepository.js';
 import { CrmContactRepository } from '../../repositories/crmContactRepository.js';
 import { notifyBusiness } from '../../services/notificationService.js';
+import { NotificationRepository } from '../../repositories/notificationRepository.js';
+import { getTopupOffer } from '../../services/billing/aiTokenTopupService.js';
 import { publishRealtimeEvent } from '../../realtime/pubsub.js';
 import { pool } from '../../db/pool.js';
 import { WhatsAppMessageRepository } from '../../repositories/whatsappMessageRepository.js';
@@ -512,6 +514,33 @@ async function runAiHandoff(params: {
     }).catch((error) => {
       console.error('[IncomingMessagesWorker] Failed to dispatch AI_FAILURE notification:', error);
     });
+
+    // Section 34-40's real budget-override flow: a second, distinct
+    // notification specifically for budget exhaustion, naming a real
+    // upsell (never re-derived from the generic AI_FAILURE reason string
+    // above - that one keeps firing on every subsequent blocked message,
+    // exactly as before). This one fires at most once per real UTC
+    // calendar month, so a business isn't spammed with the same upsell on
+    // every message once its budget is gone.
+    if (outcome.code === 'AI_BUDGET_EXCEEDED') {
+      const monthStartIso = `${new Date().toISOString().slice(0, 7)}-01T00:00:00.000Z`;
+      const alreadyNotified = await notificationRepository.existsForBusinessSince(businessId, 'AI_BUDGET_EXCEEDED', monthStartIso).catch(() => true);
+      if (!alreadyNotified) {
+        const offer = await getTopupOffer(businessId).catch(() => null);
+        const body = offer
+          ? `You've used your full AI budget for this month. Buy ${offer.tokens.toLocaleString()} more tokens for $${(offer.priceCents / 100).toFixed(2)} to keep AI replies going.`
+          : "You've used your full AI budget for this month.";
+        await notifyBusiness({
+          businessId,
+          type: 'AI_BUDGET_EXCEEDED',
+          severity: 'warning',
+          title: 'Your AI budget is exhausted this month',
+          body,
+        }).catch((error) => {
+          console.error('[IncomingMessagesWorker] Failed to dispatch AI_BUDGET_EXCEEDED notification:', error);
+        });
+      }
+    }
     return;
   }
 
@@ -637,6 +666,7 @@ async function maybeTriggerMediaAiHandoff(
   });
 }
 
+const notificationRepository = new NotificationRepository(pool);
 const messageRepository = new WhatsAppMessageRepository(pool);
 const callRepository = new WhatsAppCallRepository(pool);
 const syncJobRepository = new WhatsAppSyncJobRepository(pool);

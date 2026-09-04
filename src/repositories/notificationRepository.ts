@@ -104,6 +104,22 @@ export class NotificationRepository {
     return toRecord(row);
   }
 
+  /**
+   * Section 34-40's real budget-override flow: lets a caller check "has
+   * this business-wide event already fired since a given time" before
+   * sending another one - checks across every member's row (notifyBusiness
+   * fans one event out to a real row per active member), not scoped to a
+   * single user, since the question is "did we already notify this
+   * business", not "did this one person see it".
+   */
+  async existsForBusinessSince(businessId: string, type: NotificationType, sinceIso: string): Promise<boolean> {
+    const { rows } = await this.db.query<{ exists: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM notifications WHERE business_id = $1 AND type = $2 AND created_at >= $3) AS exists`,
+      [businessId, type, sinceIso],
+    );
+    return rows[0]?.exists ?? false;
+  }
+
   async listForUser(businessId: string, userId: string, limit = 50): Promise<NotificationRecord[]> {
     const { rows } = await this.db.query<NotificationRow>(
       `SELECT * FROM notifications

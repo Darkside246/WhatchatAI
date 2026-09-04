@@ -9,7 +9,8 @@ import { enqueueIncomingMessage, incomingMessagesQueue } from '../src/queue/queu
 import { realtimeEventsQueue } from '../src/queue/queues/realtimeEventsQueue.js';
 import { incomingMessagesWorker, realtimeEventsWorker } from '../src/queue/workers/incomingMessagesWorker.js';
 import type { IngestedWhatsAppMessage } from '../src/services/whatsappMessageIngestionService.js';
-import { createTestAccount, resetDatabase } from './helpers.js';
+import { AiUsageRepository } from '../src/repositories/aiUsageRepository.js';
+import { createTestAccount, createTestSubscription, resetDatabase } from './helpers.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
 
@@ -55,12 +56,12 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
    * completion, so assertions below see the real, final outcome rather
    * than racing ahead of it.
    */
-  async function sendInboundAndWaitForAiHandoff(messageId: string, textPreview: string): Promise<void> {
+  async function sendInboundAndWaitForAiHandoff(messageId: string, textPreview: string, remoteJid = '15550003333@s.whatsapp.net'): Promise<void> {
     const ingested: IngestedWhatsAppMessage = {
       messageId,
-      remoteJid: '15550003333@s.whatsapp.net',
+      remoteJid,
       jidKind: 'individual',
-      phoneNumber: '+15550003333',
+      phoneNumber: `+${remoteJid.split('@')[0]}`,
       participant: null,
       remoteJidAlt: null,
       participantAlt: null,
@@ -113,6 +114,18 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
         resolve();
       });
     });
+
+    // Both promises' timers start immediately and are awaited sequentially
+    // below - if `persisted` rejects/times out first (a real scenario: a
+    // chat already in HUMAN_TAKEOVER from an earlier message in the same
+    // test never gets a new debounce round scheduled at all, so a caller
+    // who still awaits `debounced` after that would hang for the full 20s),
+    // `debounced`'s own still-running timer fires later with nothing left
+    // awaiting it - a genuine unhandled rejection that crashes the whole
+    // worker process via its own global handler, not just this one test.
+    // This no-op catch marks it "handled" for Node's detector without
+    // changing what the real `await debounced` below sees.
+    debounced.catch(() => {});
 
     await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid, message: ingested });
     await persisted;
@@ -190,4 +203,45 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
     expect(failure).toBeDefined();
     expect(failure?.body).toContain('GEMINI_API_KEY is not configured');
   }, 25_000);
+
+  /**
+   * Section 34-40's real budget-override flow: a business that has
+   * exhausted its plan's monthly AI budget gets a second, distinct
+   * notification naming a real upsell - not just the generic AI_FAILURE
+   * hand-off every other 'unavailable' cause already produces.
+   */
+  it('a budget-exhausted business gets a distinct AI_BUDGET_EXCEEDED notification naming the real top-up offer, exactly once per month', async () => {
+    await createTestSubscription(businessId, 'starter');
+    const usage = new AiUsageRepository(pool);
+    await usage.record({ businessId, model: 'gemini-test', callKind: 'primary', promptTokens: 300_000, candidatesTokens: 300_000, totalTokens: 600_000 });
+
+    const agents = new AiAgentRepository(pool);
+    await agents.create({ businessId, name: 'Reception Agent', systemInstruction: 'Help qualify inbound leads.' });
+
+    const firstMessageId = `AI-BUDGET-1-${Date.now()}`;
+    await sendInboundAndWaitForAiHandoff(firstMessageId, 'What time do you open?');
+
+    const notifications = new NotificationRepository(pool);
+    const afterFirst = await notifications.listForUser(businessId, ownerId, 20);
+    const budgetNotifications = afterFirst.filter((n) => n.type === 'AI_BUDGET_EXCEEDED');
+    expect(budgetNotifications).toHaveLength(1);
+    expect(budgetNotifications[0]?.body).toContain('250,000');
+    expect(budgetNotifications[0]?.body).toContain('$1.99');
+    // The existing generic hand-off notification is unaffected - both fire.
+    expect(afterFirst.some((n) => n.type === 'AI_FAILURE')).toBe(true);
+
+    // A different contact/chat, deliberately: the first message's own
+    // processing already set its chat to ai_mode HUMAN_TAKEOVER (real,
+    // correct behavior - needsAiHandoff in incomingMessagesWorker.ts
+    // requires AI_ACTIVE), so a second message to that same chat would
+    // never schedule a new debounce round at all. The dedup this test
+    // proves is scoped to the whole business, not one chat, so a second
+    // contact hitting the same exhausted budget is the real scenario.
+    const secondMessageId = `AI-BUDGET-2-${Date.now()}`;
+    await sendInboundAndWaitForAiHandoff(secondMessageId, 'Are you open on Sundays?', '15550004444@s.whatsapp.net');
+
+    const afterSecond = await notifications.listForUser(businessId, ownerId, 20);
+    // A second blocked message this same month must not re-notify the upsell.
+    expect(afterSecond.filter((n) => n.type === 'AI_BUDGET_EXCEEDED')).toHaveLength(1);
+  }, 30_000);
 });

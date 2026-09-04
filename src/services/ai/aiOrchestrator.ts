@@ -23,7 +23,17 @@ export type OrchestratedAiOutcome =
   | { kind: 'no_agent'; reason: string }
   | { kind: 'escalate_to_human'; reason: string; matchedKeyword: string }
   | { kind: 'reply'; agent: AiAgentRecord; text: string }
-  | { kind: 'unavailable'; agent: AiAgentRecord; reason: string }
+  /**
+   * code is a real, machine-readable discriminator for the handful of
+   * 'unavailable' causes a caller needs to react to differently -
+   * currently only 'AI_BUDGET_EXCEEDED' (Section 34-40's real
+   * budget-override flow), which the worker uses to fire a distinct,
+   * once-per-month upsell notification instead of (or alongside) the
+   * generic AI_FAILURE hand-off notification every other cause gets.
+   * Never string-match `reason` for this - that's a human-facing
+   * sentence, not a stable identifier.
+   */
+  | { kind: 'unavailable'; agent: AiAgentRecord; reason: string; code?: 'AI_BUDGET_EXCEEDED' }
   /**
    * A real reply was generated but the Outbound Leak Guard blocked it
    * before it ever left this process - the (leaked) text is deliberately
@@ -140,7 +150,9 @@ export async function orchestrateAiReply(input: OrchestrateAiReplyInput): Promis
         : budget.reason === 'ENTITLEMENT_DISABLED'
           ? 'This plan does not include AI replies.'
           : 'This business has no active subscription.';
-    return { kind: 'unavailable', agent, reason };
+    return budget.reason === 'ENTITLEMENT_LIMIT_REACHED'
+      ? { kind: 'unavailable', agent, reason, code: 'AI_BUDGET_EXCEEDED' }
+      : { kind: 'unavailable', agent, reason };
   }
 
   const reply = await generateAiReply(agent, context);

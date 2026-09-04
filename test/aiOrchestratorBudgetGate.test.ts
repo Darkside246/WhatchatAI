@@ -66,6 +66,10 @@ describe('orchestrateAiReply - monthly AI token budget gate', () => {
     if (outcome.kind === 'unavailable') {
       expect(outcome.reason).toContain('AI reply allowance');
       expect(outcome.reason).toContain('500000');
+      // Section 34-40's real budget-override flow: a machine-readable
+      // discriminator the worker uses to fire the distinct upsell
+      // notification, never string-matched from the human-readable reason.
+      expect(outcome.code).toBe('AI_BUDGET_EXCEEDED');
     }
   });
 });
@@ -115,6 +119,10 @@ describe('orchestrateAiReply - blocks a business with no active subscription at 
     expect(outcome.kind).toBe('unavailable');
     if (outcome.kind === 'unavailable') {
       expect(outcome.reason).toContain('no active subscription');
+      // Distinct from the budget-exceeded case above - only that specific
+      // reason ever gets the code, never a blanket flag on every
+      // 'unavailable' outcome.
+      expect(outcome.code).toBeUndefined();
     }
   });
 });

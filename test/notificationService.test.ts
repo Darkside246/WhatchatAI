@@ -11,6 +11,7 @@ import {
   markAllNotificationsRead,
   isNotificationNotFoundError,
 } from '../src/services/notificationService.js';
+import { NotificationRepository } from '../src/repositories/notificationRepository.js';
 import { resetDatabase, createTestBusiness } from './helpers.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
@@ -107,5 +108,42 @@ describe('notificationService (real, per-user, never a shared broadcast row)', (
     expect(rows).toHaveLength(1);
     expect(rows[0].read_at).not.toBeNull();
     expect(rows[0].dismissed_at).not.toBeNull();
+  });
+
+  describe('NotificationRepository.existsForBusinessSince (Section 34-40\'s once-per-month dedup)', () => {
+    it('is false when no notification of that type has ever fired for this business', async () => {
+      const repo = new NotificationRepository(pool);
+      const sinceIso = new Date(Date.now() - 60_000).toISOString();
+      expect(await repo.existsForBusinessSince(businessId, 'AI_BUDGET_EXCEEDED', sinceIso)).toBe(false);
+    });
+
+    it('is true once a real notification of that type exists since the window start, across any member\'s row', async () => {
+      const repo = new NotificationRepository(pool);
+      await notifyBusiness({ businessId, type: 'AI_BUDGET_EXCEEDED', severity: 'warning', title: 'Budget exhausted' });
+
+      const sinceIso = new Date(Date.now() - 60_000).toISOString();
+      expect(await repo.existsForBusinessSince(businessId, 'AI_BUDGET_EXCEEDED', sinceIso)).toBe(true);
+      // Checked as ownerId's own inbox above via notifyBusiness's fan-out; existsForBusinessSince doesn't need a userId at all.
+      expect(await repo.existsForBusinessSince(businessId, 'AI_TOKENS_ADDED', sinceIso)).toBe(false);
+    });
+
+    it('ignores a notification from before the window start', async () => {
+      const repo = new NotificationRepository(pool);
+      await notifyBusiness({ businessId, type: 'AI_BUDGET_EXCEEDED', severity: 'warning', title: 'Old budget notice' });
+      await pool.query(`UPDATE notifications SET created_at = now() - interval '45 days' WHERE business_id = $1`, [businessId]);
+
+      const sinceIso = new Date(Date.now() - 60_000).toISOString();
+      expect(await repo.existsForBusinessSince(businessId, 'AI_BUDGET_EXCEEDED', sinceIso)).toBe(false);
+    });
+
+    it('never leaks another business\'s notification (tenant isolation)', async () => {
+      const { NotificationRepository } = await import('../src/repositories/notificationRepository.js');
+      const otherBusinessId = await createTestBusiness('Other Business');
+      await notifyBusiness({ businessId: otherBusinessId, type: 'AI_BUDGET_EXCEEDED', severity: 'warning', title: 'Other business budget notice' });
+
+      const repo = new NotificationRepository(pool);
+      const sinceIso = new Date(Date.now() - 60_000).toISOString();
+      expect(await repo.existsForBusinessSince(businessId, 'AI_BUDGET_EXCEEDED', sinceIso)).toBe(false);
+    });
   });
 });
