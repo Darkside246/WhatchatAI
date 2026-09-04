@@ -76,7 +76,12 @@ async function recordCommitmentIfDetected(replyText: string, context: AiHandoffC
 async function recordNameUsageIfDetected(replyText: string, context: AiHandoffContext): Promise<void> {
   const evidence = resolveNameEvidence({
     staffConfirmedName: context.contactNameSources?.staffConfirmedName,
-    confirmedPreferredName: context.conversationState?.preferredName,
+    // Section 20 (cross-conversation carry-over): this conversation's own
+    // preferredName wins if it's ever been set here; customerMemory (a
+    // different conversation with the same customer) is the fallback, not
+    // the other way round - a name the customer just corrected THIS
+    // conversation must never be shadowed by a stale cross-conversation one.
+    confirmedPreferredName: context.conversationState?.preferredName ?? context.customerMemory?.preferredName,
     verifiedName: context.contactNameSources?.verifiedName,
     businessName: context.contactNameSources?.businessName,
     pushName: context.contactNameSources?.pushName,
@@ -466,14 +471,21 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
   // only whether/what name to consider using is computed here.
   const nameEvidence = resolveNameEvidence({
     staffConfirmedName: context.contactNameSources?.staffConfirmedName,
-    confirmedPreferredName: state?.preferredName,
+    // Section 20: same this-conversation-first, cross-conversation-fallback order as recordNameUsageIfDetected above.
+    confirmedPreferredName: state?.preferredName ?? context.customerMemory?.preferredName,
     verifiedName: context.contactNameSources?.verifiedName,
     businessName: context.contactNameSources?.businessName,
     pushName: context.contactNameSources?.pushName,
     username: context.contactNameSources?.username,
     shortName: context.contactNameSources?.shortName,
   });
-  if (nameEvidence && shouldUseName({ evidence: nameEvidence, lastNameUsedAt: state?.lastNameUsedAt ?? null }) === 'USE_NAME_NATURALLY') {
+  // Section 19 (important-moment cooldown override): an URGENT customer_readiness
+  // reading is a real, already-computed signal for exactly the kind of
+  // reassurance moment this override exists for - personal address matters
+  // more right now than avoiding repetition. Deliberately reuses that
+  // existing signal rather than adding a new AI call or heuristic just for
+  // this; see identityEngine.ts's shouldUseName for the actual bypass.
+  if (nameEvidence && shouldUseName({ evidence: nameEvidence, lastNameUsedAt: state?.lastNameUsedAt ?? null, customerReadiness: state?.customerReadiness ?? null }) === 'USE_NAME_NATURALLY') {
     lines.push(
       `You may naturally address the customer as "${nameEvidence.name}" if it fits this reply - not in every reply, ` +
         `and never more than once per message.`,
@@ -807,7 +819,7 @@ async function executeOneToolCall(
       // into a failed reply, so it shares this same try/catch rather than
       // its own separate one that could swallow a real problem silently.
       if (context.customerId) {
-        await applyCustomerMemoryUpdate(customerMemoryRepository, context.businessId, context.customerId, args.confirmFacts);
+        await applyCustomerMemoryUpdate(customerMemoryRepository, context.businessId, context.customerId, args.confirmFacts, args.preferredName);
       }
       // Section 11 (lead qualification): a fresh funnel_stage/customer_readiness
       // signal is exactly when a lead's computed score can genuinely change -

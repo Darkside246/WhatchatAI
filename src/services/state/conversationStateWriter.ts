@@ -178,27 +178,42 @@ export async function recordNameUsed(repository: ConversationStateRepository, bu
  * from a contact with no linked customer never reach this. Never throws
  * for an empty confirmFacts list - identical "nothing to write" reasoning
  * as applyConversationStateUpdate above.
+ *
+ * Section 20 (cross-conversation preferred-name carry-over): preferredName
+ * gets the identical write-through treatment - once a customer states a
+ * preferred name in any conversation, it now outlives that one
+ * conversation the same way a confirmed fact already does. Trimmed and
+ * capped the same way conversationStateWriter's own buildPatch already
+ * treats it for the per-conversation write.
  */
 export async function applyCustomerMemoryUpdate(
   repository: CustomerMemoryRepository,
   businessId: string,
   customerId: string,
   confirmFacts: Array<{ key: string; value: string }> | undefined,
+  preferredName?: string | undefined,
 ): Promise<void> {
-  if (!confirmFacts?.length) return;
+  const trimmedPreferredName = preferredName?.trim().slice(0, 100);
+  if (!confirmFacts?.length && !trimmedPreferredName) return;
 
   for (let attempt = 0; attempt < MAX_CONFLICT_RETRIES; attempt++) {
     const current = await repository.getOrCreate(businessId, customerId);
     const now = new Date().toISOString();
-    const merged = new Map(current.confirmedFacts.map((fact) => [fact.key, fact]));
-    for (const incoming of confirmFacts) {
-      const key = incoming.key?.trim();
-      const value = incoming.value?.trim();
-      if (!key || !value) continue;
-      merged.set(key, { key, value, origin: 'user_confirmed', confirmedAt: now });
+    const patch: { confirmedFacts?: ConversationFact[]; preferredName?: string } = {};
+    if (confirmFacts?.length) {
+      const merged = new Map(current.confirmedFacts.map((fact) => [fact.key, fact]));
+      for (const incoming of confirmFacts) {
+        const key = incoming.key?.trim();
+        const value = incoming.value?.trim();
+        if (!key || !value) continue;
+        merged.set(key, { key, value, origin: 'user_confirmed', confirmedAt: now });
+      }
+      patch.confirmedFacts = [...merged.values()];
     }
+    if (trimmedPreferredName) patch.preferredName = trimmedPreferredName;
+    if (Object.keys(patch).length === 0) return;
     try {
-      await repository.update(businessId, customerId, current.version, [...merged.values()]);
+      await repository.update(businessId, customerId, current.version, patch);
       return;
     } catch (error) {
       if (error instanceof CustomerMemoryConflictError && attempt < MAX_CONFLICT_RETRIES - 1) continue;

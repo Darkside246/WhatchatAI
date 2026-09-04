@@ -71,6 +71,32 @@ describe('shouldUseName (Section 18/19 - usage algorithm + repetition protection
     const usedExactlyAtCooldown = new Date(now.getTime() - NAME_REPETITION_COOLDOWN_MINUTES * 60_000).toISOString();
     expect(shouldUseName({ evidence, lastNameUsedAt: usedExactlyAtCooldown, now })).toBe('USE_NAME_NATURALLY');
   });
+
+  describe('Section 19 (important-moment cooldown override)', () => {
+    it('bypasses an active cooldown when customerReadiness is URGENT', () => {
+      const now = new Date('2026-01-01T12:00:00Z');
+      const usedOneMinuteAgo = new Date(now.getTime() - 60_000).toISOString();
+      expect(shouldUseName({ evidence, lastNameUsedAt: usedOneMinuteAgo, now, customerReadiness: 'URGENT' })).toBe('USE_NAME_NATURALLY');
+    });
+
+    it('does not bypass the cooldown for any other readiness level - a genuine exception, not a broadened one', () => {
+      const now = new Date('2026-01-01T12:00:00Z');
+      const usedOneMinuteAgo = new Date(now.getTime() - 60_000).toISOString();
+      for (const readiness of ['NOT_READY', 'BROWSING', 'NEEDS_INFORMATION', 'COMPARING', 'INTERESTED', 'HIGHLY_INTERESTED', 'READY_TO_ACT'] as const) {
+        expect(shouldUseName({ evidence, lastNameUsedAt: usedOneMinuteAgo, now, customerReadiness: readiness })).toBe('DO_NOT_USE_NAME');
+      }
+    });
+
+    it('still requires real name evidence - URGENT alone never fabricates a name to use', () => {
+      expect(shouldUseName({ evidence: null, lastNameUsedAt: null, customerReadiness: 'URGENT' })).toBe('DO_NOT_USE_NAME');
+    });
+
+    it('is a no-op when customerReadiness is omitted - every pre-existing caller is unaffected', () => {
+      const now = new Date('2026-01-01T12:00:00Z');
+      const usedOneMinuteAgo = new Date(now.getTime() - 60_000).toISOString();
+      expect(shouldUseName({ evidence, lastNameUsedAt: usedOneMinuteAgo, now })).toBe('DO_NOT_USE_NAME');
+    });
+  });
 });
 
 describe('replyUsesName (deterministic post-hoc detection)', () => {

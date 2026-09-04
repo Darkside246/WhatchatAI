@@ -6,16 +6,16 @@
  * an AI call - the same "deterministic where safer" reasoning as
  * conversationIntentClassifier.ts.
  *
- * Scope of this pass: within-conversation name resolution and repetition
- * protection, plus Section 23 (manually-saved contact names - a staff
- * member's own correction/confirmation in the CRM, crm_contacts.
- * manual_display_name, migration 968). Deliberately deferred (real,
- * separate future work, not fabricated as done here): cross-conversation
- * preferred-name carry-over (Section 20's "personalisation budget" -
- * would live on customer_memory, not conversation_states) and the
- * "important moment" cooldown override (Section 19's adaptive
- * exceptions).
+ * Covers: within-conversation name resolution and repetition protection,
+ * Section 23 (manually-saved contact names - a staff member's own
+ * correction/confirmation in the CRM, crm_contacts.manual_display_name,
+ * migration 968), Section 20 (cross-conversation preferred-name
+ * carry-over - see conversationStateWriter.ts's applyCustomerMemoryUpdate
+ * and customerMemoryRepository.ts's preferredName field), and Section 19's
+ * important-moment cooldown override (below).
  */
+
+import type { CustomerReadiness } from '../../repositories/conversationStateRepository.js';
 
 /** Section 16's classification set, narrowed to what this engine can actually distinguish from the real sources it has - never a source-blind guess. */
 export type NameConfidence =
@@ -87,27 +87,42 @@ export function resolveNameEvidence(sources: NameSources): NameEvidence | null {
 
 export type NameUsageDecision = 'DO_NOT_USE_NAME' | 'USE_NAME_NATURALLY';
 
-/** Section 19's own cooldown - adaptive exceptions (important/reassurance moments) are explicitly deferred, see this file's own header comment. */
 export const NAME_REPETITION_COOLDOWN_MINUTES = 15;
+
+/**
+ * Section 19's adaptive exception: the only readiness level that
+ * represents a real reassurance/emotional moment worth overriding
+ * repetition-avoidance for - a customer already re-classified as URGENT
+ * (Section 10's own real signal) is exactly the moment personal address
+ * matters more than not repeating the name too soon. Deliberately just
+ * this one level, not PRIORITY-adjacent ones - a genuine exception, not a
+ * broadening of when the cooldown applies.
+ */
+const IMPORTANT_MOMENT_READINESS: CustomerReadiness = 'URGENT';
 
 export interface ShouldUseNameInput {
   evidence: NameEvidence | null;
   /** ISO timestamp of the last reply that actually used this name in this conversation, or null if it never has. */
   lastNameUsedAt: string | null;
+  /** Section 19: this conversation's own last-assessed readiness (Section 10) - URGENT bypasses the cooldown entirely. Optional and defaults to no override, so every existing caller is unaffected until it opts in. */
+  customerReadiness?: CustomerReadiness | null;
   /** Injectable for tests; defaults to the real current time. */
   now?: Date;
 }
 
 /**
  * Section 18 (Name Usage Algorithm), narrowed to the real signals this
- * engine has: confidence and recency. A raw phone-number fallback
- * (evidence === null) never gets used as a name - greeting someone by
- * their own phone number reads as robotic, not personal. First use in a
- * conversation is always natural; after that, a real time-based cooldown
- * (Section 19) rather than using the name on every single turn.
+ * engine has: confidence, recency, and (Section 19) an important-moment
+ * override. A raw phone-number fallback (evidence === null) never gets
+ * used as a name - greeting someone by their own phone number reads as
+ * robotic, not personal. First use in a conversation is always natural;
+ * after that, a real time-based cooldown rather than using the name on
+ * every single turn - except a genuine reassurance moment (URGENT
+ * readiness), which bypasses the cooldown outright.
  */
 export function shouldUseName(input: ShouldUseNameInput): NameUsageDecision {
   if (!input.evidence) return 'DO_NOT_USE_NAME';
+  if (input.customerReadiness === IMPORTANT_MOMENT_READINESS) return 'USE_NAME_NATURALLY';
   if (!input.lastNameUsedAt) return 'USE_NAME_NATURALLY';
 
   const now = input.now ?? new Date();

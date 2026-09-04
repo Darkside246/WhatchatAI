@@ -7,6 +7,8 @@ export interface CustomerMemoryRecord {
   businessId: string;
   customerId: string;
   confirmedFacts: ConversationFact[];
+  /** Section 20 (cross-conversation carry-over): what the customer explicitly asked to be called, once written through from any conversation - see conversationStateWriter.ts's applyCustomerMemoryUpdate. Null until they've ever stated one. */
+  preferredName: string | null;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -17,6 +19,7 @@ interface CustomerMemoryRow {
   business_id: string;
   customer_id: string;
   confirmed_facts: ConversationFact[];
+  preferred_name: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -28,6 +31,7 @@ function toRecord(row: CustomerMemoryRow): CustomerMemoryRecord {
     businessId: row.business_id,
     customerId: row.customer_id,
     confirmedFacts: row.confirmed_facts,
+    preferredName: row.preferred_name,
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -37,7 +41,7 @@ function toRecord(row: CustomerMemoryRow): CustomerMemoryRecord {
 /** A valid-shaped, non-persisted CustomerMemoryRecord for a customer with no memory row yet - mirrors emptyConversationState()'s own reasoning: reading context must never have the side effect of creating a row. */
 export function emptyCustomerMemory(businessId: string, customerId: string): CustomerMemoryRecord {
   const now = new Date().toISOString();
-  return { id: randomUUID(), businessId, customerId, confirmedFacts: [], version: 1, createdAt: now, updatedAt: now };
+  return { id: randomUUID(), businessId, customerId, confirmedFacts: [], preferredName: null, version: 1, createdAt: now, updatedAt: now };
 }
 
 /** Thrown by update() when expectedVersion no longer matches the stored row - the caller must re-read and retry, never assume its write applied. */
@@ -84,13 +88,26 @@ export class CustomerMemoryRepository {
     return created;
   }
 
-  /** Optimistic-concurrency replace of confirmedFacts - only lands if the row is still at expectedVersion. A conflict throws CustomerMemoryConflictError; the caller re-reads and retries. */
-  async update(businessId: string, customerId: string, expectedVersion: number, confirmedFacts: ConversationFact[]): Promise<CustomerMemoryRecord> {
+  /**
+   * Optimistic-concurrency patch - only lands if the row is still at
+   * expectedVersion. A conflict throws CustomerMemoryConflictError; the
+   * caller re-reads and retries. confirmedFacts, when provided, always
+   * replaces the full array (the caller already merged it - see
+   * applyCustomerMemoryUpdate); preferredName is a genuine patch field
+   * (omit to leave it untouched, pass a string or null to set/clear it) -
+   * same CASE-WHEN-touched idiom this codebase already uses elsewhere for
+   * a field that must distinguish "not provided" from "explicitly null."
+   */
+  async update(businessId: string, customerId: string, expectedVersion: number, patch: { confirmedFacts?: ConversationFact[]; preferredName?: string | null }): Promise<CustomerMemoryRecord> {
+    const preferredNameTouched = patch.preferredName !== undefined;
     const { rows } = await this.db.query<CustomerMemoryRow>(
-      `UPDATE customer_memory SET confirmed_facts = $4::jsonb, version = version + 1, updated_at = now()
+      `UPDATE customer_memory SET
+         confirmed_facts = COALESCE($4::jsonb, confirmed_facts),
+         preferred_name = CASE WHEN $6 THEN $5 ELSE preferred_name END,
+         version = version + 1, updated_at = now()
        WHERE business_id = $1 AND customer_id = $2 AND version = $3
        RETURNING *`,
-      [businessId, customerId, expectedVersion, JSON.stringify(confirmedFacts)],
+      [businessId, customerId, expectedVersion, patch.confirmedFacts ? JSON.stringify(patch.confirmedFacts) : null, patch.preferredName ?? null, preferredNameTouched],
     );
     const row = rows[0];
     if (!row) throw new CustomerMemoryConflictError(businessId, customerId, expectedVersion);

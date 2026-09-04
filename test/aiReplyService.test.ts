@@ -10,6 +10,7 @@ import { SCHEDULE_ZOOM_MEETING_TOOL_NAME } from '../src/services/meeting/schedul
 import { GET_CURRENT_TIME_TOOL_NAME } from '../src/services/time/getCurrentTimeTool.js';
 import { UPDATE_CONVERSATION_STATE_TOOL_NAME } from '../src/services/state/updateConversationStateTool.js';
 import { emptyConversationState } from '../src/repositories/conversationStateRepository.js';
+import { emptyCustomerMemory } from '../src/repositories/customerMemoryRepository.js';
 
 function fakeAgent(overrides: Partial<AiAgentRecord> = {}): AiAgentRecord {
   return {
@@ -544,6 +545,37 @@ describe('Durable conversation state (Phase 3 - supplements raw history, never r
     const instruction = buildSystemInstruction(fakeAgent(), fakeContext());
     expect(instruction).not.toContain('may naturally address');
     expect(instruction).not.toContain('do not use it again this reply');
+  });
+
+  describe('Section 20 (cross-conversation preferred-name carry-over)', () => {
+    it('falls back to customerMemory.preferredName when this conversation has never set one', () => {
+      const memory = { ...emptyCustomerMemory('business-1', 'customer-1'), preferredName: 'Mike' };
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ customerMemory: memory }));
+      expect(instruction).toContain('"Mike"');
+      expect(instruction).toContain('may naturally address');
+    });
+
+    it('this conversation\'s own preferredName always wins over a stale cross-conversation one', () => {
+      const state = { ...emptyConversationState('business-1', 'chat-1'), preferredName: 'Michael' };
+      const memory = { ...emptyCustomerMemory('business-1', 'customer-1'), preferredName: 'Mike' };
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state, customerMemory: memory }));
+      expect(instruction).toContain('"Michael"');
+      expect(instruction).not.toContain('"Mike"');
+    });
+  });
+
+  describe('Section 19 (important-moment cooldown override)', () => {
+    it('still offers the name even though it was just used, when customerReadiness is URGENT', () => {
+      const state = { ...emptyConversationState('business-1', 'chat-1'), preferredName: 'Mike', lastNameUsedAt: new Date().toISOString(), customerReadiness: 'URGENT' as const };
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state }));
+      expect(instruction).toContain('may naturally address');
+    });
+
+    it('a non-URGENT readiness does not override an active cooldown', () => {
+      const state = { ...emptyConversationState('business-1', 'chat-1'), preferredName: 'Mike', lastNameUsedAt: new Date().toISOString(), customerReadiness: 'INTERESTED' as const };
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state }));
+      expect(instruction).not.toContain('may naturally address');
+    });
   });
 
   it('falls back through the real name hierarchy to a WhatsApp push name when there is no confirmed preferred name', () => {

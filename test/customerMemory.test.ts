@@ -30,7 +30,7 @@ describe('CustomerMemoryRepository (real Postgres - migration 959, layer 2 of la
     expect(first.confirmedFacts).toEqual([]);
     expect(first.version).toBe(1);
 
-    await repo.update(businessId, customerId, 1, [{ key: 'k', value: 'v', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }]);
+    await repo.update(businessId, customerId, 1, { confirmedFacts: [{ key: 'k', value: 'v', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }] });
     const second = await repo.getOrCreate(businessId, customerId);
     expect(second.confirmedFacts).toHaveLength(1); // not reset back to empty
   });
@@ -38,7 +38,7 @@ describe('CustomerMemoryRepository (real Postgres - migration 959, layer 2 of la
   it('update() rejects a stale version with a real CAS conflict', async () => {
     await repo.getOrCreate(businessId, customerId);
     await expect(
-      repo.update(businessId, customerId, 999, [{ key: 'k', value: 'v', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }]),
+      repo.update(businessId, customerId, 999, { confirmedFacts: [{ key: 'k', value: 'v', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }] }),
     ).rejects.toThrow(CustomerMemoryConflictError);
   });
 
@@ -46,17 +46,17 @@ describe('CustomerMemoryRepository (real Postgres - migration 959, layer 2 of la
     const otherBusinessId = await createTestBusiness('Other Business');
     const { rows } = await pool.query<{ id: string }>('INSERT INTO customers (business_id) VALUES ($1) RETURNING id', [otherBusinessId]);
     const otherCustomerId = rows[0]!.id;
-    await repo.update(businessId, customerId, (await repo.getOrCreate(businessId, customerId)).version, [
-      { key: 'secret', value: 'only-this-business', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
-    ]);
+    await repo.update(businessId, customerId, (await repo.getOrCreate(businessId, customerId)).version, {
+      confirmedFacts: [{ key: 'secret', value: 'only-this-business', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }],
+    });
     expect(await repo.find(otherBusinessId, otherCustomerId)).toBeNull();
   });
 
   describe('deleteByCustomer (Section 75-91 - single-subject erasure, the counterpart to exportCrmContactData)', () => {
     it('actually erases a real memory row and reports true', async () => {
-      await repo.update(businessId, customerId, (await repo.getOrCreate(businessId, customerId)).version, [
-        { key: 'k', value: 'v', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
-      ]);
+      await repo.update(businessId, customerId, (await repo.getOrCreate(businessId, customerId)).version, {
+        confirmedFacts: [{ key: 'k', value: 'v', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }],
+      });
       expect(await repo.deleteByCustomer(businessId, customerId)).toBe(true);
       expect(await repo.find(businessId, customerId)).toBeNull();
     });
@@ -69,9 +69,9 @@ describe('CustomerMemoryRepository (real Postgres - migration 959, layer 2 of la
       const otherBusinessId = await createTestBusiness('Other Business');
       const { rows } = await pool.query<{ id: string }>('INSERT INTO customers (business_id) VALUES ($1) RETURNING id', [otherBusinessId]);
       const otherCustomerId = rows[0]!.id;
-      await repo.update(businessId, customerId, (await repo.getOrCreate(businessId, customerId)).version, [
-        { key: 'secret', value: 'must-survive', origin: 'user_confirmed', confirmedAt: new Date().toISOString() },
-      ]);
+      await repo.update(businessId, customerId, (await repo.getOrCreate(businessId, customerId)).version, {
+        confirmedFacts: [{ key: 'secret', value: 'must-survive', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }],
+      });
 
       await repo.deleteByCustomer(otherBusinessId, otherCustomerId);
 
@@ -121,7 +121,7 @@ describe('applyCustomerMemoryUpdate (real Postgres write-through)', () => {
     vi.spyOn(repo, 'update').mockImplementation(async (...args) => {
       calls += 1;
       if (calls === 1) {
-        await realUpdate(businessId, customerId, state.version, [{ key: 'concurrent', value: 'writer', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }]);
+        await realUpdate(businessId, customerId, state.version, { confirmedFacts: [{ key: 'concurrent', value: 'writer', origin: 'user_confirmed', confirmedAt: new Date().toISOString() }] });
       }
       return realUpdate(...args);
     });
@@ -133,6 +133,34 @@ describe('applyCustomerMemoryUpdate (real Postgres write-through)', () => {
     expect(final?.confirmedFacts).toEqual(
       expect.arrayContaining([expect.objectContaining({ key: 'concurrent', value: 'writer' }), expect.objectContaining({ key: 'k', value: 'v' })]),
     );
+  });
+
+  describe('Section 20 (cross-conversation preferred-name carry-over)', () => {
+    it('writes a real preferredName through to customer_memory, trimmed', async () => {
+      await applyCustomerMemoryUpdate(repo, businessId, customerId, undefined, '  Mike  ');
+      const memory = await repo.find(businessId, customerId);
+      expect(memory?.preferredName).toBe('Mike');
+    });
+
+    it('a blank/whitespace-only preferredName is a real no-op, same as an empty confirmFacts list', async () => {
+      await applyCustomerMemoryUpdate(repo, businessId, customerId, undefined, '   ');
+      expect(await repo.find(businessId, customerId)).toBeNull();
+    });
+
+    it('can write a confirmed fact and a preferred name together in one call', async () => {
+      await applyCustomerMemoryUpdate(repo, businessId, customerId, [{ key: 'unit_number', value: '4B' }], 'Mike');
+      const memory = await repo.find(businessId, customerId);
+      expect(memory?.confirmedFacts).toEqual([expect.objectContaining({ key: 'unit_number', value: '4B' })]);
+      expect(memory?.preferredName).toBe('Mike');
+    });
+
+    it('a later call with a new preferredName replaces the old one, without touching confirmedFacts', async () => {
+      await applyCustomerMemoryUpdate(repo, businessId, customerId, [{ key: 'unit_number', value: '4B' }], 'Mike');
+      await applyCustomerMemoryUpdate(repo, businessId, customerId, undefined, 'Michael');
+      const memory = await repo.find(businessId, customerId);
+      expect(memory?.preferredName).toBe('Michael');
+      expect(memory?.confirmedFacts).toEqual([expect.objectContaining({ key: 'unit_number', value: '4B' })]);
+    });
   });
 });
 
@@ -185,5 +213,23 @@ describe('gatherAiHandoffContext resolves and surfaces customer-level memory (re
     const context = await gatherAiHandoffContext({ businessId, chatId: chat.id, contactId: null, queryText: 'hi' });
     expect(context.customerId).toBeNull();
     expect(context.customerMemory).toBeNull();
+  });
+
+  it('Section 20: a preferred name stated in an earlier conversation surfaces for a brand-new conversation with the same customer', async () => {
+    const contact = await new WhatsAppContactRepository(pool).upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, whatsappJid: '15550003333@s.whatsapp.net', jidKind: 'individual', phoneNumber: '+15550003333', pushName: 'Mike',
+    });
+    const customerId = await new CustomerIdentityRepository(pool).getOrCreateForWhatsAppContact(businessId, contact.id, contact.displayName);
+    await applyCustomerMemoryUpdate(new CustomerMemoryRepository(pool), businessId, customerId, undefined, 'Mike');
+
+    // A brand-new chat (a genuinely different conversation) for the same customer - never the same chat_id used above.
+    const newChat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, chatJid: '15550003333@s.whatsapp.net', jidKind: 'individual', chatType: 'individual', contactId: contact.id,
+    });
+    const context = await gatherAiHandoffContext({ businessId, chatId: newChat.id, contactId: contact.id, queryText: 'hi, is anyone there' });
+
+    expect(context.customerMemory?.preferredName).toBe('Mike');
+    // The new conversation's own conversation_states row has never set a preferredName - only customer_memory has it.
+    expect(context.conversationState.preferredName).toBeNull();
   });
 });
