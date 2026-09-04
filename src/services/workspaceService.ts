@@ -9,7 +9,7 @@ import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobReposi
 import { CrmContactRepository, type UpdateCrmContactInput, type CrmContactWithContactInfo } from '../repositories/crmContactRepository.js';
 import { CustomerMemoryRepository, emptyCustomerMemory } from '../repositories/customerMemoryRepository.js';
 import { CustomerIdentityRepository } from '../repositories/customerIdentityRepository.js';
-import type { ConversationFact } from '../repositories/conversationStateRepository.js';
+import type { ConversationFact, ConversationFunnelStage } from '../repositories/conversationStateRepository.js';
 import { LeadRepository, type UpdateLeadInput, type LeadRecord, type LeadWithContactInfo } from '../repositories/leadRepository.js';
 import { AiAgentRepository, type AiAgentRecord, type AgentCategory } from '../repositories/aiAgentRepository.js';
 import { AgentTemplateRepository, type AgentTemplateRecord } from '../repositories/agentTemplateRepository.js';
@@ -1106,6 +1106,11 @@ export class WorkspaceService {
     const clampedDays = Math.min(90, Math.max(1, Math.trunc(periodDays)));
     const sinceIso = new Date(Date.now() - clampedDays * 24 * 60 * 60 * 1000).toISOString();
     return this.messageRepository.countByDirectionPerDay(businessId, whatsappAccountId, sinceIso);
+  }
+
+  /** Section 68 (Analytics) follow-up: a real, live "where are all my conversations right now" funnel snapshot - see ConversationStateRepository.getFunnelStageCounts's own doc comment for why this is a snapshot, not a true funnel-over-time chart. */
+  async getFunnelStageSnapshot(businessId: string): Promise<Record<ConversationFunnelStage, number>> {
+    return this.conversationStateRepository.getFunnelStageCounts(businessId);
   }
 
   /**

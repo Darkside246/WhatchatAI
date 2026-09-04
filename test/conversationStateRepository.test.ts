@@ -261,3 +261,58 @@ describe('ConversationStateRepository.deleteByWhatsAppContact (Section 75-91 - s
     expect(await repo.find(businessId, otherChat.id)).not.toBeNull();
   });
 });
+
+describe('ConversationStateRepository.getFunnelStageCounts (Section 68 follow-up - real funnel snapshot)', () => {
+  let businessId: string;
+  let accountId: string;
+  let repo: ConversationStateRepository;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId);
+    repo = new ConversationStateRepository(pool);
+  });
+
+  async function createChatAtStage(jid: string, stage: string | null): Promise<void> {
+    const chat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, chatJid: jid, jidKind: 'individual', chatType: 'individual',
+    });
+    if (stage) {
+      const state = await repo.getOrCreate(businessId, chat.id);
+      await repo.update(businessId, chat.id, state.version, { funnelStage: stage as never });
+    }
+  }
+
+  it('returns a real, zero-filled count per stage - every declared stage present, even at 0', async () => {
+    const counts = await repo.getFunnelStageCounts(businessId);
+    expect(counts.NEW).toBe(0);
+    expect(counts.BOOKED).toBe(0);
+    expect(Object.keys(counts)).toHaveLength(12);
+  });
+
+  it('counts real conversations grouped by their actual current funnel stage', async () => {
+    await createChatAtStage('15559993001@s.whatsapp.net', 'QUALIFIED');
+    await createChatAtStage('15559993002@s.whatsapp.net', 'QUALIFIED');
+    await createChatAtStage('15559993003@s.whatsapp.net', 'BOOKED');
+    await createChatAtStage('15559993004@s.whatsapp.net', null); // never reached a stage
+
+    const counts = await repo.getFunnelStageCounts(businessId);
+    expect(counts.QUALIFIED).toBe(2);
+    expect(counts.BOOKED).toBe(1);
+    expect(counts.NEW).toBe(0);
+  });
+
+  it('never counts another business\'s conversations (tenant isolation)', async () => {
+    const otherBusinessId = await createTestBusiness('Other Business');
+    const otherAccountId = await createTestAccount(otherBusinessId);
+    const otherChat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId: otherBusinessId, whatsappAccountId: otherAccountId, chatJid: '15559993005@s.whatsapp.net', jidKind: 'individual', chatType: 'individual',
+    });
+    const otherState = await new ConversationStateRepository(pool).getOrCreate(otherBusinessId, otherChat.id);
+    await new ConversationStateRepository(pool).update(otherBusinessId, otherChat.id, otherState.version, { funnelStage: 'BOOKED' as never });
+
+    const counts = await repo.getFunnelStageCounts(businessId);
+    expect(counts.BOOKED).toBe(0);
+  });
+});

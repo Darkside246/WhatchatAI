@@ -249,6 +249,48 @@ function MessageVolumeTrend() {
   );
 }
 
+/**
+ * Section 68 (Analytics) follow-up: a live count of where real
+ * conversations currently sit in the funnel - the closest thing to a
+ * funnel chart buildable on real data today. A snapshot, not a
+ * funnel-over-time chart: funnel_stage is overwritten in place, not
+ * logged as history (see conversationStateRepository.ts's own doc
+ * comment), so this can only ever answer "right now," not "how many
+ * entered/exited each stage this week."
+ */
+const FUNNEL_STAGE_ORDER = [
+  'NEW', 'CONVERSING', 'INTENT_IDENTIFIED', 'NEED_IDENTIFIED', 'QUALIFIED',
+  'SOLUTION_MATCHED', 'INTEREST_CONFIRMED', 'APPOINTMENT_OFFERED',
+  'APPOINTMENT_SELECTED', 'BOOKED', 'FOLLOW_UP', 'CUSTOMER',
+];
+const FUNNEL_STAGE_LABELS: Record<string, string> = {
+  NEW: 'New', CONVERSING: 'Conversing', INTENT_IDENTIFIED: 'Intent identified', NEED_IDENTIFIED: 'Need identified',
+  QUALIFIED: 'Qualified', SOLUTION_MATCHED: 'Solution matched', INTEREST_CONFIRMED: 'Interest confirmed',
+  APPOINTMENT_OFFERED: 'Appointment offered', APPOINTMENT_SELECTED: 'Appointment selected', BOOKED: 'Booked',
+  FOLLOW_UP: 'Follow-up', CUSTOMER: 'Customer',
+};
+
+function FunnelStageSnapshot() {
+  const [stages, setStages] = useState<Record<string, number> | null>(null);
+
+  useEffect(() => {
+    api.getFunnelSnapshot().then((res) => setStages(res.stages)).catch(() => setStages({}));
+  }, []);
+
+  if (stages === null) return <p className="text-caption text-fg-muted">Loading…</p>;
+  const total = Object.values(stages).reduce((sum, count) => sum + count, 0);
+  if (total === 0) return <p className="text-caption text-fg-muted">No conversation has reached a funnel stage yet.</p>;
+
+  const max = Math.max(1, ...Object.values(stages));
+  return (
+    <div className="space-y-1">
+      {FUNNEL_STAGE_ORDER.filter((stage) => (stages[stage] ?? 0) > 0).map((stage) => (
+        <HBar key={stage} label={FUNNEL_STAGE_LABELS[stage] ?? stage} value={stages[stage] ?? 0} max={max} color={C_ACCENT} />
+      ))}
+    </div>
+  );
+}
+
 // ── AI Mode badge ────────────────────────────────────────────────────────
 const AI_MODE_STYLE: Record<WorkspaceChatSummary['aiMode'], { label: string; color: string }> = {
   AI_ACTIVE:      { label: 'AI',    color: C_AI_ACTIVE },
@@ -600,6 +642,16 @@ export function DashboardRoute() {
           </p>
           <p className="mb-3 text-meta text-fg-muted">Real inbound vs outbound message counts, day by day</p>
           <MessageVolumeTrend />
+        </div>
+
+        {/* ── Funnel stage snapshot (Section 68 follow-up) ─────────── */}
+        <div className="mt-3 rounded-xl border border-border-subtle bg-surface-2 p-4">
+          <p className="mb-1 flex items-center gap-1.5 text-caption font-semibold text-fg-muted uppercase tracking-wide">
+            <TrendingUp size={13} aria-hidden />
+            Funnel stage snapshot
+          </p>
+          <p className="mb-3 text-meta text-fg-muted">Where real conversations sit right now, by stage</p>
+          <FunnelStageSnapshot />
         </div>
 
         {/* ── Breakdown row ──────────────────────────────────────── */}

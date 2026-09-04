@@ -270,6 +270,31 @@ export class ConversationStateRepository {
   }
 
   /**
+   * Section 68 (Analytics) follow-up: funnel_stage is a current-state
+   * snapshot, not a logged history (see this file's own doc comment on
+   * ConversationStateRecord.funnelStage) - this can only ever answer "how
+   * many conversations are in each stage right now," never a true
+   * funnel-over-time chart (entries/exits per stage per day), which would
+   * need a real history/event table this codebase doesn't have. A live
+   * snapshot is still real, useful signal on data that already exists -
+   * zero-filled so every stage is present even at 0, never a missing key
+   * the frontend has to guess a default for.
+   */
+  async getFunnelStageCounts(businessId: string): Promise<Record<ConversationFunnelStage, number>> {
+    const { rows } = await this.db.query<{ funnel_stage: ConversationFunnelStage; count: string }>(
+      `SELECT cs.funnel_stage, count(*)::text AS count
+       FROM conversation_states cs
+       JOIN whatsapp_chats wc ON wc.id = cs.chat_id AND wc.business_id = cs.business_id
+       WHERE cs.business_id = $1 AND cs.funnel_stage IS NOT NULL AND wc.deleted_at IS NULL
+       GROUP BY cs.funnel_stage`,
+      [businessId],
+    );
+    const counts = Object.fromEntries(CONVERSATION_FUNNEL_STAGES.map((stage) => [stage, 0])) as Record<ConversationFunnelStage, number>;
+    for (const row of rows) counts[row.funnel_stage] = Number(row.count);
+    return counts;
+  }
+
+  /**
    * Optimistic-concurrency patch: only the fields present in patch are
    * changed, and the write only lands if the row is still at
    * expectedVersion (the version the caller read before deciding what to

@@ -1242,6 +1242,8 @@ export const api = {
   /** Section 68: the same real inbound/outbound message signal getDashboard already aggregates, broken out per day for a real trend chart. */
   getMessageVolumeTrend: (days = 30) =>
     request<{ trend: { date: string; inbound: number; outbound: number }[] }>(`/workspace/dashboard/message-volume?days=${days}`),
+  /** Section 68 follow-up: a live count of real conversations in each funnel_stage right now - a snapshot, not a history-over-time chart (conversation_states overwrites its own funnel_stage, it doesn't log transitions). */
+  getFunnelSnapshot: () => request<{ stages: Record<string, number> }>('/workspace/dashboard/funnel-snapshot'),
   getOpenCommitments: () => request<{ commitments: AiCommitmentRecord[] }>('/workspace/commitments/open'),
   getApprovalPatternSuggestions: () => request<{ suggestions: ApprovalPatternSuggestion[] }>('/workspace/agents/approval-suggestions'),
   getNextBestActions: () => request<{ actions: NextBestAction[] }>('/workspace/next-best-actions'),

@@ -2065,6 +2065,13 @@ app.get('/api/workspace/dashboard/message-volume', requireWorkspaceContext, asyn
   return res.status(200).json({ trend });
 });
 
+/** Section 68 (Analytics) follow-up: a live snapshot of how many conversations sit in each real funnel_stage right now. */
+app.get('/api/workspace/dashboard/funnel-snapshot', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const stages = await workspaceService.getFunnelStageSnapshot(businessId);
+  return res.status(200).json({ stages });
+});
+
 app.get('/api/workspace/commitments/open', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const commitments = await workspaceService.getOpenCommitments(businessId);
