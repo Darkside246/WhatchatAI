@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
@@ -6,11 +6,24 @@ import { enqueueIncomingMessage, incomingMessagesQueue } from '../src/queue/queu
 import { incomingMessagesWorker } from '../src/queue/workers/incomingMessagesWorker.js';
 import type { IngestedWhatsAppMessage } from '../src/services/whatsappMessageIngestionService.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
+import { waitForIncomingMessageJob } from './waitForWorkerEvent.js';
 
 describe('incoming_messages BullMQ pipeline (real Redis queue + real worker + real Postgres)', () => {
   let businessId: string;
   let accountId: string;
   let accountJid: string;
+
+  /**
+   * AURA engineering directive, "Remove race conditions" (2026-09-04) -
+   * see the identical comment in aiReplyWorkerIntegration.test.ts. This
+   * file is frequently whichever file in the suite first imports (and so
+   * first triggers the connection startup of) the shared
+   * incomingMessagesQueue/Worker singletons, making it one of the two
+   * most exposed to the cold-start race this removes.
+   */
+  beforeAll(async () => {
+    await Promise.all([incomingMessagesWorker.waitUntilReady(), incomingMessagesQueue.waitUntilReady()]);
+  });
 
   beforeEach(async () => {
     await resetDatabase();
@@ -49,21 +62,11 @@ describe('incoming_messages BullMQ pipeline (real Redis queue + real worker + re
       ingestedAt: new Date().toISOString(),
     };
 
-    const completion = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timed out waiting for worker to process job')), 10_000);
-      incomingMessagesWorker.on('completed', function onCompleted(job) {
-        if (job.data.message.messageId !== messageId) return;
-        clearTimeout(timeout);
-        incomingMessagesWorker.off('completed', onCompleted);
-        resolve();
-      });
-      incomingMessagesWorker.on('failed', function onFailed(job, error) {
-        if (job?.data.message.messageId !== messageId) return;
-        clearTimeout(timeout);
-        incomingMessagesWorker.off('failed', onFailed);
-        reject(error);
-      });
-    });
+    // AURA engineering directive, "Remove race conditions" (2026-09-04):
+    // listener registered (inside waitForIncomingMessageJob) before the job
+    // is created below - see test/waitForWorkerEvent.ts for the leak-on-
+    // timeout bug this shared helper fixes over the previous inline copy.
+    const completion = waitForIncomingMessageJob(incomingMessagesWorker, messageId);
 
     await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid, message: ingested });
     await completion;

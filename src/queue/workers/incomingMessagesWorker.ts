@@ -1608,6 +1608,40 @@ installCrashSafetyHandlers('IncomingMessagesWorker', closeWorkers);
 console.log(`[IncomingMessagesWorker] Listening on queue "${INCOMING_MESSAGES_QUEUE}" (concurrency=${CONCURRENCY})`);
 console.log(`[RealtimeEventsWorker] Listening on queue "${REALTIME_EVENTS_QUEUE}" (concurrency=${CONCURRENCY})`);
 
+/**
+ * AURA engineering directive, "Remove race conditions" (2026-09-04):
+ * confirmed root cause of the aiReplyWorkerIntegration.test.ts flakiness
+ * investigated under this directive. Every one of these `upsertJobScheduler`
+ * calls registers a REAL, immediately-firing BullMQ repeatable job the
+ * moment this module is imported - which happens on every test file that
+ * imports this worker, well before that file's own beforeEach/resetDatabase
+ * has run. sweepStaleAiHandoff in particular queries across ALL AI_ACTIVE
+ * chats with unanswered messages with no test/business scoping, so its
+ * first, near-immediate firing picked up leftover chat rows from whatever
+ * ran in the shared whatchatai_test database just before it - not this
+ * test's own data - and enqueued real debounce/handoff work for them.
+ * Confirmed live via psql pg_stat_activity + a direct log capture
+ * ("[RealtimeEventsWorker] Re-armed AI debounce for 1 chat(s)...") firing
+ * before this file's first "Persisted message" log. That spurious job then
+ * competed for the same worker's concurrency slots as the test's own job
+ * and, sensitive to a chat found with an outcome the test itself was
+ * asserting against or a fk state deleted from under it. Because
+ * `incomingMessagesWorker.close()` waits for any active job to actually
+ * finish before resolving, its close() time (observed 17-27s here, vs
+ * ~2ms for a control BullMQ worker with nothing registered against it -
+ * see test/bullmqControl.test.ts) is real evidence a stray job, not the
+ * test's own, was still in flight.
+ *
+ * None of these sweeps have any reason to run automatically inside a test
+ * process: every one of them is exercised directly, deterministically, by
+ * its own dedicated unit/integration test (sweepStaleAiHandoff itself,
+ * media-download retry sweeps, etc.) - only the *automatic scheduling* is
+ * skipped here, not the underlying logic. NODE_ENV is set to 'test' only by
+ * vitest itself (confirmed: unset in dev, 'production' in prod - see
+ * src/server/index.ts's own existing NODE_ENV checks) so this can never
+ * affect a real deployment.
+ */
+if (process.env.NODE_ENV !== 'test') {
 // upsertJobScheduler is idempotent by scheduler id, so re-registering this on
 // every worker restart is safe and never creates duplicate schedules.
 void realtimeEventsQueue
@@ -1753,3 +1787,4 @@ void realtimeEventsQueue
     console.log(`[RealtimeEventsWorker] Scheduled writing-twin-raw-event-retention-sweep every ${WRITING_TWIN_RETENTION_SWEEP_INTERVAL_MS}ms`),
   )
   .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule writing-twin-raw-event-retention-sweep:', error.message));
+}

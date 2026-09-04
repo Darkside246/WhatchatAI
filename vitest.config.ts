@@ -17,6 +17,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     globalSetup: ['./test/globalSetup.ts'],
+    setupFiles: ['./test/setupFile.ts'],
     fileParallelism: false,
     testTimeout: 15_000,
     env: { REDIS_URL: testRedisUrl },

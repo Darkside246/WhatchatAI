@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { AiAgentRepository } from '../src/repositories/aiAgentRepository.js';
 import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
@@ -11,6 +11,7 @@ import { incomingMessagesWorker, realtimeEventsWorker } from '../src/queue/worke
 import type { IngestedWhatsAppMessage } from '../src/services/whatsappMessageIngestionService.js';
 import { AiUsageRepository } from '../src/repositories/aiUsageRepository.js';
 import { createTestAccount, createTestSubscription, resetDatabase } from './helpers.js';
+import { waitForWorkerEvent } from './waitForWorkerEvent.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
 
@@ -26,6 +27,31 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
   let ownerId: string;
   let accountId: string;
   let accountJid: string;
+
+  /**
+   * AURA engineering directive, "Remove race conditions" (2026-09-04):
+   * `new Worker(...)`/`new Queue(...)` return immediately, but their real
+   * Redis connection and (for a Worker) job-fetching loop start
+   * asynchronously in the background - importing this file's modules
+   * does not itself guarantee either is actually ready to move a job yet.
+   * A test that enqueues its very first job immediately after import (the
+   * common case: this file's very first `it()`) had an implicit,
+   * undeclared assumption that connection setup always finishes well
+   * within its promise's timeout - true on a lightly loaded machine, not
+   * guaranteed under real contention. `waitUntilReady()` is BullMQ's own
+   * real primitive for this exact problem; awaiting it once, for every
+   * queue/worker this file drives, before any test enqueues a job
+   * replaces that implicit assumption with a genuine, observable
+   * precondition.
+   */
+  beforeAll(async () => {
+    await Promise.all([
+      incomingMessagesWorker.waitUntilReady(),
+      realtimeEventsWorker.waitUntilReady(),
+      incomingMessagesQueue.waitUntilReady(),
+      realtimeEventsQueue.waitUntilReady(),
+    ]);
+  });
 
   beforeEach(async () => {
     await resetDatabase();
@@ -55,6 +81,16 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
    * persisted, and the debounce round for this business actually ran to
    * completion, so assertions below see the real, final outcome rather
    * than racing ahead of it.
+   *
+   * The two waits are deliberately sequenced, not both started upfront:
+   * the debounce round is a real causal consequence of the message having
+   * persisted, so a caller has no reason to be waiting for it before that
+   * happened - constructing both eagerly (the previous shape) meant a
+   * `persisted` timeout left `debounced`'s own already-ticking timer
+   * orphaned with nothing left awaiting it, a genuine unhandled promise
+   * rejection that crashed the whole worker process via its own global
+   * handler. Sequencing removes the race at its root instead of papering
+   * over the symptom with a no-op `.catch()`.
    */
   async function sendInboundAndWaitForAiHandoff(messageId: string, textPreview: string, remoteJid = '15550003333@s.whatsapp.net'): Promise<void> {
     const ingested: IngestedWhatsAppMessage = {
@@ -86,50 +122,37 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
       ingestedAt: new Date().toISOString(),
     };
 
-    const persisted = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timed out waiting for worker to process job')), 10_000);
-      incomingMessagesWorker.on('completed', function onCompleted(job) {
-        if (job.data.message.messageId !== messageId) return;
-        clearTimeout(timeout);
-        incomingMessagesWorker.off('completed', onCompleted);
-        resolve();
-      });
-      incomingMessagesWorker.on('failed', function onFailed(job, error) {
-        if (job?.data.message.messageId !== messageId) return;
-        clearTimeout(timeout);
-        incomingMessagesWorker.off('failed', onFailed);
-        reject(error);
-      });
-    });
-
-    // Scoped by businessId (fresh per test via resetDatabase + register),
-    // not messageId, since the debounce job's own payload never carries
-    // message content - only "check this business's chat now".
-    const debounced = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timed out waiting for AI debounce round to fire')), 20_000);
-      realtimeEventsWorker.on('completed', function onCompleted(job) {
-        if (job.name !== 'ai-debounce' || job.data.businessId !== businessId) return;
-        clearTimeout(timeout);
-        realtimeEventsWorker.off('completed', onCompleted);
-        resolve();
-      });
-    });
-
-    // Both promises' timers start immediately and are awaited sequentially
-    // below - if `persisted` rejects/times out first (a real scenario: a
-    // chat already in HUMAN_TAKEOVER from an earlier message in the same
-    // test never gets a new debounce round scheduled at all, so a caller
-    // who still awaits `debounced` after that would hang for the full 20s),
-    // `debounced`'s own still-running timer fires later with nothing left
-    // awaiting it - a genuine unhandled rejection that crashes the whole
-    // worker process via its own global handler, not just this one test.
-    // This no-op catch marks it "handled" for Node's detector without
-    // changing what the real `await debounced` below sees.
-    debounced.catch(() => {});
+    // Listeners are registered (inside waitForWorkerEvent, called next)
+    // before the job is created below - never the other way around, which
+    // would risk missing a fast completion entirely.
+    const persisted = waitForWorkerEvent(
+      incomingMessagesWorker,
+      (job) => (job.data as { message: { messageId: string } }).message.messageId === messageId,
+      10_000,
+      'Timed out waiting for worker to process job',
+      (job) => (job?.data as { message: { messageId: string } } | undefined)?.message.messageId === messageId,
+    );
 
     await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid, message: ingested });
     await persisted;
-    await debounced;
+
+    // Only started once the raw message has actually persisted - a real
+    // causal sequence, not two independent races. A chat already in
+    // HUMAN_TAKEOVER from an earlier message in the same test never gets a
+    // new debounce round scheduled at all (needsAiHandoff in
+    // incomingMessagesWorker.ts requires ai_mode AI_ACTIVE) - callers that
+    // hit that case should use a different contact/chat per message, not
+    // rely on this wait timing out gracefully.
+    //
+    // Scoped by businessId (fresh per test via resetDatabase + register),
+    // not messageId, since the debounce job's own payload never carries
+    // message content - only "check this business's chat now".
+    await waitForWorkerEvent(
+      realtimeEventsWorker,
+      (job) => (job as { name: string; data: { businessId: string } }).name === 'ai-debounce' && (job as { data: { businessId: string } }).data.businessId === businessId,
+      20_000,
+      'Timed out waiting for AI debounce round to fire',
+    );
   }
 
   it('never fabricates an outbound send when the business has no active AI agent configured', async () => {

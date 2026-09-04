@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { register } from '../src/services/authService.js';
 import { generatePinSalt, hashPin } from '../src/services/operator/operatorCommandService.js';
@@ -8,6 +8,7 @@ import { realtimeEventsQueue } from '../src/queue/queues/realtimeEventsQueue.js'
 import { incomingMessagesWorker, realtimeEventsWorker } from '../src/queue/workers/incomingMessagesWorker.js';
 import type { IngestedWhatsAppMessage } from '../src/services/whatsappMessageIngestionService.js';
 import { createTestAccount, resetDatabase } from './helpers.js';
+import { waitForIncomingMessageJob } from './waitForWorkerEvent.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
 const ACCOUNT_JID = '12461234567@s.whatsapp.net';
@@ -25,6 +26,19 @@ const ACCOUNT_JID = '12461234567@s.whatsapp.net';
 describe('operator self-chat routing (real BullMQ worker + real Postgres)', () => {
   let businessId: string;
   let accountId: string;
+
+  /**
+   * AURA engineering directive, "Remove race conditions" (2026-09-04) -
+   * see the identical comment in aiReplyWorkerIntegration.test.ts.
+   */
+  beforeAll(async () => {
+    await Promise.all([
+      incomingMessagesWorker.waitUntilReady(),
+      realtimeEventsWorker.waitUntilReady(),
+      incomingMessagesQueue.waitUntilReady(),
+      realtimeEventsQueue.waitUntilReady(),
+    ]);
+  });
 
   beforeEach(async () => {
     await resetDatabase();
@@ -83,21 +97,11 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
       ingestedAt: new Date().toISOString(),
     };
 
-    const completed = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timed out waiting for worker to process job')), 10_000);
-      incomingMessagesWorker.on('completed', function onCompleted(job) {
-        if (job.data.message.messageId !== messageId) return;
-        clearTimeout(timeout);
-        incomingMessagesWorker.off('completed', onCompleted);
-        resolve();
-      });
-      incomingMessagesWorker.on('failed', function onFailed(job, error) {
-        if (job?.data.message.messageId !== messageId) return;
-        clearTimeout(timeout);
-        incomingMessagesWorker.off('failed', onFailed);
-        reject(error);
-      });
-    });
+    // AURA engineering directive, "Remove race conditions" (2026-09-04):
+    // see test/waitForWorkerEvent.ts - this replaces 5 identical inline
+    // copies in this file, each of which leaked its 'completed'/'failed'
+    // listeners on the timeout path.
+    const completed = waitForIncomingMessageJob(incomingMessagesWorker, messageId);
 
     await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid: ACCOUNT_JID, message: ingested });
     await completed;
@@ -150,21 +154,11 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
       ingestedAt: new Date().toISOString(),
     };
 
-    const completed = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timed out waiting for worker to process job')), 10_000);
-      incomingMessagesWorker.on('completed', function onCompleted(job) {
-        if (job.data.message.messageId !== messageId) return;
-        clearTimeout(timeout);
-        incomingMessagesWorker.off('completed', onCompleted);
-        resolve();
-      });
-      incomingMessagesWorker.on('failed', function onFailed(job, error) {
-        if (job?.data.message.messageId !== messageId) return;
-        clearTimeout(timeout);
-        incomingMessagesWorker.off('failed', onFailed);
-        reject(error);
-      });
-    });
+    // AURA engineering directive, "Remove race conditions" (2026-09-04):
+    // see test/waitForWorkerEvent.ts - this replaces 5 identical inline
+    // copies in this file, each of which leaked its 'completed'/'failed'
+    // listeners on the timeout path.
+    const completed = waitForIncomingMessageJob(incomingMessagesWorker, messageId);
 
     await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid: ACCOUNT_JID, message: ingested });
     await completed;
@@ -198,21 +192,11 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
       ingestedAt: new Date().toISOString(),
     };
 
-    const completed = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timed out waiting for worker to process job')), 10_000);
-      incomingMessagesWorker.on('completed', function onCompleted(job) {
-        if (job.data.message.messageId !== messageId) return;
-        clearTimeout(timeout);
-        incomingMessagesWorker.off('completed', onCompleted);
-        resolve();
-      });
-      incomingMessagesWorker.on('failed', function onFailed(job, error) {
-        if (job?.data.message.messageId !== messageId) return;
-        clearTimeout(timeout);
-        incomingMessagesWorker.off('failed', onFailed);
-        reject(error);
-      });
-    });
+    // AURA engineering directive, "Remove race conditions" (2026-09-04):
+    // see test/waitForWorkerEvent.ts - this replaces 5 identical inline
+    // copies in this file, each of which leaked its 'completed'/'failed'
+    // listeners on the timeout path.
+    const completed = waitForIncomingMessageJob(incomingMessagesWorker, messageId);
 
     await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid: ACCOUNT_JID, message: ingested });
     await completed;
@@ -261,21 +245,11 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
       ingestedAt: new Date().toISOString(),
     };
 
-    const completed = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timed out waiting for worker to process job')), 10_000);
-      incomingMessagesWorker.on('completed', function onCompleted(job) {
-        if (job.data.message.messageId !== messageId) return;
-        clearTimeout(timeout);
-        incomingMessagesWorker.off('completed', onCompleted);
-        resolve();
-      });
-      incomingMessagesWorker.on('failed', function onFailed(job, error) {
-        if (job?.data.message.messageId !== messageId) return;
-        clearTimeout(timeout);
-        incomingMessagesWorker.off('failed', onFailed);
-        reject(error);
-      });
-    });
+    // AURA engineering directive, "Remove race conditions" (2026-09-04):
+    // see test/waitForWorkerEvent.ts - this replaces 5 identical inline
+    // copies in this file, each of which leaked its 'completed'/'failed'
+    // listeners on the timeout path.
+    const completed = waitForIncomingMessageJob(incomingMessagesWorker, messageId);
 
     await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid: ACCOUNT_JID, message: ingested });
     await completed;
@@ -318,21 +292,11 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
       ingestedAt: new Date().toISOString(),
     };
 
-    const completed = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timed out waiting for worker to process job')), 10_000);
-      incomingMessagesWorker.on('completed', function onCompleted(job) {
-        if (job.data.message.messageId !== messageId) return;
-        clearTimeout(timeout);
-        incomingMessagesWorker.off('completed', onCompleted);
-        resolve();
-      });
-      incomingMessagesWorker.on('failed', function onFailed(job, error) {
-        if (job?.data.message.messageId !== messageId) return;
-        clearTimeout(timeout);
-        incomingMessagesWorker.off('failed', onFailed);
-        reject(error);
-      });
-    });
+    // AURA engineering directive, "Remove race conditions" (2026-09-04):
+    // see test/waitForWorkerEvent.ts - this replaces 5 identical inline
+    // copies in this file, each of which leaked its 'completed'/'failed'
+    // listeners on the timeout path.
+    const completed = waitForIncomingMessageJob(incomingMessagesWorker, messageId);
 
     await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid: ACCOUNT_JID, message: ingested });
     await completed;
