@@ -66,8 +66,10 @@ describe('agentGuard / AI Security Governor (real Postgres tenant, actor, and ra
     );
     expect(listRegisteredTools().map((tool) => tool.name).sort()).toEqual([
       'check_property_status',
+      'check_retail_order_status',
       'get_current_time',
       'list_properties',
+      'list_retail_products',
       'schedule_google_meet',
       'schedule_zoom_meeting',
       'update_conversation_memory',

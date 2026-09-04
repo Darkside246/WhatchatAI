@@ -63,6 +63,7 @@ import { ReminderRepository } from '../../repositories/reminderRepository.js';
 import { ScheduledMeetingsRepository } from '../../repositories/scheduledMeetingsRepository.js';
 import { initializePlatformFoundation } from '../../services/platform/platformBootstrap.js';
 import { runPropertyMaintenanceHandoff } from '../../services/property/propertyMaintenanceOrchestrator.js';
+import { runRetailOrderHandoff } from '../../services/retail/retailOrderOrchestrator.js';
 import { evaluateGroupParticipationGate, type GroupParticipationGateResult } from '../../services/ai/groupParticipationGate.js';
 // Runs here, not in server/index.ts: that process owns the live Baileys
 // socket AND sends every outbound message, so it is exactly the event loop
@@ -388,6 +389,41 @@ async function runAiHandoff(params: {
     }
   } catch (err) {
     console.error('[IncomingMessagesWorker] Property maintenance handoff failed, falling back to generic AI reply:', err instanceof Error ? err.message : err);
+  }
+
+  // Same shape as the property maintenance handoff above: runs the full
+  // WhatsApp -> triage -> ActionRequest -> approval -> order -> audit loop
+  // for any business with an operational retail account, before the
+  // generic AI reply - a business with no retail account, or with the
+  // skill disabled, falls straight through unchanged. See
+  // retailOrderOrchestrator.ts.
+  try {
+    const retail = await runRetailOrderHandoff({
+      businessId,
+      chatId,
+      conversationAddress: senderJid ?? contactId ?? 'unknown',
+      queryText,
+    });
+    if (retail.kind === 'handled') {
+      const fallbackText = 'Thanks for reaching out — I’ve flagged this for our team and they’ll follow up shortly.';
+      try {
+        await whatsappOutboundMessageService.send({
+          businessId,
+          whatsappAccountId,
+          chatId,
+          idempotencyKey: `retail-order-reply:${messageId}`,
+          messageType: 'text',
+          text: retail.replyText ?? fallbackText,
+          requestedBy: 'ai',
+        });
+        if (isGroup) await chatRepository.markAiGroupReplySent(chatId);
+      } catch (err) {
+        console.error('[IncomingMessagesWorker] Retail order reply failed to send:', err instanceof Error ? err.message : err);
+      }
+      return;
+    }
+  } catch (err) {
+    console.error('[IncomingMessagesWorker] Retail order handoff failed, falling back to generic AI reply:', err instanceof Error ? err.message : err);
   }
 
   const outcome = await orchestrateAiReply({ businessId, chatId, contactId, queryText, mediaId });

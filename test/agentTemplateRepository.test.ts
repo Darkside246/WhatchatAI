@@ -14,7 +14,7 @@ describe('AgentTemplateRepository (real Postgres, seeded by migration 951)', () 
     const repo = new AgentTemplateRepository(pool);
     const templates = await repo.listAll();
 
-    expect(templates.map((t) => t.templateKey).sort()).toEqual(['personal_assistant', 'property_operations_assistant']);
+    expect(templates.map((t) => t.templateKey).sort()).toEqual(['personal_assistant', 'property_operations_assistant', 'retail_operations_assistant']);
     for (const template of templates) {
       // Every recommended tool must be a real, registered tool name - never
       // a capability that isn't actually implemented.
@@ -43,6 +43,16 @@ describe('AgentTemplateRepository (real Postgres, seeded by migration 951)', () 
       'list_properties',
       'check_property_status',
     ]);
+
+    // Migration 973: shipped instruction and recommended_tools together in
+    // one migration from the start, unlike property's 951->953->972 drift.
+    const retailAssistant = templates.find((t) => t.templateKey === 'retail_operations_assistant');
+    expect(retailAssistant?.recommendedTools).toEqual([
+      'get_current_time',
+      'update_conversation_memory',
+      'list_retail_products',
+      'check_retail_order_status',
+    ]);
   });
 
   it('findByKey returns the real matching template, and null for an unknown key', async () => {
@@ -55,6 +65,11 @@ describe('AgentTemplateRepository (real Postgres, seeded by migration 951)', () 
     expect(property?.defaultTriggerKeywords).toEqual(['viewing', 'maintenance', 'appointment', 'inspection']);
 
     expect(await repo.findByKey('does_not_exist')).toBeNull();
+
+    const retail = await repo.findByKey('retail_operations_assistant');
+    expect(retail?.role).toBe('Retail Operations Assistant');
+    expect(retail?.category).toBe('commerce');
+    expect(retail?.defaultTriggerKeywords).toEqual(['order', 'buy', 'price', 'stock', 'delivery', 'pickup']);
   });
 
   /**

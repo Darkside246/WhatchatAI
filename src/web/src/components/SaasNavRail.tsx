@@ -19,6 +19,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/agents',              label: 'AI Agents',          icon: Bot },
     { to: '/crm',                 label: 'CRM & Leads',        icon: Contact },
     { to: '/property-operations', label: 'Property Ops',       icon: Building2 },
+    { to: '/retail-operations',   label: 'Retail Ops',         icon: ShoppingBag },
     { to: '/invoices',            label: 'Invoices',           icon: Receipt },
     { to: '/automations',         label: 'Automations',        icon: Zap },
     { to: '/marketing',           label: 'Marketing',          icon: Megaphone },

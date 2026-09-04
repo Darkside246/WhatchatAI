@@ -56,6 +56,19 @@ const AI_TOOL_POLICY: Record<string, AiToolPolicyEntry> = {
       'Resolves a customer-described property reference to a real property and reports its open incidents/work ' +
       'order status. Read-only - creates nothing.',
   },
+  list_retail_products: {
+    name: 'list_retail_products',
+    risk: 'READ',
+    description:
+      'Lists this business\'s real products from RetailOperationsRepository. No arguments, no side effect.',
+  },
+  check_retail_order_status: {
+    name: 'check_retail_order_status',
+    risk: 'READ',
+    description:
+      'Resolves a customer-described order reference, scoped to that customer\'s own orders, and reports its real ' +
+      'status. Read-only - creates nothing.',
+  },
 };
 
 export function getToolPolicy(toolName: string): AiToolPolicyEntry | null {

@@ -23,6 +23,9 @@ import type { ActionRequest } from '../domain/platform/contracts.js';
 import type { MeetingProvider } from './meeting/meetingProvider.js';
 import { LIST_PROPERTIES_TOOL_NAME, listPropertiesFunctionDeclaration } from './property/listPropertiesTool.js';
 import { CHECK_PROPERTY_STATUS_TOOL_NAME, checkPropertyStatusFunctionDeclaration, type CheckPropertyStatusToolArgs } from './property/checkPropertyStatusTool.js';
+import { LIST_RETAIL_PRODUCTS_TOOL_NAME, listRetailProductsFunctionDeclaration } from './retail/listRetailProductsTool.js';
+import { CHECK_RETAIL_ORDER_STATUS_TOOL_NAME, checkRetailOrderStatusFunctionDeclaration, type CheckRetailOrderStatusToolArgs } from './retail/checkRetailOrderStatusTool.js';
+import { RetailOperationsRepository } from '../repositories/retailOperationsRepository.js';
 import { PropertyOperationsRepository } from '../repositories/propertyOperationsRepository.js';
 import { PropertyConversationBindingRepository } from '../repositories/propertyConversationBindingRepository.js';
 import { getGeminiCircuitBreaker, getGeminiConfigCircuitBreaker } from './aiCircuitBreaker.js';
@@ -42,6 +45,7 @@ const conversationStateRepository = new ConversationStateRepository(pool);
 const customerMemoryRepository = new CustomerMemoryRepository(pool);
 const propertyOperationsRepository = new PropertyOperationsRepository(pool);
 const propertyConversationBindingRepository = new PropertyConversationBindingRepository(pool);
+const retailOperationsRepository = new RetailOperationsRepository(pool);
 const aiUsageRepository = new AiUsageRepository(pool);
 const aiCommitmentRepository = new AiCommitmentRepository(pool);
 
@@ -256,11 +260,12 @@ const MAX_REPLY_CHARS = 2000;
  * "never offer a tool with nothing real behind it" rule as the meeting
  * tools above, not a property-vertical-only allowlist.
  */
-function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: AiAgentRecord, aiActionsPaused: boolean, hasPropertyData: boolean) {
+function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: AiAgentRecord, aiActionsPaused: boolean, hasPropertyData: boolean, hasRetailData: boolean) {
   let functionDeclarations = [getCurrentTimeFunctionDeclaration, updateConversationStateFunctionDeclaration];
   if (connectedMeetingProviders.includes('google_meet')) functionDeclarations.push(scheduleMeetingFunctionDeclaration);
   if (connectedMeetingProviders.includes('zoom')) functionDeclarations.push(scheduleZoomMeetingFunctionDeclaration);
   if (hasPropertyData) functionDeclarations.push(listPropertiesFunctionDeclaration, checkPropertyStatusFunctionDeclaration);
+  if (hasRetailData) functionDeclarations.push(listRetailProductsFunctionDeclaration, checkRetailOrderStatusFunctionDeclaration);
   // Defensive against undefined, not just empty: allowedTools/forbiddenTools
   // are required on AiAgentRecord, but test/ isn't covered by
   // npm run typecheck (see tsconfig.json's include), so an older fakeAgent()
@@ -686,7 +691,9 @@ async function executeOneToolCall(
     call.name !== SCHEDULE_MEETING_TOOL_NAME &&
     call.name !== SCHEDULE_ZOOM_MEETING_TOOL_NAME &&
     call.name !== LIST_PROPERTIES_TOOL_NAME &&
-    call.name !== CHECK_PROPERTY_STATUS_TOOL_NAME
+    call.name !== CHECK_PROPERTY_STATUS_TOOL_NAME &&
+    call.name !== LIST_RETAIL_PRODUCTS_TOOL_NAME &&
+    call.name !== CHECK_RETAIL_ORDER_STATUS_TOOL_NAME
   ) {
     // Fails closed on any tool name this codebase did not explicitly
     // register (defense in depth beyond the declared tools above) - never
@@ -834,6 +841,14 @@ async function executeOneToolCall(
     };
   }
 
+  if (call.name === LIST_RETAIL_PRODUCTS_TOOL_NAME) {
+    return executeListRetailProducts(context);
+  }
+
+  if (call.name === CHECK_RETAIL_ORDER_STATUS_TOOL_NAME) {
+    return executeCheckRetailOrderStatus(call, context);
+  }
+
   // CHECK_PROPERTY_STATUS_TOOL_NAME from here - the only remaining
   // registered tool name (the allowlist check at the top of this function
   // guarantees call.name is one of the handled cases). Read-only: resolves
@@ -902,6 +917,72 @@ async function executeOneToolCall(
   );
 
   return { found: true, property: { name: property.name, status: property.status }, openIncidents: incidentSummaries };
+}
+
+/**
+ * Retail's analogue to executeOneToolCall's two property branches above,
+ * called from the same function - see listRetailProductsTool.ts /
+ * checkRetailOrderStatusTool.ts for the tool declarations and their own
+ * scoping doc comments.
+ */
+async function executeListRetailProducts(context: AiHandoffContext): Promise<Record<string, unknown>> {
+  const products = await retailOperationsRepository.listProducts(context.businessId);
+  return {
+    products: products.map((product) => ({
+      name: product.name,
+      category: product.category,
+      priceCents: product.priceCents,
+      currency: product.currency,
+      inStock: product.stockQuantity === null || product.stockQuantity > 0,
+    })),
+  };
+}
+
+/**
+ * Section 75-91-style anti-probing safeguard (retail's version of
+ * check_property_status's property-binding scope): filters to THIS
+ * customer's own orders (context.customerId) before ever looking at the
+ * free-text orderReference argument, so a customer can never read back a
+ * different customer's real order just by guessing a reference. Returns
+ * found:false honestly (never guesses) when no customer could be resolved
+ * for this chat, when that customer has no orders, or when the reference
+ * doesn't uniquely match one of them.
+ */
+async function executeCheckRetailOrderStatus(call: FunctionCall, context: AiHandoffContext): Promise<Record<string, unknown>> {
+  if (!context.customerId) {
+    return { found: false, reason: 'no_customer_identity' };
+  }
+  const args = (call.args ?? {}) as unknown as CheckRetailOrderStatusToolArgs;
+  if (!args.orderReference) {
+    return { found: false, reason: 'missing_order_reference' };
+  }
+  const allOrders = await retailOperationsRepository.listOrders(context.businessId);
+  const customerOrders = allOrders.filter((order) => order.customerContactId === context.customerId);
+  if (customerOrders.length === 0) {
+    return { found: false, reason: 'no_match' };
+  }
+  const ref = args.orderReference.trim().toLowerCase();
+  const matches = customerOrders.filter((order) =>
+    order.id.toLowerCase().includes(ref) ||
+    order.items.some((item) => item.name.toLowerCase().includes(ref)),
+  );
+  const candidates = matches.length > 0 ? matches : customerOrders;
+  if (candidates.length > 1 && matches.length !== 1) {
+    return { found: false, reason: 'ambiguous' };
+  }
+  const order = candidates[0]!;
+  return {
+    found: true,
+    order: {
+      status: order.status,
+      items: order.items.map((item) => ({ name: item.name, quantity: item.quantity })),
+      totalCents: order.totalCents,
+      currency: order.currency,
+      fulfillmentMethod: order.fulfillmentMethod,
+      placedAt: order.createdAt as unknown as string,
+      fulfilledAt: order.fulfilledAt as unknown as string | null,
+    },
+  };
 }
 
 /**
@@ -998,7 +1079,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
           // rather than just making it less likely.
           thinkingConfig: { thinkingBudget: 0 },
           maxOutputTokens: 1024,
-          tools: buildReplyTools(context.connectedMeetingProviders ?? [], agent, context.aiActionsPaused ?? false, context.hasPropertyData ?? false),
+          tools: buildReplyTools(context.connectedMeetingProviders ?? [], agent, context.aiActionsPaused ?? false, context.hasPropertyData ?? false, context.hasRetailData ?? false),
         },
       });
       await recordAiUsage(model, 'primary', response, agent, context);

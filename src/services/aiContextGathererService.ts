@@ -14,6 +14,7 @@ import { GoogleMeetingRepository } from '../repositories/googleMeetingRepository
 import { ZoomMeetingRepository } from '../repositories/zoomMeetingRepository.js';
 import type { MeetingProvider } from './meeting/meetingProvider.js';
 import { PropertyOperationsRepository } from '../repositories/propertyOperationsRepository.js';
+import { RetailOperationsRepository } from '../repositories/retailOperationsRepository.js';
 
 export interface GatherAiHandoffContextInput {
   businessId: string;
@@ -80,6 +81,8 @@ export interface AiHandoffContext {
    * empty result.
    */
   hasPropertyData: boolean;
+  /** Same "never offer a tool with nothing real behind it" rule as hasPropertyData above, gating list_retail_products/check_retail_order_status. */
+  hasRetailData: boolean;
   /**
    * Emergency "Stop All Agents" kill switch (businesses.ai_actions_paused).
    * The authoritative enforcement is agentGuard.ts's guardToolInvocation -
@@ -132,6 +135,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
   const googleMeetingRepository = new GoogleMeetingRepository(pool);
   const zoomMeetingRepository = new ZoomMeetingRepository(pool);
   const propertyOperationsRepository = new PropertyOperationsRepository(pool);
+  const retailOperationsRepository = new RetailOperationsRepository(pool);
 
   // A single, fast indexed lookup - resolved before the main batch below
   // since whether/what to fetch for customerMemory depends on it. null for
@@ -142,7 +146,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     ? await customerIdentityRepository.findCustomerIdByIdentity(input.businessId, 'whatsapp', 'whatsapp_contact_id', input.contactId)
     : null;
 
-  const [crmContact, whatsappContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState, customerMemory, googleMeetingConnection, zoomMeetingConnection, properties] = await Promise.all([
+  const [crmContact, whatsappContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState, customerMemory, googleMeetingConnection, zoomMeetingConnection, properties, products] = await Promise.all([
     input.contactId
       ? crmContactRepository.findByWhatsAppContact(input.businessId, input.contactId)
       : Promise.resolve(null),
@@ -166,6 +170,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     googleMeetingRepository.getConnectionByBusiness(input.businessId),
     zoomMeetingRepository.getConnectionByBusiness(input.businessId),
     propertyOperationsRepository.listProperties(input.businessId),
+    retailOperationsRepository.listProducts(input.businessId),
   ]);
 
   const businessTimezone = resolveBusinessTimezone({ timezone: business?.timezone ?? null });
@@ -191,6 +196,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     media,
     connectedMeetingProviders,
     hasPropertyData: properties.length > 0,
+    hasRetailData: products.length > 0,
     aiActionsPaused: business?.aiActionsPaused ?? false,
     // Guarded on either source existing, not just whatsappContact - a
     // staff-confirmed name (crmContact) must still resolve even in the

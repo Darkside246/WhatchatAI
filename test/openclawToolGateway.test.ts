@@ -223,12 +223,13 @@ describe('OpenClawToolGateway - update_lead adversarial acceptance suite', () =>
   it('leaves the existing Gemini-facing tool policy completely untouched', () => {
     // The real count of registered Gemini-facing tools as of this session:
     // get_current_time, update_conversation_memory, schedule_google_meet,
-    // schedule_zoom_meeting, list_properties, check_property_status. This
-    // assertion exists to prove the OpenClaw gateway's own tool set below
-    // never leaks into the shared registry the live Gemini path reads -
-    // update this count deliberately (not by weakening it) whenever a new
-    // tool is legitimately registered in aiToolPolicy.ts.
-    expect(listRegisteredTools()).toHaveLength(6);
+    // schedule_zoom_meeting, list_properties, check_property_status,
+    // list_retail_products, check_retail_order_status. This assertion
+    // exists to prove the OpenClaw gateway's own tool set below never
+    // leaks into the shared registry the live Gemini path reads - update
+    // this count deliberately (not by weakening it) whenever a new tool is
+    // legitimately registered in aiToolPolicy.ts.
+    expect(listRegisteredTools()).toHaveLength(8);
     expect(isToolRegistered('get_current_time')).toBe(true);
     expect(isToolRegistered('update_lead')).toBe(false); // never added to the SHARED registry the live Gemini path reads
   });

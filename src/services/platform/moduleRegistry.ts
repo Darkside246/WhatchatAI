@@ -48,3 +48,14 @@ export const propertyOperationsModule: ModuleManifest = {
   routePrefix: '/property-operations',
   enabledByDefault: false,
 };
+
+export const retailOperationsModule: ModuleManifest = {
+  id: 'retail.operations',
+  version: '1.0.0',
+  name: 'Retail Operations',
+  description: 'Operational workflows for retail product catalog, order intake and fulfillment.',
+  entitlements: ['retail.operations'],
+  skillIds: ['retail.order.triage'],
+  routePrefix: '/retail-operations',
+  enabledByDefault: false,
+};

@@ -33,3 +33,16 @@ export const propertyMaintenanceTriageSkill: SkillManifest = {
   supportedChannels: ['WHATSAPP', 'VOICE', 'SMS'],
   enabled: false,
 };
+
+export const retailOrderTriageSkill: SkillManifest = {
+  id: 'retail.order.triage', version: '1.0.0', name: 'Retail Order Triage',
+  description: 'Classifies inbound retail order communications and prepares bounded operational actions.',
+  capabilities: ['communication.interpret', 'retail.catalog.read', 'retail.order.classify'],
+  requiredTools: ['retail.product.read', 'retail.create_order'],
+  allowedActions: ['retail.create_order', 'retail.request_human_review'],
+  forbiddenActions: ['retail.issue_refund', 'payment.authorize', 'retail.price_override'],
+  requiresHumanApprovalFor: ['retail.create_order'],
+  maxRiskLevel: 'CRITICAL',
+  supportedChannels: ['WHATSAPP', 'VOICE', 'SMS'],
+  enabled: false,
+};

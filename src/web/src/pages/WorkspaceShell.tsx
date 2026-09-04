@@ -16,6 +16,7 @@ const MarketingRoute = lazy(() => import('./MarketingRoute.js').then((m) => ({ d
 const EmailRoute = lazy(() => import('./EmailRoute.js').then((m) => ({ default: m.EmailRoute })));
 const FunnelsRoute = lazy(() => import('./FunnelsRoute.js').then((m) => ({ default: m.FunnelsRoute })));
 const PropertyOperationsPage = lazy(() => import('./PropertyOperationsPage.js').then((m) => ({ default: m.PropertyOperationsPage })));
+const RetailOperationsPage = lazy(() => import('./RetailOperationsPage.js').then((m) => ({ default: m.RetailOperationsPage })));
 const ProductDashboardPage = lazy(() => import('./ProductDashboardPage.js').then((m) => ({ default: m.ProductDashboardPage })));
 const FoodOperationsPage = lazy(() => import('./FoodOperationsPage.js').then((m) => ({ default: m.FoodOperationsPage })));
 const PlaceholderPage = lazy(() => import('./PlaceholderPage.js').then((m) => ({ default: m.PlaceholderPage })));
@@ -42,7 +43,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
         <Route path="/food" element={<ProductDashboardPage product="food" />} />
         <Route path="/food/operations" element={<FoodOperationsPage />} />
         <Route path="/retail" element={<ProductDashboardPage product="retail" />} />
-        <Route path="/retail/operations" element={<PlaceholderPage title="Retail Operations" description="Orders, stock management and product catalogue — coming soon." />} />
+        <Route path="/retail/operations" element={<RetailOperationsPage />} />
         <Route path="/beauty" element={<ProductDashboardPage product="beauty" />} />
         <Route path="/beauty/operations" element={<PlaceholderPage title="Beauty & Bookings" description="Appointment calendar, services and client management — coming soon." />} />
         <Route path="/auto" element={<ProductDashboardPage product="auto" />} />
@@ -58,7 +59,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
         <Route path="/logistics" element={<ProductDashboardPage product="logistics" />} />
         <Route path="/logistics/operations" element={<PlaceholderPage title="Deliveries & Routes" description="Delivery tracking, route optimisation and driver dispatch — coming soon." />} />
         <Route path="/developer" element={<DeveloperControlPlanePage />} />
-        <Route path="/chats" element={<ChatsRoute />} /><Route path="/chats/:chatId" element={<ChatsRoute />} /><Route path="/agents" element={<AgentsPage />} /><Route path="/dashboard" element={<DashboardRoute />} /><Route path="/crm" element={<CrmRoute />} /><Route path="/property-operations" element={<PropertyOperationsPage />} /><Route path="/invoices" element={<InvoicesPage />} /><Route path="/activity-log" element={<ActivityLogPage />} /><Route path="/approvals" element={<ApprovalsPage />} /><Route path="/appointments" element={<AppointmentsPage />} /><Route path="/automations" element={<FunnelsRoute />} /><Route path="/marketing" element={<MarketingRoute />} /><Route path="/email" element={<EmailRoute />} /><Route path="/billing" element={<BillingRoute />} /><Route path="/settings" element={<SettingsRoute connection={connection} />} /><Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/chats" element={<ChatsRoute />} /><Route path="/chats/:chatId" element={<ChatsRoute />} /><Route path="/agents" element={<AgentsPage />} /><Route path="/dashboard" element={<DashboardRoute />} /><Route path="/crm" element={<CrmRoute />} /><Route path="/property-operations" element={<PropertyOperationsPage />} /><Route path="/retail-operations" element={<RetailOperationsPage />} /><Route path="/invoices" element={<InvoicesPage />} /><Route path="/activity-log" element={<ActivityLogPage />} /><Route path="/approvals" element={<ApprovalsPage />} /><Route path="/appointments" element={<AppointmentsPage />} /><Route path="/automations" element={<FunnelsRoute />} /><Route path="/marketing" element={<MarketingRoute />} /><Route path="/email" element={<EmailRoute />} /><Route path="/billing" element={<BillingRoute />} /><Route path="/settings" element={<SettingsRoute connection={connection} />} /><Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes></Suspense></div>
     </div></div><SaasNavBottomBar />
   </div>;
