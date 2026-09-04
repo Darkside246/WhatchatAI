@@ -196,6 +196,23 @@ export class WhatsAppTenantConnection {
    * creds.json - see connect()'s own comment).
    */
   private connectInFlight = false;
+  /**
+   * The phone number a phone-pairing flow is currently trying to link,
+   * kept alive across automatic reconnects. Real, confirmed bug this
+   * fixes: scheduleReconnect() and the loggedOut disconnect branch both
+   * call connect() with no arguments, and connect()'s own parameter was
+   * the only place this number ever lived - so the very first disconnect
+   * during the pairing-code-waiting window (Baileys' own registration
+   * handshake routinely closes and reopens the socket while waiting, see
+   * the repeated "not logged in, attempting registration..." log lines)
+   * silently dropped back to a plain QR-flavored connect() with no phone
+   * number and no code, in an endless loop that could never produce a
+   * pairing code the user could actually use. Cleared once real pairing
+   * succeeds (the 'open' handler below) or the user explicitly stops
+   * (disconnect()/logout()) - never carried into an ordinary, already-paired
+   * reconnect.
+   */
+  private lastPairingPhoneNumber: string | null = null;
   private persistedAccountId: string | null = null;
   private sessionDirPromise: Promise<string> | null = null;
   /**
@@ -390,6 +407,13 @@ export class WhatsAppTenantConnection {
    * (connect() with no arguments) is completely unaffected.
    */
   async connect(pairingPhoneNumberE164?: string): Promise<WhatsAppConnectionSnapshot> {
+    // Recorded before any of the early-return guards below so an explicit
+    // phone-pairing request is remembered even if this particular call
+    // turns out to be a no-op (e.g. a connect is already in flight) - the
+    // next scheduled reconnect still needs to know pairing-by-phone is
+    // what's wanted, not silently fall back to QR.
+    if (pairingPhoneNumberE164) this.lastPairingPhoneNumber = pairingPhoneNumberE164;
+
     if (this.isReady()) return this.getSnapshot();
 
     if (this.connectInFlight) return this.getSnapshot();
@@ -526,6 +550,7 @@ export class WhatsAppTenantConnection {
 
   async disconnect(): Promise<void> {
     this.clearReconnectTimer();
+    this.lastPairingPhoneNumber = null;
     const socket = this.socket;
     this.socket = null;
     this.listenersAttached = false;
@@ -555,6 +580,7 @@ export class WhatsAppTenantConnection {
 
   async logout(): Promise<void> {
     this.clearReconnectTimer();
+    this.lastPairingPhoneNumber = null;
     const socket = this.socket;
     this.socket = null;
     this.listenersAttached = false;
@@ -779,6 +805,9 @@ export class WhatsAppTenantConnection {
         const pushName = user?.name ?? null;
 
         this.reconnectAttempt = 0;
+        // A real pairing just succeeded, by whichever method - nothing left
+        // to remember for a future reconnect to retry.
+        this.lastPairingPhoneNumber = null;
         this.snapshot = {
           status: 'CONNECTED',
           connected: true,
@@ -867,7 +896,7 @@ export class WhatsAppTenantConnection {
           // fresh code the UI promises rather than leaving the account
           // stuck on "Generating a new code..." forever.
           await this.clearSessionState();
-          void this.connect().catch((error) => {
+          void this.connect(this.lastPairingPhoneNumber ?? undefined).catch((error) => {
             this.snapshot = {
               ...this.snapshot,
               status: 'ERROR',
@@ -1060,7 +1089,7 @@ export class WhatsAppTenantConnection {
     };
 
     this.reconnectTimer = setTimeout(() => {
-      void this.connect().catch((error) => {
+      void this.connect(this.lastPairingPhoneNumber ?? undefined).catch((error) => {
         this.snapshot = {
           ...this.snapshot,
           status: 'ERROR',
