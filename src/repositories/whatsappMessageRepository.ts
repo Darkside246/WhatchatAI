@@ -450,4 +450,13 @@ export class WhatsAppMessageRepository {
     }
     return result;
   }
+
+  /** Real, current count for this business - used by the WhatsApp "Change number" resync UI, never a fabricated progress figure. */
+  async countByBusiness(businessId: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM whatsapp_messages WHERE business_id = $1 AND deleted_at IS NULL`,
+      [businessId],
+    );
+    return Number(rows[0]?.count ?? '0');
+  }
 }

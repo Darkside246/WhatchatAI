@@ -4,10 +4,11 @@ import {
   Activity, Bot, CreditCard, Database, Gauge, KeyRound, Radio, ShieldCheck, Users,
   Building2, CookingPot, ShoppingBag, Scissors, Car, Stethoscope, Scale, Hotel,
   HardHat, Package, ChevronDown, ChevronRight, LayoutGrid, Check, HeartPulse, X, Coins,
-  Wallet, Save,
+  Wallet, Save, PlugZap,
 } from 'lucide-react';
-import { api, type DeveloperPlan, type PlanEntitlement } from '../lib/api.js';
+import { api, type DeveloperPlan, type PlanEntitlement, type IntegrationHealth } from '../lib/api.js';
 import { ToggleSwitch } from '../components/ToggleSwitch.js';
+import { IntegrationHealthList } from '../components/IntegrationHealthList.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -464,12 +465,14 @@ export function DeveloperControlPlanePage() {
   const [plans, setPlans] = useState<DeveloperPlan[]>([]);
   const [paymentProviders, setPaymentProviders] = useState<{ kind: string; configured: boolean; enabled: boolean }[]>([]);
   const [autonomyKillSwitch, setAutonomyKillSwitch] = useState<boolean | null>(null);
+  const [globalIntegrations, setGlobalIntegrations] = useState<IntegrationHealth | null>(null);
   const [catalogOpen, setCatalogOpen] = useState(true);
   const [accountsOpen, setAccountsOpen] = useState(true);
   const [healthOpen, setHealthOpen] = useState(true);
   const [aiUsageOpen, setAiUsageOpen] = useState(true);
   const [plansOpen, setPlansOpen] = useState(true);
   const [paymentProvidersOpen, setPaymentProvidersOpen] = useState(true);
+  const [integrationsOpen, setIntegrationsOpen] = useState(true);
 
   useEffect(() => {
     api.getControlPlaneStats().then((r) => setStats(r.stats)).catch(() => undefined);
@@ -480,6 +483,7 @@ export function DeveloperControlPlanePage() {
     api.listPlans().then((r) => setPlans(r.plans)).catch(() => undefined);
     api.listPaymentProviders().then((r) => setPaymentProviders(r.providers)).catch(() => undefined);
     api.getAutonomyKillSwitch().then((r) => setAutonomyKillSwitch(r.enabled)).catch(() => undefined);
+    api.getGlobalIntegrationStatus().then(setGlobalIntegrations).catch(() => undefined);
   }, []);
 
   const handleTogglePaymentProvider = async (kind: string, enabled: boolean) => {
@@ -678,6 +682,32 @@ export function DeveloperControlPlanePage() {
         </section>
 
         {/* ── Vertical catalog — collapsible hamburger group ── */}
+        {/* ── Global integration status (platform infra, not any one business's connections) ── */}
+        <section className="rounded-2xl border border-border-subtle bg-surface-1 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setIntegrationsOpen((o) => !o)}
+            className="flex w-full items-center gap-3 px-6 py-4 text-left hover:bg-surface-2 transition-colors"
+          >
+            <PlugZap size={18} className="shrink-0 text-accent" />
+            <span className="flex-1 text-title font-semibold">Integrations — Global Status</span>
+            <span className="text-caption text-fg-muted">
+              {globalIntegrations ? `${globalIntegrations.integrations.filter((i) => i.state === 'connected').length}/${globalIntegrations.integrations.length} configured` : '…'}
+            </span>
+            {integrationsOpen
+              ? <ChevronDown size={16} className="shrink-0 text-fg-muted" />
+              : <ChevronRight size={16} className="shrink-0 text-fg-muted" />}
+          </button>
+          {integrationsOpen && (
+            <div className="border-t border-border-subtle px-6 pb-6 pt-4">
+              <p className="mb-4 text-caption text-fg-secondary">
+                The platform's own integration infrastructure - whether each provider's server credentials are configured at all, not whether any one business is connected. Real per-business connections live on that business's own Integrations page.
+              </p>
+              {globalIntegrations ? <IntegrationHealthList health={globalIntegrations} compact /> : <p className="text-caption text-fg-muted">Loading…</p>}
+            </div>
+          )}
+        </section>
+
         <section className="rounded-2xl border border-border-subtle bg-surface-1 overflow-hidden">
           <button
             type="button"

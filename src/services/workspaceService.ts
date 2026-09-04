@@ -5,6 +5,7 @@ import { BusinessRepository, isValidTimezone, type BusinessRecord } from '../rep
 import { WhatsAppChatRepository, type ChatAiMode } from '../repositories/whatsappChatRepository.js';
 import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
 import { WhatsAppMessageRepository } from '../repositories/whatsappMessageRepository.js';
+import { WhatsAppGroupRepository } from '../repositories/whatsappGroupRepository.js';
 import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobRepository.js';
 import { CrmContactRepository, type UpdateCrmContactInput, type CrmContactWithContactInfo } from '../repositories/crmContactRepository.js';
 import { CustomerMemoryRepository, emptyCustomerMemory } from '../repositories/customerMemoryRepository.js';
@@ -450,6 +451,7 @@ export class WorkspaceService {
   private readonly chatRepository = new WhatsAppChatRepository(pool);
   private readonly contactRepository = new WhatsAppContactRepository(pool);
   private readonly messageRepository = new WhatsAppMessageRepository(pool);
+  private readonly groupRepository = new WhatsAppGroupRepository(pool);
   private readonly syncJobRepository = new WhatsAppSyncJobRepository(pool);
   private readonly crmContactRepository = new CrmContactRepository(pool);
   private readonly leadRepository = new LeadRepository(pool);
@@ -1413,6 +1415,91 @@ export class WorkspaceService {
     }
 
     return { integrations };
+  }
+
+  /**
+   * The developer/global counterpart to getIntegrationHealth() above - a
+   * genuinely different question. That method answers "is business X
+   * connected to each service"; this answers "is the platform's own
+   * infrastructure for each service configured at all", with no businessId
+   * involved. Reuses the exact same underlying checks (never a second,
+   * competing detection) - just the global half of each one, skipping the
+   * per-tenant connection lookups entirely. WhatsApp is deliberately
+   * excluded: it has no platform-level OAuth app or API credential of its
+   * own to be "configured" - every WhatsApp session is a per-tenant
+   * Baileys pairing, which is exactly what the per-business
+   * getIntegrationHealth() view already covers honestly.
+   */
+  async getGlobalIntegrationStatus(): Promise<IntegrationHealth> {
+    const [aiEngineStatus, paymentProviders] = await Promise.all([
+      getAiEngineStatus(),
+      Promise.all(
+        PAYMENT_PROVIDER_KINDS.map(async (kind) => ({ kind, configured: isProviderConfigured(kind), enabled: await isProviderEnabled(kind) })),
+      ),
+    ]);
+
+    const integrations: IntegrationHealthEntry[] = [];
+
+    integrations.push({
+      id: 'google_meet', label: 'Google Meet', category: 'meetings',
+      ...(googleMeetingOAuthService.isConfigured()
+        ? { state: 'connected' as const, detail: 'Server credentials are configured.' }
+        : { state: 'not_configured' as const, detail: 'Server credentials (GMAIL_CLIENT_ID/SECRET) are not set.' }),
+    });
+
+    integrations.push({
+      id: 'zoom', label: 'Zoom', category: 'meetings',
+      ...(zoomMeetingOAuthService.isConfigured()
+        ? { state: 'connected' as const, detail: 'Server credentials are configured.' }
+        : { state: 'not_configured' as const, detail: 'Server credentials (ZOOM_CLIENT_ID/SECRET) are not set.' }),
+    });
+
+    for (const provider of ['gmail', 'outlook'] as const) {
+      integrations.push({
+        id: `email_${provider}`, label: provider === 'gmail' ? 'Gmail' : 'Outlook', category: 'email',
+        ...(emailOAuthService.isConfigured(provider)
+          ? { state: 'connected' as const, detail: 'Server credentials are configured.' }
+          : { state: 'not_configured' as const, detail: `Server credentials (${provider === 'gmail' ? 'GMAIL' : 'OUTLOOK'}_CLIENT_ID/SECRET) are not set.` }),
+      });
+    }
+
+    for (const engine of aiEngineStatus.engines) {
+      const state: IntegrationHealthState =
+        engine.state === 'configured' || engine.state === 'available' ? 'connected'
+        : engine.state === 'not_configured' ? 'not_configured'
+        : 'unavailable';
+      integrations.push({ id: `ai_${engine.id}`, label: engine.label, category: 'ai', state, detail: engine.reason ?? null });
+    }
+
+    for (const { kind, configured, enabled } of paymentProviders) {
+      integrations.push({
+        id: `payment_${kind}`, label: kind.toUpperCase(), category: 'payments',
+        ...(!configured
+          ? { state: 'not_configured' as const, detail: null }
+          : !enabled
+            ? { state: 'degraded' as const, detail: 'Configured, but switched off from the Control Plane.' }
+            : { state: 'connected' as const, detail: null }),
+      });
+    }
+
+    return { integrations };
+  }
+
+  /**
+   * Real, current counts for this business's WhatsApp data - used by the
+   * Settings "Change number" flow to show what actually synced, never a
+   * fabricated progress percentage. Deliberately cheap: four independent
+   * COUNT(*) queries, no JOIN - each table already has its own
+   * business_id index from its own creation migration.
+   */
+  async getWhatsAppAccountStats(businessId: string): Promise<{ chats: number; contacts: number; groups: number; messages: number }> {
+    const [chats, contacts, groups, messages] = await Promise.all([
+      this.chatRepository.countByBusiness(businessId),
+      this.contactRepository.countByBusiness(businessId),
+      this.groupRepository.countByBusiness(businessId),
+      this.messageRepository.countByBusiness(businessId),
+    ]);
+    return { chats, contacts, groups, messages };
   }
 
   /**

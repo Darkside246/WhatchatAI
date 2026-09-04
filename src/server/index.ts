@@ -162,7 +162,7 @@ import {
   isMembershipNotFoundError,
   isCannotModifyOwnerError,
 } from '../services/workspaceMemberService.js';
-import { requireAuth, requirePermission, requireActiveSubscription, setSessionCookie, clearSessionCookie, readSessionToken, type AuthContext } from './authMiddleware.js';
+import { requireAuth, requirePermission, requireActiveSubscription, requireDeveloper, setSessionCookie, clearSessionCookie, readSessionToken, type AuthContext } from './authMiddleware.js';
 import { BUSINESS_ROLES, isBusinessRole } from '../domain/auth/permissions.js';
 // Runs the real outbound-send BullMQ worker in this process, not the
 // separate incomingMessagesWorker.ts process - every tenant's live Baileys
@@ -2120,10 +2120,27 @@ app.get('/api/workspace/morning-briefing', requireWorkspaceContext, async (req, 
 });
 
 /** Section 120 (Integration Health Centre) - one real, honest status per integration, in one place. */
-app.get('/api/workspace/integrations/health', requireWorkspaceContext, async (_req, res) => {
+app.get('/api/workspace/integrations/health', requireWorkspaceContext, requirePermission('settings.manage'), async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const health = await workspaceService.getIntegrationHealth(businessId);
   return res.status(200).json(health);
+});
+
+/**
+ * The developer/global counterpart - see getGlobalIntegrationStatus()'s own
+ * doc comment for why this is a genuinely different question from the
+ * per-business route above, not a duplicate.
+ */
+app.get('/api/developer/integrations/status', requireAuth, requireDeveloper, async (_req, res) => {
+  const status = await workspaceService.getGlobalIntegrationStatus();
+  return res.status(200).json(status);
+});
+
+/** Real chat/contact/group/message counts for this business's WhatsApp account - the Settings "Change number" flow's honest sync-progress display. */
+app.get('/api/workspace/whatsapp/stats', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const stats = await workspaceService.getWhatsAppAccountStats(businessId);
+  return res.status(200).json(stats);
 });
 
 /** Section 56 (Appointment System) - every real meeting this business has booked, across both providers. */

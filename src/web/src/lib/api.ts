@@ -1277,6 +1277,10 @@ export const api = {
   getMorningBriefing: (sinceHours?: number) =>
     request<MorningBriefing>(`/workspace/morning-briefing${sinceHours ? `?sinceHours=${sinceHours}` : ''}`),
   getIntegrationHealth: () => request<IntegrationHealth>('/workspace/integrations/health'),
+  /** Developer-only: the platform's own global integration infrastructure status, not any one business's connections. */
+  getGlobalIntegrationStatus: () => request<IntegrationHealth>('/developer/integrations/status'),
+  /** Real, current WhatsApp chat/contact/group/message counts - never a fabricated sync percentage. */
+  getWhatsAppAccountStats: () => request<{ chats: number; contacts: number; groups: number; messages: number }>('/workspace/whatsapp/stats'),
   listAppointments: () => request<{ appointments: AppointmentDto[] }>('/workspace/appointments'),
   cancelAppointment: (id: string) => request<{ appointment: AppointmentDto }>(`/workspace/appointments/${id}/cancel`, { method: 'POST' }),
   markAppointmentNoShow: (id: string) => request<{ appointment: AppointmentDto }>(`/workspace/appointments/${id}/no-show`, { method: 'POST' }),

@@ -18,6 +18,7 @@ import { Avatar } from '../components/Avatar.js';
 import { IntegrationSettingsPanel } from '../components/IntegrationSettingsPanel.js';
 import { KnowledgeBaseCard } from '../components/KnowledgeBaseCard.js';
 import { MediaLightbox } from '../components/MediaLightbox.js';
+import { QrPanel, PhonePairingPanel } from '../components/WhatsAppPairingPanels.js';
 import { ToggleSwitch } from '../components/ToggleSwitch.js';
 import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
@@ -405,6 +406,66 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
   const [waBusy, setWaBusy] = useState<'disconnect' | 'logout' | null>(null);
   const [waError, setWaError] = useState<string | null>(null);
 
+  // WA number-change lifecycle: OLD_CONNECTION -> logout() -> DISCONNECTED/LOGGED_OUT
+  // -> (re-pairing, reusing the exact same QrPanel/PhonePairingPanel this
+  // app's own onboarding gate uses) -> CONNECTED again. `connection` itself
+  // is already live-polled from the top of the app (useAppGate, App.tsx),
+  // so no separate polling is added here - this component just reacts to
+  // the same real snapshot every other screen already reacts to.
+  const [changingNumber, setChangingNumber] = useState(false);
+  const [changeMethod, setChangeMethod] = useState<'qr' | 'phone'>('qr');
+  const [changePhoneSubmitting, setChangePhoneSubmitting] = useState(false);
+  const [changePhoneError, setChangePhoneError] = useState<string | null>(null);
+  const changeQrTriggered = useRef(false);
+  const [waStats, setWaStats] = useState<{ chats: number; contacts: number; groups: number; messages: number } | null>(null);
+
+  // Real sync counts, fetched only when a real connection exists - fires
+  // once per genuine transition into CONNECTED (including on first mount if
+  // already connected), never on every 2.5s poll tick, since the effect
+  // dependency is the status string itself, not the whole snapshot object.
+  useEffect(() => {
+    if (connection?.status !== 'CONNECTED') return;
+    api.getWhatsAppAccountStats().then(setWaStats).catch(() => undefined);
+    setChangingNumber(false);
+    changeQrTriggered.current = false;
+  }, [connection?.status]);
+
+  // Auto-request a QR the same way onboarding does, once logout() has
+  // actually taken effect (status genuinely reaches DISCONNECTED/LOGGED_OUT)
+  // - never fires for the phone-pairing method, which is user-initiated.
+  useEffect(() => {
+    if (!changingNumber || changeMethod !== 'qr') return;
+    if ((connection?.status === 'DISCONNECTED' || connection?.status === 'LOGGED_OUT') && !changeQrTriggered.current) {
+      changeQrTriggered.current = true;
+      api.connectWhatsApp().catch(() => { changeQrTriggered.current = false; });
+    }
+  }, [changingNumber, changeMethod, connection?.status]);
+
+  async function handleChangeNumberClick() {
+    const current = connection?.phoneNumber ?? 'this number';
+    if (!window.confirm(
+      `Change the connected WhatsApp number?\n\nCurrent: ${current}\n\nYour existing WhatsApp data stays, but you'll need to pair a new number from scratch and it will fully resynchronize. This can't be undone from within the app.`,
+    )) return;
+    setWaBusy('logout'); setWaError(null);
+    try {
+      await api.logoutWhatsApp();
+      setChangeMethod('qr');
+      changeQrTriggered.current = false;
+      setChangingNumber(true);
+    } catch (err) {
+      setWaError(err instanceof Error ? err.message : 'Failed to start the number change.');
+    } finally {
+      setWaBusy(null);
+    }
+  }
+
+  async function handleChangePhoneSubmit(fullPhoneNumber: string) {
+    setChangePhoneSubmitting(true); setChangePhoneError(null);
+    try { await api.pairWhatsAppByPhone(fullPhoneNumber); }
+    catch (err) { setChangePhoneError(err instanceof ApiError ? err.message : 'Could not request a pairing code. Check the number and try again.'); }
+    finally { setChangePhoneSubmitting(false); }
+  }
+
   useEffect(() => {
     api.getBusiness().then((res) => setBizName(res.business.name)).catch(() => undefined);
     api.listKnowledgeBaseDocuments().then((res) => {
@@ -525,7 +586,7 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
       {uploadingPhoto && <p className="mt-1 text-meta text-fg-muted">Updating on WhatsApp…</p>}
 
       {/* WA connection actions */}
-      {connection && (
+      {connection && !changingNumber && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {waError && <p className="w-full text-caption text-error">{waError}</p>}
           {connection.lastError && <p className="w-full text-caption text-error">{connection.lastError}</p>}
@@ -539,6 +600,52 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
             title="Ends the session - you'll need to scan a new QR code"
             className="rounded-lg border border-error/30 px-3 py-1.5 text-meta font-medium text-error hover:bg-error/10 disabled:opacity-50">
             {waBusy === 'logout' ? 'Logging out…' : 'Log out of WhatsApp'}
+          </button>
+          <button type="button" onClick={() => void handleChangeNumberClick()}
+            disabled={waBusy !== null || connection.status !== 'CONNECTED'}
+            title="Pair a different WhatsApp number for this business"
+            className="rounded-lg border border-border-subtle px-3 py-1.5 text-meta font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50">
+            {waBusy === 'logout' ? 'Starting…' : 'Change number'}
+          </button>
+        </div>
+      )}
+
+      {/* Real, current sync counts - only ever real DB values, never a fabricated percentage. */}
+      {connection?.status === 'CONNECTED' && !changingNumber && waStats && (
+        <div className="mt-3 grid grid-cols-4 gap-2 text-center">
+          {([['Chats', waStats.chats], ['Contacts', waStats.contacts], ['Groups', waStats.groups], ['Messages', waStats.messages]] as const).map(([label, value]) => (
+            <div key={label} className="rounded-lg border border-border-subtle bg-surface-1 px-2 py-2">
+              <p className="text-body font-semibold text-fg">{value.toLocaleString()}</p>
+              <p className="text-meta text-fg-muted">{label}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Number-change lifecycle: OLD_CONNECTION -> logout() -> DISCONNECTED/LOGGED_OUT -> pairing -> CONNECTED */}
+      {changingNumber && (
+        <div className="mt-3 rounded-xl border border-border-subtle bg-surface-1 p-4">
+          <p className="text-caption font-medium text-fg-secondary">
+            Pairing a new number — your previous WhatsApp data stays, but this account needs a full resync once linked.
+          </p>
+          <div className="mt-3 flex gap-2">
+            <button type="button" onClick={() => setChangeMethod('qr')}
+              className={`rounded-lg px-3 py-1.5 text-meta font-medium ${changeMethod === 'qr' ? 'bg-accent text-white' : 'border border-border-subtle text-fg-secondary hover:bg-surface-3'}`}>
+              Scan QR
+            </button>
+            <button type="button" onClick={() => setChangeMethod('phone')}
+              className={`rounded-lg px-3 py-1.5 text-meta font-medium ${changeMethod === 'phone' ? 'bg-accent text-white' : 'border border-border-subtle text-fg-secondary hover:bg-surface-3'}`}>
+              Use phone number
+            </button>
+          </div>
+          <div className="mt-3 flex justify-center">
+            {changeMethod === 'qr'
+              ? <QrPanel connection={connection} serverUnreachable={false} onRetry={() => { changeQrTriggered.current = false; void api.connectWhatsApp(); }} retrying={false} />
+              : <PhonePairingPanel connection={connection} onSubmit={(n) => void handleChangePhoneSubmit(n)} submitting={changePhoneSubmitting} submitError={changePhoneError} />}
+          </div>
+          <button type="button" onClick={() => setChangingNumber(false)}
+            className="mt-3 w-full text-center text-meta text-fg-muted hover:text-fg">
+            Cancel
           </button>
         </div>
       )}
@@ -1949,11 +2056,12 @@ const COUNTRIES: [string, string][] = [
 ];
 
 
-type SettingsView = 'business' | 'ai' | 'appearance' | 'team' | 'account' | 'inbox' | 'meetings';
+type SettingsView = 'business' | 'ai' | 'email' | 'appearance' | 'team' | 'account' | 'inbox' | 'meetings';
 
 const SETTINGS_NAV: { id: SettingsView; label: string; sub: string; Icon: ComponentType<{ size?: number; className?: string; 'aria-hidden'?: boolean }> }[] = [
   { id: 'business',   label: 'Business',           sub: 'Profile · Time & location',       Icon: Building2   },
-  { id: 'ai',         label: 'AI & Knowledge',      sub: 'Knowledge base · Integrations',   Icon: Bot         },
+  { id: 'ai',         label: 'AI & Knowledge',      sub: 'Knowledge base',                  Icon: Bot         },
+  { id: 'email',      label: 'Email',               sub: 'Sending transport',               Icon: Mail        },
   { id: 'inbox',      label: 'Connected Inbox',     sub: 'Gmail · Outlook · App mail',      Icon: Mail        },
   { id: 'meetings',   label: 'Meetings',            sub: 'Google Meet · Zoom',              Icon: Video       },
   { id: 'appearance', label: 'Appearance',           sub: 'Theme',                           Icon: Palette     },
@@ -2029,10 +2137,20 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
 
         {view === 'ai' && (
           <div className="space-y-4">
-            <SectionTitle title="AI & Knowledge" desc="What your AI agents know and which external AI providers power them." />
+            <SectionTitle title="AI & Knowledge" desc="What your AI agents know." />
             <AiActionsPauseCard />
             <KnowledgeBaseCard />
+          </div>
+        )}
+
+        {view === 'email' && (
+          <div className="space-y-4">
+            <SectionTitle title="Email" desc="How outgoing email (receipts, invoices, updates) is sent for this business." />
             <IntegrationSettingsPanel />
+            <p className="text-caption text-fg-muted">
+              Looking for your Gmail or Outlook inbox connection? See <button type="button" onClick={() => setView('inbox')} className="font-medium text-accent hover:underline">Connected Inbox</button>.
+              Managing sent/drafted emails? Visit <a href="/email" className="font-medium text-accent hover:underline">the Email page</a>.
+            </p>
           </div>
         )}
 

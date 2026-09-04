@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { PlugZap, CheckCircle2, XCircle, AlertTriangle, Ban } from 'lucide-react';
-import { api, ApiError, type IntegrationHealth, type IntegrationHealthEntry, type IntegrationHealthState } from '../lib/api.js';
+import { PlugZap } from 'lucide-react';
+import { api, ApiError, type IntegrationHealth } from '../lib/api.js';
+import { IntegrationHealthList } from '../components/IntegrationHealthList.js';
 
 /**
  * Section 120 (Integration Health Centre): the single, real, honest status
@@ -8,37 +9,6 @@ import { api, ApiError, type IntegrationHealth, type IntegrationHealthEntry, typ
  * straight from workspaceService.getIntegrationHealth - this page never
  * computes or guesses a status of its own.
  */
-
-const STATE_LABEL: Record<IntegrationHealthState, string> = {
-  connected: 'Connected',
-  not_connected: 'Not connected',
-  not_configured: 'Not configured',
-  degraded: 'Degraded',
-  unavailable: 'Unavailable',
-};
-
-const STATE_COLOR: Record<IntegrationHealthState, string> = {
-  connected: 'bg-success/15 text-success',
-  not_connected: 'bg-surface-3 text-fg-muted',
-  not_configured: 'bg-surface-3 text-fg-muted',
-  degraded: 'bg-warning/15 text-warning',
-  unavailable: 'bg-error/15 text-error',
-};
-
-function StateIcon({ state }: { state: IntegrationHealthState }) {
-  if (state === 'connected') return <CheckCircle2 size={16} className="text-success" aria-hidden />;
-  if (state === 'degraded') return <AlertTriangle size={16} className="text-warning" aria-hidden />;
-  if (state === 'unavailable') return <XCircle size={16} className="text-error" aria-hidden />;
-  return <Ban size={16} className="text-fg-muted" aria-hidden />;
-}
-
-const CATEGORY_LABEL: Record<IntegrationHealthEntry['category'], string> = {
-  meetings: 'Meetings',
-  email: 'Email',
-  messaging: 'Messaging',
-  payments: 'Payments',
-  ai: 'AI providers',
-};
 
 export function IntegrationHealthPage() {
   const [health, setHealth] = useState<IntegrationHealth | null>(null);
@@ -53,13 +23,6 @@ export function IntegrationHealthPage() {
       }
     })();
   }, []);
-
-  const categories: IntegrationHealthEntry['category'][] = ['messaging', 'meetings', 'email', 'payments', 'ai'];
-  const grouped = health
-    ? categories
-        .map((category) => ({ category, entries: health.integrations.filter((i) => i.category === category) }))
-        .filter((g) => g.entries.length > 0)
-    : [];
 
   return (
     <div className="min-h-0 flex-1 overflow-auto bg-surface-0 p-5 sm:p-8">
@@ -79,26 +42,7 @@ export function IntegrationHealthPage() {
 
         {error && <p className="rounded-xl border border-error/30 bg-error/5 p-4 text-caption text-error">{error}</p>}
         {health === null && !error && <p className="text-caption text-fg-muted">Loading…</p>}
-
-        {grouped.map(({ category, entries }) => (
-          <div key={category}>
-            <h2 className="mb-2 text-title font-semibold text-fg">{CATEGORY_LABEL[category]}</h2>
-            <div className="space-y-2">
-              {entries.map((entry) => (
-                <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border-subtle bg-surface-1 p-4">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <StateIcon state={entry.state} />
-                    <div className="min-w-0">
-                      <p className="font-medium text-fg">{entry.label}</p>
-                      {entry.detail && <p className="mt-0.5 truncate text-caption text-fg-muted">{entry.detail}</p>}
-                    </div>
-                  </div>
-                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-meta font-medium ${STATE_COLOR[entry.state]}`}>{STATE_LABEL[entry.state]}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
+        {health && <IntegrationHealthList health={health} />}
       </div>
     </div>
   );

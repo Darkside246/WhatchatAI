@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { requireActiveSubscription, type AuthContext } from '../src/server/authMiddleware.js';
+import { requireActiveSubscription, requireDeveloper, requirePermission, type AuthContext } from '../src/server/authMiddleware.js';
 import { createTestBusiness, createTestSubscription, resetDatabase } from './helpers.js';
 
 // Real gap this closes: invoicing, meeting-provider connections, and email-
@@ -81,6 +81,90 @@ describe('requireActiveSubscription (real Postgres)', () => {
     const next = vi.fn();
 
     await requireActiveSubscription({} as never, res as never, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+  });
+});
+
+/**
+ * Real gap this closes: GET /api/workspace/integrations/health previously
+ * carried no requirePermission guard at all - any authenticated role,
+ * including VIEWER, could see it. Now gated on 'settings.manage', matching
+ * SettingsRoute.tsx's own established canEdit convention (OWNER/ADMIN only).
+ */
+describe("requirePermission('settings.manage')", () => {
+  const guard = requirePermission('settings.manage');
+
+  it('blocks a VIEWER, who has no settings.manage permission', () => {
+    const res = fakeRes();
+    res.locals.auth = fakeAuth({ role: 'VIEWER' });
+    const next = vi.fn();
+
+    guard({} as never, res as never, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toEqual({ error: 'PERMISSION_DENIED', permission: 'settings.manage', role: 'VIEWER' });
+  });
+
+  it('allows an OWNER through', () => {
+    const res = fakeRes();
+    res.locals.auth = fakeAuth({ role: 'OWNER' });
+    const next = vi.fn();
+
+    guard({} as never, res as never, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.statusCode).toBeUndefined();
+  });
+
+  it('rejects an unauthenticated request', () => {
+    const res = fakeRes();
+    const next = vi.fn();
+
+    guard({} as never, res as never, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+  });
+});
+
+/**
+ * Real gap this closes: GET /api/developer/integrations/status must only
+ * ever be reachable by a genuine platform developer - a tenant business
+ * owner/admin is not automatically one (directive: "Tenant admin !=
+ * AURA platform developer").
+ */
+describe('requireDeveloper', () => {
+  it('blocks a real business OWNER whose platformRole is the ordinary CLIENT default', () => {
+    const res = fakeRes();
+    res.locals.auth = fakeAuth({ role: 'OWNER', platformRole: 'CLIENT' });
+    const next = vi.fn();
+
+    requireDeveloper({} as never, res as never, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toEqual({ error: 'DEVELOPER_ACCESS_REQUIRED' });
+  });
+
+  it('allows a real platform DEVELOPER through', () => {
+    const res = fakeRes();
+    res.locals.auth = fakeAuth({ platformRole: 'DEVELOPER' });
+    const next = vi.fn();
+
+    requireDeveloper({} as never, res as never, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.statusCode).toBeUndefined();
+  });
+
+  it('rejects an unauthenticated request', () => {
+    const res = fakeRes();
+    const next = vi.fn();
+
+    requireDeveloper({} as never, res as never, next);
 
     expect(next).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(401);
