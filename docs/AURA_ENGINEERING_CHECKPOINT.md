@@ -18,13 +18,24 @@ information already recorded here.
 
 **135-section directive: functionally closed.** Every section either
 COMPLETE, PARTIALLY COMPLETE with an explicitly named remaining item, or
-explicitly REQUIRES USER ACTION / DEFERRED / NO RECORD. Full section-by-
-section table: `docs/AURA_FINAL_ENGINEERING_REPORT.md` §1.
+explicitly REQUIRES USER ACTION / DEFERRED / NOT IMPLEMENTED. Full
+section-by-section table: `docs/AURA_FINAL_ENGINEERING_REPORT.md` §1.
 
-- **Completed sections**: ~118 of 133 accounted-for numbered sections
-  (see report §1 for the full table and accounting; 2 section numbers, 95
-  and 135, have no record anywhere in the directive's history — flagged,
-  not guessed at).
+- **Correction, 2026-09-04**: the checklist's own internal section numbers
+  had drifted from the true directive's numbers over the multi-week build
+  (confirmed once the user supplied the verbatim original text for
+  sections 94-135). The first version of this checkpoint and the final
+  report wrongly claimed sections 95 and 135 had "no record anywhere" -
+  both actually do, once matched by topic instead of by the checklist's
+  drifted numbers. See the final report's §0 for the full explanation and
+  §1 for the corrected per-section table. Two real, previously-unflagged
+  items surfaced from re-auditing: Section 120 (Integration Health Centre)
+  was a genuine, closeable gap - built this pass, commit `8935774`. Section
+  128 (Final Performance Review) is a genuinely new NOT_IMPLEMENTED finding
+  - no formal latency/resource measurement exists anywhere, gated on the
+  same observability-tooling decision already flagged for Section 69/94.
+- **Completed sections**: ~123 of 135 numbered sections (see report §1 for
+  the full table and accounting).
 - **Current section**: none open — the directive itself is at a real
   stopping point pending only the external/business items below.
 - **Next section**: whatever the user directs next. No numbered section
@@ -149,15 +160,17 @@ implication), WSL2 (this session's dev/test execution environment).
   on registration (module-import time), not after the first interval —
   this is why the ai-handoff-sweep (and its 13 siblings) were interfering
   with tests despite Redis being freshly flushed.
-- Sections 95 and 135 of the original 135-section directive have no
-  surviving record anywhere in this repository or in durable memory.
+- The checklist's own internal section numbering had drifted from the true
+  directive's numbering over the multi-week build — confirmed once the
+  user supplied the verbatim original text for sections 94-135. Corrected;
+  see the final report's §0.
 
 ## Last commit
 
-`0571167` — docs: close out the 135-section AURA master directive
-(Sections 130-134). Includes this file, the final report, and the master
-checklist update. Preceded by `e6ea5dc` (the BullMQ/Redis reliability
-fixes this checkpoint documents).
+`26eed22` — docs: correct the 130-134 accounting against the true
+directive text. Preceded by `8935774` (Integration Health Centre, Section
+120) and `e6ea5dc` (the BullMQ/Redis reliability fixes this checkpoint
+documents).
 
 ## Next action
 
