@@ -2,7 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   MessageCircle, BarChart3, Bot, Contact, Zap, Megaphone, Mail, CreditCard, Settings,
   Building2, CookingPot, Store, Truck, UsersRound, Receipt, ShoppingBag, Scissors,
-  Car, Stethoscope, Scale, Hotel, HardHat, Package, KeyRound, History, ShieldCheck, CalendarClock, type LucideIcon,
+  Car, Stethoscope, Scale, Hotel, HardHat, Package, KeyRound, History, ShieldCheck, CalendarClock, PlugZap, type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth.js';
 
@@ -28,6 +28,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/activity-log',        label: 'Activity Log',       icon: History },
     { to: '/approvals',           label: 'Approvals',          icon: ShieldCheck },
     { to: '/appointments',        label: 'Appointments',       icon: CalendarClock },
+    { to: '/integrations',        label: 'Integrations',       icon: PlugZap },
     { to: '/settings',            label: 'Settings',           icon: Settings },
   ],
   property: [
@@ -43,6 +44,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/activity-log',        label: 'Activity Log',       icon: History },
     { to: '/approvals',           label: 'Approvals',          icon: ShieldCheck },
     { to: '/appointments',        label: 'Appointments',       icon: CalendarClock },
+    { to: '/integrations',        label: 'Integrations',       icon: PlugZap },
     { to: '/settings',            label: 'Settings',           icon: Settings },
   ],
   food: [
@@ -54,6 +56,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/agents',              label: 'Food Agent',         icon: Bot },
     { to: '/approvals',           label: 'Approvals',          icon: ShieldCheck },
     { to: '/appointments',        label: 'Appointments',       icon: CalendarClock },
+    { to: '/integrations',        label: 'Integrations',       icon: PlugZap },
     { to: '/settings',            label: 'Settings',           icon: Settings },
   ],
   retail: [
@@ -67,6 +70,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/agents',              label: 'Sales Agent',        icon: Bot },
     { to: '/approvals',           label: 'Approvals',          icon: ShieldCheck },
     { to: '/appointments',        label: 'Appointments',       icon: CalendarClock },
+    { to: '/integrations',        label: 'Integrations',       icon: PlugZap },
     { to: '/settings',            label: 'Settings',           icon: Settings },
   ],
   beauty: [
@@ -80,6 +84,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/agents',              label: 'Booking Agent',      icon: Bot },
     { to: '/approvals',           label: 'Approvals',          icon: ShieldCheck },
     { to: '/appointments',        label: 'Appointments',       icon: CalendarClock },
+    { to: '/integrations',        label: 'Integrations',       icon: PlugZap },
     { to: '/settings',            label: 'Settings',           icon: Settings },
   ],
   auto: [
@@ -93,6 +98,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/agents',              label: 'Service Agent',      icon: Bot },
     { to: '/approvals',           label: 'Approvals',          icon: ShieldCheck },
     { to: '/appointments',        label: 'Appointments',       icon: CalendarClock },
+    { to: '/integrations',        label: 'Integrations',       icon: PlugZap },
     { to: '/settings',            label: 'Settings',           icon: Settings },
   ],
   health: [
@@ -106,6 +112,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/agents',              label: 'Care Agent',         icon: Bot },
     { to: '/approvals',           label: 'Approvals',          icon: ShieldCheck },
     { to: '/appointments',        label: 'Appointments',       icon: CalendarClock },
+    { to: '/integrations',        label: 'Integrations',       icon: PlugZap },
     { to: '/settings',            label: 'Settings',           icon: Settings },
   ],
   legal: [
@@ -118,6 +125,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/agents',              label: 'Legal Agent',        icon: Bot },
     { to: '/approvals',           label: 'Approvals',          icon: ShieldCheck },
     { to: '/appointments',        label: 'Appointments',       icon: CalendarClock },
+    { to: '/integrations',        label: 'Integrations',       icon: PlugZap },
     { to: '/settings',            label: 'Settings',           icon: Settings },
   ],
   hospitality: [
@@ -131,6 +139,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/agents',                  label: 'Guest Agent',    icon: Bot },
     { to: '/approvals',               label: 'Approvals',      icon: ShieldCheck },
     { to: '/appointments',            label: 'Appointments',   icon: CalendarClock },
+    { to: '/integrations',            label: 'Integrations',   icon: PlugZap },
     { to: '/settings',                label: 'Settings',       icon: Settings },
   ],
   construction: [
@@ -143,6 +152,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/agents',                  label: 'Site Agent',     icon: Bot },
     { to: '/approvals',               label: 'Approvals',      icon: ShieldCheck },
     { to: '/appointments',            label: 'Appointments',   icon: CalendarClock },
+    { to: '/integrations',            label: 'Integrations',   icon: PlugZap },
     { to: '/settings',                label: 'Settings',       icon: Settings },
   ],
   logistics: [
@@ -155,6 +165,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/agents',                  label: 'Dispatch Agent', icon: Bot },
     { to: '/approvals',               label: 'Approvals',      icon: ShieldCheck },
     { to: '/appointments',            label: 'Appointments',   icon: CalendarClock },
+    { to: '/integrations',            label: 'Integrations',   icon: PlugZap },
     { to: '/settings',                label: 'Settings',       icon: Settings },
   ],
 };

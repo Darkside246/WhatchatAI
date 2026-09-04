@@ -46,6 +46,11 @@ import { FunnelRepository } from '../repositories/funnelRepository.js';
 import { KnowledgeBaseRepository } from '../repositories/knowledgeBaseRepository.js';
 import { BusinessDocumentRepository } from '../repositories/businessDocumentRepository.js';
 import { AgentWorkJournalRepository, type AgentWorkJournalEntryType } from '../repositories/agentWorkJournalRepository.js';
+import * as googleMeetingOAuthService from './googleMeetingOAuthService.js';
+import * as zoomMeetingOAuthService from './zoomMeetingOAuthService.js';
+import * as emailOAuthService from './emailOAuthService.js';
+import { getAiEngineStatus } from './aiEngineStatusService.js';
+import { isProviderConfigured, isProviderEnabled, PAYMENT_PROVIDER_KINDS } from './billing/paymentProviderStatusService.js';
 import type {
   CallStatus,
   CallType,
@@ -412,6 +417,25 @@ export interface MorningBriefing {
   recommendedPriorities: NextBestAction[];
   /** Section 41-42 Phase 1: real counts from the autonomous sweep's own work journal since sinceIso - "While You Were Away", never a fabricated estimate. */
   autonomousActivity: Record<AgentWorkJournalEntryType, number>;
+}
+
+/**
+ * Section 120 (Integration Health Centre): one real status per integration,
+ * never a guess. Every field here is derived from something already
+ * checked elsewhere in the codebase (env credential presence, a real
+ * connection row, a live provider health check) - this method aggregates,
+ * it never invents a new detection mechanism.
+ */
+export type IntegrationHealthState = 'connected' | 'not_connected' | 'not_configured' | 'degraded' | 'unavailable';
+export interface IntegrationHealthEntry {
+  id: string;
+  label: string;
+  category: 'meetings' | 'email' | 'messaging' | 'payments' | 'ai';
+  state: IntegrationHealthState;
+  detail: string | null;
+}
+export interface IntegrationHealth {
+  integrations: IntegrationHealthEntry[];
 }
 
 const DEFAULT_APPROVAL_PATTERN_THRESHOLD = 10;
@@ -1298,6 +1322,97 @@ export class WorkspaceService {
       chatsNeedingHuman, newAppointments, newLeads, overdueInvoices, recommendedPriorities,
       autonomousActivity,
     };
+  }
+
+  /**
+   * Section 120 (Integration Health Centre): the single, real, honest
+   * status of every integration this product has, in one place - closing
+   * the gap Section 01's original audit flagged ("no central Integration
+   * Health page surfacing this status uniformly"). Every entry is derived
+   * from real, already-existing detection: server credential presence
+   * (never a guess), a real per-business connection row where one exists,
+   * and a live health check for AI providers (reusing the exact same
+   * getAiEngineStatus() the AiEngineStrip on the dashboard already shows -
+   * never a second, competing status source). Deliberately cheap: no new
+   * live network probe is added here beyond what those existing checks
+   * already do, matching the "Test" button pattern elsewhere in this
+   * codebase where a live provider probe is always opt-in, not automatic.
+   */
+  async getIntegrationHealth(businessId: string): Promise<IntegrationHealth> {
+    const [googleConnection, zoomConnection, emailAccounts, whatsappAccount, aiEngineStatus, paymentProviders] = await Promise.all([
+      googleMeetingOAuthService.getConnection(businessId),
+      zoomMeetingOAuthService.getConnection(businessId),
+      emailOAuthService.listConnectedAccounts(businessId),
+      this.accountRepository.findActiveByBusiness(businessId),
+      getAiEngineStatus(),
+      Promise.all(
+        PAYMENT_PROVIDER_KINDS.map(async (kind) => ({ kind, configured: isProviderConfigured(kind), enabled: await isProviderEnabled(kind) })),
+      ),
+    ]);
+
+    const integrations: IntegrationHealthEntry[] = [];
+
+    integrations.push({
+      id: 'google_meet', label: 'Google Meet', category: 'meetings',
+      ...(!googleMeetingOAuthService.isConfigured()
+        ? { state: 'not_configured' as const, detail: 'Server credentials (GMAIL_CLIENT_ID/SECRET) are not set.' }
+        : googleConnection
+          ? { state: 'connected' as const, detail: googleConnection.googleEmail }
+          : { state: 'not_connected' as const, detail: null }),
+    });
+
+    integrations.push({
+      id: 'zoom', label: 'Zoom', category: 'meetings',
+      ...(!zoomMeetingOAuthService.isConfigured()
+        ? { state: 'not_configured' as const, detail: 'Server credentials (ZOOM_CLIENT_ID/SECRET) are not set.' }
+        : zoomConnection
+          ? { state: 'connected' as const, detail: zoomConnection.zoomEmail }
+          : { state: 'not_connected' as const, detail: null }),
+    });
+
+    for (const provider of ['gmail', 'outlook'] as const) {
+      const account = emailAccounts.find((a) => a.provider === provider);
+      integrations.push({
+        id: `email_${provider}`, label: provider === 'gmail' ? 'Gmail' : 'Outlook', category: 'email',
+        ...(!emailOAuthService.isConfigured(provider)
+          ? { state: 'not_configured' as const, detail: `Server credentials (${provider === 'gmail' ? 'GMAIL' : 'OUTLOOK'}_CLIENT_ID/SECRET) are not set.` }
+          : account
+            ? { state: 'connected' as const, detail: account.emailAddress }
+            : { state: 'not_connected' as const, detail: null }),
+      });
+    }
+
+    integrations.push({
+      id: 'whatsapp', label: 'WhatsApp', category: 'messaging',
+      ...(!whatsappAccount
+        ? { state: 'not_connected' as const, detail: null }
+        : whatsappAccount.connectionStatus === 'CONNECTED'
+          ? { state: 'connected' as const, detail: whatsappAccount.phoneNumber }
+          : whatsappAccount.connectionStatus === 'LOGGED_OUT' || whatsappAccount.connectionStatus === 'CONFLICT_REPLACED'
+            ? { state: 'not_connected' as const, detail: `Real status: ${whatsappAccount.connectionStatus}` }
+            : { state: 'degraded' as const, detail: `Real status: ${whatsappAccount.connectionStatus}` }),
+    });
+
+    for (const engine of aiEngineStatus.engines) {
+      const state: IntegrationHealthState =
+        engine.state === 'configured' || engine.state === 'available' ? 'connected'
+        : engine.state === 'not_configured' ? 'not_configured'
+        : 'unavailable';
+      integrations.push({ id: `ai_${engine.id}`, label: engine.label, category: 'ai', state, detail: engine.reason ?? null });
+    }
+
+    for (const { kind, configured, enabled } of paymentProviders) {
+      integrations.push({
+        id: `payment_${kind}`, label: kind.toUpperCase(), category: 'payments',
+        ...(!configured
+          ? { state: 'not_configured' as const, detail: null }
+          : !enabled
+            ? { state: 'degraded' as const, detail: 'Configured, but switched off from the Control Plane.' }
+            : { state: 'connected' as const, detail: null }),
+      });
+    }
+
+    return { integrations };
   }
 
   /**

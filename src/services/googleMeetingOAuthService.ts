@@ -43,6 +43,11 @@ function googleConfig(): { clientId: string; clientSecret: string } | null {
   return { clientId, clientSecret };
 }
 
+/** Server-side credential presence only - never whether any business has actually connected. See getConnection() for that. */
+export function isConfigured(): boolean {
+  return googleConfig() !== null;
+}
+
 // ── CSRF state token ────────────────────────────────────────────────────────
 
 export function encodeState(businessId: string, userId: string): string {

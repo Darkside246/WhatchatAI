@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { PlatformSettingsRepository } from '../src/repositories/platformSettingsRepository.js';
-import { isProviderConfigured, isProviderEnabled, isProviderUsable } from '../src/server/billingRoutes.js';
+import { isProviderConfigured, isProviderEnabled, isProviderUsable } from '../src/services/billing/paymentProviderStatusService.js';
 import { resetDatabase } from './helpers.js';
 
 /**

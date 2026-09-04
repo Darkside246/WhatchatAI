@@ -38,6 +38,11 @@ function outlookConfig(): { clientId: string; clientSecret: string } | null {
   return { clientId, clientSecret };
 }
 
+/** Server-side credential presence only, per provider - never whether any business has actually connected. See listConnectedAccounts() for that. */
+export function isConfigured(provider: OAuthProvider): boolean {
+  return (provider === 'gmail' ? gmailConfig() : outlookConfig()) !== null;
+}
+
 // ── CSRF state token ────────────────────────────────────────────────────────
 
 /** Encode businessId + provider into a CSRF state token. */

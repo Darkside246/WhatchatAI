@@ -37,6 +37,11 @@ function zoomConfig(): { clientId: string; clientSecret: string } | null {
   return { clientId, clientSecret };
 }
 
+/** Server-side credential presence only - never whether any business has actually connected. See getConnection() for that. */
+export function isConfigured(): boolean {
+  return zoomConfig() !== null;
+}
+
 function basicAuthHeader(cfg: { clientId: string; clientSecret: string }): string {
   return `Basic ${Buffer.from(`${cfg.clientId}:${cfg.clientSecret}`).toString('base64')}`;
 }

@@ -355,6 +355,19 @@ export interface MorningBriefing {
   autonomousActivity: { FINDING: number; ACTION_TAKEN: number; QUEUED_FOR_APPROVAL: number; SKIPPED: number };
 }
 
+/** Section 120 (Integration Health Centre) - one real, honest status per integration. */
+export type IntegrationHealthState = 'connected' | 'not_connected' | 'not_configured' | 'degraded' | 'unavailable';
+export interface IntegrationHealthEntry {
+  id: string;
+  label: string;
+  category: 'meetings' | 'email' | 'messaging' | 'payments' | 'ai';
+  state: IntegrationHealthState;
+  detail: string | null;
+}
+export interface IntegrationHealth {
+  integrations: IntegrationHealthEntry[];
+}
+
 export interface WorkspaceBillingEntitlement {
   key: string;
   label: string;
@@ -1263,6 +1276,7 @@ export const api = {
   getNextBestActions: () => request<{ actions: NextBestAction[] }>('/workspace/next-best-actions'),
   getMorningBriefing: (sinceHours?: number) =>
     request<MorningBriefing>(`/workspace/morning-briefing${sinceHours ? `?sinceHours=${sinceHours}` : ''}`),
+  getIntegrationHealth: () => request<IntegrationHealth>('/workspace/integrations/health'),
   listAppointments: () => request<{ appointments: AppointmentDto[] }>('/workspace/appointments'),
   cancelAppointment: (id: string) => request<{ appointment: AppointmentDto }>(`/workspace/appointments/${id}/cancel`, { method: 'POST' }),
   markAppointmentNoShow: (id: string) => request<{ appointment: AppointmentDto }>(`/workspace/appointments/${id}/no-show`, { method: 'POST' }),

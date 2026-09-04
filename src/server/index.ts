@@ -2119,6 +2119,13 @@ app.get('/api/workspace/morning-briefing', requireWorkspaceContext, async (req, 
   return res.status(200).json(briefing);
 });
 
+/** Section 120 (Integration Health Centre) - one real, honest status per integration, in one place. */
+app.get('/api/workspace/integrations/health', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const health = await workspaceService.getIntegrationHealth(businessId);
+  return res.status(200).json(health);
+});
+
 /** Section 56 (Appointment System) - every real meeting this business has booked, across both providers. */
 app.get('/api/workspace/appointments', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
