@@ -6,6 +6,11 @@ import { SubscriptionRepository } from '../src/repositories/subscriptionReposito
 import { UserRepository } from '../src/repositories/userRepository.js';
 
 const TABLES = [
+  // Platform-wide developer toggles (migration 977) - no business_id, no FK
+  // to anything else in this list, so (like trial_phone_fingerprints below)
+  // it needs its own explicit entry. Unlike plans/plan_entitlements below,
+  // it carries no seed data, so truncating it between tests is safe.
+  'platform_settings',
   // No FK to anything by design (see migration 936) - a real
   // TRUNCATE ... CASCADE from any other table in this list never reaches
   // it, so it needs its own explicit entry to be cleared between tests.

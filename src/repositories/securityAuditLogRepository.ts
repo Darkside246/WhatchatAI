@@ -64,7 +64,8 @@ export type SecurityEventType =
   | 'message_risk_flagged'
   | 'plan_updated'
   | 'plan_entitlement_updated'
-  | 'vertical_assigned';
+  | 'vertical_assigned'
+  | 'platform_setting_updated';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 
