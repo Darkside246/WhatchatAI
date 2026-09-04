@@ -14,6 +14,7 @@ import {
   sendCampaign,
   cancelCampaign,
   listEligibleCampaignRecipients,
+  getCampaignPerformanceSummary,
   isInvalidCampaignStatusError,
   isNoEligibleRecipientsError,
   isTooManyRecipientsError,
@@ -400,6 +401,64 @@ describe('campaignService (real eligibility, real status machine, real send pipe
     expect(afterRead.counts.read).toBe(1);
     expect(afterRead.counts.delivered).toBe(0);
     expect(afterRead.recipients[0]?.status).toBe('read');
+  });
+
+  describe('Section 31 (marketing research): getCampaignPerformanceSummary', () => {
+    it('reports real delivery/read rates computed from actual WhatsApp acknowledgements, not fabricated', async () => {
+      const chatJid = '15559990015@s.whatsapp.net';
+      const contactId = await makeEligibleContact(businessId, accountId, chatJid, 'Contact');
+      const { campaign } = await createCampaign(businessId, accountId, ownerId, { name: 'Performance Test', messageText: 'Hello', crmContactIds: [contactId] });
+      await submitCampaignForReview(businessId, campaign.id);
+      await approveCampaign(businessId, campaign.id, ownerId);
+      await sendCampaign(businessId, campaign.id);
+
+      const beforeAck = await getCampaignPerformanceSummary(businessId);
+      const entryBefore = beforeAck.find((c) => c.campaignId === campaign.id);
+      expect(entryBefore?.recipientCount).toBe(1);
+      expect(entryBefore?.deliveredCount).toBe(0);
+      expect(entryBefore?.deliveryRate).toBe(0);
+
+      const recipient = (await getCampaign(businessId, campaign.id)).recipients[0];
+      const whatsappMessageId = 'WAMSG-PERF-TEST-1';
+      await new WhatsAppOutboundMessageRepository(pool).markSent(recipient!.outboundMessageId as string, whatsappMessageId);
+      const persisted = await new WhatsAppMessageRepository(pool).insert({
+        businessId, whatsappAccountId: accountId, chatId: recipient!.chatId, whatsappMessageId,
+        remoteJid: chatJid, senderJid: '15550001111@s.whatsapp.net', direction: 'outbound', messageType: 'text',
+        textContent: 'Hello', timestamp: new Date().toISOString(), fromMe: true, isHistorical: false,
+      });
+      await new WhatsAppOutboundMessageRepository(pool).linkPersistedMessage(accountId, whatsappMessageId, persisted.id);
+      await processMessageStatus({ businessId, whatsappAccountId: accountId, whatsappMessageId, status: 'delivered' });
+      await processMessageStatus({ businessId, whatsappAccountId: accountId, whatsappMessageId, status: 'read' });
+
+      const afterAck = await getCampaignPerformanceSummary(businessId);
+      const entryAfter = afterAck.find((c) => c.campaignId === campaign.id);
+      expect(entryAfter?.deliveredCount).toBe(1);
+      expect(entryAfter?.readCount).toBe(1);
+      expect(entryAfter?.deliveryRate).toBe(1);
+      expect(entryAfter?.readRate).toBe(1);
+    });
+
+    it('never includes a campaign that was never sent (DRAFT/REVIEW/APPROVED)', async () => {
+      const contactId = await makeEligibleContact(businessId, accountId, '15559990016@s.whatsapp.net', 'Contact');
+      const { campaign } = await createCampaign(businessId, accountId, ownerId, { name: 'Never Sent', messageText: 'x', crmContactIds: [contactId] });
+      await submitCampaignForReview(businessId, campaign.id);
+      await approveCampaign(businessId, campaign.id, ownerId);
+
+      const summary = await getCampaignPerformanceSummary(businessId);
+      expect(summary.find((c) => c.campaignId === campaign.id)).toBeUndefined();
+    });
+
+    it('never returns another business\'s campaign performance', async () => {
+      const contactId = await makeEligibleContact(businessId, accountId, '15559990017@s.whatsapp.net', 'Contact');
+      const { campaign } = await createCampaign(businessId, accountId, ownerId, { name: 'Tenant Test', messageText: 'x', crmContactIds: [contactId] });
+      await submitCampaignForReview(businessId, campaign.id);
+      await approveCampaign(businessId, campaign.id, ownerId);
+      await sendCampaign(businessId, campaign.id);
+
+      const otherBusinessId = await createTestBusiness('Other Business');
+      const summary = await getCampaignPerformanceSummary(otherBusinessId);
+      expect(summary).toEqual([]);
+    });
   });
 
   it('cancel works before send', async () => {

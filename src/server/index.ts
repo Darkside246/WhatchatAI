@@ -114,6 +114,7 @@ import { runOutboundLeakGuard } from '../security/sentinel/outboundLeakGuard.js'
 import {
   createCampaign,
   listCampaigns,
+  getCampaignPerformanceSummary,
   getCampaign,
   updateDraftCampaign,
   submitCampaignForReview,
@@ -1961,6 +1962,13 @@ app.post('/api/workspace/marketing/ai-suggest', requireWorkspaceContext, require
   // expected outcome the frontend reads from result.status, not a transport error.
   const result = await suggestMarketingCopy({ ...parsed.data, businessId });
   return res.status(200).json(result);
+});
+
+/** Section 31 (marketing research): real delivery/read performance across this business's own past campaigns. */
+app.get('/api/workspace/marketing/campaign-performance', requireWorkspaceContext, requirePermission('marketing.view'), async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const campaigns = await getCampaignPerformanceSummary(businessId);
+  return res.status(200).json({ campaigns });
 });
 
 const reactionSchema = z.object({ emoji: z.string().max(8) });

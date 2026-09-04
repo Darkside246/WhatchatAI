@@ -176,6 +176,35 @@ export async function listCampaigns(businessId: string): Promise<(CampaignRecord
   return withCounts;
 }
 
+export interface CampaignPerformanceEntry {
+  campaignId: string;
+  name: string;
+  sentAt: string;
+  recipientCount: number;
+  deliveredCount: number;
+  readCount: number;
+  failedCount: number;
+  /** 0-1. Null when there are no recipients to compute a rate from (should not happen for a genuinely sent campaign, but never divides by zero). */
+  deliveryRate: number | null;
+  readRate: number | null;
+}
+
+/**
+ * Section 31 (marketing research): real, computed performance across this
+ * business's own past campaigns, not fabricated audience research -
+ * genuine delivery/read rates from the same status data getCampaign's
+ * detail view already reports, aggregated across every campaign instead
+ * of one at a time, so staff can actually see what worked.
+ */
+export async function getCampaignPerformanceSummary(businessId: string, limit?: number): Promise<CampaignPerformanceEntry[]> {
+  const rows = await campaignRepository.getPerformanceSummary(businessId, limit);
+  return rows.map((row) => ({
+    ...row,
+    deliveryRate: row.recipientCount > 0 ? row.deliveredCount / row.recipientCount : null,
+    readRate: row.recipientCount > 0 ? row.readCount / row.recipientCount : null,
+  }));
+}
+
 export interface CampaignDetail {
   campaign: CampaignRecord;
   recipients: CampaignRecipientRecord[];

@@ -463,4 +463,44 @@ export class CampaignRepository {
       failed: Number(row?.failed ?? '0'),
     };
   }
+
+  /**
+   * Section 31 (marketing research): real, computed performance across
+   * this business's own past campaigns - what actually delivered and got
+   * read - not a per-campaign detail view (getStatusCounts above already
+   * does that) and not fabricated audience research. One aggregate query
+   * across every sent campaign, same delivery-status join logic as
+   * getStatusCounts, grouped instead of filtered to one campaign.
+   */
+  async getPerformanceSummary(businessId: string, limit = 20): Promise<{
+    campaignId: string; name: string; sentAt: string; recipientCount: number; deliveredCount: number; readCount: number; failedCount: number;
+  }[]> {
+    const { rows } = await this.db.query<{
+      campaign_id: string; name: string; sent_at: string; recipient_count: string; delivered_count: string; read_count: string; failed_count: string;
+    }>(
+      `SELECT c.id AS campaign_id, c.name, c.sent_at,
+              COUNT(cr.id)::text AS recipient_count,
+              COUNT(*) FILTER (WHERE wm.status IN ('delivered', 'played', 'read'))::text AS delivered_count,
+              COUNT(*) FILTER (WHERE wm.status = 'read')::text AS read_count,
+              COUNT(*) FILTER (WHERE om.status = 'failed' OR (om.id IS NULL AND cr.last_error IS NOT NULL))::text AS failed_count
+       FROM campaigns c
+       JOIN campaign_recipients cr ON cr.campaign_id = c.id
+       LEFT JOIN whatsapp_outbound_messages om ON om.id = cr.outbound_message_id
+       LEFT JOIN whatsapp_messages wm ON wm.id = om.message_id
+       WHERE c.business_id = $1 AND c.sent_at IS NOT NULL
+       GROUP BY c.id, c.name, c.sent_at
+       ORDER BY c.sent_at DESC
+       LIMIT $2`,
+      [businessId, limit],
+    );
+    return rows.map((row) => ({
+      campaignId: row.campaign_id,
+      name: row.name,
+      sentAt: row.sent_at,
+      recipientCount: Number(row.recipient_count),
+      deliveredCount: Number(row.delivered_count),
+      readCount: Number(row.read_count),
+      failedCount: Number(row.failed_count),
+    }));
+  }
 }
