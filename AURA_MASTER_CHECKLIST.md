@@ -671,11 +671,29 @@ Previously blocked on provider selection. The user's decision: BiMPay stays prim
 [X] 114-116 - Ethical funnel, campaign ethics, audit logging - 114 was fully absent, real anti-manipulation guardrails added to the AI system prompt, verified; 115 had a real bug (opt-out only checked at campaign creation, not at send time) found and fixed, verified; 116 was already substantial, real gap found and fixed (developer plan/entitlement/vertical changes had zero audit trail), verified
 [X] 117-122 - Security audit, deployment, env config, integration health centre, approval isolation, final approval queue - real gap found and fixed: Goose failover was a per-business setting letting any business redirect real customer conversation text to an arbitrary URL, now a global, developer-only secret like Gemini, verified; approval isolation/final approval queue investigated, no bug found (see write-up). Deployment/env config docs audited: Dockerfile/docker-compose.yml/docs/DOCKER.md/docs/FLY_DEPLOY.md are already mature (healthchecks, non-root users, cap_drop, resource limits, honest gap docs); no real code bug, but 4 real vars in actual use were missing from .env.example (BIMPAY_BRIDGE_SECRET, WHATCHATAI_AGENT_RUNTIME, OPENCLAW_GATEWAY_URL/_TOKEN, RELAY_PORT) - added, verified against real process.env usage
 [X] 123-129 - Final full system test, regression, data integrity, hallucination verification, UX/perf/security reviews - data integrity audited clean (every FK to businesses(id) cascades correctly, 80/80; NO ACTION FKs elsewhere are all safe since nothing deletes those parent rows individually); hallucination prevention exists at the prompt level (documented live-bug precedent already fixed) but a technical verification layer would be new infrastructure, not a gap fix; the N+1 this block's own investigation flagged (getApprovalPatternSuggestions) was found and fixed under Section 99-101 (see its write-up - PlatformActionRepository.getRecentDecisionsForAgents batches it), verified; full regression suite run continuously all session before every commit; nothing left open, upgraded from partial
-[ ] 130-134 - Documentation, final report, final memory entry, final principle
+[X] 130-134 - Documentation, final report, final memory entry, final principle - delivered: docs/AURA_FINAL_ENGINEERING_REPORT.md (full 1-135 section-by-section reclassification, architecture/feature/AI-system inventory, autonomous-ops loop mapping, "run while I sleep" capability status, final security/product/personalisation review, final state summary, final principle) + docs/AURA_ENGINEERING_CHECKPOINT.md (durable continuation state) + this file's own USER ACTION REQUIRED block below. Real, previously-unrecorded gap found while producing the reclassification: section numbers 95 and 135 appear nowhere in this checklist's history under any name - flagged as REQUIRES USER ACTION rather than silently omitted or guessed at (see final report §0)
 
 Also requested directly by you outside the numbered sections:
 [X] Status comments/replies threading (Marketing → Status tab) - real reply detection + UI, built and verified (see notes)
-[ ] whatsmeow-main.zip review (possible Baileys alternative) - flagged earlier, not yet done
+[BLOCKED] whatsmeow-main.zip review (possible Baileys alternative) - searched the full repository tree, no match anywhere (`find . -iname "*whatsmeow*"`, excluding node_modules). Nothing about its contents invented. BLOCKED - whatsmeow-main.zip not available - needs the user to supply it or a path to it
+
+---
+
+## USER ACTION REQUIRED (as of 2026-09-04)
+
+Full detail in `docs/AURA_FINAL_ENGINEERING_REPORT.md` §2. Summary:
+
+- **Google OAuth**: `GMAIL_CLIENT_ID`/`GMAIL_CLIENT_SECRET` absent from `.env` (real credentials needed - code already degrades honestly without them, never fakes a connection)
+- **Zoom OAuth**: `ZOOM_CLIENT_ID`/`ZOOM_CLIENT_SECRET`, same situation
+- **whatsmeow-main.zip**: not present anywhere in the repository - see above
+- **WiPay real API/webhook docs**: site is JS-rendered, could not be fetched; provider deliberately stays inert rather than guessing a signature scheme for real money
+- **Data retention TTL**: `customer_memory`/`conversation_states` have no retention length defined anywhere - needs a real policy decision (a number of days), not code
+- **Observability investment**: no APM/structured logging exists - needs a decision on whether/what to adopt and its cost, deliberately not defaulted into
+- **Vendor-availability-aware scheduling / staff task system**: no data model exists for either - needs scope definition before any code
+- **Sections 95 and 135**: no record anywhere in this checklist's history - needs the user to restate them or confirm they were folded into an adjacent section
+- **"3-min setup" claim** (Sections 50-55): a UX/speed claim, not a code gap - confirmable only by live user timing
+
+None of the above blocked completion of any other section - every other open thread in the directive was carried to a real, verified conclusion or an honestly-documented dead end.
 [X] Retail Operations vertical - built from scratch at full parity with Property (CRUD + AI order intake + approval-gated fulfillment), verified (see notes above); 9 more verticals (Food's mock-to-real conversion plus beauty/auto/health/legal/hospitality/construction/logistics) remain
 ```
 
