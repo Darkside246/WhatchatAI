@@ -516,6 +516,25 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
   );
 
   /**
+   * Section 114 (ethical funnel): the funnel/readiness/next-best-action
+   * machinery elsewhere in this codebase (customer_readiness, funnel_stage,
+   * next-best-action signals) is real, legitimate sales guidance for the
+   * model - it says what to focus on, never how far to push. Without an
+   * explicit boundary here, "steer the customer toward a purchase" and
+   * "manufacture urgency to close them" are one prompt-engineering step
+   * apart, and nothing before this guarded against the second one.
+   */
+  lines.push(
+    'Never use manipulative sales tactics: do not invent or imply a fake deadline, limited stock, a discount that ' +
+      'is about to expire, or any other urgency that is not real and explicitly given to you above. Do not use ' +
+      'guilt, pressure, or repeated asks to push a purchase or booking after a customer has said no, asked to think ' +
+      'about it, or gone quiet - acknowledge it plainly and let them come back on their own terms. Do not withhold ' +
+      'plainly relevant information (e.g. a real limitation, a real extra cost, a real waiting period) just because ' +
+      'surfacing it might lose the sale - the customer above always deserves an honest, complete answer over a more ' +
+      'persuasive one.',
+  );
+
+  /**
    * Persona-lock, not a leak-guard: a customer's own message is untrusted
    * input the same way CRM notes are (hasUntrustedData's rule already
    * covers that for injected instructions), but a persona break doesn't

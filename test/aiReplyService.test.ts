@@ -388,6 +388,22 @@ describe('Context Trust Builder - business documents (Phase D4-B, reusing the id
   });
 });
 
+describe('Section 114 (ethical funnel): anti-manipulation guardrail is always present, for every agent and category', () => {
+  it('forbids fabricated urgency/scarcity, pressuring after a no, and withholding relevant information - unconditionally, not gated on agent category', () => {
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext());
+    expect(instruction).toContain('Never use manipulative sales tactics');
+    expect(instruction).toContain('fake deadline, limited stock');
+    expect(instruction).toContain('Do not use guilt, pressure, or repeated asks');
+    expect(instruction).toContain('Do not withhold plainly relevant information');
+  });
+
+  it('is present for an advice-restricted category too, alongside that category\'s own scope limit', () => {
+    const instruction = buildSystemInstruction(fakeAgent({ category: 'plumbing' }), fakeContext());
+    expect(instruction).toContain('CRITICAL SCOPE LIMIT');
+    expect(instruction).toContain('Never use manipulative sales tactics');
+  });
+});
+
 describe('Durable conversation state (Phase 3 - supplements raw history, never replaces it)', () => {
   it('adds nothing to the prompt when conversation state is the empty default - the current, universal case today', () => {
     const instruction = buildSystemInstruction(fakeAgent(), fakeContext());
