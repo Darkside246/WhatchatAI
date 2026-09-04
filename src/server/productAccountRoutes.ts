@@ -17,9 +17,11 @@ import type { Request } from 'express';
 import { pool } from '../db/pool.js';
 import { getSystemHealth } from '../services/systemHealthService.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
+import { PlatformSettingsRepository } from '../repositories/platformSettingsRepository.js';
 
 const router = Router();
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
+const platformSettingsRepository = new PlatformSettingsRepository(pool);
 const productKey = ProductKeySchema;
 const trials = new TrialRepository(pool);
 const trialRegistrationSchema = z.object({ name: z.string().trim().min(1).max(200), email: z.string().trim().email(), phone: z.string().trim().min(3).max(50), password: z.string().min(1).max(200), productKey });
@@ -112,6 +114,34 @@ router.get('/developer/system-health', requireAuth, requireDeveloper, async (_re
 
 router.get('/developer/ai-usage', requireAuth, requireDeveloper, async (_req, res) => {
   return res.status(200).json(await getAiUsageOverview());
+});
+
+/**
+ * Section 41-42 Phase 1's global kill switch - stops the autonomous
+ * sweep (autonomousOpsService.ts) for every business platform-wide,
+ * instantly, without touching a single business's own ai_actions_paused
+ * or any agent's autonomy_level - reactive AI replies to real customer
+ * messages keep working even with this on. Reuses the same
+ * platform_settings live-toggle store as the Payment Providers panel.
+ */
+router.get('/developer/autonomy-kill-switch', requireAuth, requireDeveloper, async (_req, res) => {
+  const setting = await platformSettingsRepository.get('autonomy_kill_switch');
+  const enabled = setting ? (setting.value as { enabled?: unknown }).enabled === true : false;
+  return res.status(200).json({ enabled });
+});
+
+router.patch('/developer/autonomy-kill-switch', requireAuth, requireDeveloper, async (req, res) => {
+  const parsed = z.object({ enabled: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_KILL_SWITCH_TOGGLE', details: parsed.error.flatten() });
+  const auth = res.locals.auth as AuthContext;
+  await platformSettingsRepository.set('autonomy_kill_switch', { enabled: parsed.data.enabled }, auth.userId);
+  await securityAuditLogRepository.record({
+    businessId: null,
+    eventType: 'platform_setting_updated',
+    severity: parsed.data.enabled ? 'warning' : 'info',
+    rawMetadata: { key: 'autonomy_kill_switch', changedBy: auth.userId, enabled: parsed.data.enabled },
+  });
+  return res.status(200).json({ enabled: parsed.data.enabled });
 });
 
 export { router as productAccountRouter };

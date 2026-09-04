@@ -351,6 +351,8 @@ export interface MorningBriefing {
   newLeads: Array<{ id: string; stage: string | null; contactDisplayName: string | null; phoneNumber: string | null; createdAt: string }>;
   overdueInvoices: Array<{ id: string; invoiceNumber: string; totalCents: number; currencyCode: string; dueDate: string | null }>;
   recommendedPriorities: NextBestAction[];
+  /** Section 41-42 Phase 1: real counts from the autonomous sweep's own work journal since sinceIso. */
+  autonomousActivity: { FINDING: number; ACTION_TAKEN: number; QUEUED_FOR_APPROVAL: number; SKIPPED: number };
 }
 
 export interface WorkspaceBillingEntitlement {
@@ -890,6 +892,8 @@ export interface AiAgentSummary {
   allowedToolsEnabled: boolean;
   /** The real 5-level autonomy ladder: 1 read-only, 2 manual (SEND-tier needs approval), 3 balanced (default), 4 trusted (executes + notifies), 5 fully autonomous. */
   autonomyLevel: number;
+  /** Section 41-42 Phase 1: a separate axis from autonomyLevel - whether this agent's business gets swept for unprompted work at all. OFF by default; nothing opts in silently. */
+  proactiveMode: 'OFF' | 'ASSISTED' | 'DELEGATED' | 'AUTONOMOUS';
   /** Which system template (and version of it) this agent was created from, if any - null for a manual or custom-description agent. */
   sourceTemplateKey: string | null;
   sourceTemplateVersion: number | null;
@@ -967,6 +971,7 @@ export interface CreateAgentBody {
   forbiddenTools?: string[];
   allowedToolsEnabled?: boolean;
   autonomyLevel?: number;
+  proactiveMode?: AiAgentSummary['proactiveMode'];
   sourceTemplateKey?: string | null;
   sourceTemplateVersion?: number | null;
 }
@@ -1634,6 +1639,12 @@ export const api = {
       last7d: { totalTokens: number; callCount: number };
       topBusinessesLast24h: Array<{ businessId: string; businessName: string; totalTokens: number; callCount: number }>;
     }>('/platform/developer/ai-usage'),
+
+  // ── Autonomous operations kill switch (developer-only, Section 41-42 Phase 1) ──
+  getAutonomyKillSwitch: () =>
+    request<{ enabled: boolean }>('/platform/developer/autonomy-kill-switch'),
+  setAutonomyKillSwitch: (enabled: boolean) =>
+    request<{ enabled: boolean }>('/platform/developer/autonomy-kill-switch', { method: 'PATCH', body: JSON.stringify({ enabled }) }),
 
   // ── Plan management (developer-only) ────────────────────────────────────────
   listPlans: () =>

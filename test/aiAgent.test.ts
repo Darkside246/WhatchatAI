@@ -117,4 +117,52 @@ describe('AiAgentRepository', () => {
       expect(active?.id).toBe(newer.id);
     });
   });
+
+  describe('proactive_mode (Section 41-42 Phase 1)', () => {
+    it('defaults every new agent to OFF - nothing opts into the autonomous sweep silently', async () => {
+      const agent = await agents.create({ businessId, name: 'New Agent' });
+      expect(agent.proactiveMode).toBe('OFF');
+    });
+
+    it('updateProactiveMode round-trips a real change', async () => {
+      const agent = await agents.create({ businessId, name: 'Agent' });
+      await agents.updateProactiveMode(agent.id, 'AUTONOMOUS');
+      const updated = await agents.findById(agent.id);
+      expect(updated?.proactiveMode).toBe('AUTONOMOUS');
+    });
+
+    it('getMostPermissiveProactiveMode is OFF when every agent is OFF', async () => {
+      await agents.create({ businessId, name: 'Agent 1' });
+      await agents.create({ businessId, name: 'Agent 2' });
+      expect(await agents.getMostPermissiveProactiveMode(businessId)).toBe('OFF');
+    });
+
+    it('getMostPermissiveProactiveMode picks the most permissive real mode across agents', async () => {
+      const assisted = await agents.create({ businessId, name: 'Assisted Agent' });
+      await agents.updateProactiveMode(assisted.id, 'ASSISTED');
+      const autonomous = await agents.create({ businessId, name: 'Autonomous Agent' });
+      await agents.updateProactiveMode(autonomous.id, 'AUTONOMOUS');
+
+      expect(await agents.getMostPermissiveProactiveMode(businessId)).toBe('DELEGATED');
+    });
+
+    it('getMostPermissiveProactiveMode ignores a paused or deleted agent\'s mode', async () => {
+      const paused = await agents.create({ businessId, name: 'Paused Agent' });
+      await agents.updateProactiveMode(paused.id, 'AUTONOMOUS');
+      await agents.updateStatus(paused.id, 'PAUSED');
+
+      expect(await agents.getMostPermissiveProactiveMode(businessId)).toBe('OFF');
+    });
+
+    it('listBusinessIdsWithProactiveModeEnabled only includes a business with at least one real non-OFF agent', async () => {
+      const otherBusinessId = await createTestBusiness('Other Business');
+      const agent = await agents.create({ businessId, name: 'Agent' });
+      await agents.updateProactiveMode(agent.id, 'DELEGATED');
+      await agents.create({ businessId: otherBusinessId, name: 'Off Agent' });
+
+      const enabled = await agents.listBusinessIdsWithProactiveModeEnabled();
+      expect(enabled).toContain(businessId);
+      expect(enabled).not.toContain(otherBusinessId);
+    });
+  });
 });

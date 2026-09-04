@@ -64,6 +64,7 @@ import { ScheduledMeetingsRepository } from '../../repositories/scheduledMeeting
 import { initializePlatformFoundation } from '../../services/platform/platformBootstrap.js';
 import { runPropertyMaintenanceHandoff } from '../../services/property/propertyMaintenanceOrchestrator.js';
 import { runRetailOrderHandoff } from '../../services/retail/retailOrderOrchestrator.js';
+import { runSweepForBusiness, listBusinessesForSweep } from '../../services/platform/autonomousOpsService.js';
 import { evaluateGroupParticipationGate, type GroupParticipationGateResult } from '../../services/ai/groupParticipationGate.js';
 // Runs here, not in server/index.ts: that process owns the live Baileys
 // socket AND sends every outbound message, so it is exactly the event loop
@@ -1214,6 +1215,36 @@ export async function sweepStaleAiHandoff(): Promise<void> {
   }
 }
 
+const AUTONOMOUS_OPS_SWEEP_INTERVAL_MS = Number(process.env.AUTONOMOUS_OPS_SWEEP_INTERVAL_MS ?? 600_000);
+
+/**
+ * Section 41-42 Phase 1's real "work while you're away" tick - server-side
+ * and BullMQ-backed like every other sweep in this file, so it keeps
+ * running through a restart/deploy without depending on a browser tab or
+ * chat session staying open (a real, already-satisfied requirement from
+ * the user's own spec). One business's real failure (a bad env, a DB
+ * blip) never blocks the rest - each runs independently and any error is
+ * logged, not thrown, so a single bad business can't stall the sweep for
+ * everyone else.
+ */
+export async function runAutonomousOpsSweep(): Promise<void> {
+  const businessIds = await listBusinessesForSweep();
+  if (businessIds.length === 0) return;
+
+  let totalActions = 0;
+  for (const businessId of businessIds) {
+    try {
+      const result = await runSweepForBusiness(businessId);
+      if (result.ran) totalActions += result.actionsTaken;
+    } catch (error) {
+      console.error(`[RealtimeEventsWorker] Autonomous ops sweep failed for business ${businessId}:`, error instanceof Error ? error.message : error);
+    }
+  }
+  if (totalActions > 0) {
+    console.log(`[RealtimeEventsWorker] Autonomous ops sweep took ${totalActions} real action(s) across ${businessIds.length} business(es)`);
+  }
+}
+
 // Documented rule: incrementCounts() bumps updated_at on every real batch of
 // sync progress. A 'running' job with no progress in this long has no
 // process left driving it - WhatsApp will never send it a completion signal
@@ -1476,6 +1507,8 @@ async function processRealtimeEventJob(
     await runSecurityWatcher();
   } else if (job.name === 'account-deletion-purge-sweep') {
     await sweepDueAccountDeletions();
+  } else if (job.name === 'autonomous-ops-sweep') {
+    await runAutonomousOpsSweep();
   } else if (job.name === 'media-download') {
     await processMediaDownload(job.data as MediaDownloadJobData);
   } else if (job.name === 'message-reaction') {
@@ -1609,6 +1642,11 @@ void realtimeEventsQueue
   .upsertJobScheduler('reminder-sweep', { every: REMINDER_SWEEP_INTERVAL_MS }, { name: 'reminder-sweep' })
   .then(() => console.log(`[RealtimeEventsWorker] Scheduled reminder-sweep every ${REMINDER_SWEEP_INTERVAL_MS}ms`))
   .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule reminder-sweep:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler('autonomous-ops-sweep', { every: AUTONOMOUS_OPS_SWEEP_INTERVAL_MS }, { name: 'autonomous-ops-sweep' })
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled autonomous-ops-sweep every ${AUTONOMOUS_OPS_SWEEP_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule autonomous-ops-sweep:', error.message));
 
 void realtimeEventsQueue
   .upsertJobScheduler('meeting-completion-sweep', { every: MEETING_COMPLETION_SWEEP_INTERVAL_MS }, { name: 'meeting-completion-sweep' })

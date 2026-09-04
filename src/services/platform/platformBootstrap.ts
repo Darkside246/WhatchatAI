@@ -9,6 +9,7 @@ import { MaintenanceCreateWorkOrderExecutor, MAINTENANCE_CREATE_WORK_ORDER_ACTIO
 import { RetailCreateOrderExecutor, RETAIL_CREATE_ORDER_ACTION_TYPE } from '../retail/retailCreateOrderExecutor.js';
 import { GoogleMeetBookingExecutor, SCHEDULE_GOOGLE_MEET_ACTION_TYPE } from '../meeting/googleMeetBookingExecutor.js';
 import { ZoomMeetBookingExecutor, SCHEDULE_ZOOM_MEETING_ACTION_TYPE } from '../meeting/zoomMeetBookingExecutor.js';
+import { CreateFollowUpReminderExecutor, AUTONOMOUS_CREATE_REMINDER_ACTION_TYPE } from './createFollowUpReminderExecutor.js';
 
 let initialized = false;
 
@@ -43,6 +44,9 @@ export function initializePlatformFoundation(): void {
   }
   if (!actionBusService.listExecutors().includes(SCHEDULE_ZOOM_MEETING_ACTION_TYPE)) {
     actionBusService.register(new ZoomMeetBookingExecutor());
+  }
+  if (!actionBusService.listExecutors().includes(AUTONOMOUS_CREATE_REMINDER_ACTION_TYPE)) {
+    actionBusService.register(new CreateFollowUpReminderExecutor());
   }
 
   // Property maintenance triage is a real, sellable product capability, not

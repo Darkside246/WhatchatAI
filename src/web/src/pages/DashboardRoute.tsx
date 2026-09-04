@@ -427,7 +427,8 @@ export function DashboardRoute() {
         {/* ── Morning Briefing: "what happened while you were away" - real counts only ── */}
         {briefing && (
           briefing.completedActions.length + briefing.failedActions.length + briefing.riskFlags.length
-            + briefing.newAppointments.length + briefing.newLeads.length > 0
+            + briefing.newAppointments.length + briefing.newLeads.length
+            + briefing.autonomousActivity.ACTION_TAKEN + briefing.autonomousActivity.FINDING > 0
         ) && (
           <div className="mt-4 rounded-xl border border-border-subtle bg-surface-1">
             <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-2.5">
@@ -470,6 +471,18 @@ export function DashboardRoute() {
                   <p className="text-title font-semibold text-fg">{briefing.newLeads.length}</p>
                   <p className="text-meta text-fg-muted">New leads</p>
                 </button>
+              )}
+              {briefing.autonomousActivity.ACTION_TAKEN > 0 && (
+                <div className="bg-surface-1 px-4 py-3">
+                  <p className="text-title font-semibold text-fg">{briefing.autonomousActivity.ACTION_TAKEN}</p>
+                  <p className="text-meta text-fg-muted">Handled while you were away</p>
+                </div>
+              )}
+              {briefing.autonomousActivity.FINDING > 0 && (
+                <div className="bg-surface-1 px-4 py-3">
+                  <p className="text-title font-semibold text-fg">{briefing.autonomousActivity.FINDING}</p>
+                  <p className="text-meta text-fg-muted">Autonomous suggestions</p>
+                </div>
               )}
             </div>
           </div>

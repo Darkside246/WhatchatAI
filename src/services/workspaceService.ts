@@ -45,6 +45,7 @@ import { CampaignRepository } from '../repositories/campaignRepository.js';
 import { FunnelRepository } from '../repositories/funnelRepository.js';
 import { KnowledgeBaseRepository } from '../repositories/knowledgeBaseRepository.js';
 import { BusinessDocumentRepository } from '../repositories/businessDocumentRepository.js';
+import { AgentWorkJournalRepository, type AgentWorkJournalEntryType } from '../repositories/agentWorkJournalRepository.js';
 import type {
   CallStatus,
   CallType,
@@ -361,6 +362,7 @@ export interface CreateAgentInput {
   escalateToAgentId?: string | null | undefined;
   priority?: number | undefined;
   autonomyLevel?: number | undefined;
+  proactiveMode?: 'OFF' | 'ASSISTED' | 'DELEGATED' | 'AUTONOMOUS' | undefined;
   sourceTemplateKey?: string | null | undefined;
   sourceTemplateVersion?: number | null | undefined;
 }
@@ -408,6 +410,8 @@ export interface MorningBriefing {
   newLeads: LeadWithContactInfo[];
   overdueInvoices: InvoiceRecord[];
   recommendedPriorities: NextBestAction[];
+  /** Section 41-42 Phase 1: real counts from the autonomous sweep's own work journal since sinceIso - "While You Were Away", never a fabricated estimate. */
+  autonomousActivity: Record<AgentWorkJournalEntryType, number>;
 }
 
 const DEFAULT_APPROVAL_PATTERN_THRESHOLD = 10;
@@ -454,6 +458,7 @@ export class WorkspaceService {
   private readonly funnelRepository = new FunnelRepository(pool);
   private readonly knowledgeBaseRepository = new KnowledgeBaseRepository(pool);
   private readonly businessDocumentRepository = new BusinessDocumentRepository(pool);
+  private readonly agentWorkJournalRepository = new AgentWorkJournalRepository(pool);
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
@@ -1274,6 +1279,7 @@ export class WorkspaceService {
     const [
       completedActions, failedActions, pendingApprovals, riskFlags,
       chatsNeedingHuman, newAppointments, newLeads, overdueInvoices, recommendedPriorities,
+      autonomousActivity,
     ] = await Promise.all([
       this.platformActionRepository.listByStatusSince(businessId, ['SUCCEEDED'], sinceIso),
       this.platformActionRepository.listByStatusSince(businessId, ['FAILED'], sinceIso),
@@ -1284,11 +1290,13 @@ export class WorkspaceService {
       this.leadRepository.listCreatedSince(businessId, sinceIso),
       this.invoiceRepository.list(businessId, { status: 'OVERDUE' }),
       this.getNextBestActions(businessId),
+      this.agentWorkJournalRepository.countByTypeSince(businessId, sinceIso),
     ]);
 
     return {
       sinceIso, completedActions, failedActions, pendingApprovals, riskFlags,
       chatsNeedingHuman, newAppointments, newLeads, overdueInvoices, recommendedPriorities,
+      autonomousActivity,
     };
   }
 

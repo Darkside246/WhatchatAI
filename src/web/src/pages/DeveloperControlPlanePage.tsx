@@ -463,6 +463,7 @@ export function DeveloperControlPlanePage() {
   const [accounts, setAccounts] = useState<ProductAccount[]>([]);
   const [plans, setPlans] = useState<DeveloperPlan[]>([]);
   const [paymentProviders, setPaymentProviders] = useState<{ kind: string; configured: boolean; enabled: boolean }[]>([]);
+  const [autonomyKillSwitch, setAutonomyKillSwitch] = useState<boolean | null>(null);
   const [catalogOpen, setCatalogOpen] = useState(true);
   const [accountsOpen, setAccountsOpen] = useState(true);
   const [healthOpen, setHealthOpen] = useState(true);
@@ -478,11 +479,18 @@ export function DeveloperControlPlanePage() {
     api.listAllProductAccountsDev().then((r) => setAccounts(r.accounts)).catch(() => undefined);
     api.listPlans().then((r) => setPlans(r.plans)).catch(() => undefined);
     api.listPaymentProviders().then((r) => setPaymentProviders(r.providers)).catch(() => undefined);
+    api.getAutonomyKillSwitch().then((r) => setAutonomyKillSwitch(r.enabled)).catch(() => undefined);
   }, []);
 
   const handleTogglePaymentProvider = async (kind: string, enabled: boolean) => {
     await api.togglePaymentProvider(kind, enabled);
     setPaymentProviders((prev) => prev.map((p) => (p.kind === kind ? { ...p, enabled } : p)));
+  };
+
+  const handleToggleAutonomyKillSwitch = async () => {
+    const next = !autonomyKillSwitch;
+    await api.setAutonomyKillSwitch(next);
+    setAutonomyKillSwitch(next);
   };
 
   const handleAssign = (businessId: string, productKey: string) => {
@@ -524,6 +532,29 @@ export function DeveloperControlPlanePage() {
                 Cross-platform visibility, vertical provisioning and account management. Client dashboards remain product-specific and do not expose provider or cross-client controls.
               </p>
             </div>
+          </div>
+        </section>
+
+        {/* ── Autonomy Kill Switch (Section 41-42 Phase 1) - always visible, never buried in a collapsible group ── */}
+        <section className={`rounded-2xl border p-5 ${autonomyKillSwitch ? 'border-error/50 bg-error/5' : 'border-border-subtle bg-surface-1'}`}>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <ShieldCheck size={20} className={`mt-0.5 shrink-0 ${autonomyKillSwitch ? 'text-error' : 'text-accent'}`} />
+              <div>
+                <p className="text-title font-semibold">Autonomy Kill Switch</p>
+                <p className="mt-1 max-w-2xl text-caption text-fg-secondary">
+                  {autonomyKillSwitch
+                    ? 'Every business\'s autonomous sweep is stopped platform-wide right now. Reactive AI replies to real customer messages are unaffected.'
+                    : 'Instantly stops the autonomous work-while-you-sleep sweep for every business, platform-wide - without touching any business\'s own emergency pause or any agent\'s reply autonomy.'}
+                </p>
+              </div>
+            </div>
+            <ToggleSwitch
+              checked={autonomyKillSwitch === true}
+              onChange={() => void handleToggleAutonomyKillSwitch()}
+              disabled={autonomyKillSwitch === null}
+              label={autonomyKillSwitch ? 'Re-enable the autonomous sweep' : 'Stop the autonomous sweep platform-wide'}
+            />
           </div>
         </section>
 

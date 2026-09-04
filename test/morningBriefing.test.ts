@@ -9,6 +9,7 @@ import { SecurityAuditLogRepository } from '../src/repositories/securityAuditLog
 import { LeadRepository } from '../src/repositories/leadRepository.js';
 import { CrmContactRepository } from '../src/repositories/crmContactRepository.js';
 import { WhatsAppContactRepository } from '../src/repositories/whatsappContactRepository.js';
+import { AgentWorkJournalRepository } from '../src/repositories/agentWorkJournalRepository.js';
 import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
 
 const chatRepo = new WhatsAppChatRepository(pool);
@@ -18,6 +19,7 @@ const auditRepo = new SecurityAuditLogRepository(pool);
 const leadRepo = new LeadRepository(pool);
 const crmContactRepo = new CrmContactRepository(pool);
 const waContactRepo = new WhatsAppContactRepository(pool);
+const journalRepo = new AgentWorkJournalRepository(pool);
 
 describe('workspaceService.getMorningBriefing (real Postgres, real aggregation)', () => {
   let businessId: string;
@@ -40,6 +42,16 @@ describe('workspaceService.getMorningBriefing (real Postgres, real aggregation)'
     expect(briefing.newAppointments).toEqual([]);
     expect(briefing.newLeads).toEqual([]);
     expect(briefing.sinceIso).toBe(sinceIso);
+    expect(briefing.autonomousActivity).toEqual({ FINDING: 0, ACTION_TAKEN: 0, QUEUED_FOR_APPROVAL: 0, SKIPPED: 0 });
+  });
+
+  it('"While You Were Away" (Section 41-42 Phase 1) surfaces real counts from the autonomous sweep\'s own work journal, never fabricated', async () => {
+    await journalRepo.record({ businessId, agentId: null, entryType: 'ACTION_TAKEN', summary: 'Created a follow-up reminder' });
+    await journalRepo.record({ businessId, agentId: null, entryType: 'ACTION_TAKEN', summary: 'Created a follow-up reminder' });
+    await journalRepo.record({ businessId, agentId: null, entryType: 'FINDING', summary: 'Would have created a reminder' });
+
+    const briefing = await workspaceService.getMorningBriefing(businessId, sinceIso);
+    expect(briefing.autonomousActivity).toEqual({ FINDING: 1, ACTION_TAKEN: 2, QUEUED_FOR_APPROVAL: 0, SKIPPED: 0 });
   });
 
   it('surfaces a real completed action that occurred since sinceIso', async () => {
@@ -133,9 +145,11 @@ describe('workspaceService.getMorningBriefing (real Postgres, real aggregation)'
     const otherChat = await chatRepo.upsertFromWhatsApp({ businessId: otherBusinessId, whatsappAccountId: otherAccountId, chatJid: '15550003333@s.whatsapp.net', jidKind: 'individual', chatType: 'individual' });
     await chatRepo.setAiMode(otherChat.id, 'HUMAN_TAKEOVER', 'manual_reply_detected');
     await auditRepo.record({ businessId: otherBusinessId, whatsappAccountId: otherAccountId, eventType: 'message_risk_flagged', severity: 'warning', reason: 'other business', rawMetadata: {} });
+    await journalRepo.record({ businessId: otherBusinessId, agentId: null, entryType: 'ACTION_TAKEN', summary: 'other business action' });
 
     const briefing = await workspaceService.getMorningBriefing(businessId, sinceIso);
     expect(briefing.chatsNeedingHuman).toEqual([]);
     expect(briefing.riskFlags).toEqual([]);
+    expect(briefing.autonomousActivity).toEqual({ FINDING: 0, ACTION_TAKEN: 0, QUEUED_FOR_APPROVAL: 0, SKIPPED: 0 });
   });
 });

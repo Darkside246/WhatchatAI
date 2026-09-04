@@ -41,6 +41,21 @@ const AUTONOMY_LEVELS: { level: number; label: string; description: string }[] =
   { level: 5, label: 'Fully autonomous', description: 'This agent acts immediately with no approval step and no extra notification - full trust, no oversight overhead.' },
 ];
 
+/**
+ * Section 41-42 Phase 1: a separate question from Autonomy above - that
+ * governs how this agent replies to a message someone actually sent.
+ * Proactive work is whether this business gets swept for unprompted work
+ * at all while nobody's watching, and how much of what's found gets
+ * handled without a person in the loop. Off by default for every agent -
+ * nothing opts in silently.
+ */
+const PROACTIVE_MODES: { value: AiAgentSummary['proactiveMode']; label: string; description: string }[] = [
+  { value: 'OFF', label: 'Off', description: 'This agent is never swept for unprompted work - the same as today.' },
+  { value: 'ASSISTED', label: 'Assisted', description: 'Aura looks for follow-up work on its own, but only ever suggests it - nothing happens automatically. Review what it would have done on the dashboard.' },
+  { value: 'DELEGATED', label: 'Delegated', description: 'Aura creates a real internal reminder for your team when it finds something worth following up on - no external message is ever sent on its own.' },
+  { value: 'AUTONOMOUS', label: 'Autonomous', description: 'Same as Delegated in this release - Aura handles genuinely low-risk follow-up work and reports back; anything riskier still always waits for a person.' },
+];
+
 const CATEGORY_LABEL: Record<AgentCategory, string> = {
   general: 'General',
   sales: 'Sales',
@@ -84,6 +99,7 @@ interface AgentForm {
   allowedToolsEnabled: boolean;
   allowedTools: string[];
   autonomyLevel: number;
+  proactiveMode: AiAgentSummary['proactiveMode'];
   sourceTemplateKey: string | null;
   sourceTemplateVersion: number | null;
 }
@@ -112,6 +128,7 @@ const EMPTY_FORM: AgentForm = {
   allowedToolsEnabled: false,
   allowedTools: TOGGLEABLE_TOOLS.map((t) => t.name),
   autonomyLevel: 3,
+  proactiveMode: 'OFF',
   sourceTemplateKey: null,
   sourceTemplateVersion: null,
 };
@@ -141,6 +158,7 @@ function toForm(agent: AiAgentSummary): AgentForm {
     allowedToolsEnabled: agent.allowedToolsEnabled,
     allowedTools: agent.allowedToolsEnabled ? agent.allowedTools : TOGGLEABLE_TOOLS.map((t) => t.name),
     autonomyLevel: agent.autonomyLevel,
+    proactiveMode: agent.proactiveMode,
     sourceTemplateKey: agent.sourceTemplateKey,
     sourceTemplateVersion: agent.sourceTemplateVersion,
   };
@@ -179,6 +197,7 @@ function toBody(form: AgentForm): CreateAgentBody {
     allowedToolsEnabled: form.allowedToolsEnabled,
     allowedTools: form.allowedTools,
     autonomyLevel: form.autonomyLevel,
+    proactiveMode: form.proactiveMode,
     sourceTemplateKey: form.sourceTemplateKey,
     sourceTemplateVersion: form.sourceTemplateVersion,
   };
@@ -499,6 +518,35 @@ function AgentEditor({
           <div key={l.level} className="rounded-lg bg-surface-2 p-3">
             <p className="text-caption font-semibold text-fg">{l.label}</p>
             <p className="mt-1 text-meta text-fg-muted">{l.description}</p>
+          </div>
+        ))}
+      </section>
+
+      <section className="space-y-4 rounded-xl border border-border-subtle bg-surface-1 p-5">
+        <div>
+          <h2 className="text-body font-semibold text-fg">Proactive work</h2>
+          <p className="text-caption text-fg-muted">Whether this agent looks for follow-up work on its own while nobody's watching - a different question from Autonomy above, which only governs how it replies to a message someone actually sent.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {PROACTIVE_MODES.map((mode) => (
+            <button
+              key={mode.value}
+              type="button"
+              onClick={() => setForm({ ...form, proactiveMode: mode.value })}
+              className={`control-sm font-medium ${
+                mode.value === form.proactiveMode
+                  ? 'bg-accent text-white'
+                  : 'bg-surface-2 text-fg-secondary hover:bg-surface-3'
+              }`}
+            >
+              {mode.label}
+            </button>
+          ))}
+        </div>
+        {PROACTIVE_MODES.filter((m) => m.value === form.proactiveMode).map((m) => (
+          <div key={m.value} className="rounded-lg bg-surface-2 p-3">
+            <p className="text-caption font-semibold text-fg">{m.label}</p>
+            <p className="mt-1 text-meta text-fg-muted">{m.description}</p>
           </div>
         ))}
       </section>

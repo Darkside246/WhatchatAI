@@ -70,6 +70,13 @@ export interface AiAgentRecord {
    */
   autonomyLevel: number;
   /**
+   * Section 41-42 Phase 1: a separate axis from autonomyLevel above -
+   * whether this agent's business gets swept for unprompted work at all
+   * (migration 979), and how much of what the sweep finds it may act on
+   * without a human. See autonomousOpsService.ts.
+   */
+  proactiveMode: 'OFF' | 'ASSISTED' | 'DELEGATED' | 'AUTONOMOUS';
+  /**
    * Which system template (agent_templates.template_key) and version this
    * agent was created from, if any (migration 956) - null for a manually-
    * created or custom-description agent. Set once at creation and updated
@@ -114,6 +121,7 @@ interface AiAgentRow {
   forbidden_tools: string[];
   allowed_tools_enabled: boolean;
   autonomy_level: number;
+  proactive_mode: 'OFF' | 'ASSISTED' | 'DELEGATED' | 'AUTONOMOUS';
   source_template_key: string | null;
   source_template_version: number | null;
   status: AgentStatus;
@@ -152,6 +160,7 @@ function toRecord(row: AiAgentRow): AiAgentRecord {
     forbiddenTools: row.forbidden_tools ?? [],
     allowedToolsEnabled: row.allowed_tools_enabled,
     autonomyLevel: row.autonomy_level,
+    proactiveMode: row.proactive_mode,
     sourceTemplateKey: row.source_template_key,
     sourceTemplateVersion: row.source_template_version,
     status: row.status,
@@ -187,6 +196,7 @@ export interface CreateAiAgentInput {
   forbiddenTools?: string[] | undefined;
   allowedToolsEnabled?: boolean | undefined;
   autonomyLevel?: number | undefined;
+  proactiveMode?: 'OFF' | 'ASSISTED' | 'DELEGATED' | 'AUTONOMOUS' | undefined;
   sourceTemplateKey?: string | null | undefined;
   sourceTemplateVersion?: number | null | undefined;
 }
@@ -204,9 +214,9 @@ export class AiAgentRepository {
           greeting, business_context, response_style, human_takeover_policy,
           category, specialization, trigger_keywords, blocked_keywords, protected_facts,
           blocked_reply_message, response_delay_seconds, parent_agent_id, escalate_to_agent_id, priority,
-          allowed_tools, forbidden_tools, allowed_tools_enabled, autonomy_level,
+          allowed_tools, forbidden_tools, allowed_tools_enabled, autonomy_level, proactive_mode,
           source_template_key, source_template_version)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
        RETURNING *`,
       [
         input.businessId,
@@ -234,6 +244,7 @@ export class AiAgentRepository {
         JSON.stringify(input.forbiddenTools ?? []),
         input.allowedToolsEnabled ?? false,
         input.autonomyLevel ?? 3,
+        input.proactiveMode ?? 'OFF',
         input.sourceTemplateKey ?? null,
         input.sourceTemplateVersion ?? null,
       ],
@@ -258,7 +269,7 @@ export class AiAgentRepository {
          protected_facts = $16, blocked_reply_message = $17, response_delay_seconds = $18,
          parent_agent_id = $19, escalate_to_agent_id = $20, priority = $21,
          allowed_tools = $22, forbidden_tools = $23, allowed_tools_enabled = $24, autonomy_level = $25,
-         source_template_key = $26, source_template_version = $27, updated_at = now()
+         proactive_mode = $26, source_template_key = $27, source_template_version = $28, updated_at = now()
        WHERE id = $1 AND deleted_at IS NULL
        RETURNING *`,
       [
@@ -287,6 +298,7 @@ export class AiAgentRepository {
         JSON.stringify(input.forbiddenTools ?? []),
         input.allowedToolsEnabled ?? false,
         input.autonomyLevel ?? 3,
+        input.proactiveMode ?? 'OFF',
         input.sourceTemplateKey ?? null,
         input.sourceTemplateVersion ?? null,
       ],
@@ -357,5 +369,34 @@ export class AiAgentRepository {
 
   async updateAutonomyLevel(id: string, autonomyLevel: number): Promise<void> {
     await this.db.query('UPDATE ai_agents SET autonomy_level = $2, updated_at = now() WHERE id = $1', [id, autonomyLevel]);
+  }
+
+  async updateProactiveMode(id: string, proactiveMode: 'OFF' | 'ASSISTED' | 'DELEGATED' | 'AUTONOMOUS'): Promise<void> {
+    await this.db.query('UPDATE ai_agents SET proactive_mode = $2, updated_at = now() WHERE id = $1', [id, proactiveMode]);
+  }
+
+  /**
+   * Section 41-42 Phase 1: the most permissive real proactive_mode any of
+   * this business's agents carries - 'OFF' if none, else the most
+   * permissive (AUTONOMOUS/DELEGATED > ASSISTED). Deliberately coarse: a
+   * business that has delegated to any one agent gets its sweep, rather
+   * than requiring every agent to individually agree.
+   */
+  /** Every business with at least one real, active agent opted into the Section 41-42 Phase 1 sweep - what the recurring autonomous-ops-sweep job iterates. */
+  async listBusinessIdsWithProactiveModeEnabled(): Promise<string[]> {
+    const { rows } = await this.db.query<{ business_id: string }>(
+      `SELECT DISTINCT business_id FROM ai_agents WHERE deleted_at IS NULL AND status = 'ACTIVE' AND proactive_mode <> 'OFF'`,
+    );
+    return rows.map((r) => r.business_id);
+  }
+
+  async getMostPermissiveProactiveMode(businessId: string): Promise<'OFF' | 'ASSISTED' | 'DELEGATED' | 'AUTONOMOUS'> {
+    const { rows } = await this.db.query<{ proactive_mode: 'OFF' | 'ASSISTED' | 'DELEGATED' | 'AUTONOMOUS' }>(
+      `SELECT proactive_mode FROM ai_agents WHERE business_id = $1 AND deleted_at IS NULL AND status = 'ACTIVE' AND proactive_mode <> 'OFF'`,
+      [businessId],
+    );
+    if (rows.some((r) => r.proactive_mode === 'AUTONOMOUS' || r.proactive_mode === 'DELEGATED')) return 'DELEGATED';
+    if (rows.some((r) => r.proactive_mode === 'ASSISTED')) return 'ASSISTED';
+    return 'OFF';
   }
 }
