@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const PaymentProviderSchema = z.enum(['BIMPAY', 'BANK_TRANSFER', 'OTHER']);
+export const PaymentProviderSchema = z.enum(['BIMPAY', 'PAYPAL', 'WIPAY', 'BANK_TRANSFER', 'OTHER']);
 export type PaymentProvider = z.infer<typeof PaymentProviderSchema>;
 
 export const PaymentStatusSchema = z.enum(['PENDING', 'RECEIVED', 'VERIFIED', 'REJECTED', 'EXPIRED', 'REFUNDED']);

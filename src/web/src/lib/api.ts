@@ -1646,6 +1646,15 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
+  // ── Payment providers (developer-only, Section 73-74) ───────────────────────
+  listPaymentProviders: () =>
+    request<{ providers: { kind: string; configured: boolean; enabled: boolean }[] }>('/billing/developer/payment-providers'),
+  togglePaymentProvider: (kind: string, enabled: boolean) =>
+    request<{ setting: { key: string; value: unknown } }>(`/billing/developer/payment-providers/${kind}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    }),
+
   // ── Operator Mode ──────────────────────────────────────────────────────────
   getOperatorSettings: () =>
     request<{ configured: false } | { configured: true; operatorWaJid: string; enabled: boolean; createdAt: string; updatedAt: string }>(

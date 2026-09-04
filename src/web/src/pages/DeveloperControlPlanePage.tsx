@@ -7,6 +7,7 @@ import {
   Wallet, Save,
 } from 'lucide-react';
 import { api, type DeveloperPlan, type PlanEntitlement } from '../lib/api.js';
+import { ToggleSwitch } from '../components/ToggleSwitch.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -408,6 +409,50 @@ function PlanCard({
   );
 }
 
+const PAYMENT_PROVIDER_LABELS: Record<string, string> = { bimpay: 'BiMPay', paypal: 'PayPal', wipay: 'WiPay' };
+
+/**
+ * Section 73-74: one row per registered payment provider. "Configured"
+ * (real credentials present) and "enabled" (this live switch) are
+ * independent - a developer can have real PayPal credentials in place and
+ * still keep it off until they're ready, or flip a working provider off
+ * instantly (e.g. mid-incident) without touching env vars or redeploying.
+ */
+function PaymentProviderRow({
+  provider, onToggle,
+}: {
+  provider: { kind: string; configured: boolean; enabled: boolean };
+  onToggle: (kind: string, enabled: boolean) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  const handleToggle = async () => {
+    setBusy(true);
+    try {
+      await onToggle(provider.kind, !provider.enabled);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl border border-border-subtle bg-surface-1 p-4">
+      <div>
+        <p className="text-title font-semibold">{PAYMENT_PROVIDER_LABELS[provider.kind] ?? provider.kind}</p>
+        <p className="text-caption text-fg-muted">
+          {provider.configured ? 'Credentials configured' : 'Not configured yet - set its env vars first'}
+        </p>
+      </div>
+      <ToggleSwitch
+        checked={provider.enabled}
+        onChange={() => void handleToggle()}
+        disabled={busy || !provider.configured}
+        label={`${provider.enabled ? 'Disable' : 'Enable'} ${PAYMENT_PROVIDER_LABELS[provider.kind] ?? provider.kind}`}
+      />
+    </div>
+  );
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────
 
 export function DeveloperControlPlanePage() {
@@ -417,11 +462,13 @@ export function DeveloperControlPlanePage() {
   const [verticals, setVerticals] = useState<Vertical[]>([]);
   const [accounts, setAccounts] = useState<ProductAccount[]>([]);
   const [plans, setPlans] = useState<DeveloperPlan[]>([]);
+  const [paymentProviders, setPaymentProviders] = useState<{ kind: string; configured: boolean; enabled: boolean }[]>([]);
   const [catalogOpen, setCatalogOpen] = useState(true);
   const [accountsOpen, setAccountsOpen] = useState(true);
   const [healthOpen, setHealthOpen] = useState(true);
   const [aiUsageOpen, setAiUsageOpen] = useState(true);
   const [plansOpen, setPlansOpen] = useState(true);
+  const [paymentProvidersOpen, setPaymentProvidersOpen] = useState(true);
 
   useEffect(() => {
     api.getControlPlaneStats().then((r) => setStats(r.stats)).catch(() => undefined);
@@ -430,7 +477,13 @@ export function DeveloperControlPlanePage() {
     api.listVerticals().then((r) => setVerticals(r.verticals)).catch(() => undefined);
     api.listAllProductAccountsDev().then((r) => setAccounts(r.accounts)).catch(() => undefined);
     api.listPlans().then((r) => setPlans(r.plans)).catch(() => undefined);
+    api.listPaymentProviders().then((r) => setPaymentProviders(r.providers)).catch(() => undefined);
   }, []);
+
+  const handleTogglePaymentProvider = async (kind: string, enabled: boolean) => {
+    await api.togglePaymentProvider(kind, enabled);
+    setPaymentProviders((prev) => prev.map((p) => (p.kind === kind ? { ...p, enabled } : p)));
+  };
 
   const handleAssign = (businessId: string, productKey: string) => {
     setAccounts((prev) =>
@@ -554,6 +607,38 @@ export function DeveloperControlPlanePage() {
                 <div className="grid gap-4 lg:grid-cols-2">
                   {plans.map((plan) => (
                     <PlanCard key={plan.id} plan={plan} onUpdatePlan={handleUpdatePlan} onUpdateEntitlement={handleUpdateEntitlement} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
+        {/* ── Payment providers — collapsible hamburger group (Section 73-74) ── */}
+        <section className="rounded-2xl border border-border-subtle bg-surface-1 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setPaymentProvidersOpen((o) => !o)}
+            className="flex w-full items-center gap-3 px-6 py-4 text-left hover:bg-surface-2 transition-colors"
+          >
+            <CreditCard size={18} className="shrink-0 text-accent" />
+            <span className="flex-1 text-title font-semibold">Payment Providers</span>
+            <span className="text-caption text-fg-muted">{paymentProviders.filter((p) => p.enabled && p.configured).length} live</span>
+            {paymentProvidersOpen
+              ? <ChevronDown size={16} className="shrink-0 text-fg-muted" />
+              : <ChevronRight size={16} className="shrink-0 text-fg-muted" />}
+          </button>
+          {paymentProvidersOpen && (
+            <div className="border-t border-border-subtle px-6 pb-6 pt-4">
+              <p className="mb-4 text-caption text-fg-secondary">
+                A provider only accepts real checkouts when it's both configured (real credentials in the environment) and switched on here - flipping this takes effect immediately, no redeploy needed.
+              </p>
+              {paymentProviders.length === 0 ? (
+                <p className="text-caption text-fg-muted">Loading…</p>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {paymentProviders.map((provider) => (
+                    <PaymentProviderRow key={provider.kind} provider={provider} onToggle={handleTogglePaymentProvider} />
                   ))}
                 </div>
               )}

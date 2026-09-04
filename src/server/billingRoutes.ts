@@ -3,15 +3,18 @@ import { z } from 'zod';
 import { requireAuth, requireDeveloper, type AuthContext } from './authMiddleware.js';
 import { activateVerifiedPayment, createCheckout, submitPaymentProof } from '../services/billing/paymentService.js';
 import { resolveProvider } from '../services/billing/providers/registry.js';
-import type { PaymentProvider } from '../domain/billing/payment.js';
+import { PaymentProviderSchema, type PaymentProvider } from '../domain/billing/payment.js';
 import { PlanRepository } from '../repositories/planRepository.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
+import { PlatformSettingsRepository } from '../repositories/platformSettingsRepository.js';
 import { pool } from '../db/pool.js';
 
 const router = Router();
 const planRepository = new PlanRepository(pool);
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
-const checkoutSchema = z.object({ productAccountId: z.string().uuid(), amountMinor: z.number().int().positive(), currency: z.string().trim().length(3).default('BBD'), billingInterval: z.enum(['month', 'year', 'one_time']).default('month') });
+const platformSettingsRepository = new PlatformSettingsRepository(pool);
+const PAYMENT_PROVIDER_KINDS = ['bimpay', 'paypal', 'wipay'] as const;
+const checkoutSchema = z.object({ productAccountId: z.string().uuid(), provider: PaymentProviderSchema.optional(), amountMinor: z.number().int().positive(), currency: z.string().trim().length(3).default('BBD'), billingInterval: z.enum(['month', 'year', 'one_time']).default('month') });
 const proofSchema = z.object({ productAccountId: z.string().uuid(), paymentAttemptId: z.string().uuid(), proofUrl: z.string().url().max(2000), note: z.string().trim().max(2000).optional() });
 const proofReviewSchema = z.object({ decision: z.enum(['APPROVE', 'REJECT']), note: z.string().trim().max(2000).optional() });
 const updatePlanSchema = z.object({
@@ -31,12 +34,36 @@ router.post('/checkout', requireAuth, async (req, res) => {
   const parsed = checkoutSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_CHECKOUT', details: parsed.error.flatten() });
   const auth = res.locals.auth as AuthContext;
+  const providerKind = (parsed.data.provider ?? 'BIMPAY').toLowerCase();
+  if (!(await isProviderUsable(providerKind))) return res.status(503).json({ error: 'PAYMENT_PROVIDER_NOT_CONFIGURED' });
   try {
-    const checkout = await createCheckout({ userId: auth.userId, ...parsed.data });
+    const checkoutInput: Parameters<typeof createCheckout>[0] = {
+      userId: auth.userId,
+      productAccountId: parsed.data.productAccountId,
+      amountMinor: parsed.data.amountMinor,
+      currency: parsed.data.currency,
+      billingInterval: parsed.data.billingInterval,
+    };
+    if (parsed.data.provider !== undefined) checkoutInput.provider = parsed.data.provider;
+    const checkout = await createCheckout(checkoutInput);
     const provider = resolveProvider(checkout.provider.toLowerCase());
-    const instructions = provider?.buildCheckoutInstructions(checkout.checkoutReference, { amountMinor: checkout.amountMinor, currency: checkout.currency });
+    const instructions = provider ? await provider.buildCheckoutInstructions(checkout.checkoutReference, { amountMinor: checkout.amountMinor, currency: checkout.currency }) : undefined;
     return res.status(201).json({ checkout, instructions });
   } catch (error) { return res.status(404).json({ error: 'BILLING_ACCOUNT_NOT_FOUND', message: error instanceof Error ? error.message : String(error) }); }
+});
+
+/**
+ * Only a provider a customer could actually complete a real payment
+ * through - configured (real credentials present) AND not switched off
+ * from the Control Plane. Feeds the checkout provider picker so BiMPay
+ * never silently offers PayPal/WiPay before they're genuinely ready.
+ */
+router.get('/providers/available', requireAuth, async (_req, res) => {
+  const available: string[] = [];
+  for (const kind of PAYMENT_PROVIDER_KINDS) {
+    if (await isProviderUsable(kind)) available.push(kind.toUpperCase());
+  }
+  return res.status(200).json({ providers: available });
 });
 
 router.post('/payment-proof', requireAuth, async (req, res) => {
@@ -56,14 +83,35 @@ router.post('/payment-proof', requireAuth, async (req, res) => {
 });
 
 /**
- * Resolves a provider's own bridge/webhook secret. Only BiMPay exists
- * today, so this is a small explicit branch rather than a generic lookup
- * table - appropriate for a single-provider registry, and expected to
- * grow one branch per provider as they're actually added.
+ * Resolves a provider's own bridge/webhook secret - for BiMPay, the shared
+ * HMAC secret; for PayPal, the webhook ID PayPal's verify-signature API
+ * needs (see paypalProvider.ts's own doc comment - the OAuth client
+ * id/secret it separately needs live are read directly from env inside
+ * that file, not threaded through this generic string).
  */
 function resolveProviderSecret(providerKind: string): string | undefined {
   if (providerKind === 'bimpay') return process.env.BIMPAY_BRIDGE_SECRET?.trim();
+  if (providerKind === 'paypal') return process.env.PAYPAL_WEBHOOK_ID?.trim();
   return undefined;
+}
+
+/** Does this provider have the real credentials it needs to function at all - independent of whether a developer has since switched it off (see isProviderEnabled). WiPay is never configured until its real integration replaces the deliberate stub in wipayProvider.ts. */
+export function isProviderConfigured(providerKind: string): boolean {
+  if (providerKind === 'bimpay') return Boolean(process.env.BIMPAY_BRIDGE_SECRET?.trim());
+  if (providerKind === 'paypal') return Boolean(process.env.PAYPAL_CLIENT_ID?.trim() && process.env.PAYPAL_CLIENT_SECRET?.trim() && process.env.PAYPAL_WEBHOOK_ID?.trim());
+  return false;
+}
+
+/** The live Control Plane toggle (platform_settings) - defaults to enabled once a provider is configured, so setting up real credentials is enough on its own; a developer can still switch a configured provider off instantly without touching env vars or redeploying. */
+export async function isProviderEnabled(providerKind: string): Promise<boolean> {
+  const setting = await platformSettingsRepository.get(`payment_provider:${providerKind}`);
+  if (!setting) return true;
+  const value = setting.value as { enabled?: unknown };
+  return value.enabled !== false;
+}
+
+export async function isProviderUsable(providerKind: string): Promise<boolean> {
+  return resolveProvider(providerKind) !== undefined && isProviderConfigured(providerKind) && (await isProviderEnabled(providerKind));
 }
 
 /**
@@ -77,12 +125,18 @@ function resolveProviderSecret(providerKind: string): string | undefined {
 async function handleProviderEvent(providerKind: string, req: Request, res: Response) {
   const provider = resolveProvider(providerKind);
   if (!provider) return res.status(404).json({ error: 'UNKNOWN_PAYMENT_PROVIDER' });
+  if (!isProviderConfigured(providerKind) || !(await isProviderEnabled(providerKind))) return res.status(503).json({ error: 'PAYMENT_PROVIDER_NOT_CONFIGURED' });
   const secret = resolveProviderSecret(providerKind);
   if (!secret) return res.status(503).json({ error: 'PAYMENT_PROVIDER_NOT_CONFIGURED' });
 
-  const result = provider.verifyEvent({ body: req.body, headers: req.headers, secret });
+  const result = await provider.verifyEvent({ body: req.body, headers: req.headers, secret });
+  // A real, signature-verified event the provider sent that this bridge
+  // deliberately takes no action on (e.g. PayPal's ORDER.APPROVED) - a
+  // genuine 200 acknowledgment, not an error, so the provider doesn't
+  // retry it forever.
+  if (result.outcome === 'ignored') return res.status(200).json({ ok: true, ignored: result.reason });
   if (result.outcome === 'rejected') {
-    const status = result.reason === 'INVALID_BIMPAY_SIGNATURE' ? 401 : 400;
+    const status = result.reason === 'INVALID_BIMPAY_SIGNATURE' || result.reason === 'INVALID_PAYPAL_SIGNATURE' ? 401 : 400;
     return res.status(status).json({ error: result.reason });
   }
 
@@ -111,6 +165,35 @@ async function handleProviderEvent(providerKind: string, req: Request, res: Resp
 router.post('/providers/bimpay/bridge', async (req, res) => { await handleProviderEvent('bimpay', req, res); });
 
 router.post('/webhooks/:provider', async (req, res) => { await handleProviderEvent(req.params.provider, req, res); });
+
+/**
+ * Section 73-74: the live Control Plane view of every registered payment
+ * provider - whether it has real credentials configured, and whether a
+ * developer has switched it on/off. This is what lets PayPal/WiPay be
+ * built and wired end-to-end today while staying invisible to a real
+ * checkout until they're actually ready to go live.
+ */
+router.get('/developer/payment-providers', requireAuth, requireDeveloper, async (_req, res) => {
+  const providers = await Promise.all(
+    PAYMENT_PROVIDER_KINDS.map(async (kind) => ({ kind, configured: isProviderConfigured(kind), enabled: await isProviderEnabled(kind) })),
+  );
+  return res.status(200).json({ providers });
+});
+
+router.patch('/developer/payment-providers/:kind', requireAuth, requireDeveloper, async (req, res) => {
+  const kind = z.enum(PAYMENT_PROVIDER_KINDS).safeParse(req.params.kind);
+  if (!kind.success) return res.status(400).json({ error: 'UNKNOWN_PAYMENT_PROVIDER' });
+  const parsed = z.object({ enabled: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PAYMENT_PROVIDER_TOGGLE', details: parsed.error.flatten() });
+  const auth = res.locals.auth as AuthContext;
+  const setting = await platformSettingsRepository.set(`payment_provider:${kind.data}`, { enabled: parsed.data.enabled }, auth.userId);
+  await securityAuditLogRepository.record({
+    businessId: null,
+    eventType: 'platform_setting_updated',
+    rawMetadata: { key: setting.key, changedBy: auth.userId, enabled: parsed.data.enabled },
+  });
+  return res.status(200).json({ setting });
+});
 
 router.get('/developer/payment-proofs', requireAuth, requireDeveloper, async (_req, res) => {
   const { rows } = await pool.query(`SELECT id, payment_attempt_id, product_account_id, submitted_by_user_id, status, proof_url, note, reviewed_by_user_id, reviewed_at, created_at FROM payment_proof_submissions ORDER BY created_at DESC LIMIT 500`);
