@@ -177,6 +177,55 @@ describe('campaignService (real eligibility, real status machine, real send pipe
     expect(detail.counts.total).toBe(1);
   });
 
+  it('Section 115 (campaign ethics): a contact who opts out during the review/approval window is never messaged, and the campaign refuses to send with no one left', async () => {
+    const contactId = await makeEligibleContact(businessId, accountId, '15559990012@s.whatsapp.net', 'Second Thoughts');
+    const { campaign } = await createCampaign(businessId, accountId, ownerId, { name: 'x', messageText: 'y', crmContactIds: [contactId] });
+    await submitCampaignForReview(businessId, campaign.id);
+    await approveCampaign(businessId, campaign.id, ownerId);
+
+    // The opt-out happens AFTER creation/approval - listEligibleCampaignRecipients'
+    // own check ran once, at creation, and can never see this.
+    await crmContactRepository.setOptedOut(businessId, contactId, true);
+
+    const sendSpy = vi.spyOn(whatsappOutboundMessageService, 'send');
+    await expect(sendCampaign(businessId, campaign.id)).rejects.toThrow();
+    try {
+      await sendCampaign(businessId, campaign.id);
+    } catch (error) {
+      expect(isNoEligibleRecipientsError(error)).toBe(true);
+    }
+    expect(sendSpy).not.toHaveBeenCalled();
+    sendSpy.mockRestore();
+
+    // Never left dangling: a real terminal failure, not a silent skip.
+    const detail = await getCampaign(businessId, campaign.id);
+    expect(detail.recipients[0]?.outboundMessageId).toBeNull();
+    expect(detail.recipients[0]?.status).toBe('failed');
+    expect(detail.recipients[0]?.lastError).toContain('opted out');
+    // Refusing to send never flips the campaign to RUNNING.
+    expect(detail.campaign.status).toBe('APPROVED');
+  });
+
+  it('Section 115: with one opted-out and one still-eligible recipient, only the eligible one is actually messaged', async () => {
+    const staying = await makeEligibleContact(businessId, accountId, '15559990013@s.whatsapp.net', 'Staying In');
+    const leaving = await makeEligibleContact(businessId, accountId, '15559990014@s.whatsapp.net', 'Opting Out');
+    const { campaign } = await createCampaign(businessId, accountId, ownerId, { name: 'x', messageText: 'y', crmContactIds: [staying, leaving] });
+    await submitCampaignForReview(businessId, campaign.id);
+    await approveCampaign(businessId, campaign.id, ownerId);
+    await crmContactRepository.setOptedOut(businessId, leaving, true);
+
+    const sent = await sendCampaign(businessId, campaign.id);
+    expect(sent.status).toBe('RUNNING');
+
+    const detail = await getCampaign(businessId, campaign.id);
+    const stayingRecipient = detail.recipients.find((r) => r.crmContactId === staying);
+    const leavingRecipient = detail.recipients.find((r) => r.crmContactId === leaving);
+    expect(stayingRecipient?.outboundMessageId).not.toBeNull();
+    expect(leavingRecipient?.outboundMessageId).toBeNull();
+    expect(leavingRecipient?.status).toBe('failed');
+    expect(leavingRecipient?.lastError).toContain('opted out');
+  });
+
   describe('Section 27-30: real attachments, reusing the exact pipeline the 1:1 composer already uses', () => {
     // A real, minimal 1x1 transparent PNG - small enough to keep these tests fast, real enough to exercise storeMedia()'s actual decode/hash/store path.
     const onePixelPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';

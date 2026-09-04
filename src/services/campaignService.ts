@@ -260,8 +260,22 @@ export async function sendCampaign(businessId: string, campaignId: string): Prom
   const campaign = await requireOwnCampaign(businessId, campaignId);
   requireStatus(campaign, ['APPROVED']);
 
-  const pending = await campaignRepository.listUndispatchedRecipients(campaignId);
-  if (pending.length === 0) throw new NoEligibleRecipientsError('This campaign has no recipients to send to.');
+  const allPending = await campaignRepository.listUndispatchedRecipients(campaignId);
+  if (allPending.length === 0) throw new NoEligibleRecipientsError('This campaign has no recipients to send to.');
+
+  // Section 115 (campaign ethics): a contact can opt out during the
+  // REVIEW/APPROVED review window, which can span minutes to days - the
+  // opt-out check at campaign-creation time (listEligibleRecipients) only
+  // ever ran once. Recipients who have since opted out are never sent to;
+  // they're recorded as a real terminal failure (never left dangling with
+  // outbound_message_id NULL forever) so the campaign's status counts
+  // reflect what actually happened, not a silent skip.
+  const pending = allPending.filter((recipient) => !recipient.optedOut);
+  const skippedForOptOut = allPending.filter((recipient) => recipient.optedOut);
+  for (const recipient of skippedForOptOut) {
+    await campaignRepository.recordDispatchFailure(recipient.id, 'Recipient opted out of campaigns before send.');
+  }
+  if (pending.length === 0) throw new NoEligibleRecipientsError('Every recipient has opted out of campaigns since this campaign was created.');
 
   const running = await campaignRepository.updateStatus(campaignId, 'RUNNING', { sentAt: true });
   if (!running) throw new CampaignNotFoundError('Campaign not found.');
@@ -270,11 +284,11 @@ export async function sendCampaign(businessId: string, campaignId: string): Prom
     businessId,
     whatsappAccountId: campaign.whatsappAccountId,
     eventType: 'campaign_sent',
-    rawMetadata: { campaignId, recipientCount: pending.length },
+    rawMetadata: { campaignId, recipientCount: pending.length, skippedForOptOutCount: skippedForOptOut.length },
   });
 
   let index = 0;
-  let failedCount = 0;
+  let failedCount = skippedForOptOut.length;
   for (const recipient of pending) {
     try {
       const isText = campaign.messageType === 'text';
@@ -310,12 +324,15 @@ export async function sendCampaign(businessId: string, campaignId: string): Prom
   }
 
   if (failedCount > 0) {
+    const reasonNote = skippedForOptOut.length > 0
+      ? ` (${skippedForOptOut.length} opted out since this campaign was created; the rest could not be dispatched, e.g. their conversation no longer exists)`
+      : ' (e.g. their conversation no longer exists)';
     await notifyBusiness({
       businessId,
       type: 'AUTOMATION_FAILURE',
       severity: 'warning',
       title: 'Some campaign messages could not be sent',
-      body: `${failedCount} of ${pending.length} recipient(s) in "${campaign.name}" could not be dispatched (e.g. their conversation no longer exists). Check the campaign detail for which ones.`,
+      body: `${failedCount} of ${allPending.length} recipient(s) in "${campaign.name}" could not be dispatched${reasonNote}. Check the campaign detail for which ones.`,
       targetType: 'campaign',
       targetId: campaignId,
     }).catch((notifyError) => {

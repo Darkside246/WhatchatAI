@@ -5,10 +5,12 @@ import { activateVerifiedPayment, createCheckout, submitPaymentProof } from '../
 import { resolveProvider } from '../services/billing/providers/registry.js';
 import type { PaymentProvider } from '../domain/billing/payment.js';
 import { PlanRepository } from '../repositories/planRepository.js';
+import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { pool } from '../db/pool.js';
 
 const router = Router();
 const planRepository = new PlanRepository(pool);
+const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
 const checkoutSchema = z.object({ productAccountId: z.string().uuid(), amountMinor: z.number().int().positive(), currency: z.string().trim().length(3).default('BBD'), billingInterval: z.enum(['month', 'year', 'one_time']).default('month') });
 const proofSchema = z.object({ productAccountId: z.string().uuid(), paymentAttemptId: z.string().uuid(), proofUrl: z.string().url().max(2000), note: z.string().trim().max(2000).optional() });
 const proofReviewSchema = z.object({ decision: z.enum(['APPROVE', 'REJECT']), note: z.string().trim().max(2000).optional() });
@@ -177,6 +179,15 @@ router.patch('/developer/plans/:planId', requireAuth, requireDeveloper, async (r
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_PLAN_UPDATE', details: parsed.error.flatten() });
   const updated = await planRepository.updatePlan(planId.data, parsed.data);
   if (!updated) return res.status(404).json({ error: 'PLAN_NOT_FOUND' });
+  // Section 116 (audit logging): this changes real billing terms for every
+  // business subscribed to this plan - platform-wide, so businessId is
+  // null (migration 974), not the acting developer's own business.
+  const auth = res.locals.auth as AuthContext;
+  await securityAuditLogRepository.record({
+    businessId: null,
+    eventType: 'plan_updated',
+    rawMetadata: { planId: planId.data, changedBy: auth.userId, changes: parsed.data },
+  });
   return res.status(200).json({ plan: updated });
 });
 
@@ -190,6 +201,12 @@ router.put('/developer/plans/:planId/entitlements/:entitlementKey', requireAuth,
   const plan = await planRepository.findById(planId.data);
   if (!plan) return res.status(404).json({ error: 'PLAN_NOT_FOUND' });
   const entitlement = await planRepository.upsertEntitlement(planId.data, entitlementKey.data, parsed.data);
+  const auth = res.locals.auth as AuthContext;
+  await securityAuditLogRepository.record({
+    businessId: null,
+    eventType: 'plan_entitlement_updated',
+    rawMetadata: { planId: planId.data, entitlementKey: entitlementKey.data, changedBy: auth.userId, changes: parsed.data },
+  });
   return res.status(200).json({ entitlement });
 });
 

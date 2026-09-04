@@ -61,13 +61,17 @@ export type SecurityEventType =
   | 'phone_number_changed'
   | 'ai_output_leak_blocked'
   | 'ai_output_leak_check_unavailable'
-  | 'message_risk_flagged';
+  | 'message_risk_flagged'
+  | 'plan_updated'
+  | 'plan_entitlement_updated'
+  | 'vertical_assigned';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 
 export interface SecurityAuditLogRecord {
   id: string;
-  businessId: string;
+  /** Null for a genuinely platform-wide event (e.g. a developer changing a plan that applies across every subscribed business) - see migration 974. */
+  businessId: string | null;
   whatsappAccountId: string | null;
   eventType: SecurityEventType;
   severity: SecuritySeverity;
@@ -78,7 +82,7 @@ export interface SecurityAuditLogRecord {
 
 interface SecurityAuditLogRow {
   id: string;
-  business_id: string;
+  business_id: string | null;
   whatsapp_account_id: string | null;
   event_type: SecurityEventType;
   severity: SecuritySeverity;
@@ -101,7 +105,8 @@ function toRecord(row: SecurityAuditLogRow): SecurityAuditLogRecord {
 }
 
 export interface RecordSecurityEventInput {
-  businessId: string;
+  /** Null only for a genuinely platform-wide event with no single owning business - see migration 974. Every ordinary business action must still pass a real businessId. */
+  businessId: string | null;
   whatsappAccountId?: string | null;
   eventType: SecurityEventType;
   severity?: SecuritySeverity;
@@ -155,6 +160,15 @@ export class SecurityAuditLogRepository {
    * real rows in a rolling window), not a new Redis counter. Matches on
    * the toolName recorded in rawMetadata by guardToolInvocation.
    */
+  /** The platform-wide events listRecent can never see (it's always scoped to one businessId) - a developer-facing view of plan/entitlement config changes. */
+  async listPlatformEvents(limit = 100): Promise<SecurityAuditLogRecord[]> {
+    const { rows } = await this.db.query<SecurityAuditLogRow>(
+      'SELECT * FROM security_audit_logs WHERE business_id IS NULL ORDER BY created_at DESC LIMIT $1',
+      [limit],
+    );
+    return rows.map(toRecord);
+  }
+
   async countRecentByBusinessAndTool(businessId: string, toolName: string, windowMinutes: number): Promise<number> {
     const { rows } = await this.db.query<{ count: string }>(
       `SELECT count(*)::int AS count FROM security_audit_logs

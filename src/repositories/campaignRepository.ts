@@ -343,13 +343,25 @@ export class CampaignRepository {
     return rows.map(toRecipientRecord);
   }
 
-  /** The list of recipients still needing an actual send - used by the dispatch loop, never a stale cached list. */
-  async listUndispatchedRecipients(campaignId: string): Promise<{ id: string; chatId: string }[]> {
-    const { rows } = await this.db.query<{ id: string; chat_id: string }>(
-      `SELECT id, chat_id FROM campaign_recipients WHERE campaign_id = $1 AND outbound_message_id IS NULL ORDER BY created_at`,
+  /**
+   * The list of recipients still needing an actual send - used by the
+   * dispatch loop, never a stale cached list. Re-checks opted_out_of_campaigns
+   * here, not just at list-build time: a campaign sits in REVIEW/APPROVED
+   * (human gates) for anywhere from minutes to days before this runs, and a
+   * contact can opt out during that window - listEligibleRecipients'
+   * opt-out filter only ever ran once, at creation, so without this
+   * re-check sendCampaign would message someone who has since said no.
+   */
+  async listUndispatchedRecipients(campaignId: string): Promise<{ id: string; chatId: string; optedOut: boolean }[]> {
+    const { rows } = await this.db.query<{ id: string; chat_id: string; opted_out: boolean }>(
+      `SELECT cr.id, cr.chat_id, c.opted_out_of_campaigns AS opted_out
+       FROM campaign_recipients cr
+       JOIN crm_contacts c ON c.id = cr.crm_contact_id
+       WHERE cr.campaign_id = $1 AND cr.outbound_message_id IS NULL
+       ORDER BY cr.created_at`,
       [campaignId],
     );
-    return rows.map((row) => ({ id: row.id, chatId: row.chat_id }));
+    return rows.map((row) => ({ id: row.id, chatId: row.chat_id, optedOut: row.opted_out }));
   }
 
   async linkOutboundMessage(recipientId: string, outboundMessageId: string): Promise<void> {

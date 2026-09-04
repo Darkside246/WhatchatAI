@@ -16,8 +16,10 @@ import { requireAuth, requireDeveloper, setSessionCookie, type AuthContext } fro
 import type { Request } from 'express';
 import { pool } from '../db/pool.js';
 import { getSystemHealth } from '../services/systemHealthService.js';
+import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 
 const router = Router();
+const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
 const productKey = ProductKeySchema;
 const trials = new TrialRepository(pool);
 const trialRegistrationSchema = z.object({ name: z.string().trim().min(1).max(200), email: z.string().trim().email(), phone: z.string().trim().min(3).max(50), password: z.string().min(1).max(200), productKey });
@@ -73,12 +75,28 @@ router.post('/developer/accounts/:businessId/assign-vertical', requireAuth, requ
   const parsed = z.object({ productKey: ProductKeySchema }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_PRODUCT_KEY', details: parsed.error.flatten() });
   await assignVertical(businessId, parsed.data.productKey);
+  // Section 116 (audit logging): a developer changing which vertical a
+  // business is on is a real, consequential cross-tenant action with no
+  // audit trail before this - business-scoped (unlike a plan-wide config
+  // change), so it uses the affected business's own id.
+  const auth = res.locals.auth as AuthContext;
+  await securityAuditLogRepository.record({
+    businessId,
+    eventType: 'vertical_assigned',
+    rawMetadata: { productKey: parsed.data.productKey, assignedBy: auth.userId },
+  });
   return res.status(200).json({ ok: true, businessId, productKey: parsed.data.productKey });
 });
 
 router.get('/developer/control-plane-stats', requireAuth, requireDeveloper, async (_req, res) => {
   const stats = await getControlPlaneStats();
   return res.status(200).json({ stats });
+});
+
+/** Section 116: the platform-wide events (plan_updated, plan_entitlement_updated, vertical_assigned) no business-scoped view (e.g. /api/workspace/activity-log) can ever see, since they carry no single business_id. */
+router.get('/developer/audit-log', requireAuth, requireDeveloper, async (_req, res) => {
+  const events = await securityAuditLogRepository.listPlatformEvents();
+  return res.status(200).json({ events });
 });
 
 /**
