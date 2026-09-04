@@ -130,6 +130,44 @@ function PlanCard({ plan }: { plan: PlanCatalogueEntryDto }) {
   );
 }
 
+/**
+ * Section 34-40 (Token economy) follow-up: real per-agent token spend for
+ * the current calendar month - before this, a business owner could see
+ * their total AI usage (the UsageMeter above) but nothing telling them
+ * WHICH agent was actually spending it. Fetches on its own, same
+ * established pattern as DashboardRoute.tsx's MessageVolumeTrend/
+ * FunnelStageSnapshot.
+ */
+function AiUsageByAgentBreakdown() {
+  const [usage, setUsage] = useState<{ agentId: string | null; agentName: string; totalTokens: number; callCount: number }[] | null>(null);
+
+  useEffect(() => {
+    api.getAiUsageByAgent().then((res) => setUsage(res.usage)).catch(() => setUsage([]));
+  }, []);
+
+  if (usage === null) return <p className="text-caption text-fg-muted">Loading…</p>;
+  if (usage.length === 0) return <p className="text-caption text-fg-muted">No AI usage recorded yet this month.</p>;
+
+  const max = Math.max(1, ...usage.map((row) => row.totalTokens));
+  return (
+    <div className="space-y-2">
+      {usage.map((row) => (
+        <div key={row.agentId ?? 'unattributed'}>
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="min-w-0-safe truncate text-caption text-fg-secondary">{row.agentName}</span>
+            <span className="shrink-0 tabular-nums text-meta text-fg-muted">
+              <span className="font-medium text-fg">{row.totalTokens.toLocaleString()}</span> tokens · {row.callCount.toLocaleString()} call{row.callCount === 1 ? '' : 's'}
+            </span>
+          </div>
+          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-3">
+            <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, Math.round((row.totalTokens / max) * 100))}%` }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function BillingRoute() {
   const [billing, setBilling] = useState<WorkspaceBillingOverview | null>(null);
   const [catalogue, setCatalogue] = useState<PlanCatalogueDto | null>(null);
@@ -226,6 +264,18 @@ export function BillingRoute() {
                   <UsageMeter label={entitlement.label} current={entitlement.current ?? 0} limit={entitlement.limit} />
                 </div>
               ))}
+            </div>
+          </section>
+        )}
+
+        {metered.some((entitlement) => entitlement.key === 'max_ai_tokens_per_month') && (
+          <section className="mt-6">
+            <h2 className="text-body font-semibold text-fg">AI usage by agent</h2>
+            <p className="mt-1 text-caption text-fg-muted">
+              Where this month's AI token spend actually went, broken down by agent.
+            </p>
+            <div className="mt-3 rounded-xl border border-border-subtle bg-surface-2 p-4">
+              <AiUsageByAgentBreakdown />
             </div>
           </section>
         )}

@@ -102,4 +102,55 @@ describe('AiUsageRepository (real Postgres - migration 954)', () => {
       client.release();
     }
   });
+
+  /**
+   * Section 34-40 follow-up: getMonthlyUsageByAgentForBusiness is the new
+   * per-agent breakdown backing the business owner's "where did this
+   * month's AI spend actually go" view. Proves real per-agent grouping,
+   * honest labeling of unattributed and deleted-agent usage, most-usage-
+   * first ordering, and that it never leaks another business's usage.
+   */
+  describe('getMonthlyUsageByAgentForBusiness (Section 34-40 follow-up)', () => {
+    it('groups real usage by agent, most-usage-first, and never leaks another business\'s usage', async () => {
+      const otherAgent = await new AiAgentRepository(pool).create({ businessId, name: 'Sales Agent' });
+      const otherBusinessId = await createTestBusiness('Other Business');
+      const otherBusinessAgent = await new AiAgentRepository(pool).create({ businessId: otherBusinessId, name: 'Other Business Agent' });
+
+      await repo.record({ businessId, agentId, chatId: null, model: 'gemini-3.5-flash', callKind: 'primary', promptTokens: 10, candidatesTokens: 10, totalTokens: 20 });
+      await repo.record({ businessId, agentId: otherAgent.id, chatId: null, model: 'gemini-3.5-flash', callKind: 'primary', promptTokens: 40, candidatesTokens: 40, totalTokens: 80 });
+      await repo.record({ businessId: otherBusinessId, agentId: otherBusinessAgent.id, chatId: null, model: 'gemini-3.5-flash', callKind: 'primary', promptTokens: 1000, candidatesTokens: 1000, totalTokens: 2000 });
+
+      const usage = await repo.getMonthlyUsageByAgentForBusiness(businessId);
+      expect(usage).toHaveLength(2);
+      expect(usage[0]?.agentId).toBe(otherAgent.id);
+      expect(usage[0]?.agentName).toBe('Sales Agent');
+      expect(usage[0]?.totalTokens).toBe(80);
+      expect(usage[0]?.callCount).toBe(1);
+      expect(usage[1]?.agentId).toBe(agentId);
+      expect(usage[1]?.totalTokens).toBe(20);
+      expect(usage.some((row) => row.totalTokens === 2000)).toBe(false);
+    });
+
+    it('labels usage with no agent_id honestly, and folds a since-deleted agent\'s usage into that same bucket (ai_usage_events.agent_id is ON DELETE SET NULL)', async () => {
+      const deletedAgent = await new AiAgentRepository(pool).create({ businessId, name: 'Retiring Agent' });
+      await repo.record({ businessId, agentId: null, chatId: null, model: 'gemini-3.5-flash', callKind: 'primary', promptTokens: 5, candidatesTokens: 5, totalTokens: 10 });
+      await repo.record({ businessId, agentId: deletedAgent.id, chatId: null, model: 'gemini-3.5-flash', callKind: 'primary', promptTokens: 5, candidatesTokens: 5, totalTokens: 10 });
+      await pool.query('DELETE FROM ai_agents WHERE id = $1', [deletedAgent.id]);
+
+      const usage = await repo.getMonthlyUsageByAgentForBusiness(businessId);
+      expect(usage).toHaveLength(1);
+      expect(usage[0]?.agentId).toBeNull();
+      expect(usage[0]?.agentName).toBe('Not attributed to an agent');
+      expect(usage[0]?.totalTokens).toBe(20);
+      expect(usage[0]?.callCount).toBe(2);
+    });
+
+    it('excludes usage from a prior calendar month', async () => {
+      await repo.record({ businessId, agentId, chatId: null, model: 'gemini-3.5-flash', callKind: 'primary', promptTokens: 10, candidatesTokens: 10, totalTokens: 20 });
+      await pool.query(`UPDATE ai_usage_events SET created_at = now() - interval '45 days' WHERE business_id = $1`, [businessId]);
+
+      const usage = await repo.getMonthlyUsageByAgentForBusiness(businessId);
+      expect(usage).toHaveLength(0);
+    });
+  });
 });

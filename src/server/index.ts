@@ -2326,6 +2326,13 @@ app.get('/api/workspace/billing', requireWorkspaceContext, async (_req, res) => 
   return res.status(200).json(billing);
 });
 
+/** Section 34-40 (Token economy) follow-up: real per-agent AI token spend for the current calendar month - business-owner-facing, unlike the developer control plane's cross-business totals. */
+app.get('/api/workspace/billing/ai-usage-by-agent', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const usage = await workspaceService.getAiUsageByAgent(businessId);
+  return res.status(200).json({ usage });
+});
+
 app.get('/api/workspace/agents', requireWorkspaceContext, async (_req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   const agents = await workspaceService.listAgents(businessId);

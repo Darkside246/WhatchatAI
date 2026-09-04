@@ -1113,6 +1113,11 @@ export class WorkspaceService {
     return this.conversationStateRepository.getFunnelStageCounts(businessId);
   }
 
+  /** Section 34-40 (Token economy) follow-up: real per-agent token spend for the current calendar month - see AiUsageRepository.getMonthlyUsageByAgentForBusiness's own doc comment. Business-owner-facing, unlike getTopBusinessesByUsage/getPlatformTotal (developer control plane only). */
+  async getAiUsageByAgent(businessId: string): Promise<{ agentId: string | null; agentName: string; totalTokens: number; callCount: number }[]> {
+    return this.aiUsageRepository.getMonthlyUsageByAgentForBusiness(businessId);
+  }
+
   /**
    * Real, unaddressed follow-up promises an AI reply made and nothing has
    * followed up on since (see AiCommitmentRepository.listOpen) - never a

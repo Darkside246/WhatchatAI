@@ -1237,6 +1237,8 @@ export const api = {
   retryMediaDownload: (mediaId: string) =>
     request<{ media: WorkspaceMedia }>(`/workspace/media/${mediaId}/retry`, { method: 'POST' }),
   getBilling: () => request<WorkspaceBillingOverview>('/workspace/billing'),
+  /** Section 34-40 follow-up: real per-agent AI token spend for this calendar month - never guessed, no rate estimate. */
+  getAiUsageByAgent: () => request<{ usage: { agentId: string | null; agentName: string; totalTokens: number; callCount: number }[] }>('/workspace/billing/ai-usage-by-agent'),
   getPlanCatalogue: () => request<PlanCatalogueDto>('/workspace/billing/plans'),
   getDashboard: () => request<WorkspaceDashboardOverview>('/workspace/dashboard'),
   /** Section 68: the same real inbound/outbound message signal getDashboard already aggregates, broken out per day for a real trend chart. */

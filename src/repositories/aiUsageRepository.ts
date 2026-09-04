@@ -20,6 +20,13 @@ export interface AiUsageBusinessSummary {
   callCount: number;
 }
 
+export interface AiUsageAgentSummary {
+  agentId: string | null;
+  agentName: string;
+  totalTokens: number;
+  callCount: number;
+}
+
 export class AiUsageRepository {
   constructor(private readonly db: Queryable) {}
 
@@ -90,5 +97,34 @@ export class AiUsageRepository {
       [businessId],
     );
     return Number(rows[0]?.total_tokens ?? 0);
+  }
+
+  /**
+   * Section 34-40 follow-up: ai_usage_events.agent_id was captured on
+   * every real recorded call, but the only aggregate queries this
+   * repository ever exposed were platform-wide/cross-business
+   * (getTopBusinessesByUsage, getPlatformTotal) - consumed only by the
+   * developer control plane, never a business owner's own view of where
+   * THEIR AI spend is actually going. Real per-agent totals for the
+   * current calendar month (UTC), most-usage-first - a call with no
+   * agent_id (e.g. a system-level call) groups under agentId: null,
+   * labeled honestly rather than dropped or misattributed.
+   */
+  async getMonthlyUsageByAgentForBusiness(businessId: string): Promise<AiUsageAgentSummary[]> {
+    const { rows } = await this.db.query<{ agent_id: string | null; agent_name: string | null; total_tokens: string; call_count: string }>(
+      `SELECT u.agent_id, a.name AS agent_name, COALESCE(sum(u.total_tokens), 0) AS total_tokens, count(*) AS call_count
+       FROM ai_usage_events u
+       LEFT JOIN ai_agents a ON a.id = u.agent_id
+       WHERE u.business_id = $1 AND u.created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+       GROUP BY u.agent_id, a.name
+       ORDER BY total_tokens DESC`,
+      [businessId],
+    );
+    return rows.map((row) => ({
+      agentId: row.agent_id,
+      agentName: row.agent_name ?? (row.agent_id ? 'Deleted agent' : 'Not attributed to an agent'),
+      totalTokens: Number(row.total_tokens),
+      callCount: Number(row.call_count),
+    }));
   }
 }
