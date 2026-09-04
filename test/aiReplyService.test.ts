@@ -388,6 +388,38 @@ describe('Context Trust Builder - business documents (Phase D4-B, reusing the id
   });
 });
 
+describe('Section 05 (human-like conversation): varies phrasing against the actual last reply, not a generic instruction', () => {
+  it('surfaces the real opening words of the most recent outbound message and tells the model to vary against it', () => {
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext({
+      conversationHistory: [
+        fakeMessage({ direction: 'outbound', textContent: 'Thanks so much for reaching out today, happy to help!' }),
+        fakeMessage({ direction: 'inbound', textContent: 'Do you have this in blue?' }),
+      ],
+    }));
+    expect(instruction).toContain('opened with: "Thanks so much for reaching out..."');
+    expect(instruction).toContain('Vary your phrasing this time');
+  });
+
+  it('says nothing when this is the first message in the conversation - no prior reply exists to vary against', () => {
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext({
+      conversationHistory: [fakeMessage({ direction: 'inbound', textContent: 'Hi, are you open today?' })],
+    }));
+    expect(instruction).not.toContain('Vary your phrasing');
+  });
+
+  it('picks the most recent outbound message when several exist (conversationHistory is newest-first)', () => {
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext({
+      conversationHistory: [
+        fakeMessage({ direction: 'outbound', textContent: 'Newest reply right here today' }),
+        fakeMessage({ direction: 'inbound', textContent: 'ok' }),
+        fakeMessage({ direction: 'outbound', textContent: 'Older reply from before' }),
+      ],
+    }));
+    expect(instruction).toContain('opened with: "Newest reply right here today..."');
+    expect(instruction).not.toContain('Older reply from before');
+  });
+});
+
 describe('Section 114 (ethical funnel): anti-manipulation guardrail is always present, for every agent and category', () => {
   it('forbids fabricated urgency/scarcity, pressuring after a no, and withholding relevant information - unconditionally, not gated on agent category', () => {
     const instruction = buildSystemInstruction(fakeAgent(), fakeContext());

@@ -560,6 +560,28 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
   );
 
   /**
+   * Section 05 (human-like conversation): the only naturalness guidance
+   * before this was a business-configured tone string passed through
+   * verbatim - nothing here ever looked at what the assistant itself
+   * already said. A real, structural conversation reads as robotic when
+   * every reply opens the same way ("Thanks for reaching out!", "Great
+   * question!", etc.) turn after turn - this computes the actual opening
+   * words of the most recent real reply in this conversation (whichever
+   * side sent it) and tells the model to vary its own phrasing against
+   * that, not against a generic "sound human" instruction with nothing
+   * concrete behind it.
+   */
+  const lastOutbound = context.conversationHistory.find((message) => message.direction === 'outbound' && message.textContent?.trim());
+  if (lastOutbound?.textContent) {
+    const opening = lastOutbound.textContent.trim().split(/\s+/).slice(0, 6).join(' ');
+    lines.push(
+      `The last reply sent in this conversation opened with: "${opening}...". Vary your phrasing this time - use a ` +
+        'different opening, sentence structure, and wording than that, rather than reusing the same stock phrase ' +
+        'turn after turn.',
+    );
+  }
+
+  /**
    * Persona-lock, not a leak-guard: a customer's own message is untrusted
    * input the same way CRM notes are (hasUntrustedData's rule already
    * covers that for injected instructions), but a persona break doesn't
