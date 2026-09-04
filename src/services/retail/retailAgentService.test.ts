@@ -27,6 +27,19 @@ function provider(text: string): AIProviderAdapter & { model: string; priority: 
   };
 }
 
+/** Captures the exact request sent to the gateway - see propertyMaintenanceAgentService.test.ts's identical helper. */
+function capturingProvider(text: string): { capture: { lastRequest: Parameters<AIProviderAdapter['generate']>[0] | null }; adapter: AIProviderAdapter & { model: string; priority: number } } {
+  const capture: { lastRequest: Parameters<AIProviderAdapter['generate']>[0] | null } = { lastRequest: null };
+  return {
+    capture,
+    adapter: {
+      name: 'test-provider', model: 'test-model', priority: 1,
+      async capabilities() { return { text: true, vision: false, audio: false, video: false, documents: false, functionCalling: false }; },
+      async generate(request) { capture.lastRequest = request; return { provider: 'test-provider', text }; },
+    },
+  };
+}
+
 describe('runRetailOrderTriage', () => {
   beforeEach(() => {
     skillRegistry.clear();
@@ -88,5 +101,55 @@ describe('runRetailOrderTriage', () => {
 
     expect(result.classification.confidence).toBe(0.2);
     expect(result.actionRequests[0]?.type).toBe('retail.request_human_review');
+  });
+
+  /** Section 75-91 follow-up: retail's own copy of the same untested few-shot calibration loop - see propertyMaintenanceAgentService.test.ts's identical block. */
+  describe('past-decision feedback calibration (Section 75-91)', () => {
+    it('injects recent feedback examples into the prompt sent to the model, wrapped as untrusted data', async () => {
+      const { capture, adapter } = capturingProvider(JSON.stringify({ category: 'NEW_ORDER', urgency: 'ROUTINE', confidence: 0.9, summary: 'order', items: [], missingInformation: [], recommendedNextStep: 'CREATE_ORDER' }));
+      const gateway = new AiGateway();
+      gateway.register({ ...adapter, priority: 1 });
+      const feedbackRepo = {
+        async getRecentExamples() {
+          return [{
+            id: 'fb-1', businessId: 'tenant-1', actionRequestId: null,
+            messageText: 'I want to order the blue hoodie', aiCategory: 'NEW_ORDER', aiUrgency: 'ROUTINE',
+            aiConfidence: 0.7, humanDecision: 'APPROVED' as const, decisionReason: null, createdAt: new Date(),
+          }];
+        },
+      };
+
+      await runRetailOrderTriage({
+        event: event("I'd like to order 2 blue t-shirts please, and I'm ready to check out now"),
+        context: { relevantProducts: [] },
+        agentId: 'agent-retail',
+        gateway,
+        feedbackRepo: feedbackRepo as never,
+      });
+
+      const systemMessage = capture.lastRequest?.messages.find((message) => message.role === 'system')?.content ?? '';
+      expect(systemMessage).toContain('I want to order the blue hoodie');
+      expect(systemMessage).toContain('APPROVED');
+      expect(systemMessage).toContain('untrusted_data');
+    });
+
+    it('degrades honestly (no feedback lines, triage still runs) when the feedback fetch itself fails', async () => {
+      const { capture, adapter } = capturingProvider(JSON.stringify({ category: 'NEW_ORDER', urgency: 'ROUTINE', confidence: 0.9, summary: 'order', items: [], missingInformation: [], recommendedNextStep: 'CREATE_ORDER' }));
+      const gateway = new AiGateway();
+      gateway.register({ ...adapter, priority: 1 });
+      const feedbackRepo = { async getRecentExamples() { throw new Error('real DB error'); } };
+
+      const result = await runRetailOrderTriage({
+        event: event("I'd like to order 2 blue t-shirts please, and I'm ready to check out now"),
+        context: { relevantProducts: [] },
+        agentId: 'agent-retail',
+        gateway,
+        feedbackRepo: feedbackRepo as never,
+      });
+
+      expect(result.classification.category).toBe('NEW_ORDER');
+      const systemMessage = capture.lastRequest?.messages.find((message) => message.role === 'system')?.content ?? '';
+      expect(systemMessage).not.toContain('Recent team decisions');
+    });
   });
 });
