@@ -412,7 +412,15 @@ export class WhatsAppMessageRepository {
     sinceIso: string,
   ): Promise<{ date: string; inbound: number; outbound: number }[]> {
     const { rows } = await this.db.query<{ day: string; direction: MessageDirection; count: string }>(
-      `SELECT to_char(date_trunc('day', "timestamp"), 'YYYY-MM-DD') AS day, direction, count(*)::int AS count
+      // "timestamp" is timestamptz - date_trunc() truncates in the session's
+      // timezone unless told otherwise, which is not necessarily UTC (a real
+      // bug found live: this server's own session timezone resolved to
+      // America/Blanc-Sablon, not UTC). The doc comment above already
+      // promises "buckets by UTC calendar day" and the JS-side gap-fill
+      // below already assumes UTC (setUTCHours/getUTCDate) - AT TIME ZONE
+      // 'UTC' makes the SQL side actually match that intent instead of
+      // silently drifting by the server's local offset for part of every day.
+      `SELECT to_char(date_trunc('day', "timestamp" AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day, direction, count(*)::int AS count
        FROM whatsapp_messages
        WHERE business_id = $1 AND whatsapp_account_id = $2 AND "timestamp" >= $3 AND deleted_at IS NULL
        GROUP BY day, direction

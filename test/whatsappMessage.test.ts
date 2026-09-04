@@ -27,6 +27,48 @@ describe('WhatsAppMessageRepository', () => {
     messages = new WhatsAppMessageRepository(pool);
   });
 
+  /**
+   * Section 68 follow-up (real bug found live): "timestamp" is timestamptz,
+   * and date_trunc('day', "timestamp") truncates in the DB session's
+   * timezone, not UTC, unless told otherwise - this repository's own doc
+   * comment already promised "buckets by UTC calendar day" and the JS-side
+   * gap-fill already assumes UTC, but the SQL didn't actually force it.
+   * Confirmed live: this dev machine's own Postgres session timezone
+   * resolved to America/Blanc-Sablon (UTC-4/-3), not UTC. Reproduces that
+   * exact scenario deterministically via SET LOCAL TIME ZONE on a
+   * dedicated client, rather than depending on whatever timezone the CI/dev
+   * machine happens to be in.
+   */
+  describe('countByDirectionPerDay buckets by UTC calendar day regardless of the DB session timezone', () => {
+    it('a message at 02:00 UTC lands on the UTC day, not the prior day a UTC-4 session would compute', async () => {
+      // 2026-01-15T02:00:00Z is 2026-01-14 22:00 in America/Blanc-Sablon
+      // (UTC-4 in January, no DST) - a session bucketing by local time would
+      // put this message on Jan 14; the real UTC calendar day is Jan 15.
+      await messages.insert({
+        businessId, whatsappAccountId: accountId, chatId,
+        whatsappMessageId: 'WA-TZ-1', remoteJid: '15550002222@s.whatsapp.net', senderJid: '15550002222@s.whatsapp.net',
+        direction: 'inbound', messageType: 'text', textContent: 'tz check',
+        timestamp: '2026-01-15T02:00:00Z', fromMe: false, isHistorical: false,
+      });
+
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(`SET LOCAL TIME ZONE 'America/Blanc-Sablon'`);
+        const tzScopedMessages = new WhatsAppMessageRepository(client);
+        const trend = await tzScopedMessages.countByDirectionPerDay(businessId, accountId, '2026-01-01T00:00:00Z');
+        await client.query('ROLLBACK');
+
+        const jan15 = trend.find((day) => day.date === '2026-01-15');
+        const jan14 = trend.find((day) => day.date === '2026-01-14');
+        expect(jan15).toEqual({ date: '2026-01-15', inbound: 1, outbound: 0 });
+        expect(jan14?.inbound ?? 0).toBe(0);
+      } finally {
+        client.release();
+      }
+    });
+  });
+
   it('persists a real message', async () => {
     const message = await messages.insert({
       businessId,

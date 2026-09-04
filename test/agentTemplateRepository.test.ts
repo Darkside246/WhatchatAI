@@ -56,4 +56,22 @@ describe('AgentTemplateRepository (real Postgres, seeded by migration 951)', () 
 
     expect(await repo.findByKey('does_not_exist')).toBeNull();
   });
+
+  /**
+   * Section 50-55 follow-up to migration 953: that migration gave the
+   * property template the real list_properties/check_property_status
+   * tools, but the seed's own default_system_instruction (migration 951)
+   * still told the agent "You do not have access to maintenance requests,
+   * work orders... yet" - a stale disclaimer directly contradicting the
+   * tool it now has. Migration 972 fixes the text.
+   */
+  it('the property template\'s instruction no longer disclaims maintenance/work-order access it actually has, and still tells the agent to use its status tool honestly', async () => {
+    await resetDatabase();
+    const repo = new AgentTemplateRepository(pool);
+    const property = await repo.findByKey('property_operations_assistant');
+
+    expect(property?.defaultSystemInstruction).not.toContain('do not have access to maintenance requests, work orders');
+    expect(property?.defaultSystemInstruction).toContain('checking on the real status of a maintenance issue');
+    expect(property?.defaultSystemInstruction).toContain('never guess or invent a status');
+  });
 });

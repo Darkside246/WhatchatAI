@@ -67,4 +67,39 @@ describe('AiUsageRepository (real Postgres - migration 954)', () => {
     const total = await repo.getPlatformTotal(24);
     expect(total.totalTokens).toBe(10);
   });
+
+  /**
+   * Real bug found live (Section 68 follow-up, same class as
+   * whatsappMessageRepository.ts's countByDirectionPerDay fix): the doc
+   * comment on getMonthlyTotalForBusiness always claimed "UTC via
+   * date_trunc", but date_trunc('month', now()) truncates in the DB
+   * session's timezone unless told otherwise. On a session behind UTC
+   * (confirmed live: America/Blanc-Sablon, UTC-4/-3), the local month
+   * doesn't roll over until a few hours after the true UTC month start -
+   * an event that landed in the first moments of the real UTC month would
+   * be wrongly excluded from "this month's" entitlement total under the
+   * old, unforced query. This test places a real usage event exactly one
+   * second into the true UTC month and proves it is counted even when the
+   * query runs under a session timezone that would, unfixed, still think
+   * the previous month hadn't ended.
+   */
+  it('getMonthlyTotalForBusiness counts an event from the first second of the true UTC month, even under a session timezone behind UTC', async () => {
+    await repo.record({ businessId, agentId, chatId: null, model: 'gemini-3.5-flash', callKind: 'primary', promptTokens: 7, candidatesTokens: 3, totalTokens: 10 });
+    await pool.query(
+      `UPDATE ai_usage_events SET created_at = date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' + interval '1 second' WHERE business_id = $1`,
+      [businessId],
+    );
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SET LOCAL TIME ZONE 'America/Blanc-Sablon'`);
+      const tzScopedRepo = new AiUsageRepository(client);
+      const total = await tzScopedRepo.getMonthlyTotalForBusiness(businessId);
+      await client.query('ROLLBACK');
+      expect(total).toBe(10);
+    } finally {
+      client.release();
+    }
+  });
 });

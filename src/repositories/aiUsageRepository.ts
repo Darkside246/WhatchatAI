@@ -68,18 +68,25 @@ export class AiUsageRepository {
   }
 
   /**
-   * One real business's usage for the current calendar month (server's own
-   * clock, in UTC via date_trunc - not a rolling 30-day window) - the
-   * number entitlementService.canUseAiThisMonth() compares against the
-   * plan's max_ai_tokens_per_month limit. Resets naturally on the 1st of
-   * each month with no separate reset job needed, the same way a real
-   * monthly billing cycle would.
+   * One real business's usage for the current calendar month (UTC, not a
+   * rolling 30-day window) - the number entitlementService.canUseAiThisMonth()
+   * compares against the plan's max_ai_tokens_per_month limit. Resets
+   * naturally on the 1st of each month with no separate reset job needed,
+   * the same way a real monthly billing cycle would.
+   *
+   * A real bug lived here: this doc comment always claimed "UTC via
+   * date_trunc", but date_trunc('month', now()) truncates in the session's
+   * timezone, not UTC, unless told otherwise - on a server whose session
+   * timezone isn't UTC (found live: America/Blanc-Sablon), the monthly
+   * counter would reset up to several hours early or late relative to the
+   * true UTC month boundary this plan limit is meant to track. AT TIME
+   * ZONE 'UTC' makes the SQL actually match what was always documented.
    */
   async getMonthlyTotalForBusiness(businessId: string): Promise<number> {
     const { rows } = await this.db.query<{ total_tokens: string }>(
       `SELECT COALESCE(sum(total_tokens), 0) AS total_tokens
        FROM ai_usage_events
-       WHERE business_id = $1 AND created_at >= date_trunc('month', now())`,
+       WHERE business_id = $1 AND created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
       [businessId],
     );
     return Number(rows[0]?.total_tokens ?? 0);
