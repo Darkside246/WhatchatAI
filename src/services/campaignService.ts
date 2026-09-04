@@ -78,13 +78,24 @@ export interface CreateCampaignInput {
 async function storeCampaignAttachment(
   businessId: string,
   attachment: CampaignAttachmentInput,
-): Promise<{ messageType: CampaignMessageType; mediaStorageReference: string; mediaMimeType: string; mediaFileName: string | undefined }> {
+): Promise<{ messageType: CampaignMessageType; mediaStorageReference: string; mediaMimeType: string; mediaFileName: string | undefined; mediaSizeBytes: number }> {
   const buffer = Buffer.from(attachment.mediaBase64, 'base64');
   if (buffer.length === 0) throw new Error('Decoded media is empty');
   if (buffer.length > MAX_MEDIA_BYTES) throw new Error(`Media exceeds the ${MAX_MEDIA_BYTES} byte limit`);
+
+  const storageCheck = await entitlementService.canStoreCampaignAttachmentBytes(businessId, buffer.length);
+  if (!storageCheck.allowed) {
+    const error = new Error(`Campaign attachment denied: ${storageCheck.reason}`) as EntitlementDeniedError;
+    error.code = 'ENTITLEMENT_DENIED';
+    error.reason = storageCheck.reason as EntitlementDeniedError['reason'];
+    error.limit = storageCheck.limit;
+    error.current = storageCheck.current;
+    throw error;
+  }
+
   const sha256Hex = createHash('sha256').update(buffer).digest('hex');
   const mediaStorageReference = await storeMedia(businessId, sha256Hex, buffer);
-  return { messageType: attachment.messageType, mediaStorageReference, mediaMimeType: attachment.mediaMimeType, mediaFileName: attachment.mediaFileName };
+  return { messageType: attachment.messageType, mediaStorageReference, mediaMimeType: attachment.mediaMimeType, mediaFileName: attachment.mediaFileName, mediaSizeBytes: buffer.length };
 }
 
 export interface CreateCampaignResult {
@@ -138,7 +149,7 @@ export async function createCampaign(
     name: input.name.trim(),
     messageText: input.messageText,
     ...(stored
-      ? { messageType: stored.messageType, mediaStorageReference: stored.mediaStorageReference, mediaMimeType: stored.mediaMimeType, mediaFileName: stored.mediaFileName }
+      ? { messageType: stored.messageType, mediaStorageReference: stored.mediaStorageReference, mediaMimeType: stored.mediaMimeType, mediaFileName: stored.mediaFileName, mediaSizeBytes: stored.mediaSizeBytes }
       : {}),
   });
   await campaignRepository.createRecipients(
@@ -249,9 +260,9 @@ export async function updateDraftCampaign(
     name: input.name.trim(),
     messageText: input.messageText,
     ...(stored
-      ? { messageType: stored.messageType, mediaStorageReference: stored.mediaStorageReference, mediaMimeType: stored.mediaMimeType, mediaFileName: stored.mediaFileName }
+      ? { messageType: stored.messageType, mediaStorageReference: stored.mediaStorageReference, mediaMimeType: stored.mediaMimeType, mediaFileName: stored.mediaFileName, mediaSizeBytes: stored.mediaSizeBytes }
       : input.removeAttachment
-        ? { messageType: 'text' as const, mediaStorageReference: null, mediaMimeType: null, mediaFileName: null }
+        ? { messageType: 'text' as const, mediaStorageReference: null, mediaMimeType: null, mediaFileName: null, mediaSizeBytes: null }
         : {}),
   });
   if (!updated) throw new CampaignNotFoundError('Campaign not found.');

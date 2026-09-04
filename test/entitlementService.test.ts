@@ -3,7 +3,8 @@ import { pool } from '../src/db/pool.js';
 import { EntitlementService } from '../src/services/entitlementService.js';
 import { AiAgentRepository } from '../src/repositories/aiAgentRepository.js';
 import { AiUsageRepository } from '../src/repositories/aiUsageRepository.js';
-import { createTestAccount, createTestBusiness, createTestSubscription, resetDatabase } from './helpers.js';
+import { CampaignRepository } from '../src/repositories/campaignRepository.js';
+import { createTestAccount, createTestBusiness, createTestSubscription, createTestUser, resetDatabase } from './helpers.js';
 
 describe('EntitlementService (real backend enforcement, not UI-only)', () => {
   let entitlements: EntitlementService;
@@ -179,6 +180,65 @@ describe('EntitlementService (real backend enforcement, not UI-only)', () => {
 
       const result = await entitlements.canAddMember(businessId);
       expect(result.allowed).toBe(true);
+    });
+  });
+
+  describe('Section 27-30 follow-up: canStoreCampaignAttachmentBytes (real cumulative storage-limit enforcement)', () => {
+    const MB = 1024 * 1024;
+
+    async function createCampaignWithAttachmentBytes(businessId: string, accountId: string, userId: string, mediaSizeBytes: number): Promise<void> {
+      await new CampaignRepository(pool).create({
+        businessId, whatsappAccountId: accountId, createdBy: userId, name: 'Existing', messageText: 'x',
+        messageType: 'image', mediaStorageReference: 'ref', mediaMimeType: 'image/png', mediaFileName: 'x.png', mediaSizeBytes,
+      });
+    }
+
+    it('allows storing an attachment that fits comfortably under the real starter-plan 50MB limit', async () => {
+      const businessId = await createTestBusiness();
+      await createTestSubscription(businessId, 'starter');
+
+      const result = await entitlements.canStoreCampaignAttachmentBytes(businessId, 5 * MB);
+      expect(result.allowed).toBe(true);
+      expect(result.limit).toBe(50);
+      expect(result.current).toBe(0);
+    });
+
+    it('denies a new attachment that would push cumulative real usage over the limit, even though it fit before this one', async () => {
+      const businessId = await createTestBusiness();
+      await createTestSubscription(businessId, 'starter');
+      const accountId = await createTestAccount(businessId);
+      const userId = await createTestUser(businessId);
+      await createCampaignWithAttachmentBytes(businessId, accountId, userId, 49 * MB);
+
+      const smallEnough = await entitlements.canStoreCampaignAttachmentBytes(businessId, 0.5 * MB);
+      expect(smallEnough.allowed).toBe(true);
+
+      const tooMuch = await entitlements.canStoreCampaignAttachmentBytes(businessId, 2 * MB);
+      expect(tooMuch.allowed).toBe(false);
+      expect(tooMuch.reason).toBe('ENTITLEMENT_LIMIT_REACHED');
+      expect(tooMuch.current).toBe(49 * MB);
+    });
+
+    it('treats a NULL plan limit as genuinely unlimited storage (enterprise plan)', async () => {
+      const businessId = await createTestBusiness();
+      await createTestSubscription(businessId, 'enterprise');
+
+      const result = await entitlements.canStoreCampaignAttachmentBytes(businessId, 500 * MB);
+      expect(result.allowed).toBe(true);
+    });
+
+    it('never lets one business\'s stored attachments count against another business\'s quota (tenant isolation)', async () => {
+      const businessId = await createTestBusiness();
+      await createTestSubscription(businessId, 'starter');
+      const otherBusinessId = await createTestBusiness('Other Business');
+      await createTestSubscription(otherBusinessId, 'starter');
+      const otherAccountId = await createTestAccount(otherBusinessId);
+      const otherUserId = await createTestUser(otherBusinessId);
+      await createCampaignWithAttachmentBytes(otherBusinessId, otherAccountId, otherUserId, 49 * MB);
+
+      const result = await entitlements.canStoreCampaignAttachmentBytes(businessId, 5 * MB);
+      expect(result.allowed).toBe(true);
+      expect(result.current).toBe(0);
     });
   });
 });

@@ -67,6 +67,30 @@ export class EntitlementService {
   async canAddMember(businessId: string): Promise<EntitlementCheckResult> { return this.checkCountLimit(businessId, 'max_users', () => this.membershipRepository.countForBusiness(businessId)); }
 
   /**
+   * Section 27-30 follow-up: a real per-business cumulative cap on
+   * campaign-attachment storage, previously only a hardcoded per-file size
+   * cap (MAX_MEDIA_BYTES) with nothing capping the running total across
+   * every campaign a business has ever attached media to. Deliberately
+   * not built on checkCountLimit above - that helper checks "current <
+   * limit" against a count taken BEFORE the new item exists, which is
+   * wrong for a cumulative byte total: a single large file could jump
+   * straight from comfortably under the limit to well over it in one
+   * write, so this checks "current usage + this file's real size" against
+   * the limit instead.
+   */
+  async canStoreCampaignAttachmentBytes(businessId: string, additionalBytes: number): Promise<EntitlementCheckResult> {
+    const subscription = await this.subscriptionRepository.findLiveByBusiness(businessId);
+    if (!subscription) return { allowed: false, reason: 'NO_ACTIVE_SUBSCRIPTION' };
+    const entitlement = await this.planRepository.getEntitlement(subscription.planId, 'max_campaign_storage_mb');
+    if (!entitlement || !entitlement.isEnabled) return { allowed: false, reason: 'ENTITLEMENT_DISABLED' };
+    if (entitlement.limitValue === null) return { allowed: true };
+    const currentBytes = await this.campaignRepository.sumAttachmentBytesByBusiness(businessId);
+    const limitBytes = entitlement.limitValue * 1024 * 1024;
+    if (currentBytes + additionalBytes <= limitBytes) return { allowed: true, limit: entitlement.limitValue, current: currentBytes };
+    return { allowed: false, reason: 'ENTITLEMENT_LIMIT_REACHED', limit: entitlement.limitValue, current: currentBytes };
+  }
+
+  /**
    * Real cost-control gate - before this, no per-business ceiling on
    * actual AI usage existed anywhere: max_ai_agents caps how many agents a
    * business can *create*, nothing capped what one active agent could

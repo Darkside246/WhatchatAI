@@ -4,6 +4,7 @@ import { register } from '../src/services/authService.js';
 import { WhatsAppContactRepository } from '../src/repositories/whatsappContactRepository.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
 import { CrmContactRepository } from '../src/repositories/crmContactRepository.js';
+import { CampaignRepository } from '../src/repositories/campaignRepository.js';
 import {
   createCampaign,
   updateDraftCampaign,
@@ -244,6 +245,44 @@ describe('campaignService (real eligibility, real status machine, real send pipe
       expect(campaign.mediaStorageReference).toBeTruthy();
       expect(campaign.mediaMimeType).toBe('image/png');
       expect(campaign.mediaFileName).toBe('menu.png');
+      // Section 27-30 follow-up: the real decoded byte size is kept, not discarded.
+      expect(campaign.mediaSizeBytes).toBe(68);
+    });
+
+    it('Section 27-30 follow-up: refuses a new attachment once it would push this business over its real per-plan storage limit', async () => {
+      // Starter plan's real cap is 50MB (migration 975) - directly exercising
+      // that with a real upload would mean encoding/decoding 50MB of base64
+      // in a test; instead this pre-seeds a real prior campaign with 50MB
+      // (minus this fixture's own 68 bytes) already attributed to this
+      // business, so the tiny 68-byte upload below is the exact thing that
+      // tips real cumulative usage over the real limit - the same check
+      // createCampaign() itself calls, not a reimplementation of it.
+      const contactId = await makeEligibleContact(businessId, accountId, '15559990023@s.whatsapp.net', 'Contact');
+      await new CampaignRepository(pool).create({
+        businessId, whatsappAccountId: accountId, createdBy: ownerId, name: 'Existing', messageText: 'x',
+        messageType: 'image', mediaStorageReference: 'ref', mediaMimeType: 'image/png', mediaFileName: 'x.png',
+        mediaSizeBytes: 50 * 1024 * 1024 - 32,
+      });
+
+      await expect(
+        createCampaign(businessId, accountId, ownerId, {
+          name: 'Tips it over',
+          messageText: 'x',
+          crmContactIds: [contactId],
+          attachment: { messageType: 'image', mediaBase64: onePixelPngBase64, mediaMimeType: 'image/png', mediaFileName: 'x.png' },
+        }),
+      ).rejects.toThrow();
+      try {
+        await createCampaign(businessId, accountId, ownerId, {
+          name: 'Tips it over 2',
+          messageText: 'x',
+          crmContactIds: [contactId],
+          attachment: { messageType: 'image', mediaBase64: onePixelPngBase64, mediaMimeType: 'image/png', mediaFileName: 'x.png' },
+        });
+      } catch (error) {
+        expect(isEntitlementDeniedError(error)).toBe(true);
+        if (isEntitlementDeniedError(error)) expect(error.reason).toBe('ENTITLEMENT_LIMIT_REACHED');
+      }
     });
 
     it('defaults to a text-only campaign when no attachment is given, unchanged from before this feature existed', async () => {

@@ -30,6 +30,8 @@ export interface CampaignRecord {
   mediaStorageReference: string | null;
   mediaMimeType: string | null;
   mediaFileName: string | null;
+  /** Real decoded byte size at store time - null for a text-only campaign. Section 27-30's per-business storage-limit entitlement sums this column. */
+  mediaSizeBytes: number | null;
   approvedBy: string | null;
   approvedAt: string | null;
   sentAt: string | null;
@@ -50,6 +52,7 @@ interface CampaignRow {
   media_storage_reference: string | null;
   media_mime_type: string | null;
   media_file_name: string | null;
+  media_size_bytes: string | null;
   approved_by: string | null;
   approved_at: string | null;
   sent_at: string | null;
@@ -71,6 +74,11 @@ function toCampaignRecord(row: CampaignRow): CampaignRecord {
     mediaStorageReference: row.media_storage_reference,
     mediaMimeType: row.media_mime_type,
     mediaFileName: row.media_file_name,
+    // media_size_bytes is BIGINT - node-postgres returns it as a string by
+    // default (same documented quirk as other BIGINT columns elsewhere in
+    // this codebase), so this coerces explicitly rather than leaving a
+    // string masquerading as CampaignRecord's declared `number | null`.
+    mediaSizeBytes: row.media_size_bytes === null ? null : Number(row.media_size_bytes),
     approvedBy: row.approved_by,
     approvedAt: row.approved_at,
     sentAt: row.sent_at,
@@ -148,6 +156,7 @@ export interface CreateCampaignInput {
   mediaStorageReference?: string | undefined;
   mediaMimeType?: string | undefined;
   mediaFileName?: string | undefined;
+  mediaSizeBytes?: number | undefined;
 }
 
 export interface UpdateCampaignDraftInput {
@@ -158,6 +167,7 @@ export interface UpdateCampaignDraftInput {
   mediaStorageReference?: string | null | undefined;
   mediaMimeType?: string | null | undefined;
   mediaFileName?: string | null | undefined;
+  mediaSizeBytes?: number | null | undefined;
 }
 
 /**
@@ -198,8 +208,8 @@ export class CampaignRepository {
 
   async create(input: CreateCampaignInput): Promise<CampaignRecord> {
     const { rows } = await this.db.query<CampaignRow>(
-      `INSERT INTO campaigns (business_id, whatsapp_account_id, created_by, name, message_text, message_type, media_storage_reference, media_mime_type, media_file_name)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO campaigns (business_id, whatsapp_account_id, created_by, name, message_text, message_type, media_storage_reference, media_mime_type, media_file_name, media_size_bytes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         input.businessId,
@@ -211,6 +221,7 @@ export class CampaignRepository {
         input.mediaStorageReference ?? null,
         input.mediaMimeType ?? null,
         input.mediaFileName ?? null,
+        input.mediaSizeBytes ?? null,
       ],
     );
     const row = rows[0];
@@ -238,6 +249,21 @@ export class CampaignRepository {
     return Number(rows[0]?.count ?? 0);
   }
 
+  /**
+   * Section 27-30's real storage-limit entitlement sums this rather than
+   * walking the storage backend itself - campaigns are never soft-deleted
+   * (deleteCampaign hard-deletes), so a removed campaign's attachment
+   * bytes correctly drop out of this total the moment it's gone, the same
+   * way its storage bytes are actually freed.
+   */
+  async sumAttachmentBytesByBusiness(businessId: string): Promise<number> {
+    const { rows } = await this.db.query<{ total: string }>(
+      `SELECT COALESCE(SUM(media_size_bytes), 0)::text AS total FROM campaigns WHERE business_id = $1`,
+      [businessId],
+    );
+    return Number(rows[0]?.total ?? 0);
+  }
+
   async updateDraft(id: string, input: UpdateCampaignDraftInput): Promise<CampaignRecord | null> {
     const attachmentTouched = input.messageType !== undefined;
     const { rows } = await this.db.query<CampaignRow>(
@@ -247,6 +273,7 @@ export class CampaignRepository {
          media_storage_reference = CASE WHEN $8 THEN $5 ELSE media_storage_reference END,
          media_mime_type = CASE WHEN $8 THEN $6 ELSE media_mime_type END,
          media_file_name = CASE WHEN $8 THEN $7 ELSE media_file_name END,
+         media_size_bytes = CASE WHEN $8 THEN $9 ELSE media_size_bytes END,
          updated_at = now()
        WHERE id = $1 RETURNING *`,
       [
@@ -258,6 +285,7 @@ export class CampaignRepository {
         input.mediaMimeType ?? null,
         input.mediaFileName ?? null,
         attachmentTouched,
+        input.mediaSizeBytes ?? null,
       ],
     );
     return rows[0] ? toCampaignRecord(rows[0]) : null;
