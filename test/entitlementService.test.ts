@@ -4,6 +4,7 @@ import { EntitlementService } from '../src/services/entitlementService.js';
 import { AiAgentRepository } from '../src/repositories/aiAgentRepository.js';
 import { AiUsageRepository } from '../src/repositories/aiUsageRepository.js';
 import { CampaignRepository } from '../src/repositories/campaignRepository.js';
+import { AiTokenTopupRepository } from '../src/repositories/aiTokenTopupRepository.js';
 import { createTestAccount, createTestBusiness, createTestSubscription, createTestUser, resetDatabase } from './helpers.js';
 
 describe('EntitlementService (real backend enforcement, not UI-only)', () => {
@@ -128,6 +129,65 @@ describe('EntitlementService (real backend enforcement, not UI-only)', () => {
 
       expect((await entitlements.canUseAiThisMonth(businessA)).allowed).toBe(false);
       expect((await entitlements.canUseAiThisMonth(businessB)).allowed).toBe(true);
+    });
+
+    describe('token top-up (Section 34-40\'s real budget-override flow)', () => {
+      it('a real verified top-up this month raises the effective limit and lets AI usage continue', async () => {
+        const businessId = await createTestBusiness();
+        await createTestSubscription(businessId, 'starter');
+        const usage = new AiUsageRepository(pool);
+        await usage.record({ businessId, model: 'gemini-test', callKind: 'primary', promptTokens: 300000, candidatesTokens: 300000, totalTokens: 600000 });
+
+        const beforeTopup = await entitlements.canUseAiThisMonth(businessId);
+        expect(beforeTopup.allowed).toBe(false);
+
+        const topups = new AiTokenTopupRepository(pool);
+        await topups.create({ businessId, provider: 'BIMPAY', checkoutReference: 'TOPUP-TEST-1', tokensPurchased: 250000, amountMinor: 199, currency: 'USD' });
+        await topups.markVerified('TOPUP-TEST-1', 'EVT-1');
+
+        const afterTopup = await entitlements.canUseAiThisMonth(businessId);
+        expect(afterTopup.allowed).toBe(true);
+        expect(afterTopup.limit).toBe(750000); // 500,000 plan limit + 250,000 top-up
+        expect(afterTopup.current).toBe(600000);
+      });
+
+      it('a top-up from a prior calendar month does not carry over into this month\'s effective limit', async () => {
+        const businessId = await createTestBusiness();
+        await createTestSubscription(businessId, 'starter');
+        const usage = new AiUsageRepository(pool);
+        await usage.record({ businessId, model: 'gemini-test', callKind: 'primary', promptTokens: 300000, candidatesTokens: 300000, totalTokens: 600000 });
+
+        const topups = new AiTokenTopupRepository(pool);
+        await topups.create({ businessId, provider: 'BIMPAY', checkoutReference: 'TOPUP-OLD-1', tokensPurchased: 250000, amountMinor: 199, currency: 'USD' });
+        await topups.markVerified('TOPUP-OLD-1', 'EVT-OLD');
+        await pool.query(`UPDATE ai_token_topup_purchases SET verified_at = now() - interval '45 days' WHERE checkout_reference = 'TOPUP-OLD-1'`);
+
+        const result = await entitlements.canUseAiThisMonth(businessId);
+        expect(result.allowed).toBe(false);
+        expect(result.limit).toBe(500000);
+      });
+
+      it('a PENDING (unverified) top-up never counts toward the effective limit', async () => {
+        const businessId = await createTestBusiness();
+        await createTestSubscription(businessId, 'starter');
+        const usage = new AiUsageRepository(pool);
+        await usage.record({ businessId, model: 'gemini-test', callKind: 'primary', promptTokens: 300000, candidatesTokens: 300000, totalTokens: 600000 });
+
+        const topups = new AiTokenTopupRepository(pool);
+        await topups.create({ businessId, provider: 'BIMPAY', checkoutReference: 'TOPUP-PENDING-1', tokensPurchased: 250000, amountMinor: 199, currency: 'USD' });
+
+        const result = await entitlements.canUseAiThisMonth(businessId);
+        expect(result.allowed).toBe(false);
+        expect(result.limit).toBe(500000);
+      });
+
+      it('an enterprise (unlimited) business is unaffected by top-ups - the null-limit short-circuit skips the top-up lookup entirely', async () => {
+        const businessId = await createTestBusiness();
+        await createTestSubscription(businessId, 'enterprise');
+        const result = await entitlements.canUseAiThisMonth(businessId);
+        expect(result.allowed).toBe(true);
+        expect(result.limit).toBeUndefined();
+      });
     });
   });
 

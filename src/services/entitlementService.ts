@@ -9,6 +9,7 @@ import { KnowledgeBaseRepository } from '../repositories/knowledgeBaseRepository
 import { BusinessDocumentRepository } from '../repositories/businessDocumentRepository.js';
 import { AiUsageRepository } from '../repositories/aiUsageRepository.js';
 import { BusinessMembershipRepository } from '../repositories/businessMembershipRepository.js';
+import { AiTokenTopupRepository } from '../repositories/aiTokenTopupRepository.js';
 
 export type EntitlementDenialReason = 'NO_ACTIVE_SUBSCRIPTION' | 'ENTITLEMENT_DISABLED' | 'ENTITLEMENT_LIMIT_REACHED';
 export interface EntitlementCheckResult { allowed: boolean; reason?: EntitlementDenialReason; limit?: number | null; current?: number; }
@@ -24,6 +25,7 @@ export class EntitlementService {
   private readonly businessDocumentRepository: BusinessDocumentRepository;
   private readonly aiUsageRepository: AiUsageRepository;
   private readonly membershipRepository: BusinessMembershipRepository;
+  private readonly aiTokenTopupRepository: AiTokenTopupRepository;
 
   constructor(private readonly db: Queryable) {
     this.planRepository = new PlanRepository(db);
@@ -36,6 +38,7 @@ export class EntitlementService {
     this.businessDocumentRepository = new BusinessDocumentRepository(db);
     this.aiUsageRepository = new AiUsageRepository(db);
     this.membershipRepository = new BusinessMembershipRepository(db);
+    this.aiTokenTopupRepository = new AiTokenTopupRepository(db);
   }
 
   async checkEntitlement(businessId: string, entitlementKey: string): Promise<EntitlementCheckResult> {
@@ -99,8 +102,30 @@ export class EntitlementService {
    * does for an agent count, so this reuses it rather than duplicating the
    * subscription/entitlement lookup.
    */
+  /**
+   * Section 34-40's real budget-override flow: the plan's own limitValue
+   * is no longer the whole ceiling - a business that has bought a real
+   * token top-up this calendar month (aiTokenTopupService.ts) gets that
+   * added to it for the rest of the month. Not reused via
+   * checkCountLimit's generic shape below (every other entitlement has no
+   * such second dimension) - this is its own small check, deliberately
+   * duplicating checkCountLimit's subscription/entitlement lookup rather
+   * than complicating that helper for one caller.
+   */
   async canUseAiThisMonth(businessId: string): Promise<EntitlementCheckResult> {
-    return this.checkCountLimit(businessId, 'max_ai_tokens_per_month', () => this.aiUsageRepository.getMonthlyTotalForBusiness(businessId));
+    const subscription = await this.subscriptionRepository.findLiveByBusiness(businessId);
+    if (!subscription) return { allowed: false, reason: 'NO_ACTIVE_SUBSCRIPTION' };
+    const entitlement = await this.planRepository.getEntitlement(subscription.planId, 'max_ai_tokens_per_month');
+    if (!entitlement || !entitlement.isEnabled) return { allowed: false, reason: 'ENTITLEMENT_DISABLED' };
+    if (entitlement.limitValue === null) return { allowed: true };
+
+    const [current, toppedUp] = await Promise.all([
+      this.aiUsageRepository.getMonthlyTotalForBusiness(businessId),
+      this.aiTokenTopupRepository.getVerifiedTokensThisMonthForBusiness(businessId),
+    ]);
+    const effectiveLimit = entitlement.limitValue + toppedUp;
+    if (current < effectiveLimit) return { allowed: true, limit: effectiveLimit, current };
+    return { allowed: false, reason: 'ENTITLEMENT_LIMIT_REACHED', limit: effectiveLimit, current };
   }
 
   private async checkCountLimit(businessId: string, entitlementKey: string, countCurrent: () => Promise<number>): Promise<EntitlementCheckResult> {
