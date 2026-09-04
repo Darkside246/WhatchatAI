@@ -1244,6 +1244,13 @@ export const api = {
   getBilling: () => request<WorkspaceBillingOverview>('/workspace/billing'),
   /** Section 34-40 follow-up: real per-agent AI token spend for this calendar month - never guessed, no rate estimate. */
   getAiUsageByAgent: () => request<{ usage: { agentId: string | null; agentName: string; totalTokens: number; callCount: number }[] }>('/workspace/billing/ai-usage-by-agent'),
+  /** Section 34-40's real budget-override flow: the real top-up pack/price for this business's plan tier, or null (unlimited plan, or no live subscription). */
+  getAiTokenTopupOffer: () => request<{ offer: { planKey: string; tokens: number; priceCents: number; currency: string } | null }>('/billing/ai-token-topup/offer'),
+  createAiTokenTopupCheckout: (provider?: 'BIMPAY' | 'PAYPAL' | 'WIPAY') =>
+    request<{ purchase: { id: string; checkoutReference: string; tokensPurchased: number; amountMinor: number; currency: string }; instructions: Record<string, unknown> }>('/billing/ai-token-topup/checkout', {
+      method: 'POST',
+      body: JSON.stringify(provider ? { provider } : {}),
+    }),
   getPlanCatalogue: () => request<PlanCatalogueDto>('/workspace/billing/plans'),
   getDashboard: () => request<WorkspaceDashboardOverview>('/workspace/dashboard'),
   /** Section 68: the same real inbound/outbound message signal getDashboard already aggregates, broken out per day for a real trend chart. */

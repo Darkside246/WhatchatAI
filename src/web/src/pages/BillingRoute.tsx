@@ -168,6 +168,80 @@ function AiUsageByAgentBreakdown() {
   );
 }
 
+/**
+ * Section 34-40's real budget-override flow: once a business is at (or
+ * has exhausted) its plan's monthly AI token budget, a real, self-serve
+ * top-up purchase - never a fabricated "contact us" dead end. Kept
+ * intentionally minimal (no checkout wizard) since this is the first real
+ * checkout UI in the app; BiMPay's instructions are a bank-transfer memo,
+ * PayPal's is a real approval link to continue to.
+ */
+function AiTokenTopupOffer() {
+  const [offer, setOffer] = useState<{ planKey: string; tokens: number; priceCents: number; currency: string } | null | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [instructions, setInstructions] = useState<Record<string, unknown> | null>(null);
+
+  useEffect(() => {
+    api.getAiTokenTopupOffer().then((res) => setOffer(res.offer)).catch(() => setOffer(null));
+  }, []);
+
+  const handleBuy = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.createAiTokenTopupCheckout();
+      setInstructions(result.instructions);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not start checkout.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (offer === undefined) return null;
+  if (offer === null) return null;
+
+  const approvalUrl = typeof instructions?.approvalUrl === 'string' ? instructions.approvalUrl : null;
+  const memoInstruction = typeof instructions?.memoInstruction === 'string' ? instructions.memoInstruction : null;
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+      <p className="text-body font-medium text-fg">
+        Need more AI replies this month? Buy {offer.tokens.toLocaleString()} extra tokens for {formatPrice(offer.priceCents, offer.currency)}.
+      </p>
+      <p className="mt-1 text-caption text-fg-muted">Added to your budget immediately once the payment is confirmed, for the rest of this calendar month.</p>
+
+      {!instructions && (
+        <button
+          type="button"
+          onClick={() => void handleBuy()}
+          disabled={busy}
+          className="mt-3 rounded-lg bg-accent px-4 py-2 text-caption font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+        >
+          {busy ? 'Starting checkout…' : `Buy ${offer.tokens.toLocaleString()} tokens`}
+        </button>
+      )}
+
+      {error && <p className="mt-2 text-caption text-error">{error}</p>}
+
+      {instructions && (
+        <div className="mt-3 rounded-lg bg-surface-1 p-3">
+          {approvalUrl ? (
+            <a href={approvalUrl} target="_blank" rel="noreferrer" className="text-caption font-semibold text-accent underline">
+              Continue to PayPal to complete payment →
+            </a>
+          ) : memoInstruction ? (
+            <p className="text-caption text-fg-secondary">{memoInstruction}</p>
+          ) : (
+            <p className="text-caption text-fg-secondary">Checkout started - follow the payment provider's instructions to complete it.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function BillingRoute() {
   const [billing, setBilling] = useState<WorkspaceBillingOverview | null>(null);
   const [catalogue, setCatalogue] = useState<PlanCatalogueDto | null>(null);
@@ -277,6 +351,12 @@ export function BillingRoute() {
             <div className="mt-3 rounded-xl border border-border-subtle bg-surface-2 p-4">
               <AiUsageByAgentBreakdown />
             </div>
+          </section>
+        )}
+
+        {metered.some((entitlement) => entitlement.key === 'max_ai_tokens_per_month') && (
+          <section className="mt-6">
+            <AiTokenTopupOffer />
           </section>
         )}
 
