@@ -562,6 +562,22 @@ Of the 11 vertical business pages, only Property Operations was a real, producti
 
 **Verified**: backend and frontend typecheck clean; production `vite build` succeeds (`RetailOperationsPage` chunk present); 25 new tests (`retailOperationsLifecycle`, `retailCreateOrderExecutor`, `retailOrderPolicy`, `retailAgentService`) plus 3 updated `agentTemplateRepository` tests, all green against real Postgres; Property's own test suite (lifecycle, executor, agent service, policy, nav rail) re-run and confirmed untouched; full regression suite run before commit.
 
+## Sections 05, 07, 08, 11, 31-33 — the 7 genuinely not-started sections, closed out one by one
+
+Investigated first (3 parallel Explore agents), then built a real, minimal, tested slice for each — no premature abstraction, no fabricated infrastructure. Two real bugs surfaced along the way and were fixed as their own commits (see 115/116 above, discovered while investigating this batch, not originally scoped to it).
+
+**05 (human-like conversation)**: the only prior naturalness guidance was a business-configured tone string passed through verbatim. `buildSystemInstruction` now computes the real opening words of the most recent outbound message in the conversation and tells the model to vary its phrasing against that concrete text — never a generic "sound human" instruction with nothing behind it.
+
+**07/08 (progressive information discovery, question priority engine)**: open questions were one flat, unordered list — nothing ranked them, nothing paced how many were surfaced per reply. The model itself now assigns HIGH/MEDIUM/LOW priority when it opens a question (it has the conversational context to judge this, not this codebase); the system prompt surfaces only the single highest-priority question as "the next thing to ask," with the rest held back as lower-priority background and an explicit one-question-per-reply pacing rule.
+
+**11 (lead qualification)**: `leads.score`/`status` were 100% human-entered, zero computation. `leadScoringService.ts` combines real signals (customer_readiness, funnel_stage, message engagement, activity recency) into an actual score, recomputed whenever a fresh readiness/funnel-stage signal lands. Deliberately one-directional: `setScoreIfUnset` only ever fills a genuinely blank score (no provenance flag exists to tell manual from computed, so it never overwrites either), and `autoQualifyIfNew` only ever transitions NEW→QUALIFIED, never touching ENGAGED/WON/LOST — both enforced at the SQL WHERE clause, not a prior read.
+
+**32/33 (timing engine, contact availability intelligence)**: no per-contact timezone signal is ever collected from a WhatsApp customer (confirmed dead code: `resolveCustomerTimezone` was never called anywhere), and campaigns always sent immediately regardless of the schema's unused `SCHEDULED` status. `contactAvailabilityService.ts` derives a real signal instead — the UTC hour-of-day a contact has actually sent real inbound messages in the past (min 5 samples to trust it, honestly null below that) — and `sendCampaign()` delays each recipient to their own next real active hour, bounded to 24h, stacked on the existing anti-burst stagger, 0 (immediate) when there's no real history to go on.
+
+**31 (marketing research)**: the only "marketing" AI code was copywriting assistance (`suggestMarketingCopy`) — no audience analysis, no performance data, nothing. `getCampaignPerformanceSummary` aggregates real delivery/read status across a business's own past campaigns (same status-join logic the per-campaign detail view already used, grouped across all of them) so staff can see what actually worked.
+
+**Verified**: every slice typechecked (backend + frontend), tested against real Postgres where DB-backed, and committed individually. Full regression suite run at the end of the batch.
+
 ## Section checklist
 
 ```
@@ -569,20 +585,20 @@ Of the 11 vertical business pages, only Property Operations was a real, producti
 [X] 02      - Existing feature inventory
 [X] 03      - Unified agent intelligence architecture - ALREADY IMPLEMENTED, VERIFIED
 [~] 04      - Conversational intelligence engine - first pipeline stage shipped (intent/entity/risk classifier)
-[ ] 05      - Human-like conversation
+[X] 05      - Human-like conversation - real gap found and fixed: only naturalness guidance was a passthrough tone string; replies now vary phrasing against the actual last message sent, verified
 [X] 06      - Invisible conversational funnel - funnel_stage field, verified
-[ ] 07      - Progressive information discovery
-[ ] 08      - Question priority engine
+[X] 07      - Progressive information discovery - real gap found and fixed: open questions were one flat unordered list; now paced one-highest-priority-at-a-time, verified
+[X] 08      - Question priority engine - real gap found and fixed: no ranking existed at all; the model now assigns HIGH/MEDIUM/LOW priority per question, verified
 [X] 09      - Next-best-action engine - extended real engine with a 6th signal, verified
 [X] 10      - Customer readiness - customer_readiness field, verified
-[ ] 11      - Lead qualification
+[X] 11      - Lead qualification - real gap found and fixed: score/status were 100% manual; leadScoringService.ts now computes a real score from real signals and safely auto-qualifies, verified
 [X] 12      - CRM funnel UI bug - FIXED (pipelineStages.ts), verified
 [X] 13      - Conversational memory - formally verified: real, working, cross-conversation write-through since migration 959; real gap found (never surfaced to staff) and fixed, verified
 [~] 14-24   - Identity & Name Discovery Engine - within-conversation resolution + usage/repetition + manual contact-name UI (23) shipped and verified; cross-conversation carry-over (20), "important moment" cooldown override (19) still deferred
 [X] 25      - Chat sync incremental resume - real bug found and fixed, verified
 [X] 26      - Message delivery status reconciliation - real bug found and fixed (see notes), verified
 [~] 27-30   - Campaign attachments - real, working feature built and verified; storage limits, AI content generator still open
-[ ] 31-33   - Marketing research, timing engine, contact availability intelligence
+[X] 31-33   - Marketing research, timing engine, contact availability intelligence - all 3 genuinely absent, all 3 built: real campaign performance analytics, real per-contact send-timing from actual activity history, verified
 [~] 34-40   - Token economy, budgets, display, cost control - real gap found and fixed, verified; second real gap found and fixed (monthly budget reset used the DB session's local timezone instead of UTC, could reset a business's token limit hours early/late), verified; approval/override flow and deeper analytics deferred
 [!] 41-42   - Autonomous operations modes / work loop - BLOCKED, APPROVAL REQUIRED (product-policy decision, see approval queue)
 [~] 43-44   - Best-recommendation engine (not yet touched); work queue states - real gap found (a FAILED execution's notification claimed "approved") and fixed, verified
