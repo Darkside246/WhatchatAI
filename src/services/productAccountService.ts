@@ -4,7 +4,7 @@ import { BusinessMembershipRepository } from '../repositories/businessMembership
 import { TrialRepository } from '../repositories/trialRepository.js';
 import { AiUsageRepository, type AiUsageBusinessSummary } from '../repositories/aiUsageRepository.js';
 import { deriveTrialState } from './trialPolicy.js';
-import type { ProductKey, ProductAccountAccess } from '../domain/platform/productAccounts.js';
+import type { ProductKey, ProductAccountAccess, ProductAccountStatus } from '../domain/platform/productAccounts.js';
 
 const aiUsageRepository = new AiUsageRepository(pool);
 
@@ -102,6 +102,33 @@ export async function provisionProductAccount(input: {
   }
 }
 
+/**
+ * The one place a trial's stored `state` gets recomputed against its real
+ * `ends_at` and, if it just expired, its product account restricted to
+ * match. Shared by the lazy per-access path (getAccountAccessForMember,
+ * below) and the scheduled sweep (sweepExpiredTrials) so an abandoned
+ * trial nobody logs back into doesn't stay falsely ACTIVE forever - see
+ * that function's own doc comment for the full story.
+ */
+type Trial = NonNullable<Awaited<ReturnType<typeof trials.findTrialByProductAccountId>>>;
+type Account = NonNullable<Awaited<ReturnType<typeof productAccounts.findById>>>;
+
+async function refreshTrialState(trial: Trial, account: Account): Promise<ProductAccountStatus> {
+  if (trial.state === 'CONVERTED' || trial.state === 'CANCELLED') return account.status;
+  const nextState = deriveTrialState({
+    state: trial.state,
+    startsAt: trial.startsAt ? new Date(trial.startsAt) : null,
+    endsAt: trial.endsAt ? new Date(trial.endsAt) : null,
+  });
+  if (nextState !== trial.state) await trials.updateState(trial.id, nextState, nextState === 'EXPIRED' ? new Date() : null);
+  if (nextState === 'EXPIRED' && account.status === 'ACTIVE') {
+    await productAccounts.setStatus(account.id, 'RESTRICTED');
+    await productAccounts.recordProvisioningEvent(account.id, 'RESTRICTED');
+    return 'RESTRICTED';
+  }
+  return account.status;
+}
+
 async function getAccountAccessForMember(userId: string, accountId: string): Promise<ProductAccountAccess> {
   const account = await productAccounts.findById(accountId);
   if (!account) throw new ProductAccountNotFoundError('Product account not found.');
@@ -109,22 +136,40 @@ async function getAccountAccessForMember(userId: string, accountId: string): Pro
   if (!membership || membership.status !== 'active') throw new ProductAccountNotFoundError('Product account membership not found.');
 
   const trial = await trials.findTrialByProductAccountId(account.id);
-  if (trial && trial.state !== 'CONVERTED' && trial.state !== 'CANCELLED') {
-    const nextState = deriveTrialState({
-      state: trial.state,
-      startsAt: trial.startsAt ? new Date(trial.startsAt) : null,
-      endsAt: trial.endsAt ? new Date(trial.endsAt) : null,
-    });
-    if (nextState !== trial.state) await trials.updateState(trial.id, nextState, nextState === 'EXPIRED' ? new Date() : null);
-    if (nextState === 'EXPIRED' && account.status === 'ACTIVE') {
-      await productAccounts.setStatus(account.id, 'RESTRICTED');
-      await productAccounts.recordProvisioningEvent(account.id, 'RESTRICTED');
-      account.status = 'RESTRICTED';
-    }
-  }
+  if (trial) account.status = await refreshTrialState(trial, account);
 
   const entitlements = await productAccounts.listEntitlements(account.id);
   return { account, entitlements, operationalAccess: account.status === 'ACTIVE' };
+}
+
+/**
+ * Scheduled counterpart to getAccountAccessForMember's lazy recompute -
+ * without this, a trial nobody ever logs back into (an abandoned/test
+ * signup, say) keeps reading as ACTIVE/EXPIRING in the database forever,
+ * even though its real ends_at passed days ago, inflating anything that
+ * counts trials by their stored state (e.g. getControlPlaneStats, which
+ * also guards itself with a live `ends_at > NOW()` check so the dashboard
+ * is honest even between sweep runs - this function is what keeps the
+ * underlying data itself honest, not just that one query). Registered as
+ * a periodic job in incomingMessagesWorker.ts, same shape as the
+ * governance/business-intelligence sweeps. Named distinctly from
+ * subscriptionExpiryService.ts's own sweepExpiredTrials - that one expires
+ * a TRIALING core AURA subscription (subscriptions.trial_ends_at), a
+ * completely separate concept from this file's product_trials (the
+ * Property/Food product-account vertical) - the two must never be
+ * confused or merged.
+ */
+export async function sweepExpiredProductTrials(): Promise<{ swept: number }> {
+  const expirable = await trials.listExpirableNow();
+  let swept = 0;
+  for (const trial of expirable) {
+    if (!trial.productAccountId) continue;
+    const account = await productAccounts.findById(trial.productAccountId);
+    if (!account) continue;
+    await refreshTrialState(trial, account);
+    swept += 1;
+  }
+  return { swept };
 }
 
 export async function getProductAccountAccess(userId: string, accountId: string): Promise<ProductAccountAccess> {
@@ -160,7 +205,7 @@ export async function getControlPlaneStats(): Promise<ControlPlaneStats> {
       (SELECT COUNT(*) FROM whatsapp_accounts WHERE connection_status = 'CONNECTED' AND deleted_at IS NULL) AS active_wa_connections,
       (SELECT COUNT(*) FROM whatsapp_accounts WHERE connection_status != 'CONNECTED' AND deleted_at IS NULL) AS inactive_wa_connections,
       (SELECT COUNT(*) FROM ai_agents WHERE deleted_at IS NULL) AS total_ai_agents,
-      (SELECT COUNT(*) FROM product_trials WHERE state IN ('ACTIVE', 'EXPIRING')) AS active_trials,
+      (SELECT COUNT(*) FROM product_trials WHERE state IN ('ACTIVE', 'EXPIRING') AND ends_at > NOW()) AS active_trials,
       (SELECT COUNT(*) FROM security_audit_logs WHERE created_at > NOW() - INTERVAL '24 hours') AS recent_security_events
   `);
   const row = rows[0];

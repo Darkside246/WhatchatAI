@@ -17,6 +17,8 @@ export class TrialRepository {
   async findTrialById(id: string) { const { rows } = await this.db.query<TrialRow>(`${TRIAL_SELECT} WHERE pt.id = $1`, [id]); return rows[0] ? toTrial(rows[0]) : null; }
   async findTrialByProductAccountId(productAccountId: string) { const { rows } = await this.db.query<TrialRow>(`${TRIAL_SELECT} WHERE pt.product_account_id = $1`, [productAccountId]); return rows[0] ? toTrial(rows[0]) : null; }
   async listAll() { const { rows } = await this.db.query<TrialRow>(`${TRIAL_SELECT} ORDER BY pt.created_at DESC`); return rows.map(toTrial); }
+  /** Real rows past their own `ends_at` but still carrying a stale ACTIVE/EXPIRING state - the sweep's own worklist. Lazy per-access recompute (getAccountAccessForMember) never revisits a trial nobody logs back into, so this is the only thing that keeps an abandoned trial's state honest platform-wide. */
+  async listExpirableNow() { const { rows } = await this.db.query<TrialRow>(`${TRIAL_SELECT} WHERE pt.state IN ('ACTIVE', 'EXPIRING') AND pt.ends_at <= NOW()`); return rows.map(toTrial); }
   async updateState(id: string, state: TrialState, expiredAt: Date | null = null): Promise<void> { await this.db.query(`UPDATE product_trials SET state = $2, expired_at = CASE WHEN $2 = 'EXPIRED' THEN COALESCE($3, now()) ELSE expired_at END, updated_at = now() WHERE id = $1`, [id, state, expiredAt?.toISOString() ?? null]); }
   async attachAccount(id: string, productAccountId: string, userId: string): Promise<void> { await this.db.query(`UPDATE product_trials pt SET product_account_id = $2, updated_at = now() WHERE pt.id = $1 AND EXISTS (SELECT 1 FROM trial_identities ti WHERE ti.id = pt.trial_identity_id AND ti.user_id = $3)`, [id, productAccountId, userId]); }
 }

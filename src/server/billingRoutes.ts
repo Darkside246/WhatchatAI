@@ -8,7 +8,10 @@ import { PlanRepository } from '../repositories/planRepository.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { PlatformSettingsRepository } from '../repositories/platformSettingsRepository.js';
 import { getTopupOffer, createTopupCheckout, verifyTopupPayment, NoTopupOfferError, TopupVerificationError } from '../services/billing/aiTokenTopupService.js';
+import { getMemoryTopupOffer, createMemoryTopupCheckout, verifyMemoryTopupPayment, NoMemoryTopupOfferError, MemoryTopupVerificationError } from '../services/billing/aiMemoryTopupService.js';
+import { getUpgradeOffer, createUpgradeCheckout, verifyUpgradePayment, NoUpgradeOfferError, UpgradeVerificationError } from '../services/billing/planUpgradeService.js';
 import { PAYMENT_PROVIDER_KINDS, isProviderConfigured, isProviderEnabled, isProviderUsable } from '../services/billing/paymentProviderStatusService.js';
+import { listAllAccounts, manuallyChangeBusinessPlan, BusinessHasNoSubscriptionError } from '../services/platform/developerAccountsService.js';
 import { pool } from '../db/pool.js';
 
 const router = Router();
@@ -18,6 +21,14 @@ const platformSettingsRepository = new PlatformSettingsRepository(pool);
 const checkoutSchema = z.object({ productAccountId: z.string().uuid(), provider: PaymentProviderSchema.optional(), amountMinor: z.number().int().positive(), currency: z.string().trim().length(3).default('BBD'), billingInterval: z.enum(['month', 'year', 'one_time']).default('month') });
 const proofSchema = z.object({ productAccountId: z.string().uuid(), paymentAttemptId: z.string().uuid(), proofUrl: z.string().url().max(2000), note: z.string().trim().max(2000).optional() });
 const proofReviewSchema = z.object({ decision: z.enum(['APPROVE', 'REJECT']), note: z.string().trim().max(2000).optional() });
+const createPlanSchema = z.object({
+  planKey: z.string().trim().min(1).max(100).regex(/^[a-z0-9_]+$/, 'planKey must be lowercase letters, numbers, and underscores only'),
+  name: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(2000).nullable().optional(),
+  priceMonthlyCents: z.number().int().min(0),
+  priceYearlyCents: z.number().int().min(0).nullable().optional(),
+  currency: z.string().trim().length(3).optional(),
+});
 const updatePlanSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   description: z.string().trim().max(2000).nullable().optional(),
@@ -205,6 +216,118 @@ router.post('/webhooks/:provider/ai-token-topup', async (req, res) => {
 });
 
 /**
+ * The same real, self-serve top-up shape as the AI-token routes above,
+ * for AI customer-memory capacity instead - a parallel, independent
+ * checkout/webhook pair (see aiMemoryTopupService.ts's own doc comment
+ * for why this is a permanent capacity add, never a monthly reset, unlike
+ * the token top-up it otherwise mirrors).
+ */
+router.get('/ai-memory-topup/offer', requireAuth, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const offer = await getMemoryTopupOffer(auth.businessId);
+  return res.status(200).json({ offer });
+});
+
+router.post('/ai-memory-topup/checkout', requireAuth, async (req, res) => {
+  const parsed = topupCheckoutSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_TOPUP_CHECKOUT', details: parsed.error.flatten() });
+  const auth = res.locals.auth as AuthContext;
+  const providerKind = (parsed.data.provider ?? 'BIMPAY').toLowerCase();
+  if (!(await isProviderUsable(providerKind))) return res.status(503).json({ error: 'PAYMENT_PROVIDER_NOT_CONFIGURED' });
+  try {
+    const { purchase, instructions } = await createMemoryTopupCheckout(auth.businessId, providerKind);
+    return res.status(201).json({ purchase, instructions });
+  } catch (error) {
+    if (error instanceof NoMemoryTopupOfferError) return res.status(404).json({ error: 'NO_TOPUP_OFFER', message: error.message });
+    throw error;
+  }
+});
+
+router.post('/webhooks/:provider/ai-memory-topup', async (req, res) => {
+  const providerKind = req.params.provider;
+  const provider = resolveProvider(providerKind);
+  if (!provider) return res.status(404).json({ error: 'UNKNOWN_PAYMENT_PROVIDER' });
+  if (!isProviderConfigured(providerKind) || !(await isProviderEnabled(providerKind))) return res.status(503).json({ error: 'PAYMENT_PROVIDER_NOT_CONFIGURED' });
+  const secret = resolveProviderSecret(providerKind);
+  if (!secret) return res.status(503).json({ error: 'PAYMENT_PROVIDER_NOT_CONFIGURED' });
+
+  const result = await provider.verifyEvent({ body: req.body, headers: req.headers, secret });
+  if (result.outcome === 'ignored') return res.status(200).json({ ok: true, ignored: result.reason });
+  if (result.outcome === 'rejected') {
+    const status = result.reason === 'INVALID_BIMPAY_SIGNATURE' || result.reason === 'INVALID_PAYPAL_SIGNATURE' ? 401 : 400;
+    return res.status(status).json({ error: result.reason });
+  }
+
+  try {
+    await verifyMemoryTopupPayment(result);
+    return res.status(200).json({ ok: true });
+  } catch (error) {
+    if (error instanceof MemoryTopupVerificationError) return res.status(409).json({ error: 'TOPUP_VERIFICATION_FAILED', message: error.message });
+    throw error;
+  }
+});
+
+/**
+ * A real, self-serve plan-tier upgrade checkout - same shape as the
+ * AI-token/memory top-up routes above, but the offer is parameterized by
+ * which plan the business wants to move to (any Plans tile, not just the
+ * next tier up), and a verified payment actually changes the business's
+ * subscription plan (planUpgradeService.ts's verifyUpgradePayment).
+ */
+router.get('/plan-upgrade/offer/:planKey', requireAuth, async (req, res) => {
+  const planKey = String(req.params.planKey ?? '');
+  const auth = res.locals.auth as AuthContext;
+  try {
+    const offer = await getUpgradeOffer(auth.businessId, planKey);
+    return res.status(200).json({ offer });
+  } catch (error) {
+    if (error instanceof NoUpgradeOfferError) return res.status(404).json({ error: 'NO_UPGRADE_OFFER', message: error.message });
+    throw error;
+  }
+});
+
+const upgradeCheckoutSchema = z.object({ planKey: z.string().trim().min(1), provider: PaymentProviderSchema.optional() });
+
+router.post('/plan-upgrade/checkout', requireAuth, async (req, res) => {
+  const parsed = upgradeCheckoutSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_UPGRADE_CHECKOUT', details: parsed.error.flatten() });
+  const auth = res.locals.auth as AuthContext;
+  const providerKind = (parsed.data.provider ?? 'BIMPAY').toLowerCase();
+  if (!(await isProviderUsable(providerKind))) return res.status(503).json({ error: 'PAYMENT_PROVIDER_NOT_CONFIGURED' });
+  try {
+    const { purchase, instructions } = await createUpgradeCheckout(auth.businessId, parsed.data.planKey, providerKind);
+    return res.status(201).json({ purchase, instructions });
+  } catch (error) {
+    if (error instanceof NoUpgradeOfferError) return res.status(404).json({ error: 'NO_UPGRADE_OFFER', message: error.message });
+    throw error;
+  }
+});
+
+router.post('/webhooks/:provider/plan-upgrade', async (req, res) => {
+  const providerKind = req.params.provider;
+  const provider = resolveProvider(providerKind);
+  if (!provider) return res.status(404).json({ error: 'UNKNOWN_PAYMENT_PROVIDER' });
+  if (!isProviderConfigured(providerKind) || !(await isProviderEnabled(providerKind))) return res.status(503).json({ error: 'PAYMENT_PROVIDER_NOT_CONFIGURED' });
+  const secret = resolveProviderSecret(providerKind);
+  if (!secret) return res.status(503).json({ error: 'PAYMENT_PROVIDER_NOT_CONFIGURED' });
+
+  const result = await provider.verifyEvent({ body: req.body, headers: req.headers, secret });
+  if (result.outcome === 'ignored') return res.status(200).json({ ok: true, ignored: result.reason });
+  if (result.outcome === 'rejected') {
+    const status = result.reason === 'INVALID_BIMPAY_SIGNATURE' || result.reason === 'INVALID_PAYPAL_SIGNATURE' ? 401 : 400;
+    return res.status(status).json({ error: result.reason });
+  }
+
+  try {
+    await verifyUpgradePayment(result);
+    return res.status(200).json({ ok: true });
+  } catch (error) {
+    if (error instanceof UpgradeVerificationError) return res.status(409).json({ error: 'UPGRADE_VERIFICATION_FAILED', message: error.message });
+    throw error;
+  }
+});
+
+/**
  * Section 73-74: the live Control Plane view of every registered payment
  * provider - whether it has real credentials configured, and whether a
  * developer has switched it on/off. This is what lets PayPal/WiPay be
@@ -285,12 +408,74 @@ router.post('/developer/payment-proofs/:proofId/review', requireAuth, requireDev
  * promised admin surface, developer-only like every other cross-tenant
  * control in this router.
  */
+/**
+ * A real, cross-tenant "who is out there" view - see
+ * developerAccountsService.ts's own doc comment for why "Clients"/
+ * "Trials" previously just linked out to the developer's own business's
+ * CRM/Billing pages, which is nonsensical for a platform operator.
+ * Sorted by real, decrypted phone number in numeric order server-side -
+ * the frontend renders whatever order this returns.
+ */
+router.get('/developer/accounts', requireAuth, requireDeveloper, async (_req, res) => {
+  const accounts = await listAllAccounts();
+  return res.status(200).json({ accounts });
+});
+
+const manualPlanChangeSchema = z.object({ planKey: z.string().trim().min(1).max(100) });
+
+/**
+ * The manual override identified as a real gap: changePlan() previously
+ * had exactly one caller anywhere in this codebase (planUpgradeService.ts's
+ * automated, webhook-verified path) - nothing let a developer fix a
+ * business's plan by hand when a real payment fell outside that flow.
+ */
+router.patch('/developer/businesses/:businessId/plan', requireAuth, requireDeveloper, async (req, res) => {
+  const businessId = z.string().uuid().safeParse(req.params.businessId);
+  if (!businessId.success) return res.status(400).json({ error: 'INVALID_BUSINESS_ID' });
+  const parsed = manualPlanChangeSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PLAN_CHANGE', details: parsed.error.flatten() });
+
+  try {
+    const { subscription, planName } = await manuallyChangeBusinessPlan(businessId.data, parsed.data.planKey);
+    const auth = res.locals.auth as AuthContext;
+    await securityAuditLogRepository.record({
+      businessId: businessId.data,
+      eventType: 'subscription_plan_manually_changed',
+      severity: 'warning',
+      rawMetadata: { changedBy: auth.userId, newPlanKey: parsed.data.planKey, subscriptionId: subscription.id },
+    });
+    return res.status(200).json({ subscription, planName });
+  } catch (error) {
+    if (error instanceof BusinessHasNoSubscriptionError) return res.status(409).json({ error: 'NO_ACTIVE_SUBSCRIPTION', message: error.message });
+    if (error instanceof Error && error.message.startsWith('Unknown plan key')) return res.status(404).json({ error: 'PLAN_NOT_FOUND' });
+    throw error;
+  }
+});
+
 router.get('/developer/plans', requireAuth, requireDeveloper, async (_req, res) => {
   const plans = await planRepository.listAll();
   const withEntitlements = await Promise.all(
     plans.map(async (plan) => ({ ...plan, entitlements: await planRepository.listEntitlements(plan.id) })),
   );
   return res.status(200).json({ plans: withEntitlements });
+});
+
+router.post('/developer/plans', requireAuth, requireDeveloper, async (req, res) => {
+  const parsed = createPlanSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PLAN', details: parsed.error.flatten() });
+  const auth = res.locals.auth as AuthContext;
+  try {
+    const plan = await planRepository.createPlan(parsed.data);
+    await securityAuditLogRepository.record({
+      businessId: null,
+      eventType: 'plan_updated',
+      rawMetadata: { planId: plan.id, planKey: plan.planKey, createdBy: auth.userId, action: 'created' },
+    });
+    return res.status(201).json({ plan: { ...plan, entitlements: [] } });
+  } catch (error) {
+    if ((error as { code?: string }).code === '23505') return res.status(409).json({ error: 'PLAN_KEY_ALREADY_EXISTS' });
+    throw error;
+  }
 });
 
 router.patch('/developer/plans/:planId', requireAuth, requireDeveloper, async (req, res) => {

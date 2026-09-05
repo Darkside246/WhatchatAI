@@ -3,6 +3,8 @@ import { BusinessRepository } from '../../repositories/businessRepository.js';
 import { AiAgentRepository } from '../../repositories/aiAgentRepository.js';
 import { pool } from '../../db/pool.js';
 import { getToolPolicy, isToolRegistered, isTierAlwaysDenied, type AiToolRisk } from './aiToolPolicy.js';
+import { WhatsAppChatRepository } from '../../repositories/whatsappChatRepository.js';
+import { ListAgentAssignmentRepository } from '../../repositories/listAgentAssignmentRepository.js';
 
 export class UnregisteredToolError extends Error {}
 export class UnknownTenantError extends Error {}
@@ -22,6 +24,8 @@ export interface ToolInvocationContext {
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
 const businessRepository = new BusinessRepository(pool);
 const aiAgentRepository = new AiAgentRepository(pool);
+const chatRepository = new WhatsAppChatRepository(pool);
+const listAgentAssignmentRepository = new ListAgentAssignmentRepository(pool);
 
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -150,6 +154,31 @@ export async function guardToolInvocation(toolName: string, context: ToolInvocat
   // aiActionsPaused check above.
   if (agent.autonomyLevel === 1 && risk !== 'READ') {
     return denyAndAudit('Agent autonomy level is read-only', toolName, context, AgentAutonomyRestrictedError);
+  }
+
+  // AURA Lists (Phase 1): a List's autonomyOverride is restrict-only -
+  // listAgentAssignmentRepository.upsert already rejects any value greater
+  // than the agent's own autonomyLevel, so the only new restriction this
+  // gate can ever add is denying non-READ tools when a List has forced this
+  // specific agent down to level 1 for this specific chat, mirroring the
+  // agent-level check immediately above. Fails open (no restriction, this
+  // block simply does nothing) whenever the chat has no active_list_id, no
+  // enabled assignment, or the assignment isn't for this agent - a business
+  // that never uses Lists sees identical behavior to before this existed.
+  // Finer-grained List autonomy levels (2-4) are not enforced here in Phase
+  // 1: the existing autonomyLevel<=2 approval-required check is scattered
+  // across individual tool call sites in aiReplyService.ts (not centralized
+  // in this gate), and consistently threading a List override through every
+  // one of those sites is deliberately out of scope for this phase rather
+  // than risk an inconsistent, partially-enforced restriction.
+  if (context.chatId && risk !== 'READ') {
+    const chat = await chatRepository.findByIdForBusiness(context.chatId, context.businessId).catch(() => null);
+    if (chat?.activeListId) {
+      const assignment = await listAgentAssignmentRepository.findEnabledForList(context.businessId, chat.activeListId).catch(() => null);
+      if (assignment?.agentId === context.agentId && assignment.autonomyOverride === 1) {
+        return denyAndAudit('This chat\'s active List restricts this agent to read-only', toolName, context, AgentAutonomyRestrictedError);
+      }
+    }
   }
 
   const windowMinutes = getRateLimitWindowMinutes();

@@ -1,4 +1,5 @@
-import { routeInboundMessage, resolveEscalationAgent } from '../agentRoutingService.js';
+import { resolveEscalationAgent } from '../agentRoutingService.js';
+import { resolveAgentRouting } from '../listRoutingService.js';
 import { gatherAiHandoffContext } from '../aiContextGathererService.js';
 import { generateAiReply } from '../aiReplyService.js';
 import { runOutboundLeakGuard } from '../../security/sentinel/outboundLeakGuard.js';
@@ -113,7 +114,7 @@ export async function orchestrateAiReply(input: OrchestrateAiReplyInput): Promis
       queryText: input.queryText,
       mediaId: input.mediaId ?? null,
     }),
-    routeInboundMessage(input.businessId, input.queryText),
+    resolveAgentRouting(input.businessId, input.chatId, input.queryText),
   ]);
 
   if (decision.outcome === 'no_agent') {
@@ -124,6 +125,21 @@ export async function orchestrateAiReply(input: OrchestrateAiReplyInput): Promis
   }
 
   const agent = decision.agent;
+
+  // AURA Learn Agent auditability: only the audit trail needs to know
+  // "which agent accessed this, when" - the actual gating already
+  // happened (twice - see aiContextGathererService.ts and
+  // buildSystemInstruction). Fire-and-forget: an audit-write failure
+  // must never affect whether a reply gets generated.
+  if (context.communicationStyle?.available && context.communicationStyle.profile && context.learnAllowedAgentIds.has(agent.id)) {
+    void securityAuditLogRepository
+      .record({
+        businessId: input.businessId,
+        eventType: 'writing_twin_context_served',
+        rawMetadata: { agentId: agent.id, channelScope: context.communicationStyle.profile.channelScope, exampleCount: context.communicationStyle.profile.exampleCount },
+      })
+      .catch((error: Error) => console.error('[aiOrchestrator] Failed to record writing_twin_context_served:', error.message));
+  }
 
   // Real cost-control gate (Section 34-40) - checked once per inbound
   // message, right before the one real Gemini call that actually costs

@@ -60,7 +60,12 @@ export function useAppGate(): AppGateState {
         if (mounted.current) {
           setServerUnreachable(false);
           setConnection(snapshot);
-          if (snapshot.connected) setPairedOnce(true);
+          // everConnectedBefore is a real, persisted fact (survives a
+          // backend restart's in-memory reset) - a fresh tab whose very
+          // first poll lands mid-reconnect must not be treated the same as
+          // a business that has genuinely never paired (see this route's
+          // own doc comment in server/index.ts).
+          if (snapshot.connected || snapshot.everConnectedBefore) setPairedOnce(true);
           if (snapshot.status === 'LOGGED_OUT') setPairedOnce(false);
         }
       } catch {
@@ -131,6 +136,11 @@ export function useAppGate(): AppGateState {
       connection.status === 'QR_READY' ||
       connection.status === 'PAIRING_CODE_READY' ||
       connection.status === 'LOGGED_OUT' ||
+      // A genuine WhatsApp-side conflict (another device took over the
+      // linked-device slot) - real, terminal, needs a fresh pairing
+      // regardless of pairedOnce/everConnectedBefore, unlike a merely
+      // transient reconnect.
+      connection.status === 'CONFLICT_REPLACED' ||
       // Real, confirmed bug fixed here: this used to also exclude
       // `connection.status !== 'RECONNECTING'`, on the theory that
       // RECONNECTING only ever follows a real prior connection (true of

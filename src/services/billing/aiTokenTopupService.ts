@@ -5,6 +5,7 @@ import { AiTokenTopupRepository } from '../../repositories/aiTokenTopupRepositor
 import { generateCheckoutReference } from './paymentService.js';
 import { resolveProvider } from './providers/registry.js';
 import { notifyBusiness } from '../notificationService.js';
+import { getAiTokenTopupCatalogOverride } from '../platform/platformConfigService.js';
 import type { PaymentProvider } from '../../domain/billing/payment.js';
 import type { VerifyEventResult } from './providers/types.js';
 
@@ -37,11 +38,18 @@ const topupRepository = new AiTokenTopupRepository(pool);
  * ratio (once actually measurable from ai_usage_events) turns out to
  * differ meaningfully from the 75/25 assumption above.
  */
-export const TOPUP_CATALOG: Record<string, { tokens: number; priceCents: number; currency: string }> = {
+export type AiTokenTopupCatalog = Record<string, { tokens: number; priceCents: number; currency: string }>;
+
+export const TOPUP_CATALOG: AiTokenTopupCatalog = {
   starter: { tokens: 250_000, priceCents: 199, currency: 'USD' },
   growth: { tokens: 1_000_000, priceCents: 799, currency: 'USD' },
   business: { tokens: 5_000_000, priceCents: 3799, currency: 'USD' },
 };
+
+/** Developer Master Control page override (platform_settings key ai_token_topup_catalog), falling back to the hardcoded TOPUP_CATALOG above when nothing's been set - additive, never a regression for this already-shipped upsell flow. */
+async function resolveCatalog(): Promise<AiTokenTopupCatalog> {
+  return (await getAiTokenTopupCatalogOverride()) ?? TOPUP_CATALOG;
+}
 
 export interface AiTokenTopupOffer {
   planKey: string;
@@ -58,7 +66,8 @@ export async function getTopupOffer(businessId: string): Promise<AiTokenTopupOff
   if (!subscription) return null;
   const plan = await planRepository.findById(subscription.planId);
   if (!plan) return null;
-  const entry = TOPUP_CATALOG[plan.planKey];
+  const catalog = await resolveCatalog();
+  const entry = catalog[plan.planKey];
   if (!entry) return null;
   return { planKey: plan.planKey, tokens: entry.tokens, priceCents: entry.priceCents, currency: entry.currency };
 }

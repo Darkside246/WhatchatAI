@@ -8,6 +8,7 @@ import { SessionRepository, type SessionRecord } from '../repositories/sessionRe
 import { UserPreferenceRepository } from '../repositories/userPreferenceRepository.js';
 import { AuthLoginAttemptRepository } from '../repositories/authLoginAttemptRepository.js';
 import { BusinessRepository, type BusinessRecord } from '../repositories/businessRepository.js';
+import { isRegistrationPaused } from './platform/platformConfigService.js';
 
 const userRepository = new UserRepository(pool);
 const membershipRepository = new BusinessMembershipRepository(pool);
@@ -34,6 +35,7 @@ export interface AuthResult { user: PublicUser; business: BusinessRecord; member
 function normalizeEmail(email: string): string { return email.trim().toLowerCase(); }
 
 export async function isRegistrationOpen(): Promise<boolean> {
+  if (await isRegistrationPaused()) return false;
   const business = await ensureDefaultBusinessProvisioned();
   const count = await membershipRepository.countForBusiness(business.id);
   return count === 0;
@@ -42,6 +44,7 @@ export async function isRegistrationOpen(): Promise<boolean> {
 export interface RegisterInput { email: string; password: string; displayName: string; }
 
 export async function register(input: RegisterInput, device: DeviceContext): Promise<AuthResult> {
+  if (await isRegistrationPaused()) throw new RegistrationClosedError('New registrations are paused right now. Try again shortly.');
   validatePasswordStrength(input.password);
   const email = normalizeEmail(input.email);
   const displayName = input.displayName.trim();

@@ -25,6 +25,31 @@
  * a hook would already run too late, after the file's own module-level
  * `new Worker(...)` call already started consuming.
  */
+/**
+ * Follow-up, found while chasing intermittent 15s timeouts in
+ * outboundLeakGuard.test.ts/sentinel.test.ts/aiReplyService.test.ts/etc.:
+ * this machine's own .env genuinely configures a real GEMINI_API_KEY (for
+ * manual/live verification), but the whole test suite's design assumes it
+ * is absent - every "AI stage cannot run" test asserts the honest
+ * 'unavailable' outcome specifically because no key exists in CI/normal
+ * dev. The leak into test workers is real dotenv/config imports inside
+ * src/queue/workers/incomingMessagesWorker.ts (and src/server/index.ts,
+ * src/services/gooseFallbackSupervisor.ts) - dotenv's default behavior
+ * never overrides an already-set process.env var, and vitest's
+ * fileParallelism:false reuses one worker process across many files
+ * sequentially with a persistent process.env (only the ES module registry
+ * is fresh per file, not the process) - so the FIRST file in a worker that
+ * happens to import the incoming-messages worker loads the real key once,
+ * and it then silently "leaks" into every later file sharing that same
+ * worker process, non-deterministically depending on file run order.
+ * Forcing it to an explicit empty string (falsy, matching getGeminiClient's
+ * own `!apiKey` check) here - before any test file's own top-level imports
+ * run - both undoes whatever a prior file in this worker already set and
+ * blocks any later dotenv.config() call in THIS file from re-setting it,
+ * since dotenv sees the var as "already set" even when empty.
+ */
+process.env.GEMINI_API_KEY = '';
+
 const redisUrl = process.env.REDIS_URL;
 if (!redisUrl) {
   throw new Error('REDIS_URL must be set before test/setupFile.ts runs - globalSetup.ts is expected to set it.');

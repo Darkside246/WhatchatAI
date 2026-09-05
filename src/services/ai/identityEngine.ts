@@ -87,7 +87,26 @@ export function resolveNameEvidence(sources: NameSources): NameEvidence | null {
 
 export type NameUsageDecision = 'DO_NOT_USE_NAME' | 'USE_NAME_NATURALLY';
 
-export const NAME_REPETITION_COOLDOWN_MINUTES = 15;
+/**
+ * Personalisation Budget (directive §27): a real, business-configurable
+ * 5-level setting replacing what used to be one hardcoded cooldown
+ * constant. Level 3 (Natural) preserves the exact original 15-minute
+ * value, so an unconfigured business (the DB default) behaves identically
+ * to before this setting existed - this is a genuine behavior change only
+ * once a business actually moves the slider. Level 5 (Very frequent) is
+ * zero, not a tiny nonzero number - "use it whenever there's evidence" is
+ * a real, distinct choice from "almost never wait," not an approximation
+ * of it.
+ */
+export const NAME_USAGE_COOLDOWN_MINUTES: Record<number, number> = {
+  1: 60, // Minimal
+  2: 30, // Low
+  3: 15, // Natural (default) - the original hardcoded cooldown value this replaces
+  4: 5,  // Frequent
+  5: 0,  // Very frequent
+};
+
+export const DEFAULT_NAME_USAGE_LEVEL = 3;
 
 /**
  * Section 19's adaptive exception: the only readiness level that
@@ -106,8 +125,27 @@ export interface ShouldUseNameInput {
   lastNameUsedAt: string | null;
   /** Section 19: this conversation's own last-assessed readiness (Section 10) - URGENT bypasses the cooldown entirely. Optional and defaults to no override, so every existing caller is unaffected until it opts in. */
   customerReadiness?: CustomerReadiness | null;
+  /** Personalisation Budget (directive §27): the business's own configured level (1-5, see NAME_USAGE_COOLDOWN_MINUTES). Optional and defaults to DEFAULT_NAME_USAGE_LEVEL (Natural), so an existing caller that hasn't wired the business's real setting through yet keeps the original behavior. */
+  nameUsageLevel?: number;
+  /** Master on/off switch (businesses.name_usage_enabled). Optional and defaults to true so an existing caller that hasn't wired the business's real setting through yet keeps the original behavior. When false, the name is withheld unless customerAskedForName is also true for this reply. */
+  nameUsageEnabled?: boolean;
+  /** Real, deterministic signal (see customerAskedToUseName below) that the customer's own latest message asked to be addressed by name - the one exception to nameUsageEnabled === false, and it bypasses the cooldown too, same as the URGENT override. */
+  customerAskedForName?: boolean;
   /** Injectable for tests; defaults to the real current time. */
   now?: Date;
+}
+
+/**
+ * Deterministic keyword detection of a customer explicitly asking to be
+ * called by name - the one carve-out when name usage is otherwise turned
+ * off entirely. Deliberately narrow and phrase-based (same "deterministic
+ * where safer" reasoning as the rest of this module) rather than an AI
+ * call just to answer this one yes/no question. False negatives here just
+ * mean the name stays withheld, which is the safe direction for an
+ * explicitly-off setting; it never fabricates a customer request.
+ */
+export function customerAskedToUseName(messageText: string): boolean {
+  return /\b(call me|use my name|say my name|address me)\b/i.test(messageText);
 }
 
 /**
@@ -116,18 +154,23 @@ export interface ShouldUseNameInput {
  * override. A raw phone-number fallback (evidence === null) never gets
  * used as a name - greeting someone by their own phone number reads as
  * robotic, not personal. First use in a conversation is always natural;
- * after that, a real time-based cooldown rather than using the name on
- * every single turn - except a genuine reassurance moment (URGENT
- * readiness), which bypasses the cooldown outright.
+ * after that, a real time-based cooldown (now business-configurable via
+ * the Personalisation Budget, directive §27) rather than using the name
+ * on every single turn - except a genuine reassurance moment (URGENT
+ * readiness), which bypasses the cooldown outright regardless of level.
  */
 export function shouldUseName(input: ShouldUseNameInput): NameUsageDecision {
   if (!input.evidence) return 'DO_NOT_USE_NAME';
+  if (input.nameUsageEnabled === false) {
+    return input.customerAskedForName ? 'USE_NAME_NATURALLY' : 'DO_NOT_USE_NAME';
+  }
   if (input.customerReadiness === IMPORTANT_MOMENT_READINESS) return 'USE_NAME_NATURALLY';
   if (!input.lastNameUsedAt) return 'USE_NAME_NATURALLY';
 
+  const cooldownMinutes = NAME_USAGE_COOLDOWN_MINUTES[input.nameUsageLevel ?? DEFAULT_NAME_USAGE_LEVEL] ?? NAME_USAGE_COOLDOWN_MINUTES[DEFAULT_NAME_USAGE_LEVEL]!;
   const now = input.now ?? new Date();
   const minutesSinceLastUse = (now.getTime() - new Date(input.lastNameUsedAt).getTime()) / 60_000;
-  return minutesSinceLastUse >= NAME_REPETITION_COOLDOWN_MINUTES ? 'USE_NAME_NATURALLY' : 'DO_NOT_USE_NAME';
+  return minutesSinceLastUse >= cooldownMinutes ? 'USE_NAME_NATURALLY' : 'DO_NOT_USE_NAME';
 }
 
 /** Real, deterministic detection of whether a just-generated reply actually used the resolved name - word-boundary matched so "Ann" doesn't false-positive inside "Anniversary". Drives Section 19's cooldown from what really went out, never from what the model claims it did. */

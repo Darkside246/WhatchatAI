@@ -7,10 +7,13 @@ import { ProductAccountRepository } from '../repositories/productAccountReposito
 import { getProductAccountAccess } from '../services/productAccountService.js';
 import type { ProductKey } from '../domain/platform/productAccounts.js';
 import { SubscriptionRepository } from '../repositories/subscriptionRepository.js';
+import { BusinessRepository } from '../repositories/businessRepository.js';
 import { pool } from '../db/pool.js';
 
 export const SESSION_COOKIE_NAME = 'wc_session';
 export interface AuthContext { userId: string; businessId: string; role: BusinessRole; platformRole: PlatformRole; sessionId: string; user: PublicUser; }
+/** user.developerTier already carries this (PublicUser includes it) - a named accessor purely so requireDeveloperAdmin's intent reads clearly at the call site. */
+function isDeveloperAdmin(auth: AuthContext): boolean { return auth.platformRole === 'DEVELOPER' && auth.user.developerTier === 'ADMIN'; }
 function isSecureRequest(req: Request): boolean { return req.secure || req.headers['x-forwarded-proto'] === 'https'; }
 /**
  * maxAgeSeconds omitted (undefined) produces a true browser-session
@@ -43,7 +46,23 @@ export function requireDeveloper(req: Request, res: Response, next: NextFunction
   next();
 }
 
+/**
+ * The one narrower slice within DEVELOPER: managing other developer
+ * accounts (promote/demote/change tier) and granting/revoking a
+ * business's tier_unrestricted flag. Every other requireDeveloper route
+ * stays open to any developer, admin or standard - this is deliberately
+ * the ONLY new gate, per the user's own confirmed scope.
+ */
+export function requireDeveloperAdmin(req: Request, res: Response, next: NextFunction): void {
+  const auth = res.locals.auth as AuthContext | undefined;
+  if (!auth) return void res.status(401).json({ error: 'NOT_AUTHENTICATED' });
+  if (auth.platformRole !== 'DEVELOPER') return void res.status(403).json({ error: 'DEVELOPER_ACCESS_REQUIRED' });
+  if (!isDeveloperAdmin(auth)) return void res.status(403).json({ error: 'DEVELOPER_ADMIN_ACCESS_REQUIRED' });
+  next();
+}
+
 const subscriptionRepository = new SubscriptionRepository(pool);
+const businessRepository = new BusinessRepository(pool);
 
 /**
  * Real, previously-missing gate for the few paid-feature surfaces
@@ -61,6 +80,7 @@ export async function requireActiveSubscription(req: Request, res: Response, nex
   const auth = res.locals.auth as AuthContext | undefined;
   if (!auth) return void res.status(401).json({ error: 'NOT_AUTHENTICATED' });
   if (auth.platformRole === 'DEVELOPER') return void next();
+  if (await businessRepository.isTierUnrestricted(auth.businessId)) return void next();
   const subscription = await subscriptionRepository.findLiveByBusiness(auth.businessId);
   if (!subscription) return void res.status(402).json({ error: 'NO_ACTIVE_SUBSCRIPTION' });
   next();

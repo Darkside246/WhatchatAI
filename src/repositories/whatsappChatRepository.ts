@@ -45,6 +45,8 @@ export interface WhatsAppChatRecord {
   groupParticipationModeSetAt: string | null;
   /** Cooldown watermark: last time the AI actually SENT a reply into this group - distinct from lastAiHandoffMessageId, which tracks "considered," not "spoke." */
   lastAiGroupReplyAt: string | null;
+  /** AURA Lists (Phase 1): which List currently governs routing/memory-scoping for this chat, when more than one List's membership could otherwise apply - see listRoutingService.ts. Null for any chat that has never used Lists, which is the overwhelming default and changes nothing about existing behavior. */
+  activeListId: string | null;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -79,6 +81,7 @@ interface ChatRow {
   group_participation_mode_source: string | null;
   group_participation_mode_set_at: string | null;
   last_ai_group_reply_at: string | null;
+  active_list_id: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -114,6 +117,7 @@ function toRecord(row: ChatRow): WhatsAppChatRecord {
     groupParticipationModeSource: row.group_participation_mode_source,
     groupParticipationModeSetAt: row.group_participation_mode_set_at,
     lastAiGroupReplyAt: row.last_ai_group_reply_at,
+    activeListId: row.active_list_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
@@ -450,6 +454,23 @@ export class WhatsAppChatRepository {
     const { rows } = await this.db.query<ChatRow>(
       'UPDATE whatsapp_chats SET assignee_user_id = $2, assignee_team_id = $3, updated_at = now() WHERE id = $1 RETURNING *',
       [id, assigneeUserId, assigneeTeamId],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
+   * AURA Lists (Phase 1): sets which List currently governs routing for
+   * this chat. Set only by an explicit action (never auto-guessed when
+   * more than one List with a different enabled agent assignment applies -
+   * see listRoutingService.ts's computeUnambiguousActiveList) - same
+   * "human assignment belongs to the specific conversation" reasoning as
+   * setAssignment above, scoped to businessId since this is called from
+   * request handlers, never trusted on chat id alone.
+   */
+  async setActiveList(id: string, businessId: string, activeListId: string | null): Promise<WhatsAppChatRecord | null> {
+    const { rows } = await this.db.query<ChatRow>(
+      'UPDATE whatsapp_chats SET active_list_id = $3, updated_at = now() WHERE id = $1 AND business_id = $2 RETURNING *',
+      [id, businessId, activeListId],
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }

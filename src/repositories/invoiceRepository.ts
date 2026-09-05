@@ -13,6 +13,8 @@ export type InvoiceRecord = {
   taxBasisPoints: number;
   discountCents: number;
   totalCents: number;
+  /** The document's own stated date - separate from createdAt (an audit timestamp), so a business can backdate a document to match a physical original without misrepresenting when the row was actually created. */
+  issueDate: string;
   dueDate: string | null;
   notes: string | null;
   terms: string | null;
@@ -47,6 +49,7 @@ export type CreateInvoiceInput = {
   documentType?: 'INVOICE' | 'QUOTE' | 'RECEIPT';
   currencyCode?: string;
   taxBasisPoints?: number;
+  issueDate?: string | undefined;
   dueDate?: string | undefined;
   notes?: string | undefined;
   terms?: string | undefined;
@@ -68,6 +71,7 @@ const INVOICE_COLS = `
   invoice_number AS "invoiceNumber", currency_code AS "currencyCode",
   subtotal_cents AS "subtotalCents", tax_basis_points AS "taxBasisPoints",
   discount_cents AS "discountCents", total_cents AS "totalCents",
+  issue_date::text AS "issueDate",
   due_date AS "dueDate", notes, terms, footer_text AS "footerText",
   ai_generated AS "aiGenerated", ai_conversation_id AS "aiConversationId",
   approved_at AS "approvedAt", sent_at AS "sentAt", paid_at AS "paidAt",
@@ -81,13 +85,14 @@ const LINE_COLS = `
   total_cents AS "totalCents", created_at AS "createdAt", updated_at AS "updatedAt"
 `.trim();
 
-function computeLineTotalCents(unitPriceCents: number, quantity: number, discountBasisPoints: number): number {
+/** Exported so a preview render (invoiceRouter.ts's POST /preview - unsaved, ad-hoc line items) computes the exact same figures a real saved invoice would, never a second, potentially-drifting calculation. */
+export function computeLineTotalCents(unitPriceCents: number, quantity: number, discountBasisPoints: number): number {
   const gross = Math.round(unitPriceCents * quantity);
   const discount = Math.round(gross * discountBasisPoints / 10000);
   return gross - discount;
 }
 
-function computeInvoiceTotals(
+export function computeInvoiceTotals(
   lineItems: Array<{ unitPriceCents: number; quantity: number; discountBasisPoints: number }>,
   taxBasisPoints: number,
 ): { subtotalCents: number; discountCents: number; totalCents: number } {
@@ -132,14 +137,14 @@ export class InvoiceRepository {
       `INSERT INTO invoices
          (business_id, contact_id, property_id, document_type, invoice_number,
           currency_code, subtotal_cents, tax_basis_points, discount_cents, total_cents,
-          due_date, notes, terms, footer_text, ai_generated, ai_conversation_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+          issue_date, due_date, notes, terms, footer_text, ai_generated, ai_conversation_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($11, CURRENT_DATE),$12,$13,$14,$15,$16,$17)
        RETURNING ${INVOICE_COLS}`,
       [
         input.businessId, input.contactId ?? null, input.propertyId ?? null, docType,
         invoiceNumber, input.currencyCode ?? 'BBD',
         totals.subtotalCents, taxBp, totals.discountCents, totals.totalCents,
-        input.dueDate ?? null, input.notes ?? null, input.terms ?? null, input.footerText ?? null,
+        input.issueDate ?? null, input.dueDate ?? null, input.notes ?? null, input.terms ?? null, input.footerText ?? null,
         input.aiGenerated ?? false, input.aiConversationId ?? null,
       ],
     );
@@ -183,6 +188,34 @@ export class InvoiceRepository {
       params,
     );
     return rows;
+  }
+
+  /**
+   * Business Intelligence Agent: the one bulk, date-ranged read this
+   * repository needed - list() has no date filter, only status/type. Line
+   * items are fetched in one query (not N+1 per invoice) since the BI
+   * pipeline's whole purpose is mining their free-text `description`
+   * (there is no separate product catalog to join against - see
+   * businessIntelligence's own doc comments on this limitation).
+   */
+  async listForBusinessSince(businessId: string, sinceIso: string, limit = 500): Promise<{ invoice: InvoiceRecord; lineItems: InvoiceLineItemRecord[] }[]> {
+    const { rows: invoices } = await this.db.query<InvoiceRecord>(
+      `SELECT ${INVOICE_COLS} FROM invoices WHERE business_id = $1 AND created_at >= $2 ORDER BY created_at DESC LIMIT $3`,
+      [businessId, sinceIso, limit],
+    );
+    if (invoices.length === 0) return [];
+
+    const { rows: lines } = await this.db.query<InvoiceLineItemRecord>(
+      `SELECT ${LINE_COLS} FROM invoice_line_items WHERE business_id = $1 AND invoice_id = ANY($2::uuid[]) ORDER BY invoice_id, sort_order ASC`,
+      [businessId, invoices.map((inv) => inv.id)],
+    );
+    const linesByInvoice = new Map<string, InvoiceLineItemRecord[]>();
+    for (const line of lines) {
+      const existing = linesByInvoice.get(line.invoiceId) ?? [];
+      existing.push(line);
+      linesByInvoice.set(line.invoiceId, existing);
+    }
+    return invoices.map((invoice) => ({ invoice, lineItems: linesByInvoice.get(invoice.id) ?? [] }));
   }
 
   async listLineItems(businessId: string, invoiceId: string): Promise<InvoiceLineItemRecord[]> {

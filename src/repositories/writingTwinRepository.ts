@@ -12,8 +12,20 @@ export interface WritingTwinSettingsRecord {
   businessId: string;
   userId: string;
   learningEnabled: boolean;
+  /** Learn Agent wiring: independent from learningEnabled - a profile can exist with sharing off, but sharing can never itself enable learning. Defaults false. */
+  shareWithAgentsEnabled: boolean;
   historicalBackfillRequestedAt: string | null;
   historicalBackfillCompletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WritingTwinAgentAccessRecord {
+  id: string;
+  businessId: string;
+  userId: string;
+  agentId: string;
+  allowed: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -65,6 +77,7 @@ interface SettingsRow {
   business_id: string;
   user_id: string;
   learning_enabled: boolean;
+  share_with_agents_enabled: boolean;
   historical_backfill_requested_at: string | null;
   historical_backfill_completed_at: string | null;
   created_at: string;
@@ -77,8 +90,31 @@ function toSettingsRecord(row: SettingsRow): WritingTwinSettingsRecord {
     businessId: row.business_id,
     userId: row.user_id,
     learningEnabled: row.learning_enabled,
+    shareWithAgentsEnabled: row.share_with_agents_enabled,
     historicalBackfillRequestedAt: row.historical_backfill_requested_at,
     historicalBackfillCompletedAt: row.historical_backfill_completed_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+interface AgentAccessRow {
+  id: string;
+  business_id: string;
+  user_id: string;
+  agent_id: string;
+  allowed: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+function toAgentAccessRecord(row: AgentAccessRow): WritingTwinAgentAccessRecord {
+  return {
+    id: row.id,
+    businessId: row.business_id,
+    userId: row.user_id,
+    agentId: row.agent_id,
+    allowed: row.allowed,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -192,6 +228,52 @@ export class WritingTwinRepository {
     const row = rows[0];
     if (!row) throw new Error('writing_twin_settings upsert returned no row');
     return toSettingsRecord(row);
+  }
+
+  async setShareWithAgentsEnabled(businessId: string, userId: string, enabled: boolean): Promise<WritingTwinSettingsRecord> {
+    const { rows } = await this.db.query<SettingsRow>(
+      `INSERT INTO writing_twin_settings (business_id, user_id, share_with_agents_enabled)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (business_id, user_id) DO UPDATE SET share_with_agents_enabled = $3, updated_at = now()
+       RETURNING *`,
+      [businessId, userId, enabled],
+    );
+    const row = rows[0];
+    if (!row) throw new Error('writing_twin_settings upsert returned no row');
+    return toSettingsRecord(row);
+  }
+
+  // --- Learn Agent wiring: per-agent access control ---
+
+  /** Absence of a row means "not yet decided" - callers must treat that as denied, this method only returns rows that exist. */
+  async listAgentAccess(businessId: string, userId: string): Promise<WritingTwinAgentAccessRecord[]> {
+    const { rows } = await this.db.query<AgentAccessRow>(
+      `SELECT * FROM writing_twin_agent_access WHERE business_id = $1 AND user_id = $2`,
+      [businessId, userId],
+    );
+    return rows.map(toAgentAccessRecord);
+  }
+
+  /** Just the agentIds with an explicit allowed=true row - the fail-closed AI-serving boundary (aiContextGathererService.ts) reads only this, never the full list above. */
+  async listAllowedAgentIds(businessId: string, userId: string): Promise<string[]> {
+    const { rows } = await this.db.query<{ agent_id: string }>(
+      `SELECT agent_id FROM writing_twin_agent_access WHERE business_id = $1 AND user_id = $2 AND allowed = true`,
+      [businessId, userId],
+    );
+    return rows.map((row) => row.agent_id);
+  }
+
+  async setAgentAccess(businessId: string, userId: string, agentId: string, allowed: boolean): Promise<WritingTwinAgentAccessRecord> {
+    const { rows } = await this.db.query<AgentAccessRow>(
+      `INSERT INTO writing_twin_agent_access (business_id, user_id, agent_id, allowed)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (business_id, user_id, agent_id) DO UPDATE SET allowed = $4, updated_at = now()
+       RETURNING *`,
+      [businessId, userId, agentId, allowed],
+    );
+    const row = rows[0];
+    if (!row) throw new Error('writing_twin_agent_access upsert returned no row');
+    return toAgentAccessRecord(row);
   }
 
   async recordBackfillRequested(businessId: string, userId: string): Promise<void> {
@@ -531,5 +613,9 @@ export class WritingTwinRepository {
 
   async deleteSettings(businessId: string, userId: string): Promise<void> {
     await this.db.query(`DELETE FROM writing_twin_settings WHERE business_id = $1 AND user_id = $2`, [businessId, userId]);
+  }
+
+  async deleteAgentAccess(businessId: string, userId: string): Promise<void> {
+    await this.db.query(`DELETE FROM writing_twin_agent_access WHERE business_id = $1 AND user_id = $2`, [businessId, userId]);
   }
 }

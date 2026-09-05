@@ -376,6 +376,27 @@ export class WhatsAppMessageRepository {
     return { messageCount: Number(rows[0]?.message_count ?? 0), distinctSenders: Number(rows[0]?.distinct_senders ?? 0) };
   }
 
+  /**
+   * Business Intelligence Agent: the one bulk, business-wide, real-text
+   * fetch this repository has ever needed - every other method here is
+   * scoped to one chat or is a count-only aggregate. Deliberately
+   * capped (`limit`) to bound both decrypt cost and the analysis
+   * prompt's own size; the caller (biExtractionService.ts) is
+   * responsible for further capping what actually reaches an LLM.
+   * Excludes media-only rows (`text_content IS NOT NULL`) since there
+   * is nothing to analyze there - a caption alone still qualifies.
+   */
+  async listTextForBusinessSince(businessId: string, sinceIso: string, limit = 500): Promise<WhatsAppMessageRecord[]> {
+    const { rows } = await this.db.query<MessageRow>(
+      `SELECT * FROM whatsapp_messages
+       WHERE business_id = $1 AND "timestamp" >= $2 AND deleted_at IS NULL
+         AND (text_content IS NOT NULL OR caption IS NOT NULL)
+       ORDER BY "timestamp" DESC LIMIT $3`,
+      [businessId, sinceIso, limit],
+    );
+    return Promise.all(rows.map((row) => toRecord(row, false)));
+  }
+
   /** Real dashboard aggregate - inbound vs outbound message counts since a real timestamp, never estimated. */
   async countByDirectionSince(
     businessId: string,

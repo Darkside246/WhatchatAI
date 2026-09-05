@@ -116,6 +116,23 @@ export class SubscriptionRepository {
     return rows.map(toRecord);
   }
 
+  /**
+   * A real plan-tier change (planUpgradeService.ts, on a verified upgrade
+   * payment) - starts a fresh billing cycle from the moment of upgrade
+   * (current_period_start reset to now()) rather than leaving the old
+   * plan's cycle boundaries in place, since the 5-day proration window
+   * planUpgradeService.ts computes is itself measured from
+   * current_period_start - leaving it stale would let the same account
+   * upgrade "within 5 days" of a cycle that, from the new plan's
+   * perspective, never started.
+   */
+  async changePlan(id: string, planId: string): Promise<void> {
+    await this.db.query(
+      `UPDATE subscriptions SET plan_id = $2, current_period_start = now(), current_period_end = now() + interval '1 month', updated_at = now() WHERE id = $1`,
+      [id, planId],
+    );
+  }
+
   async updateStatus(id: string, status: SubscriptionStatus): Promise<void> {
     const cancelledAtClause = status === 'CANCELLED' ? ', cancelled_at = now()' : '';
     await this.db.query(`UPDATE subscriptions SET status = $2, updated_at = now()${cancelledAtClause} WHERE id = $1`, [

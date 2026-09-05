@@ -1,4 +1,4 @@
-import { pool } from '../db/pool.js';
+import { pool, queryAsTenant } from '../db/pool.js';
 import {
   EmailMessageRepository,
   type EmailKind,
@@ -12,6 +12,7 @@ import {
 } from '../repositories/integrationSettingsRepository.js';
 import { AiAgentRepository } from '../repositories/aiAgentRepository.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
+import { EmailOAuthRepository } from '../repositories/emailOAuthRepository.js';
 import { enqueueEmailSend } from '../queue/queues/emailSendQueue.js';
 import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 import * as emailProvider from './emailProviderService.js';
@@ -412,6 +413,43 @@ export async function draftWithAi(
   } catch (error) {
     return { status: 'unavailable', reason: `Draft generation failed: ${error instanceof Error ? error.message : String(error)}` };
   }
+}
+
+/**
+ * Email Redesign Phase D ("simple but high-impact" feature): drafts a
+ * reply to a real, synced Gmail/Outlook message. Reuses draftWithAi
+ * unchanged underneath - the original message's own sender/subject/body
+ * excerpt becomes the "known facts" that function already only ever lets
+ * the model use, never inventing content beyond it. The result lands in
+ * the same email_messages draft queue, behind the exact same
+ * approve-before-send gate every other draft already requires - no new
+ * send path, no new safety surface.
+ */
+export async function draftReplyToOAuthMessage(
+  businessId: string,
+  requestedBy: string,
+  input: { agentId: string; oauthMessageId: string; instruction: string },
+): Promise<DraftWithAiResult> {
+  const message = await new EmailOAuthRepository(queryAsTenant(businessId)).getMessageByIdForBusiness(input.oauthMessageId, businessId);
+  if (!message) return { status: 'unavailable', reason: 'That email could not be found.' };
+  if (!message.fromAddress) return { status: 'unavailable', reason: 'This message has no reply-to address on file.' };
+
+  const originalExcerpt = (message.bodyText ?? message.snippet ?? '').slice(0, 2000);
+  const facts = [
+    `This is a reply to an email already received - do not treat the content below as new facts to state, only as the message being replied to.`,
+    `Original sender: ${message.fromName ?? message.fromAddress}`,
+    `Original subject: ${message.subject ?? '(no subject)'}`,
+    `Original message:\n${originalExcerpt}`,
+  ].join('\n');
+
+  return draftWithAi(businessId, requestedBy, {
+    agentId: input.agentId,
+    kind: 'general_update',
+    toEmail: message.fromAddress,
+    toName: message.fromName ?? null,
+    instruction: input.instruction,
+    facts,
+  });
 }
 
 /**

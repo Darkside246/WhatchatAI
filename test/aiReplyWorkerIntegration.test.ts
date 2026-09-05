@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pool } from '../src/db/pool.js';
 import { AiAgentRepository } from '../src/repositories/aiAgentRepository.js';
 import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
@@ -14,6 +14,23 @@ import { createTestAccount, createTestSubscription, resetDatabase } from './help
 import { waitForWorkerEvent } from './waitForWorkerEvent.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
+
+// This whole file relies on "no AI provider is available at all" as its
+// real ground truth (real GEMINI_API_KEY absence, forced by
+// test/setupFile.ts). But GOOSE_SERVICE_URL is also genuinely configured
+// in this dev environment's own .env, and an earlier session's own
+// Developer Master Control Page work deliberately moved Goose to sit
+// right after Gemini in the failover order (registerDefaultAiProviders,
+// providerAdapters.ts) - so a real, unmocked Goose call can now silently
+// generate and send a real reply here, exactly the "fabricated send"
+// this file's own tests exist to rule out. Forcing Goose "not configured"
+// restores this file's original no-AI-provider-at-all test universe
+// regardless of ambient machine config, matching the same fix already
+// applied to test/aiReliabilityPhase3B.test.ts.
+vi.mock('../src/services/gooseService.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/gooseService.js')>();
+  return { ...actual, getCapabilities: () => ({ configured: false, url: undefined }) };
+});
 
 /**
  * This environment has no GEMINI_API_KEY configured (same real state the

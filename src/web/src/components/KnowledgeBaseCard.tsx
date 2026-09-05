@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { BookOpen, FileText, Loader2, Pencil, Plus, Trash2, Upload } from 'lucide-react';
+import { BookOpen, FileText, Loader2, Pencil, Trash2, Upload } from 'lucide-react';
 import { api, ApiError, type KnowledgeBaseDocumentDto, type BusinessDocumentDto } from '../lib/api.js';
 
 const ALLOWED_MIME = new Set([
@@ -202,7 +202,7 @@ export function KnowledgeBaseCard() {
         <div className="flex rounded-lg border border-border-subtle bg-surface-1 p-0.5">
           {(['docs', 'files'] as const).map((t) => (
             <button key={t} type="button" onClick={() => setTab(t)}
-              className={`rounded-md px-3 py-1 text-meta font-medium transition ${tab === t ? 'bg-surface-2 text-fg shadow-sm' : 'text-fg-muted hover:text-fg'}`}>
+              className={`rounded-md px-3 py-1 text-meta font-medium transition ${tab === t ? 'bg-success text-white shadow-sm' : 'text-success hover:bg-success/10'}`}>
               {t === 'docs' ? 'Text docs' : 'Files'}
             </button>
           ))}
@@ -220,9 +220,7 @@ export function KnowledgeBaseCard() {
         <>
           {notice ? <p className={`mt-2 text-caption ${notice.kind === 'ok' ? 'text-success' : 'text-error'}`}>{notice.text}</p> : null}
           <div className="mt-3 rounded-lg border border-border-subtle bg-surface-1 p-3">
-            <div className="mb-2 flex items-center gap-1.5 text-caption font-medium text-fg-secondary">
-              <Plus size={12} aria-hidden /> Add a document
-            </div>
+            <div className="mb-2 text-caption font-medium text-fg-secondary">Add a document</div>
             <DocumentForm title={newTitle} content={newContent} onTitleChange={setNewTitle} onContentChange={setNewContent} onSubmit={handleAdd} busy={adding} submitLabel="Add" />
           </div>
           <div className="mt-3 space-y-2">

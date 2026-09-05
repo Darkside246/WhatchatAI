@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { resolveNameEvidence, shouldUseName, replyUsesName, NAME_REPETITION_COOLDOWN_MINUTES } from '../src/services/ai/identityEngine.js';
+import { resolveNameEvidence, shouldUseName, replyUsesName, customerAskedToUseName, NAME_USAGE_COOLDOWN_MINUTES, DEFAULT_NAME_USAGE_LEVEL } from '../src/services/ai/identityEngine.js';
+
+const NATURAL_COOLDOWN_MINUTES = NAME_USAGE_COOLDOWN_MINUTES[DEFAULT_NAME_USAGE_LEVEL]!;
 
 describe('resolveNameEvidence (Section 15/16 - name source hierarchy)', () => {
   it('prefers a staff-confirmed name (Section 23) over every other source, including the customer\'s own self-reported preferred name', () => {
@@ -62,13 +64,13 @@ describe('shouldUseName (Section 18/19 - usage algorithm + repetition protection
 
   it('allows the name again once the cooldown has fully elapsed', () => {
     const now = new Date('2026-01-01T12:00:00Z');
-    const usedJustOverCooldownAgo = new Date(now.getTime() - (NAME_REPETITION_COOLDOWN_MINUTES + 1) * 60_000).toISOString();
+    const usedJustOverCooldownAgo = new Date(now.getTime() - (NATURAL_COOLDOWN_MINUTES + 1) * 60_000).toISOString();
     expect(shouldUseName({ evidence, lastNameUsedAt: usedJustOverCooldownAgo, now })).toBe('USE_NAME_NATURALLY');
   });
 
   it('sits exactly on the cooldown boundary as allowed (>=, not >)', () => {
     const now = new Date('2026-01-01T12:00:00Z');
-    const usedExactlyAtCooldown = new Date(now.getTime() - NAME_REPETITION_COOLDOWN_MINUTES * 60_000).toISOString();
+    const usedExactlyAtCooldown = new Date(now.getTime() - NATURAL_COOLDOWN_MINUTES * 60_000).toISOString();
     expect(shouldUseName({ evidence, lastNameUsedAt: usedExactlyAtCooldown, now })).toBe('USE_NAME_NATURALLY');
   });
 
@@ -96,6 +98,95 @@ describe('shouldUseName (Section 18/19 - usage algorithm + repetition protection
       const usedOneMinuteAgo = new Date(now.getTime() - 60_000).toISOString();
       expect(shouldUseName({ evidence, lastNameUsedAt: usedOneMinuteAgo, now })).toBe('DO_NOT_USE_NAME');
     });
+  });
+
+  describe('Personalisation Budget (directive §27 - configurable 5-level cooldown)', () => {
+    it('defaults to level 3 (Natural, 15 minutes) when nameUsageLevel is omitted - every pre-existing caller unaffected', () => {
+      const now = new Date('2026-01-01T12:00:00Z');
+      const used14MinutesAgo = new Date(now.getTime() - 14 * 60_000).toISOString();
+      const used16MinutesAgo = new Date(now.getTime() - 16 * 60_000).toISOString();
+      expect(shouldUseName({ evidence, lastNameUsedAt: used14MinutesAgo, now })).toBe('DO_NOT_USE_NAME');
+      expect(shouldUseName({ evidence, lastNameUsedAt: used16MinutesAgo, now })).toBe('USE_NAME_NATURALLY');
+    });
+
+    it.each([
+      [1, 60],
+      [2, 30],
+      [3, 15],
+      [4, 5],
+      [5, 0],
+    ])('level %i maps to a real %i-minute cooldown', (level, minutes) => {
+      const now = new Date('2026-01-01T12:00:00Z');
+      const justUnder = minutes > 0 ? new Date(now.getTime() - (minutes - 1) * 60_000).toISOString() : null;
+      const justAtOrOver = new Date(now.getTime() - minutes * 60_000).toISOString();
+
+      if (justUnder) {
+        expect(shouldUseName({ evidence, lastNameUsedAt: justUnder, now, nameUsageLevel: level })).toBe('DO_NOT_USE_NAME');
+      }
+      expect(shouldUseName({ evidence, lastNameUsedAt: justAtOrOver, now, nameUsageLevel: level })).toBe('USE_NAME_NATURALLY');
+    });
+
+    it('level 5 (Very frequent) has a zero cooldown - real evidence is used every turn, never withheld for repetition alone', () => {
+      const now = new Date('2026-01-01T12:00:00Z');
+      const usedOneSecondAgo = new Date(now.getTime() - 1_000).toISOString();
+      expect(shouldUseName({ evidence, lastNameUsedAt: usedOneSecondAgo, now, nameUsageLevel: 5 })).toBe('USE_NAME_NATURALLY');
+    });
+
+    it('never fabricates a name at any level - no real evidence still means no name, regardless of how permissive the level is', () => {
+      expect(shouldUseName({ evidence: null, lastNameUsedAt: null, nameUsageLevel: 5 })).toBe('DO_NOT_USE_NAME');
+    });
+
+    it('URGENT readiness still bypasses the cooldown at every level, not only the default', () => {
+      const now = new Date('2026-01-01T12:00:00Z');
+      const usedOneMinuteAgo = new Date(now.getTime() - 60_000).toISOString();
+      for (const level of [1, 2, 3, 4, 5]) {
+        expect(shouldUseName({ evidence, lastNameUsedAt: usedOneMinuteAgo, now, nameUsageLevel: level, customerReadiness: 'URGENT' })).toBe('USE_NAME_NATURALLY');
+      }
+    });
+  });
+
+  describe('master on/off switch (nameUsageEnabled) - "off unless the customer asks"', () => {
+    it('is a no-op when omitted - every pre-existing caller keeps its original, enabled behavior', () => {
+      expect(shouldUseName({ evidence, lastNameUsedAt: null })).toBe('USE_NAME_NATURALLY');
+    });
+
+    it('withholds the name outright when disabled, even on the very first message of a conversation', () => {
+      expect(shouldUseName({ evidence, lastNameUsedAt: null, nameUsageEnabled: false })).toBe('DO_NOT_USE_NAME');
+    });
+
+    it('withholds the name when disabled regardless of URGENT readiness - the ask carve-out is the only exception, not the important-moment one', () => {
+      expect(shouldUseName({ evidence, lastNameUsedAt: null, nameUsageEnabled: false, customerReadiness: 'URGENT' })).toBe('DO_NOT_USE_NAME');
+    });
+
+    it('uses the name for this one reply when disabled but the customer explicitly asked', () => {
+      expect(shouldUseName({ evidence, lastNameUsedAt: null, nameUsageEnabled: false, customerAskedForName: true })).toBe('USE_NAME_NATURALLY');
+    });
+
+    it('never fabricates a name even when disabled-but-asked - real evidence is still required', () => {
+      expect(shouldUseName({ evidence: null, lastNameUsedAt: null, nameUsageEnabled: false, customerAskedForName: true })).toBe('DO_NOT_USE_NAME');
+    });
+
+    it('an explicit true behaves identically to omitted (the default)', () => {
+      expect(shouldUseName({ evidence, lastNameUsedAt: null, nameUsageEnabled: true })).toBe('USE_NAME_NATURALLY');
+    });
+  });
+});
+
+describe('customerAskedToUseName (deterministic ask detection - the one carve-out when name usage is off)', () => {
+  it('detects common phrasings of an explicit request to be addressed by name', () => {
+    expect(customerAskedToUseName('Please call me by my name from now on')).toBe(true);
+    expect(customerAskedToUseName('can you use my name please')).toBe(true);
+    expect(customerAskedToUseName('Feel free to say my name')).toBe(true);
+    expect(customerAskedToUseName('Could you address me properly')).toBe(true);
+  });
+
+  it('is case-insensitive', () => {
+    expect(customerAskedToUseName('CALL ME by my name')).toBe(true);
+  });
+
+  it('does not false-positive on ordinary messages that never ask for this', () => {
+    expect(customerAskedToUseName('What time do you close today?')).toBe(false);
+    expect(customerAskedToUseName('My name is Michael')).toBe(false);
   });
 });
 

@@ -10,6 +10,7 @@ import {
   type ConversationStatePatch,
 } from '../../repositories/conversationStateRepository.js';
 import { CustomerMemoryConflictError, type CustomerMemoryRepository } from '../../repositories/customerMemoryRepository.js';
+import { ListScopedMemoryConflictError, type ListScopedMemoryRepository } from '../../repositories/listScopedMemoryRepository.js';
 import type { UpdateConversationStateToolArgs } from './updateConversationStateTool.js';
 
 /**
@@ -192,9 +193,21 @@ export async function applyCustomerMemoryUpdate(
   customerId: string,
   confirmFacts: Array<{ key: string; value: string }> | undefined,
   preferredName?: string | undefined,
+  options?: {
+    /** AI Agents Page Consolidation: businesses.customer_memory_enabled - a real kill switch, same shape as aiActionsPaused. Defaults to true (every pre-existing caller unaffected) when omitted. */
+    customerMemoryEnabled?: boolean;
+    /** Checked only when this exact customer has no memory row yet - an existing profile keeps updating normally even after a plan downgrade drops the count below its new cap (matches every other entitlement's "block new creation only" semantics). Defaults to always-allowed when omitted. */
+    canCreateNewProfile?: () => Promise<boolean>;
+  },
 ): Promise<void> {
   const trimmedPreferredName = preferredName?.trim().slice(0, 100);
   if (!confirmFacts?.length && !trimmedPreferredName) return;
+  if (options?.customerMemoryEnabled === false) return;
+
+  if (options?.canCreateNewProfile) {
+    const alreadyRemembered = await repository.find(businessId, customerId);
+    if (!alreadyRemembered && !(await options.canCreateNewProfile())) return;
+  }
 
   for (let attempt = 0; attempt < MAX_CONFLICT_RETRIES; attempt++) {
     const current = await repository.getOrCreate(businessId, customerId);
@@ -217,6 +230,64 @@ export async function applyCustomerMemoryUpdate(
       return;
     } catch (error) {
       if (error instanceof CustomerMemoryConflictError && attempt < MAX_CONFLICT_RETRIES - 1) continue;
+      throw error;
+    }
+  }
+}
+
+/**
+ * AURA Lists (Phase 1): the list-scoped sibling of applyCustomerMemoryUpdate
+ * above - deliberately a separate function, not a generic parameter over
+ * either repository, since ListScopedMemoryRepository's methods require an
+ * extra listId argument at every call (the structural enforcement of the
+ * hard-must isolation requirement - see its own doc comment). Called
+ * INSTEAD OF applyCustomerMemoryUpdate, never alongside it, for a
+ * conversation whose context.listScopedMemoryEnabled is true (see
+ * aiReplyService.ts's call site) - the write-side counterpart to
+ * aiContextGathererService.ts's read-side table swap.
+ */
+export async function applyListScopedMemoryUpdate(
+  repository: ListScopedMemoryRepository,
+  businessId: string,
+  listId: string,
+  customerId: string,
+  confirmFacts: Array<{ key: string; value: string }> | undefined,
+  preferredName?: string | undefined,
+  options?: {
+    customerMemoryEnabled?: boolean;
+    canCreateNewProfile?: () => Promise<boolean>;
+  },
+): Promise<void> {
+  const trimmedPreferredName = preferredName?.trim().slice(0, 100);
+  if (!confirmFacts?.length && !trimmedPreferredName) return;
+  if (options?.customerMemoryEnabled === false) return;
+
+  if (options?.canCreateNewProfile) {
+    const alreadyRemembered = await repository.find(businessId, listId, customerId);
+    if (!alreadyRemembered && !(await options.canCreateNewProfile())) return;
+  }
+
+  for (let attempt = 0; attempt < MAX_CONFLICT_RETRIES; attempt++) {
+    const current = await repository.getOrCreate(businessId, listId, customerId);
+    const now = new Date().toISOString();
+    const patch: { confirmedFacts?: ConversationFact[]; preferredName?: string } = {};
+    if (confirmFacts?.length) {
+      const merged = new Map(current.confirmedFacts.map((fact) => [fact.key, fact]));
+      for (const incoming of confirmFacts) {
+        const key = incoming.key?.trim();
+        const value = incoming.value?.trim();
+        if (!key || !value) continue;
+        merged.set(key, { key, value, origin: 'user_confirmed', confirmedAt: now });
+      }
+      patch.confirmedFacts = [...merged.values()];
+    }
+    if (trimmedPreferredName) patch.preferredName = trimmedPreferredName;
+    if (Object.keys(patch).length === 0) return;
+    try {
+      await repository.update(businessId, listId, customerId, current.version, patch);
+      return;
+    } catch (error) {
+      if (error instanceof ListScopedMemoryConflictError && attempt < MAX_CONFLICT_RETRIES - 1) continue;
       throw error;
     }
   }

@@ -14,7 +14,7 @@
  *    incidents - a real reply never opens this way.
  * 2. The literal phrase "the user" anywhere in the text. Confirmed against
  *    a real incident that did NOT use the preamble at all (opened directly
- *    with "The user is saying that Haji told them..."), so the preamble
+ *    with "The user is saying that Alex told them..."), so the preamble
  *    alone is not a reliable enough signal on its own. "the user" is
  *    reliable specifically because this persona - and any real reply meant
  *    for the customer - only ever addresses them in the second person

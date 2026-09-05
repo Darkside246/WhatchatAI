@@ -239,11 +239,22 @@ describe('WritingTwinRepository (real Postgres, W2-B structural boundaries)', ()
     expect(remaining[0]?.id).toBe(rows[2]?.id);
   });
 
-  it('15. no public WritingTwinRepository method accepts an agentId parameter, and none is a generic unscoped lookup (structural check on the real source file)', async () => {
+  it('15. no public WritingTwinRepository method accepts an agentId in place of a real user identity, and none is a generic unscoped lookup (structural check on the real source file)', async () => {
     const source = await readFile(new URL('../src/repositories/writingTwinRepository.ts', import.meta.url), 'utf8');
-    // Matches an actual parameter declaration (agentId: ...), not prose
-    // mentioning the concept in a comment explaining why it's absent.
-    expect(source).not.toMatch(/\bagentId\s*:/);
+    // Learn Agent wiring added a legitimate, different use of "agentId" -
+    // which ai_agents.id a real (businessId, userId) owner has granted
+    // access to (writing_twin_agent_access) - never an actor's own
+    // identity substituting for userId. Every method signature that
+    // mentions agentId must still require both businessId AND userId
+    // alongside it, so agentId is only ever additional scoped data, never
+    // a bypass of the fail-closed AI-attribution boundary.
+    const agentIdMethods = [...source.matchAll(/async\s+\w+\(([^)]*\bagentId\s*:[^)]*)\)/g)];
+    expect(agentIdMethods.length).toBeGreaterThan(0);
+    for (const match of agentIdMethods) {
+      const params = match[1] ?? '';
+      expect(params).toMatch(/\bbusinessId\s*:/);
+      expect(params).toMatch(/\buserId\s*:/);
+    }
     expect(source).not.toMatch(/\bidentityId\s*:/);
     expect(source).not.toMatch(/async\s+findById\s*\(/);
     expect(source).not.toMatch(/async\s+getById\s*\(/);

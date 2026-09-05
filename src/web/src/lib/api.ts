@@ -18,6 +18,8 @@ export interface WhatsAppConnectionSnapshot {
   pairingCode: string | null;
   pairingCodeGeneratedAt: string | null;
   pairingPhoneNumber: string | null;
+  /** A real, persisted fact (whatsapp_accounts.last_connected_at) that survives every in-memory reset - lets a brand-new browser tab tell "genuinely never paired" apart from "was paired, just reconnecting" without having to witness a live connected:true first. */
+  everConnectedBefore: boolean;
 }
 
 export interface SyncStatusResponse {
@@ -55,6 +57,8 @@ export interface WorkspaceChatSummary {
   activeStatusCount: number;
   /** This contact's real, downloaded profile picture media row - null for groups and until a sync has actually succeeded. */
   avatarMediaId: string | null;
+  /** Real List memberships (AURA Lists) - [] when this chat isn't in any List. Drives the dynamic List filter pills in ChatListPane.tsx. */
+  listIds: string[];
 }
 
 export interface WorkspaceMedia {
@@ -409,6 +413,103 @@ export interface PlanCatalogueDto {
   selfServeUnavailableReason?: string;
 }
 
+export interface BiInsight {
+  id: string;
+  category: 'sentiment' | 'product_performance' | 'feedback' | 'emerging' | 'operations';
+  title: string;
+  body: string;
+  direction: 'increasing' | 'decreasing' | 'stable' | 'emerging' | 'declining' | 'anomalous' | null;
+  metricChangePct: number | null;
+  periodStart: string;
+  periodEnd: string;
+  evidenceObservationCount: number;
+  evidenceConversationCount: number;
+  confidence: 'insufficient_data' | 'early_signal' | 'moderate' | 'high';
+}
+
+export interface ListDto {
+  id: string;
+  businessId: string;
+  name: string;
+  description: string | null;
+  color: string | null;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface ListMemberDto {
+  id: string;
+  businessId: string;
+  listId: string;
+  memberType: 'chat' | 'contact' | 'group';
+  chatId: string | null;
+  contactId: string | null;
+  groupId: string | null;
+  createdAt: string;
+}
+
+export interface RelationshipCandidateDto {
+  listId: string;
+  listName: string;
+  agentId: string;
+  agentName: string;
+  matchedKeywords: string[];
+  score: number;
+  /** Engagement-history follow-up: real recency/frequency, present only when this List has ever been engaged for this chat - absent means never, never a fabricated zero. */
+  lastActiveAt?: string;
+  engagementCount?: number;
+}
+
+export interface ChatRelationshipSignalDto {
+  id: string;
+  businessId: string;
+  chatId: string;
+  candidates: RelationshipCandidateDto[];
+  suggestedListId: string | null;
+  computedAt: string;
+}
+
+export interface ListAgentAssignmentDto {
+  id: string;
+  businessId: string;
+  listId: string;
+  agentId: string;
+  enabled: boolean;
+  useConversationHistory: boolean;
+  useLearnProfile: boolean;
+  rememberListSpecificInfo: boolean;
+  requireApproval: boolean;
+  autonomyOverride: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GovernanceFlagDto {
+  id: string;
+  businessId: string | null;
+  agentId: string | null;
+  flagType: 'high_tool_denial_rate' | 'high_sentinel_block_rate' | 'high_output_leak_rate' | 'high_agent_output_leak_rate';
+  severity: 'info' | 'warning' | 'critical';
+  metricValue: number;
+  thresholdValue: number;
+  windowStart: string;
+  windowEnd: string;
+  status: 'open' | 'reviewed' | 'dismissed';
+  reviewedByUserId: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+  businessName?: string | null;
+  agentName?: string | null;
+}
+
+export interface GovernanceThresholdsDto {
+  toolDenialsPerHour: number;
+  sentinelBlocksPerHour: number;
+  outputLeaksPerHour: number;
+  outputLeaksPerAgentPerHour: number;
+}
+
 export interface WorkspaceBusiness {
   id: string;
   name: string;
@@ -423,9 +524,23 @@ export interface WorkspaceBusiness {
   /** Emergency "Stop All Agents" kill switch - true blocks every AI tool call above a plain read, enforced server-side regardless of this flag ever reaching the frontend. */
   aiActionsPaused: boolean;
   aiActionsPausedAt: string | null;
+  /** Personalisation Budget (directive §27): 1=Minimal, 2=Low, 3=Natural (default), 4=Frequent, 5=Very frequent. Only consulted while nameUsageEnabled is true. */
+  nameUsageLevel: number;
+  /** Master on/off for name usage (default true). When false, the AI never uses the customer's name on its own initiative - only if the customer explicitly asks to be addressed by name. */
+  nameUsageEnabled: boolean;
+  /** Relationship-Confidence Engine (Phase 3): off by default. When on, a genuinely ambiguous chat (in 2+ Lists with different enabled agent assignments) gets a real, deterministic keyword-count suggestion for routing - never auto-writes active_list_id. */
+  relationshipConfidenceEnabled: boolean;
   /** Section 75-91: a real, pending account-deletion request (accountDeletionService.ts) - null unless the OWNER has explicitly requested it. */
   deletionRequestedAt: string | null;
   scheduledPurgeAt: string | null;
+  motto: string | null;
+  vision: string | null;
+  mission: string | null;
+  /** One combined switch for all three - whether they're currently fed to the AI via an auto-managed knowledge-base document. */
+  missionStatementAiVisible: boolean;
+  /** Real contact details (migration 989) - shown in the invoice/quote/receipt header alongside motto (the existing "slogan"). */
+  address: string | null;
+  phone: string | null;
 }
 
 export type TimeSyncStatus = 'SYNCED' | 'DEGRADED' | 'STALE' | 'MANUAL_OVERRIDE';
@@ -455,6 +570,8 @@ export interface AuthUserDto {
   email: string;
   displayName: string;
   status: string;
+  platformRole: 'CLIENT' | 'DEVELOPER';
+  developerTier: 'ADMIN' | 'STANDARD' | null;
 }
 
 export interface AuthMeResponse {
@@ -1044,12 +1161,14 @@ export interface WorkspaceStatus {
   mediaAvailable: boolean;
   createdAt: string;
   expiresAt: string | null;
+  viewedAt: string | null;
 }
 
 export interface UserPreferencesDto {
   userId: string;
   country: string | null;
   navigationOrder: string[] | null;
+  emailPanelCardOrder: string[] | null;
   timezone: string;
   language: string;
   theme: string;
@@ -1180,6 +1299,7 @@ export type InvoiceDto = {
   taxBasisPoints: number;
   discountCents: number;
   totalCents: number;
+  issueDate: string;
   dueDate: string | null;
   notes: string | null;
   terms: string | null;
@@ -1209,6 +1329,7 @@ export type CreateInvoiceInput = {
   documentType?: 'INVOICE' | 'QUOTE' | 'RECEIPT';
   currencyCode?: string;
   taxBasisPoints?: number;
+  issueDate?: string;
   dueDate?: string;
   notes?: string;
   terms?: string;
@@ -1221,6 +1342,61 @@ export type CreateInvoiceInput = {
     sortOrder?: number;
   }>;
 };
+
+/** The 3 built-in invoice/quote/receipt templates (invoiceTemplates.ts, server-side) - "classic" is the default every business starts on. */
+export type InvoiceTemplateId = 'classic' | 'modern' | 'minimal';
+
+/** Curated, system-safe fonts only (invoiceTemplates.ts, server-side) - "helvetica" is the original default. */
+export type InvoiceFontId = 'helvetica' | 'georgia' | 'times' | 'courier';
+
+/** Every value here is optional/nullable - unset falls back to that template's own default (usually the business's brandColor). */
+export interface InvoiceBlockColors {
+  headerBg?: string | null;
+  accent?: string | null;
+  tableHeaderBg?: string | null;
+  tableHeaderText?: string | null;
+  totalsBg?: string | null;
+  totalsText?: string | null;
+}
+
+export interface InvoiceCustomizationDto {
+  templateId: InvoiceTemplateId;
+  fontId?: InvoiceFontId | null;
+  colors: InvoiceBlockColors;
+}
+
+export type InvoicePreviewInput = {
+  documentType?: 'INVOICE' | 'QUOTE' | 'RECEIPT';
+  currencyCode?: string;
+  taxBasisPoints?: number;
+  issueDate?: string;
+  dueDate?: string;
+  notes?: string;
+  terms?: string;
+  footerText?: string;
+  lineItems?: Array<{ description: string; quantity: number; unitPriceCents: number; discountBasisPoints?: number }>;
+  customization?: InvoiceCustomizationDto;
+};
+
+/**
+ * A real, unsaved-draft render - "as he or she works on it" (the live
+ * preview pane, InvoicesPage.tsx) and the Customize panel's template/color
+ * picker both call this. Bypasses request() since the response is raw
+ * HTML (meant for an iframe's srcDoc), never JSON.
+ */
+export async function previewInvoiceHtml(input: InvoicePreviewInput): Promise<string> {
+  const response = await fetch('/api/invoices/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new ApiError(response.status, body.error ?? 'PREVIEW_FAILED', body.message ?? response.statusText);
+  }
+  return response.text();
+}
 
 export const api = {
   getWhatsAppStatus: () => request<WhatsAppConnectionSnapshot>('/whatsapp/status'),
@@ -1263,6 +1439,31 @@ export const api = {
     request<{ purchase: { id: string; checkoutReference: string; tokensPurchased: number; amountMinor: number; currency: string }; instructions: Record<string, unknown> }>('/billing/ai-token-topup/checkout', {
       method: 'POST',
       body: JSON.stringify(provider ? { provider } : {}),
+    }),
+  /** Real, permanent AI-memory-capacity top-up pack/price for this business's plan tier, or null (unlimited plan, or no live subscription). */
+  getAiMemoryTopupOffer: () => request<{ offer: { planKey: string; profiles: number; priceCents: number; currency: string } | null }>('/billing/ai-memory-topup/offer'),
+  createAiMemoryTopupCheckout: (provider?: 'BIMPAY' | 'PAYPAL' | 'WIPAY') =>
+    request<{ purchase: { id: string; checkoutReference: string; profilesPurchased: number; amountMinor: number; currency: string }; instructions: Record<string, unknown> }>('/billing/ai-memory-topup/checkout', {
+      method: 'POST',
+      body: JSON.stringify(provider ? { provider } : {}),
+    }),
+  /** Real, calculated price to move to this plan right now - proration if within 5 days of the current billing period's start, full price otherwise (see planUpgradeService.ts's own doc comment for the exact policy). */
+  getPlanUpgradeOffer: (planKey: string) =>
+    request<{
+      offer: {
+        currentPlan: { id: string; planKey: string; name: string; priceMonthlyCents: number };
+        targetPlan: { id: string; planKey: string; name: string; priceMonthlyCents: number };
+        currency: string;
+        wasProrated: boolean;
+        fullAmountCents: number;
+        amountDueCents: number;
+        prorationWindowEndsAt: string | null;
+      };
+    }>(`/billing/plan-upgrade/offer/${planKey}`),
+  createPlanUpgradeCheckout: (planKey: string, provider?: 'BIMPAY' | 'PAYPAL' | 'WIPAY') =>
+    request<{ purchase: { id: string; checkoutReference: string; toPlanId: string; amountMinor: number; currency: string }; instructions: Record<string, unknown> }>('/billing/plan-upgrade/checkout', {
+      method: 'POST',
+      body: JSON.stringify({ planKey, ...(provider ? { provider } : {}) }),
     }),
   getPlanCatalogue: () => request<PlanCatalogueDto>('/workspace/billing/plans'),
   getDashboard: () => request<WorkspaceDashboardOverview>('/workspace/dashboard'),
@@ -1311,6 +1512,96 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ paused }),
     }),
+  setNameUsageLevel: (level: number) =>
+    request<{ business: WorkspaceBusiness }>('/workspace/business/name-usage-level', {
+      method: 'PATCH',
+      body: JSON.stringify({ level }),
+    }),
+  setNameUsageEnabled: (enabled: boolean) =>
+    request<{ business: WorkspaceBusiness }>('/workspace/business/name-usage-enabled', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    }),
+  setCustomerMemoryEnabled: (enabled: boolean) =>
+    request<{ business: WorkspaceBusiness }>('/workspace/business/memory-enabled', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    }),
+  getCustomerMemoryStats: () =>
+    request<{ enabled: boolean; current: number; limit: number | null }>('/workspace/business/memory-stats'),
+  // ── AURA Learn Agent ──────────────────────────────────────────────────
+  getLearnStats: () =>
+    request<{ enabled: boolean; shareEnabled: boolean; exampleCount: number; profileVersion: number | null; lastComputedAt: string | null }>('/workspace/learn/stats'),
+  setLearnEnabled: (enabled: boolean) =>
+    request<{ settings: unknown }>('/workspace/learn/enabled', { method: 'PATCH', body: JSON.stringify({ enabled }) }),
+  setLearnShareEnabled: (enabled: boolean) =>
+    request<{ settings: unknown }>('/workspace/learn/share-enabled', { method: 'PATCH', body: JSON.stringify({ enabled }) }),
+  resetLearnProfile: () => request<{ ok: boolean }>('/workspace/learn/reset', { method: 'POST' }),
+  deleteLearnData: () => request<{ ok: boolean }>('/workspace/learn', { method: 'DELETE' }),
+  getLearnAgentAccess: () =>
+    request<{ access: { agentId: string; allowed: boolean }[] }>('/workspace/learn/agent-access'),
+  setLearnAgentAccess: (agentId: string, allowed: boolean) =>
+    request<{ access: { agentId: string; allowed: boolean } }>(`/workspace/learn/agent-access/${agentId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ allowed }),
+    }),
+  // ── AURA Lists (Phase 1) ──────────────────────────────────────────────
+  getLists: () => request<{ lists: ListDto[] }>('/workspace/lists'),
+  createList: (body: { name: string; description?: string | null; color?: string | null }) =>
+    request<{ list: ListDto }>('/workspace/lists', { method: 'POST', body: JSON.stringify(body) }),
+  updateList: (id: string, body: { name?: string; description?: string | null; color?: string | null }) =>
+    request<{ list: ListDto }>(`/workspace/lists/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteList: (id: string) => request<{ ok: boolean }>(`/workspace/lists/${id}`, { method: 'DELETE' }),
+  getListMembers: (listId: string) => request<{ members: ListMemberDto[] }>(`/workspace/lists/${listId}/members`),
+  addListMember: (listId: string, memberType: 'chat' | 'contact' | 'group', memberId: string) =>
+    request<{ member: ListMemberDto }>(`/workspace/lists/${listId}/members`, { method: 'POST', body: JSON.stringify({ memberType, memberId }) }),
+  removeListMember: (listId: string, memberId: string) =>
+    request<{ ok: boolean }>(`/workspace/lists/${listId}/members/${memberId}`, { method: 'DELETE' }),
+  getListAssignments: (listId: string) => request<{ assignments: ListAgentAssignmentDto[] }>(`/workspace/lists/${listId}/agent-assignment`),
+  upsertListAssignment: (listId: string, body: Partial<Omit<ListAgentAssignmentDto, 'id' | 'businessId' | 'listId' | 'createdAt' | 'updatedAt'>> & { agentId: string }) =>
+    request<{ assignment: ListAgentAssignmentDto }>(`/workspace/lists/${listId}/agent-assignment`, { method: 'PUT', body: JSON.stringify(body) }),
+  removeListAssignment: (listId: string, agentId: string) =>
+    request<{ ok: boolean }>(`/workspace/lists/${listId}/agent-assignment/${agentId}`, { method: 'DELETE' }),
+  getListsForChat: (chatId: string) => request<{ lists: ListDto[]; unambiguousListId: string | null }>(`/workspace/chats/${chatId}/lists`),
+  setChatActiveList: (chatId: string, listId: string | null) =>
+    request<{ chat: unknown }>(`/workspace/chats/${chatId}/active-list`, { method: 'PATCH', body: JSON.stringify({ listId }) }),
+  // ── Relationship-Confidence Engine (Phase 3) ──────────────────────────
+  setRelationshipConfidenceEnabled: (enabled: boolean) =>
+    request<{ business: WorkspaceBusiness }>('/workspace/business/relationship-confidence-enabled', { method: 'PATCH', body: JSON.stringify({ enabled }) }),
+  getRelationshipSignals: () => request<{ signals: ChatRelationshipSignalDto[] }>('/workspace/relationship-signals'),
+  // ── Business Intelligence Agent ──────────────────────────────────────
+  getBusinessIntelligenceStats: () =>
+    request<{ enabled: boolean; lastRunAt: string | null }>('/workspace/business-intelligence/stats'),
+  setBusinessIntelligenceEnabled: (enabled: boolean) =>
+    request<{ enabled: boolean; lastRunAt: string | null }>('/workspace/business-intelligence/enabled', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    }),
+  getTrends: () =>
+    request<{ insights: Record<BiInsight['category'], BiInsight[]> }>('/workspace/trends'),
+  setMissionStatement: (input: { motto: string | null; vision: string | null; mission: string | null; aiVisible: boolean }) =>
+    request<{ business: WorkspaceBusiness; kbSyncWarning: string | null }>('/workspace/business/mission-statement', {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  setBusinessContactDetails: (input: { address: string | null; phone: string | null }) =>
+    request<{ business: WorkspaceBusiness }>('/workspace/business/contact-details', {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  getAiStatus: () => request<{ active: boolean }>('/workspace/ai/status'),
+  /**
+   * Bypasses request()'s own ApiError (which discards everything but
+   * status/code/message) since a 429 here carries a real
+   * retryAfterSeconds the countdown UI needs, not just an error string.
+   */
+  testAiConnection: async (): Promise<{ status: 'active' | 'unavailable' } | { rateLimited: true; retryAfterSeconds: number }> => {
+    const response = await fetch('/api/workspace/ai/test-connection', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' });
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 429) return { rateLimited: true, retryAfterSeconds: Number(body.retryAfterSeconds ?? 0) };
+    if (!response.ok) throw new ApiError(response.status, body.error ?? 'UNKNOWN_ERROR', body.message ?? response.statusText);
+    return body as { status: 'active' | 'unavailable' };
+  },
   getTimeStatus: () => request<TimeStatusResponse>('/workspace/time-status'),
   /** `targetLocalDateTime` is a "YYYY-MM-DDTHH:mm" wall-clock string (no timezone suffix) - interpreted server-side against the business's own timezone. */
   enableManualTimeOverride: (targetLocalDateTime: string) =>
@@ -1406,6 +1697,7 @@ export const api = {
     }),
   listCalls: () => request<{ calls: WorkspaceCallSummary[] }>('/workspace/calls'),
   listStatuses: () => request<{ statuses: WorkspaceStatus[] }>('/workspace/statuses'),
+  markStatusViewed: (id: string) => request<{ ok: true }>(`/workspace/statuses/${id}/view`, { method: 'PATCH' }),
   getLockStatus: () => request<LockStatusResponse>('/security/lock/status'),
   getUnlockChallenge: () => request<UnlockChallengeResponse>('/security/lock/challenge'),
   setupLock: (body: { salt: string; pinHash: string; argon2Params: Argon2ParamsDto }) =>
@@ -1432,7 +1724,7 @@ export const api = {
     request<{ alerts: HumanTakeoverAlertDto[] }>(`/security/alerts/human-takeover${includeIdentity ? '?includeIdentity=true' : ''}`),
 
   getPreferences: () => request<{ preferences: UserPreferencesDto }>('/auth/preferences'),
-  updatePreferences: (body: { country?: string | null; navigationOrder?: string[] | null; timezone?: string; language?: string }) =>
+  updatePreferences: (body: { country?: string | null; navigationOrder?: string[] | null; emailPanelCardOrder?: string[] | null; timezone?: string; language?: string }) =>
     request<{ preferences: UserPreferencesDto }>('/auth/preferences', { method: 'PATCH', body: JSON.stringify(body) }),
   getBootstrapStatus: () => request<BootstrapStatusResponse>('/auth/bootstrap-status'),
   registerAccount: (body: { email: string; password: string; displayName: string }) =>
@@ -1580,6 +1872,11 @@ export const api = {
       '/workspace/email/ai-draft',
       { method: 'POST', body: JSON.stringify(input) },
     ),
+  aiDraftReplyToOAuthMessage: (input: { oauthMessageId: string; agentId: string; instruction: string }) =>
+    request<{ status: 'drafted'; email: EmailMessageDto } | { status: 'unavailable'; reason: string }>(
+      '/workspace/email/ai-draft-reply',
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
 
   listScheduledStatuses: () => request<{ statuses: ScheduledStatusDto[] }>('/workspace/scheduled-statuses'),
   createScheduledStatus: (input: {
@@ -1671,6 +1968,60 @@ export const api = {
   setAutonomyKillSwitch: (enabled: boolean) =>
     request<{ enabled: boolean }>('/platform/developer/autonomy-kill-switch', { method: 'PATCH', body: JSON.stringify({ enabled }) }),
 
+  // ── Platform config (developer-only, Developer Master Control page) ────────
+  getPlatformConfig: () =>
+    request<{
+      gooseFallbackEnabled: boolean;
+      registrationPaused: boolean;
+      maintenanceMode: boolean;
+      trialDurationHours: number;
+      geminiModelOverride: string | null;
+      aiTokenTopupCatalog: Record<string, { tokens: number; priceCents: number; currency: string }>;
+      aiMemoryTopupCatalog: Record<string, { profiles: number; priceCents: number; currency: string }>;
+    }>('/platform/developer/platform-config'),
+  setPlatformConfig: (key: string, value: unknown) =>
+    request<{ ok: true }>(`/platform/developer/platform-config/${key}`, { method: 'PATCH', body: JSON.stringify(value) }),
+  getSecretsStatus: () =>
+    request<{ secrets: { name: string; configured: boolean }[] }>('/platform/developer/secrets-status'),
+  getOpenClawStatus: () =>
+    request<{
+      mcpServerEnabled: boolean;
+      cellCount: number;
+      quarantinedCells: { businessId: string; cellId: string; quarantineReason: string | null; quarantinedAt: string | null }[];
+      recentAdvisories: { ghsaId: string; deploymentVersion: string; severity: string; summary: string; advisoryUrl: string; publishedAt: string | null; riskClassification: string }[];
+      lastWatcherRun: { id: string; startedAt: string; finishedAt: string | null; status: 'OK' | 'FAILED'; versionsChecked: number; advisoriesSeen: number; cellsQuarantined: number; errorMessage: string | null } | null;
+    }>('/platform/developer/openclaw/status'),
+  clearOpenClawQuarantine: (businessId: string) =>
+    request<{ ok: true }>(`/platform/developer/openclaw/cells/${businessId}/clear-quarantine`, { method: 'POST' }),
+  createPlan: (input: { planKey: string; name: string; priceMonthlyCents: number; priceYearlyCents?: number | null; currency?: string }) =>
+    request<{ plan: DeveloperPlan }>('/billing/developer/plans', { method: 'POST', body: JSON.stringify(input) }),
+  // ── AI Governance & Oversight (v1) ────────────────────────────────────
+  getGovernanceFlags: () => request<{ flags: GovernanceFlagDto[] }>('/developer/governance/flags'),
+  reviewGovernanceFlag: (id: string) =>
+    request<{ flag: GovernanceFlagDto }>(`/developer/governance/flags/${id}`, { method: 'PATCH', body: JSON.stringify({ action: 'review' }) }),
+  dismissGovernanceFlag: (id: string) =>
+    request<{ flag: GovernanceFlagDto }>(`/developer/governance/flags/${id}`, { method: 'PATCH', body: JSON.stringify({ action: 'dismiss' }) }),
+  getGovernanceThresholds: () => request<{ thresholds: GovernanceThresholdsDto }>('/developer/governance/thresholds'),
+  setGovernanceThresholds: (thresholds: GovernanceThresholdsDto) =>
+    request<{ thresholds: GovernanceThresholdsDto }>('/developer/governance/thresholds', { method: 'PATCH', body: JSON.stringify(thresholds) }),
+  // ── Accurate stat drill-down + tiered developer roles ─────────────────
+  getPlatformTrials: () =>
+    request<{ trials: { id: string; email: string; productKey: string; state: string; startsAt: string | null; endsAt: string | null; productAccountId: string | null }[] }>('/developer/trials'),
+  getPlatformSecurityEvents: (hours = 24) =>
+    request<{ events: { id: string; eventType: string; severity: string; businessId: string | null; businessName: string | null; createdAt: string }[] }>(`/developer/security-events?hours=${hours}`),
+  getDevelopers: () =>
+    request<{ developers: { id: string; email: string; displayName: string; developerTier: 'ADMIN' | 'STANDARD' | null; createdAt: string }[] }>('/developer/developers'),
+  promoteDeveloper: (email: string, tier: 'ADMIN' | 'STANDARD') =>
+    request<{ user: { id: string; email: string; developerTier: string | null } }>('/developer/developers', { method: 'POST', body: JSON.stringify({ email, tier }) }),
+  setDeveloperTier: (userId: string, tier: 'ADMIN' | 'STANDARD') =>
+    request<{ user: { id: string; email: string; developerTier: string | null } }>(`/developer/developers/${userId}/tier`, { method: 'PATCH', body: JSON.stringify({ tier }) }),
+  demoteDeveloper: (userId: string) =>
+    request<{ user: { id: string; email: string; developerTier: string | null } }>(`/developer/developers/${userId}`, { method: 'DELETE' }),
+  setBusinessTierUnrestricted: (businessId: string, unrestricted: boolean) =>
+    request<{ business: { id: string; name: string; tierUnrestricted: boolean } }>(`/developer/businesses/${businessId}/tier-unrestricted`, { method: 'PATCH', body: JSON.stringify({ unrestricted }) }),
+  testGeminiConnectionDeveloper: () =>
+    request<{ status: 'ok'; detail: string } | { status: 'failed'; reason: string }>('/platform/developer/test-gemini-connection', { method: 'POST' }),
+
   // ── Plan management (developer-only) ────────────────────────────────────────
   listPlans: () =>
     request<{ plans: DeveloperPlan[] }>('/billing/developer/plans'),
@@ -1680,6 +2031,29 @@ export const api = {
     request<{ entitlement: PlanEntitlement }>(`/billing/developer/plans/${planId}/entitlements/${encodeURIComponent(entitlementKey)}`, {
       method: 'PUT',
       body: JSON.stringify(input),
+    }),
+
+  // ── Developer Accounts view (real, cross-tenant - phone number, signup date, trial/plan status) ──
+  getDeveloperAccounts: () =>
+    request<{
+      accounts: Array<{
+        userId: string;
+        phoneNumber: string | null;
+        isDeveloper: boolean;
+        signupDate: string;
+        businessId: string | null;
+        businessName: string | null;
+        subscriptionId: string | null;
+        subscriptionStatus: string | null;
+        trialEndsAt: string | null;
+        planKey: string | null;
+        planName: string | null;
+      }>;
+    }>('/billing/developer/accounts'),
+  setBusinessPlan: (businessId: string, planKey: string) =>
+    request<{ subscription: unknown; planName: string }>(`/billing/developer/businesses/${businessId}/plan`, {
+      method: 'PATCH',
+      body: JSON.stringify({ planKey }),
     }),
 
   // ── Payment providers (developer-only, Section 73-74) ───────────────────────
@@ -1737,6 +2111,12 @@ export const api = {
   voidInvoice: (id: string) => request<{ invoice: InvoiceDto }>(`/invoices/${id}/void`, { method: 'POST' }),
   deleteInvoice: (id: string) => request<Record<string, never>>(`/invoices/${id}`, { method: 'DELETE' }),
   invoiceHtmlUrl: (id: string) => `/api/invoices/${id}/html`,
+  getInvoiceCustomization: () => request<{ customization: InvoiceCustomizationDto }>('/workspace/business/invoice-customization'),
+  setInvoiceCustomization: (customization: InvoiceCustomizationDto) =>
+    request<{ customization: InvoiceCustomizationDto }>('/workspace/business/invoice-customization', {
+      method: 'PATCH',
+      body: JSON.stringify(customization),
+    }),
 
   // ── Email OAuth ────────────────────────────────────────────────────────────
   listOAuthAccounts: () =>
@@ -1754,10 +2134,11 @@ export const api = {
     request<{ ok: boolean }>(`/email-oauth/accounts/${id}`, { method: 'DELETE' }),
   syncOAuthAccount: (accountId: string) =>
     request<{ ok: boolean }>(`/email-oauth/sync/${accountId}`, { method: 'POST' }),
-  getOAuthMessages: (accountId: string, opts?: { limit?: number; unread?: boolean }) => {
+  getOAuthMessages: (accountId: string, opts?: { limit?: number; unread?: boolean; folderId?: string }) => {
     const qs = new URLSearchParams();
     if (opts?.limit) qs.set('limit', String(opts.limit));
     if (opts?.unread) qs.set('unread', 'true');
+    if (opts?.folderId) qs.set('folderId', opts.folderId);
     const q = qs.toString();
     return request<{
       messages: Array<{
@@ -1765,12 +2146,14 @@ export const api = {
         accountId: string;
         providerMessageId: string;
         providerThreadId: string | null;
-        folder: string;
+        folderId: string;
         subject: string | null;
         fromAddress: string | null;
         fromName: string | null;
         toAddresses: string | null;
         snippet: string | null;
+        bodyHtml: string | null;
+        bodyText: string | null;
         isRead: boolean;
         isStarred: boolean;
         labels: string[];
@@ -1778,7 +2161,41 @@ export const api = {
       }>;
     }>(`/email-oauth/messages/${accountId}${q ? `?${q}` : ''}`);
   },
+  getOAuthFolders: (accountId: string) =>
+    request<{
+      folders: Array<{
+        id: string;
+        accountId: string;
+        providerFolderId: string;
+        displayName: string;
+        wellKnownType: 'inbox' | 'sent' | 'drafts' | 'spam' | 'trash' | 'archive' | 'other';
+        parentProviderFolderId: string | null;
+        unreadCount: number;
+        totalCount: number;
+        lastSyncedAt: string | null;
+      }>;
+    }>(`/email-oauth/accounts/${accountId}/folders`),
   oauthConnectUrl: (provider: 'gmail' | 'outlook') => `/api/email-oauth/connect/${provider}`,
+
+  // ── Email tools panel (Email Redesign Phase C/D) ───────────────────────────
+  getEmailContacts: () => request<{ contacts: Array<{ address: string; name: string | null }> }>('/workspace/email/contacts'),
+  getEmailReminders: () => request<{ reminders: Array<{ id: string; body: string; remindAt: string | null }> }>('/workspace/email/reminders'),
+  getEmailNotes: () => request<{ notes: Array<{ id: string; body: string; remindAt: string | null; createdAt: string }> }>('/workspace/email/notes'),
+  createEmailNote: (input: { body: string; remindAt?: string | null }) =>
+    request<{ note: { id: string; body: string; remindAt: string | null } }>('/workspace/email/notes', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  deleteEmailNote: (id: string) => request<{ ok: boolean }>(`/workspace/email/notes/${id}`, { method: 'DELETE' }),
+  getEmailAiSuggestions: () =>
+    request<{ status: 'ok'; suggestions: string[]; generatedOn: string; cached: boolean } | { status: 'unavailable'; reason: string }>(
+      '/workspace/email/suggestions',
+    ),
+  regenerateEmailAiSuggestions: () =>
+    request<{ status: 'ok'; suggestions: string[]; generatedOn: string; cached: boolean } | { status: 'unavailable'; reason: string }>(
+      '/workspace/email/suggestions/regenerate',
+      { method: 'POST' },
+    ),
 
   // ── Meeting booking OAuth (Google Meet, Zoom) ──────────────────────────────
   getMeetingConnection: (provider: 'google_meet' | 'zoom') =>

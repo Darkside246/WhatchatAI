@@ -9,10 +9,18 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { pool } from '../db/pool.js';
+import { queryAsTenant } from '../db/pool.js';
 import { EmailOAuthRepository, type OAuthProvider } from '../repositories/emailOAuthRepository.js';
 
-const repo = new EmailOAuthRepository(pool);
+// RLS-backed tables (email_oauth_accounts/messages/folders) require a
+// fresh, tenant-scoped repository per call rather than one shared
+// module-level instance on the bare pool - see migration 993's own
+// comment. Every exported function below has a real businessId already
+// in scope (decoded from OAuth state, or passed in directly), so this
+// never needs a bare-pool fallback.
+function repoFor(businessId: string): EmailOAuthRepository {
+  return new EmailOAuthRepository(queryAsTenant(businessId));
+}
 
 // ── Config helpers ─────────────────────────────────────────────────────────
 
@@ -192,7 +200,7 @@ export async function handleOAuthCallback(
       ? new Date(Date.now() + tokens.expires_in * 1000)
       : null;
 
-    await repo.upsertAccount({
+    await repoFor(businessId).upsertAccount({
       businessId,
       provider,
       emailAddress: profile.email,
@@ -218,7 +226,7 @@ export async function refreshAccessToken(
   businessId: string,
   provider: OAuthProvider,
 ): Promise<string | null> {
-  const stored = await repo.getTokens(accountId, businessId);
+  const stored = await repoFor(businessId).getTokens(accountId, businessId);
   if (!stored?.refreshToken) return null;
 
   try {
@@ -256,7 +264,7 @@ export async function refreshAccessToken(
     const tokens = (await resp.json()) as TokenResponse;
     const expiresAt = tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null;
 
-    await repo.updateTokens(accountId, businessId, {
+    await repoFor(businessId).updateTokens(accountId, businessId, {
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token ?? null,
       tokenExpiresAt: expiresAt,
@@ -274,7 +282,7 @@ export async function getValidAccessToken(
   businessId: string,
   provider: OAuthProvider,
 ): Promise<string | null> {
-  const account = await repo.getById(accountId);
+  const account = await repoFor(businessId).getByIdForBusiness(accountId, businessId);
   if (!account) return null;
 
   const isExpiringSoon = account.tokenExpiresAt
@@ -285,18 +293,16 @@ export async function getValidAccessToken(
     return refreshAccessToken(accountId, businessId, provider);
   }
 
-  const stored = await repo.getTokens(accountId, businessId);
+  const stored = await repoFor(businessId).getTokens(accountId, businessId);
   return stored?.accessToken ?? null;
 }
 
 // ── Account management ──────────────────────────────────────────────────────
 
 export async function listConnectedAccounts(businessId: string) {
-  return repo.listByBusiness(businessId);
+  return repoFor(businessId).listByBusiness(businessId);
 }
 
 export async function disconnectAccount(accountId: string, businessId: string): Promise<boolean> {
-  return repo.deleteAccount(accountId, businessId);
+  return repoFor(businessId).deleteAccount(accountId, businessId);
 }
-
-export { repo as emailOAuthRepo };

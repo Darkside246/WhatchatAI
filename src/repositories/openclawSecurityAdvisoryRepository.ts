@@ -79,6 +79,28 @@ export class OpenClawSecurityAdvisoryRepository {
     );
   }
 
+  /** Every advisory across every deployed version, most recently checked first - the Developer Master Control page's status card, unlike listByVersion which is scoped to the Security Watcher's own per-version check. */
+  async listRecent(limit = 20): Promise<UpsertAdvisoryInput[]> {
+    const { rows } = await this.db.query<{
+      ghsa_id: string;
+      deployment_version: string;
+      severity: AdvisorySeverity;
+      summary: string;
+      advisory_url: string;
+      published_at: string | null;
+      risk_classification: AdvisoryRiskClassification;
+    }>('SELECT * FROM openclaw_security_advisories ORDER BY last_checked_at DESC LIMIT $1', [limit]);
+    return rows.map((row) => ({
+      ghsaId: row.ghsa_id,
+      deploymentVersion: row.deployment_version,
+      severity: row.severity,
+      summary: row.summary,
+      advisoryUrl: row.advisory_url,
+      publishedAt: row.published_at,
+      riskClassification: row.risk_classification,
+    }));
+  }
+
   async listByVersion(deploymentVersion: string): Promise<UpsertAdvisoryInput[]> {
     const { rows } = await this.db.query<{
       ghsa_id: string;

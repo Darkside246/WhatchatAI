@@ -53,6 +53,11 @@ export type SecurityEventType =
   | 'writing_twin_deleted'
   | 'writing_twin_profile_reset'
   | 'writing_twin_example_removed'
+  | 'writing_twin_share_enabled'
+  | 'writing_twin_share_disabled'
+  | 'writing_twin_agent_access_changed'
+  | 'writing_twin_profile_computed'
+  | 'writing_twin_context_served'
   | 'contact_privacy_updated'
   | 'crm_contact_memory_erased'
   | 'handover_auto_reverted'
@@ -65,7 +70,34 @@ export type SecurityEventType =
   | 'plan_updated'
   | 'plan_entitlement_updated'
   | 'vertical_assigned'
-  | 'platform_setting_updated';
+  | 'platform_setting_updated'
+  | 'subscription_plan_manually_changed'
+  | 'bi_settings_enabled'
+  | 'bi_settings_disabled'
+  | 'bi_insight_approved'
+  | 'bi_insight_rejected'
+  | 'bi_insight_held'
+  | 'bi_security_alert_detected'
+  | 'list_created'
+  | 'list_deleted'
+  | 'list_agent_assigned'
+  | 'list_agent_unassigned'
+  | 'list_membership_changed'
+  | 'list_active_list_set'
+  | 'list_routed'
+  | 'list_scoped_memory_erased'
+  | 'governance_flag_raised'
+  | 'governance_flag_reviewed'
+  | 'governance_flag_dismissed'
+  | 'relationship_confidence_enabled'
+  | 'relationship_confidence_disabled'
+  | 'relationship_suggestion_computed'
+  | 'relationship_suggestion_overridden'
+  | 'developer_promoted'
+  | 'developer_demoted'
+  | 'developer_tier_changed'
+  | 'business_tier_unrestricted_granted'
+  | 'business_tier_unrestricted_revoked';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 
@@ -170,6 +202,28 @@ export class SecurityAuditLogRepository {
     return rows.map(toRecord);
   }
 
+  /**
+   * The real detail behind the Developer Control Plane's "Security events
+   * (24h)" stat pill - every event across every business in the window,
+   * not just the null-business platform events listPlatformEvents covers.
+   * Bare pool, one join for the business name (matching
+   * governanceFlagRepository.listOpenAcrossPlatform's own precedent for a
+   * developer-facing cross-tenant view) - structural fields only, never
+   * raw message content (this table's own established convention).
+   */
+  async listRecentAcrossPlatform(hours: number, limit = 200): Promise<Array<SecurityAuditLogRecord & { businessName: string | null }>> {
+    const { rows } = await this.db.query<SecurityAuditLogRow & { business_name: string | null }>(
+      `SELECT sal.*, b.name AS business_name
+       FROM security_audit_logs sal
+       LEFT JOIN businesses b ON b.id = sal.business_id
+       WHERE sal.created_at > NOW() - ($1 || ' hours')::interval
+       ORDER BY sal.created_at DESC
+       LIMIT $2`,
+      [hours, limit],
+    );
+    return rows.map((row) => ({ ...toRecord(row), businessName: row.business_name }));
+  }
+
   async countRecentByBusinessAndTool(businessId: string, toolName: string, windowMinutes: number): Promise<number> {
     const { rows } = await this.db.query<{ count: string }>(
       `SELECT count(*)::int AS count FROM security_audit_logs
@@ -180,5 +234,51 @@ export class SecurityAuditLogRepository {
       [businessId, toolName, windowMinutes],
     );
     return Number(rows[0]?.count ?? 0);
+  }
+
+  /**
+   * AI Governance & Oversight (v1): per-(business, agent) count of one
+   * event type since a point in time - powers governanceSweepService.ts's
+   * high_tool_denial_rate rule (event_type='ai_tool_denied'). agentId is a
+   * plain string inside raw_metadata (see agentGuard.ts's guardToolInvocation),
+   * so ->> (text extraction) is correct - no ::uuid cast needed since this
+   * is a GROUP BY, not a join. Bare-pool, platform-wide in one pass - the
+   * sweep scans every business at once rather than looping per business,
+   * matching listPlatformEvents's own precedent.
+   */
+  async countGroupedByAgentSince(eventType: SecurityEventType, sinceIso: string): Promise<{ businessId: string; agentId: string; count: number }[]> {
+    const { rows } = await this.db.query<{ business_id: string; agent_id: string; count: string }>(
+      `SELECT business_id, raw_metadata ->> 'agentId' AS agent_id, count(*)::int AS count
+       FROM security_audit_logs
+       WHERE event_type = $1
+         AND business_id IS NOT NULL
+         AND raw_metadata ->> 'agentId' IS NOT NULL
+         AND created_at >= $2
+       GROUP BY business_id, raw_metadata ->> 'agentId'`,
+      [eventType, sinceIso],
+    );
+    return rows.map((row) => ({ businessId: row.business_id, agentId: row.agent_id, count: Number(row.count) }));
+  }
+
+  /**
+   * AI Governance & Oversight (v1): per-business count across one or more
+   * event types since a point in time - powers high_sentinel_block_rate
+   * (sentinel_heuristic_block + sentinel_ai_block) and high_output_leak_rate
+   * (ai_output_leak_blocked). Business-scoped only, never per-agent -
+   * neither sentinel.ts nor the outbound leak guard record an agentId in
+   * rawMetadata today. Bare-pool, platform-wide in one pass, same
+   * reasoning as countGroupedByAgentSince above.
+   */
+  async countGroupedByBusinessSince(eventTypes: SecurityEventType[], sinceIso: string): Promise<{ businessId: string; count: number }[]> {
+    const { rows } = await this.db.query<{ business_id: string; count: string }>(
+      `SELECT business_id, count(*)::int AS count
+       FROM security_audit_logs
+       WHERE event_type = ANY($1::text[])
+         AND business_id IS NOT NULL
+         AND created_at >= $2
+       GROUP BY business_id`,
+      [eventTypes, sinceIso],
+    );
+    return rows.map((row) => ({ businessId: row.business_id, count: Number(row.count) }));
   }
 }

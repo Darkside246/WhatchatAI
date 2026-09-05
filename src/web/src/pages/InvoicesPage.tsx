@@ -1,6 +1,7 @@
-import { useEffect, useState, type FormEvent } from 'react';
-import { Plus, Receipt, FileText, CheckSquare, Send, DollarSign, X, Eye, Trash2, Ban } from 'lucide-react';
-import { api, ApiError, type InvoiceDto, type InvoiceLineItemDto, type CreateInvoiceInput } from '../lib/api.js';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { Plus, Receipt, FileText, CheckSquare, Send, DollarSign, X, Eye, Trash2, Ban, Palette } from 'lucide-react';
+import { api, ApiError, previewInvoiceHtml, type InvoiceDto, type InvoiceLineItemDto, type CreateInvoiceInput } from '../lib/api.js';
+import { InvoiceCustomizePanel } from '../components/InvoiceCustomizePanel.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -41,15 +42,56 @@ function parseCents(str: string): number {
   return isNaN(n) ? 0 : Math.round(n * 100);
 }
 
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function CreateInvoiceModal({ onClose, onCreated }: { onClose: () => void; onCreated: (inv: InvoiceDto) => void }) {
   const [docType, setDocType] = useState<'INVOICE' | 'QUOTE' | 'RECEIPT'>('INVOICE');
   const [currency, setCurrency] = useState('BBD');
   const [taxPctStr, setTaxPctStr] = useState('0');
+  const [issueDate, setIssueDate] = useState(todayStr());
   const [dueDate, setDueDate] = useState('');
   const [notes, setNotes] = useState('');
+  const [terms, setTerms] = useState('');
+  const [footerText, setFooterText] = useState('');
   const [lines, setLines] = useState<LineItemDraft[]>([emptyLine()]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [previewHtml, setPreviewHtml] = useState<string>('');
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  // Real, unsaved-draft preview - "as he or she works on it" - debounced so
+  // every keystroke doesn't fire its own request. Skips real line items
+  // with no description/price yet in favor of the endpoint's own sample
+  // fallback, so the preview never looks broken while a form is empty.
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      const readyLines = lines
+        .filter((l) => l.description.trim() && parseCents(l.unitPriceStr) > 0)
+        .map((l) => ({
+          description: l.description.trim(),
+          quantity: parseFloat(l.quantity) || 1,
+          unitPriceCents: parseCents(l.unitPriceStr),
+          discountBasisPoints: parseInt(l.discountBp || '0'),
+        }));
+      previewInvoiceHtml({
+        documentType: docType,
+        currencyCode: currency,
+        taxBasisPoints: Math.round(parseFloat(taxPctStr || '0') * 100),
+        ...(issueDate ? { issueDate } : {}),
+        ...(dueDate ? { dueDate } : {}),
+        ...(notes.trim() ? { notes: notes.trim() } : {}),
+        ...(terms.trim() ? { terms: terms.trim() } : {}),
+        ...(footerText.trim() ? { footerText: footerText.trim() } : {}),
+        ...(readyLines.length > 0 ? { lineItems: readyLines } : {}),
+      })
+        .then(setPreviewHtml)
+        .catch(() => undefined);
+    }, 350);
+    return () => clearTimeout(debounceRef.current);
+  }, [docType, currency, taxPctStr, issueDate, dueDate, notes, terms, footerText, lines]);
 
   function setLine(i: number, patch: Partial<LineItemDraft>) {
     setLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
@@ -82,8 +124,11 @@ function CreateInvoiceModal({ onClose, onCreated }: { onClose: () => void; onCre
       documentType: docType,
       currencyCode: currency,
       taxBasisPoints: taxBp,
+      issueDate: issueDate || undefined,
       dueDate: dueDate || undefined,
       notes: notes.trim() || undefined,
+      terms: terms.trim() || undefined,
+      footerText: footerText.trim() || undefined,
       lineItems: parsedLines,
     };
     setBusy(true);
@@ -99,7 +144,8 @@ function CreateInvoiceModal({ onClose, onCreated }: { onClose: () => void; onCre
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="flex w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border-subtle bg-surface-1 shadow-2xl" style={{ maxHeight: 'calc(100vh - 2rem)' }}>
+      <div className="flex w-full max-w-6xl overflow-hidden rounded-2xl border border-border-subtle bg-surface-1 shadow-2xl" style={{ height: 'calc(100vh - 2rem)' }}>
+        <div className="flex w-[480px] shrink-0 flex-col border-r border-border-subtle">
         <div className="flex shrink-0 items-center justify-between border-b border-border-subtle px-5 py-4">
           <h2 className="text-body font-semibold text-fg">New document</h2>
           <button type="button" onClick={onClose} className="rounded p-1 text-fg-muted hover:text-fg"><X size={16} /></button>
@@ -124,9 +170,15 @@ function CreateInvoiceModal({ onClose, onCreated }: { onClose: () => void; onCre
             </div>
           </div>
 
-          <div>
-            <label className="mb-1 block text-caption font-medium text-fg">Due date (optional)</label>
-            <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg focus:outline-none focus:ring-1 focus:ring-accent" />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-caption font-medium text-fg">Issue date</label>
+              <input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} className="w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg focus:outline-none focus:ring-1 focus:ring-accent" />
+            </div>
+            <div>
+              <label className="mb-1 block text-caption font-medium text-fg">Due date (optional)</label>
+              <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg focus:outline-none focus:ring-1 focus:ring-accent" />
+            </div>
           </div>
 
           <div>
@@ -186,7 +238,17 @@ function CreateInvoiceModal({ onClose, onCreated }: { onClose: () => void; onCre
 
           <div>
             <label className="mb-1 block text-caption font-medium text-fg">Notes (optional)</label>
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="Payment terms, reference notes…" className="w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg placeholder:text-fg-muted focus:outline-none focus:ring-1 focus:ring-accent" />
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="Reference notes for this document…" className="w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg placeholder:text-fg-muted focus:outline-none focus:ring-1 focus:ring-accent" />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-caption font-medium text-fg">Terms &amp; conditions (optional)</label>
+            <textarea value={terms} onChange={(e) => setTerms(e.target.value)} rows={2} placeholder="Payment terms, late fees, warranty…" className="w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg placeholder:text-fg-muted focus:outline-none focus:ring-1 focus:ring-accent" />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-caption font-medium text-fg">Footer (optional)</label>
+            <textarea value={footerText} onChange={(e) => setFooterText(e.target.value)} rows={2} placeholder="Thank you for your business, bank details, a closing note…" className="w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg placeholder:text-fg-muted focus:outline-none focus:ring-1 focus:ring-accent" />
           </div>
 
           {err && <p className="text-caption text-error">{err}</p>}
@@ -198,6 +260,16 @@ function CreateInvoiceModal({ onClose, onCreated }: { onClose: () => void; onCre
             <button type="button" onClick={onClose} className="rounded-lg border border-border-subtle px-4 py-2 text-caption text-fg-secondary hover:text-fg transition-colors">Cancel</button>
           </div>
         </form>
+        </div>
+
+        {/* ── Live preview ── */}
+        <div className="hidden min-w-0 flex-1 bg-surface-0 p-4 lg:block">
+          {previewHtml ? (
+            <iframe title="Document preview" srcDoc={previewHtml} className="h-full w-full rounded-lg border border-border-subtle bg-white" />
+          ) : (
+            <div className="flex h-full items-center justify-center text-caption text-fg-muted">Loading preview…</div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -392,6 +464,7 @@ export function InvoicesPage() {
   const [filter, setFilter] = useState<Filter>('ALL');
   const [docTypeFilter, setDocTypeFilter] = useState<'' | 'INVOICE' | 'QUOTE' | 'RECEIPT'>('');
   const [showCreate, setShowCreate] = useState(false);
+  const [showCustomize, setShowCustomize] = useState(false);
   const [selected, setSelected] = useState<{ invoice: InvoiceDto; lineItems: InvoiceLineItemDto[] } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
@@ -444,6 +517,7 @@ export function InvoicesPage() {
   return (
     <div className="flex h-full flex-col bg-surface-0">
       {showCreate && <CreateInvoiceModal onClose={() => setShowCreate(false)} onCreated={handleCreated} />}
+      {showCustomize && <InvoiceCustomizePanel onClose={() => setShowCustomize(false)} />}
 
       <div className="flex h-full min-h-0 flex-1">
         {/* Main list */}
@@ -455,13 +529,23 @@ export function InvoicesPage() {
                 <h1 className="text-title font-semibold text-fg">Invoices & Documents</h1>
                 <p className="text-caption text-fg-muted mt-0.5">Invoices, quotes, and receipts — drafts require approval before sending.</p>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowCreate(true)}
-                className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-caption font-medium text-white hover:bg-accent-dim transition-colors"
-              >
-                <Plus size={14} /> New
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCustomize(true)}
+                  title="Customize your invoice, quote, and receipt template - independent of any single document"
+                  className="flex items-center gap-1.5 rounded-lg border border-accent px-3 py-2 text-caption font-medium text-accent hover:bg-accent-soft transition-colors"
+                >
+                  <Palette size={14} /> Customize
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCreate(true)}
+                  className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-caption font-medium text-white hover:bg-accent-dim transition-colors"
+                >
+                  <Plus size={14} /> New
+                </button>
+              </div>
             </div>
 
             {/* Summary tiles */}

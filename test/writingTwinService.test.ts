@@ -113,17 +113,43 @@ describe('WritingTwinService (Phase W3 - fail-closed AI-attribution boundary, de
     expect(await repo.listStyleExamples(businessId, otherUserId, 'email', 10)).toHaveLength(1);
   });
 
-  it('22. retrieveWritingTwinContext is not called from the WhatsApp AI-agent reply path in this commit (structural check)', async () => {
+  it('22. AURA Learn Agent: aiContextGathererService now wires retrieveWritingTwinContext, gated on both business-level flags together', async () => {
     const source = await readFile(new URL('../src/services/aiContextGathererService.ts', import.meta.url), 'utf8');
-    expect(source).not.toContain('retrieveWritingTwinContext');
-    expect(source).not.toContain('writingTwinService');
+    expect(source).toContain('retrieveWritingTwinContext');
+    expect(source).toContain('writingTwinService');
+    // Never gathered from raw request input - always resolved server-side
+    // from the business's own OWNER membership.
+    expect(source).toContain('findOwnerUserId');
+  });
 
-    // GatherAiHandoffContextInput itself carries no userId field - there is
-    // nothing to pass to Writing Twin retrieval from this path even if a
-    // future change tried, without first adding one deliberately.
-    const inputInterfaceMatch = source.match(/interface GatherAiHandoffContextInput \{([\s\S]*?)\n\}/);
-    expect(inputInterfaceMatch).not.toBeNull();
-    expect(inputInterfaceMatch?.[1]).not.toContain('userId');
+  it("22b. gatherAiHandoffContext's communicationStyle is null unless BOTH learningEnabled and shareWithAgentsEnabled are on for the business OWNER", async () => {
+    const { gatherAiHandoffContext } = await import('../src/services/aiContextGathererService.js');
+    // No real whatsapp_chats row is needed - gatherAiHandoffContext
+    // already tolerates a chatId with none (see its own doc comment on
+    // conversationState), which is exactly what this test needs to stay
+    // focused on the Learn gating alone.
+    const baseInput = { businessId, chatId: crypto.randomUUID(), contactId: null, queryText: 'hello' };
+
+    // Neither flag set - no profile exists yet either, but the gate itself must already be closed.
+    const neitherOn = await gatherAiHandoffContext(baseInput);
+    expect(neitherOn.communicationStyle).toBeNull();
+    expect(neitherOn.learnAllowedAgentIds.size).toBe(0);
+
+    const userContext = businessExecutionContextForUser(businessId, userId);
+    await service.setLearningEnabled(userContext, true);
+    const repo = new WritingTwinRepository(pool);
+    await repo.createProfileVersion(businessId, userId, 'global', signalsWith('concise'), []);
+
+    // Learning on, sharing still off - must stay closed.
+    const learningOnlyOn = await gatherAiHandoffContext(baseInput);
+    expect(learningOnlyOn.communicationStyle).toBeNull();
+
+    await service.setShareWithAgentsEnabled(userContext, true);
+
+    // Both on now - the profile is actually attached.
+    const bothOn = await gatherAiHandoffContext(baseInput);
+    expect(bothOn.communicationStyle?.available).toBe(true);
+    expect(bothOn.communicationStyle?.profile?.signals.preferredTone).toBe('concise');
   });
 
   describe('sweepExpiredWritingTwinRawEvents (Section 75-91 - the sweep repository.sweepExpiredRawEvents() had, but nothing ever called)', () => {

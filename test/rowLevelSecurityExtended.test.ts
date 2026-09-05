@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { pool, queryAsTenant } from '../src/db/pool.js';
-import { createTestBusiness, resetDatabase } from './helpers.js';
+import { createTestBusiness, createTestUser, resetDatabase } from './helpers.js';
 
 // Migration 958 extends the migration-944 RLS backstop from 4 tables to
 // every other real tenant-scoped table. This proves the database itself -
@@ -85,6 +85,78 @@ describe('Row-Level Security, extended tables (migration 958, real Postgres)', (
     const { rows } = await queryAsTenant(businessB).query<{ customer_id: string }>('SELECT customer_id FROM customer_memory');
     expect(rows).toHaveLength(1);
     expect(rows[0]?.customer_id).toBe(customerB);
+  });
+
+  it('email_notes (Email Redesign, migration 992): notes are isolated by business - and always must be read via queryAsTenant, never the bare pool', async () => {
+    const userA = await createTestUser(businessA);
+    const userB = await createTestUser(businessB);
+    await pool.query(`INSERT INTO email_notes (business_id, user_id, body) VALUES ($1, $2, 'A-only note')`, [businessA, userA]);
+    await pool.query(`INSERT INTO email_notes (business_id, user_id, body) VALUES ($1, $2, 'B-only note')`, [businessB, userB]);
+
+    const { rows } = await queryAsTenant(businessA).query<{ body: string }>('SELECT body FROM email_notes');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.body).toBe('A-only note');
+  });
+
+  it('email_ai_suggestions (Email Redesign, migration 992): a business only ever sees its own cached digest', async () => {
+    await pool.query(`INSERT INTO email_ai_suggestions (business_id, generated_on, suggestions) VALUES ($1, now()::date, '["A-only suggestion"]'::jsonb)`, [businessA]);
+    await pool.query(`INSERT INTO email_ai_suggestions (business_id, generated_on, suggestions) VALUES ($1, now()::date, '["B-only suggestion"]'::jsonb)`, [businessB]);
+
+    const { rows } = await queryAsTenant(businessB).query<{ suggestions: string[] }>('SELECT suggestions FROM email_ai_suggestions');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.suggestions).toEqual(['B-only suggestion']);
+  });
+
+  it('email_oauth_accounts (Email Redesign RLS follow-up): a connected account is isolated by business', async () => {
+    await pool.query(
+      `INSERT INTO email_oauth_accounts (business_id, provider, email_address, access_token_enc) VALUES ($1, 'gmail', 'a@example.com', 'enc-a')`,
+      [businessA],
+    );
+    await pool.query(
+      `INSERT INTO email_oauth_accounts (business_id, provider, email_address, access_token_enc) VALUES ($1, 'gmail', 'b@example.com', 'enc-b')`,
+      [businessB],
+    );
+
+    const { rows } = await queryAsTenant(businessA).query<{ email_address: string }>('SELECT email_address FROM email_oauth_accounts');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.email_address).toBe('a@example.com');
+  });
+
+  it('email_oauth_folders and email_oauth_messages (Email Redesign RLS follow-up): both isolated by their own denormalized business_id', async () => {
+    const accountA = (
+      await pool.query<{ id: string }>(
+        `INSERT INTO email_oauth_accounts (business_id, provider, email_address, access_token_enc) VALUES ($1, 'gmail', 'a@example.com', 'enc-a') RETURNING id`,
+        [businessA],
+      )
+    ).rows[0]!.id;
+    const accountB = (
+      await pool.query<{ id: string }>(
+        `INSERT INTO email_oauth_accounts (business_id, provider, email_address, access_token_enc) VALUES ($1, 'gmail', 'b@example.com', 'enc-b') RETURNING id`,
+        [businessB],
+      )
+    ).rows[0]!.id;
+
+    const folderA = (
+      await pool.query<{ id: string }>(
+        `INSERT INTO email_oauth_folders (account_id, business_id, provider_folder_id, display_name) VALUES ($1, $2, 'INBOX', 'Inbox') RETURNING id`,
+        [accountA, businessA],
+      )
+    ).rows[0]!.id;
+    await pool.query(
+      `INSERT INTO email_oauth_folders (account_id, business_id, provider_folder_id, display_name) VALUES ($1, $2, 'INBOX', 'Inbox')`,
+      [accountB, businessB],
+    );
+
+    await pool.query(
+      `INSERT INTO email_oauth_messages (account_id, business_id, provider_message_id, folder_id, subject) VALUES ($1, $2, 'msg-a', $3, 'A-only subject')`,
+      [accountA, businessA, folderA],
+    );
+
+    const folderRows = await queryAsTenant(businessA).query<{ display_name: string }>('SELECT display_name FROM email_oauth_folders');
+    expect(folderRows.rows).toHaveLength(1);
+
+    const messageRows = await queryAsTenant(businessB).query<{ subject: string }>('SELECT subject FROM email_oauth_messages');
+    expect(messageRows.rows).toHaveLength(0);
   });
 
   it('with no tenant context set, the tenant role sees nothing (fails closed, never open)', async () => {

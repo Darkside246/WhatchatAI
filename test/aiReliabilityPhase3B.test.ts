@@ -43,6 +43,21 @@ vi.mock('../src/services/geminiClient.js', () => ({
   getGeminiClient: () => ({ models: { generateContent: (...args: unknown[]) => generateContentMock(...args) } }),
 }));
 
+// This whole file's circuit-breaker/escalation assertions assume Gemini is
+// the ONLY registered provider, so a mocked Gemini failure always surfaces
+// as a real 'unavailable' outcome. Without this, a machine whose own .env
+// genuinely configures GOOSE_SERVICE_URL (as this dev environment's does)
+// registers a real GooseProvider right after Gemini in the failover order
+// (see providerAdapters.ts's registerDefaultAiProviders) and the gateway
+// silently fails over to a real, unmocked, live Goose call - turning an
+// expected 'unavailable' into a real 'generated'/'reply' non-deterministically.
+// Forcing Goose "not configured" here restores this file's own Gemini-only
+// test universe regardless of ambient machine config.
+vi.mock('../src/services/gooseService.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/gooseService.js')>();
+  return { ...actual, getCapabilities: () => ({ configured: false, url: undefined }) };
+});
+
 const notifyBusinessMock = vi.fn().mockResolvedValue([]);
 vi.mock('../src/services/notificationService.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/notificationService.js')>();

@@ -6,21 +6,41 @@ import {
   TrialAlreadyUsedOnboardingError,
   TrialPhoneAlreadyUsedOnboardingError,
   TrialProductUnavailableOnboardingError,
+  RegistrationPausedOnboardingError,
   InvalidPhoneNumberError,
 } from '../services/trialOnboardingService.js';
 import { hasUsedTrial } from '../services/trialService.js';
 import { isWeakPasswordError } from '../services/authService.js';
 import { TrialRepository } from '../repositories/trialRepository.js';
 import { ProductKeySchema } from '../domain/platform/productAccounts.js';
-import { requireAuth, requireDeveloper, setSessionCookie, type AuthContext } from './authMiddleware.js';
+import { requireAuth, requireDeveloper, requireDeveloperAdmin, setSessionCookie, type AuthContext } from './authMiddleware.js';
+import { UserRepository } from '../repositories/userRepository.js';
+import { BusinessRepository } from '../repositories/businessRepository.js';
 import type { Request } from 'express';
 import { pool } from '../db/pool.js';
 import { getSystemHealth } from '../services/systemHealthService.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { PlatformSettingsRepository } from '../repositories/platformSettingsRepository.js';
+import {
+  isGooseFallbackEnabled, setGooseFallbackEnabled,
+  isRegistrationPaused, setRegistrationPaused,
+  isMaintenanceModeOn, setMaintenanceMode,
+  getTrialDurationHours, setTrialDurationHours,
+  getGeminiModelOverride, setGeminiModelOverride,
+  getAiTokenTopupCatalogOverride, setAiTokenTopupCatalog,
+  getAiMemoryTopupCatalogOverride, setAiMemoryTopupCatalog,
+} from '../services/platform/platformConfigService.js';
+import { TOPUP_CATALOG } from '../services/billing/aiTokenTopupService.js';
+import { MEMORY_TOPUP_CATALOG } from '../services/billing/aiMemoryTopupService.js';
+import { OpenClawCellRepository } from '../repositories/openclawCellRepository.js';
+import { OpenClawSecurityAdvisoryRepository } from '../repositories/openclawSecurityAdvisoryRepository.js';
+import { openclawCellService } from '../services/openclawCellService.js';
+import { testGeminiConnection } from '../services/aiEngineStatusService.js';
 
 const router = Router();
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
+const userRepository = new UserRepository(pool);
+const businessRepository = new BusinessRepository(pool);
 const platformSettingsRepository = new PlatformSettingsRepository(pool);
 const productKey = ProductKeySchema;
 const trials = new TrialRepository(pool);
@@ -42,6 +62,7 @@ router.post('/trials/register', async (req, res) => {
     setSessionCookie(req, res, result.token, 48 * 60 * 60);
     return res.status(201).json({ user: result.user, productAccountId: result.productAccountId, productKey: result.productKey, trial: { id: result.trialId, startsAt: result.startsAt, endsAt: result.endsAt, state: 'ACTIVE' } });
   } catch (error) {
+    if (error instanceof RegistrationPausedOnboardingError) return res.status(403).json({ error: 'REGISTRATION_PAUSED', message: error.message });
     if (error instanceof TrialAlreadyUsedOnboardingError) return res.status(409).json({ error: 'TRIAL_ALREADY_USED', message: error.message });
     if (error instanceof TrialPhoneAlreadyUsedOnboardingError) return res.status(409).json({ error: 'TRIAL_ALREADY_USED', message: error.message });
     if (error instanceof InvalidPhoneNumberError) return res.status(400).json({ error: 'INVALID_PHONE_NUMBER', message: error.message });
@@ -95,10 +116,94 @@ router.get('/developer/control-plane-stats', requireAuth, requireDeveloper, asyn
   return res.status(200).json({ stats });
 });
 
+/** The real detail behind the "Active trials" stat pill - every product_trials row, business name resolved server-side so the frontend needs no second lookup. */
+router.get('/developer/trials', requireAuth, requireDeveloper, async (_req, res) => {
+  const allTrials = await trials.listAll();
+  return res.status(200).json({
+    trials: allTrials.map((trial) => ({
+      id: trial.id, email: trial.email, productKey: trial.productKey, state: trial.state,
+      startsAt: trial.startsAt, endsAt: trial.endsAt, productAccountId: trial.productAccountId,
+    })),
+  });
+});
+
+/** The real detail behind the "Security events (24h)" stat pill - structural fields only, never raw message content. */
+router.get('/developer/security-events', requireAuth, requireDeveloper, async (req, res) => {
+  const hours = Number(req.query.hours ?? 24) || 24;
+  const events = await securityAuditLogRepository.listRecentAcrossPlatform(hours);
+  return res.status(200).json({
+    events: events.map((event) => ({
+      id: event.id, eventType: event.eventType, severity: event.severity,
+      businessId: event.businessId, businessName: event.businessName, createdAt: event.createdAt,
+    })),
+  });
+});
+
 /** Section 116: the platform-wide events (plan_updated, plan_entitlement_updated, vertical_assigned) no business-scoped view (e.g. /api/workspace/activity-log) can ever see, since they carry no single business_id. */
 router.get('/developer/audit-log', requireAuth, requireDeveloper, async (_req, res) => {
   const events = await securityAuditLogRepository.listPlatformEvents();
   return res.status(200).json({ events });
+});
+
+/**
+ * Developer-tier management (migration 1002). Listing is open to any
+ * developer (matching every other requireDeveloper route's own read
+ * access); the two mutating routes below are the one deliberate
+ * requireDeveloperAdmin-gated surface - only an Admin developer may
+ * promote/demote another user or change an existing developer's tier.
+ */
+router.get('/developer/developers', requireAuth, requireDeveloper, async (_req, res) => {
+  const developers = await userRepository.listDevelopers();
+  return res.status(200).json({ developers: developers.map((user) => ({ id: user.id, email: user.email, displayName: user.displayName, developerTier: user.developerTier, createdAt: user.createdAt })) });
+});
+
+/** email, not userId - an Admin knows the person's real email, not their opaque id (which only appears once they're already a developer, i.e. after this call). */
+const promoteDeveloperSchema = z.object({ email: z.string().trim().email(), tier: z.enum(['ADMIN', 'STANDARD']) });
+router.post('/developer/developers', requireAuth, requireDeveloperAdmin, async (req, res) => {
+  const parsed = promoteDeveloperSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_INPUT' });
+  const auth = res.locals.auth as AuthContext;
+  const target = await userRepository.findByEmail(parsed.data.email.toLowerCase());
+  if (!target) return res.status(404).json({ error: 'USER_NOT_FOUND' });
+  const user = await userRepository.promoteToDeveloper(target.id, parsed.data.tier);
+  if (!user) return res.status(404).json({ error: 'USER_NOT_FOUND' });
+  await securityAuditLogRepository.record({ businessId: null, eventType: 'developer_promoted', rawMetadata: { targetUserId: user.id, tier: parsed.data.tier, promotedByUserId: auth.userId } });
+  return res.status(200).json({ user: { id: user.id, email: user.email, developerTier: user.developerTier } });
+});
+
+const changeTierSchema = z.object({ tier: z.enum(['ADMIN', 'STANDARD']) });
+router.patch('/developer/developers/:userId/tier', requireAuth, requireDeveloperAdmin, async (req, res) => {
+  const parsed = changeTierSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_INPUT' });
+  const auth = res.locals.auth as AuthContext;
+  const user = await userRepository.setDeveloperTier(String(req.params['userId'] ?? ''), parsed.data.tier);
+  if (!user) return res.status(404).json({ error: 'DEVELOPER_NOT_FOUND' });
+  await securityAuditLogRepository.record({ businessId: null, eventType: 'developer_tier_changed', rawMetadata: { targetUserId: user.id, tier: parsed.data.tier, changedByUserId: auth.userId } });
+  return res.status(200).json({ user: { id: user.id, email: user.email, developerTier: user.developerTier } });
+});
+
+router.delete('/developer/developers/:userId', requireAuth, requireDeveloperAdmin, async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const user = await userRepository.demoteToClient(String(req.params['userId'] ?? ''));
+  if (!user) return res.status(404).json({ error: 'DEVELOPER_NOT_FOUND' });
+  await securityAuditLogRepository.record({ businessId: null, eventType: 'developer_demoted', rawMetadata: { targetUserId: user.id, demotedByUserId: auth.userId } });
+  return res.status(200).json({ user: { id: user.id, email: user.email, developerTier: user.developerTier } });
+});
+
+/** The one action that grants/revokes Part 3's businesses.tier_unrestricted exemption - Admin-only, since it's the actual mechanism that removes a business from every subscription/trial/entitlement gate. */
+const tierUnrestrictedSchema = z.object({ unrestricted: z.boolean() });
+router.patch('/developer/businesses/:businessId/tier-unrestricted', requireAuth, requireDeveloperAdmin, async (req, res) => {
+  const parsed = tierUnrestrictedSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_INPUT' });
+  const auth = res.locals.auth as AuthContext;
+  const business = await businessRepository.setTierUnrestricted(String(req.params['businessId'] ?? ''), parsed.data.unrestricted);
+  if (!business) return res.status(404).json({ error: 'BUSINESS_NOT_FOUND' });
+  await securityAuditLogRepository.record({
+    businessId: business.id,
+    eventType: parsed.data.unrestricted ? 'business_tier_unrestricted_granted' : 'business_tier_unrestricted_revoked',
+    rawMetadata: { grantedByUserId: auth.userId },
+  });
+  return res.status(200).json({ business: { id: business.id, name: business.name, tierUnrestricted: business.tierUnrestricted } });
 });
 
 /**
@@ -114,6 +219,11 @@ router.get('/developer/system-health', requireAuth, requireDeveloper, async (_re
 
 router.get('/developer/ai-usage', requireAuth, requireDeveloper, async (_req, res) => {
   return res.status(200).json(await getAiUsageOverview());
+});
+
+/** A real, live test call against Gemini using the exact request shape a real reply uses (aiEngineStatusService.ts's own doc comment) - honors any developer-set model override, never just the env-var chain. */
+router.post('/developer/test-gemini-connection', requireAuth, requireDeveloper, async (_req, res) => {
+  return res.status(200).json(await testGeminiConnection());
 });
 
 /**
@@ -142,6 +252,161 @@ router.patch('/developer/autonomy-kill-switch', requireAuth, requireDeveloper, a
     rawMetadata: { key: 'autonomy_kill_switch', changedBy: auth.userId, enabled: parsed.data.enabled },
   });
   return res.status(200).json({ enabled: parsed.data.enabled });
+});
+
+const openclawCellRepository = new OpenClawCellRepository(pool);
+const openclawSecurityAdvisoryRepository = new OpenClawSecurityAdvisoryRepository(pool);
+
+/**
+ * Developer Master Control page: one generic pair of routes for every new
+ * platform_settings-backed toggle (Section: Developer Master Control Page),
+ * rather than a bespoke route per setting - the existing dedicated routes
+ * (autonomy-kill-switch above, payment-providers in billingRoutes.ts) are
+ * left untouched since they already work.
+ */
+const PLATFORM_CONFIG_KEYS = [
+  'goose_fallback_enabled', 'registration_paused', 'maintenance_mode',
+  'trial_duration_hours', 'gemini_model_override', 'ai_token_topup_catalog',
+  'ai_memory_topup_catalog',
+] as const;
+
+router.get('/developer/platform-config', requireAuth, requireDeveloper, async (_req, res) => {
+  return res.status(200).json({
+    gooseFallbackEnabled: await isGooseFallbackEnabled(),
+    registrationPaused: await isRegistrationPaused(),
+    maintenanceMode: await isMaintenanceModeOn(),
+    trialDurationHours: await getTrialDurationHours(),
+    geminiModelOverride: await getGeminiModelOverride(),
+    aiTokenTopupCatalog: (await getAiTokenTopupCatalogOverride()) ?? TOPUP_CATALOG,
+    aiMemoryTopupCatalog: (await getAiMemoryTopupCatalogOverride()) ?? MEMORY_TOPUP_CATALOG,
+  });
+});
+
+const aiTokenTopupCatalogEntrySchema = z.object({
+  tokens: z.number().int().positive(),
+  priceCents: z.number().int().positive(),
+  currency: z.string().trim().length(3),
+});
+
+const aiMemoryTopupCatalogEntrySchema = z.object({
+  profiles: z.number().int().positive(),
+  priceCents: z.number().int().positive(),
+  currency: z.string().trim().length(3),
+});
+
+router.patch('/developer/platform-config/:key', requireAuth, requireDeveloper, async (req, res) => {
+  const key = z.enum(PLATFORM_CONFIG_KEYS).safeParse(req.params.key);
+  if (!key.success) return res.status(400).json({ error: 'UNKNOWN_PLATFORM_CONFIG_KEY' });
+  const auth = res.locals.auth as AuthContext;
+
+  switch (key.data) {
+    case 'goose_fallback_enabled': {
+      const parsed = z.object({ enabled: z.boolean() }).safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: 'INVALID_VALUE', details: parsed.error.flatten() });
+      await setGooseFallbackEnabled(parsed.data.enabled, auth.userId);
+      break;
+    }
+    case 'registration_paused': {
+      const parsed = z.object({ enabled: z.boolean() }).safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: 'INVALID_VALUE', details: parsed.error.flatten() });
+      await setRegistrationPaused(parsed.data.enabled, auth.userId);
+      break;
+    }
+    case 'maintenance_mode': {
+      const parsed = z.object({ enabled: z.boolean() }).safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: 'INVALID_VALUE', details: parsed.error.flatten() });
+      await setMaintenanceMode(parsed.data.enabled, auth.userId);
+      break;
+    }
+    case 'trial_duration_hours': {
+      const parsed = z.object({ hours: z.number().int().min(1).max(24 * 30) }).safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: 'INVALID_VALUE', details: parsed.error.flatten() });
+      await setTrialDurationHours(parsed.data.hours, auth.userId);
+      break;
+    }
+    case 'gemini_model_override': {
+      const parsed = z.object({ model: z.string().trim().max(200).nullable() }).safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: 'INVALID_VALUE', details: parsed.error.flatten() });
+      await setGeminiModelOverride(parsed.data.model, auth.userId);
+      break;
+    }
+    case 'ai_token_topup_catalog': {
+      const parsed = z.record(z.string(), aiTokenTopupCatalogEntrySchema).safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: 'INVALID_VALUE', details: parsed.error.flatten() });
+      await setAiTokenTopupCatalog(parsed.data, auth.userId);
+      break;
+    }
+    case 'ai_memory_topup_catalog': {
+      const parsed = z.record(z.string(), aiMemoryTopupCatalogEntrySchema).safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: 'INVALID_VALUE', details: parsed.error.flatten() });
+      await setAiMemoryTopupCatalog(parsed.data, auth.userId);
+      break;
+    }
+  }
+
+  await securityAuditLogRepository.record({
+    businessId: null,
+    eventType: 'platform_setting_updated',
+    severity: key.data === 'maintenance_mode' || key.data === 'registration_paused' ? 'warning' : 'info',
+    rawMetadata: { key: key.data, changedBy: auth.userId, body: req.body },
+  });
+  return res.status(200).json({ ok: true });
+});
+
+/**
+ * Real secrets-configured checklist ("passwords: status only, not
+ * editable" - see the Developer Master Control plan). Booleans only - no
+ * value, masked or otherwise, ever leaves the server.
+ */
+router.get('/developer/secrets-status', requireAuth, requireDeveloper, async (_req, res) => {
+  const configured = (value: string | undefined): boolean => Boolean(value?.trim());
+  return res.status(200).json({
+    secrets: [
+      { name: 'GEMINI_API_KEY', configured: configured(process.env.GEMINI_API_KEY) },
+      { name: 'GOOSE_SERVICE_API_KEY', configured: configured(process.env.GOOSE_SERVICE_API_KEY) },
+      { name: 'OPENAI_API_KEY', configured: configured(process.env.OPENAI_API_KEY) },
+      { name: 'OPENROUTER_API_KEY', configured: configured(process.env.OPENROUTER_API_KEY) },
+      { name: 'GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET', configured: configured(process.env.GMAIL_CLIENT_ID) && configured(process.env.GMAIL_CLIENT_SECRET) },
+      { name: 'ZOOM_CLIENT_ID / ZOOM_CLIENT_SECRET', configured: configured(process.env.ZOOM_CLIENT_ID) && configured(process.env.ZOOM_CLIENT_SECRET) },
+      { name: 'OUTLOOK_CLIENT_ID / OUTLOOK_CLIENT_SECRET', configured: configured(process.env.OUTLOOK_CLIENT_ID) && configured(process.env.OUTLOOK_CLIENT_SECRET) },
+      { name: 'BIMPAY_BRIDGE_SECRET', configured: configured(process.env.BIMPAY_BRIDGE_SECRET) },
+      { name: 'PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET / PAYPAL_WEBHOOK_ID', configured: configured(process.env.PAYPAL_CLIENT_ID) && configured(process.env.PAYPAL_CLIENT_SECRET) && configured(process.env.PAYPAL_WEBHOOK_ID) },
+    ],
+  });
+});
+
+/**
+ * OpenClaw is genuinely experimental and unwired today (no production code
+ * path ever provisions a cell) - this gives honest, real visibility rather
+ * than pretending it's a bigger surface than it is. clear-quarantine is
+ * the one safe, already-implemented write action this subsystem has.
+ */
+router.get('/developer/openclaw/status', requireAuth, requireDeveloper, async (_req, res) => {
+  const [cells, advisories, recentRuns] = await Promise.all([
+    openclawCellRepository.listAll(),
+    openclawSecurityAdvisoryRepository.listRecent(20),
+    openclawSecurityAdvisoryRepository.listRecentRuns(1),
+  ]);
+  return res.status(200).json({
+    mcpServerEnabled: process.env.OPENCLAW_MCP_SERVER_ENABLED === 'true',
+    cellCount: cells.length,
+    quarantinedCells: cells.filter((c) => c.securityStatus === 'SECURITY_QUARANTINED').map((c) => ({ businessId: c.businessId, cellId: c.cellId, quarantineReason: c.quarantineReason, quarantinedAt: c.quarantinedAt })),
+    recentAdvisories: advisories,
+    lastWatcherRun: recentRuns[0] ?? null,
+  });
+});
+
+router.post('/developer/openclaw/cells/:businessId/clear-quarantine', requireAuth, requireDeveloper, async (req, res) => {
+  const businessId = z.string().uuid().safeParse(req.params.businessId);
+  if (!businessId.success) return res.status(400).json({ error: 'INVALID_BUSINESS_ID' });
+  await openclawCellService.clearQuarantine(businessId.data);
+  const auth = res.locals.auth as AuthContext;
+  await securityAuditLogRepository.record({
+    businessId: businessId.data,
+    eventType: 'platform_setting_updated',
+    rawMetadata: { key: 'openclaw_clear_quarantine', changedBy: auth.userId },
+  });
+  return res.status(200).json({ ok: true });
 });
 
 export { router as productAccountRouter };

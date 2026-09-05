@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { NavLink, useSearchParams } from 'react-router-dom';
-import { api, mediaUrl, type WorkspaceChatSummary } from '../lib/api.js';
+import { api, mediaUrl, type WorkspaceChatSummary, type ListDto } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
 import { Pin, Mic, Image as ImageIcon, Video, FileText, Sticker, MapPin, UserSquare, Archive } from 'lucide-react';
 import { Avatar } from './Avatar.js';
@@ -39,16 +39,23 @@ const URGENCY_ROW_CLASS: Record<'HIGH' | 'MEDIUM', string> = {
 // "success" is reserved for live/online/connected signals - kept distinct
 // from "accent" (the brand/interactive color used for buttons and selection).
 
-type FilterPill = 'all' | 'unread' | 'groups' | 'needsHuman';
+type BuiltinFilterPill = 'all' | 'unread' | 'groups' | 'needsHuman';
+// A real List's own id (a UUID) once selected - real WhatsApp's own "swipe
+// down to view your Lists" bar mixes its 4 fixed defaults (All/Unread/
+// Favorites/Groups) with a business's own custom Lists exactly the same
+// way; this mirrors that by appending each real List (listRepository.ts)
+// as one more pill alongside the fixed ones, rather than a second,
+// separate filter UI.
+type FilterPill = BuiltinFilterPill | string;
 
-const FILTER_PILLS: { value: FilterPill; label: string }[] = [
+const BUILTIN_FILTER_PILLS: { value: BuiltinFilterPill; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'unread', label: 'Unread' },
   { value: 'groups', label: 'Groups' },
   { value: 'needsHuman', label: 'Needs human' },
 ];
 
-function isFilterPill(value: string | null): value is FilterPill {
+function isBuiltinFilterPill(value: string | null): value is BuiltinFilterPill {
   return value === 'all' || value === 'unread' || value === 'groups' || value === 'needsHuman';
 }
 
@@ -105,7 +112,7 @@ function ChatRow({
       to={`/chats/${chat.id}`}
       title={urgency === 'HIGH' ? 'Urgent - needs human attention' : urgency === 'MEDIUM' ? 'Needs attention' : undefined}
       className={({ isActive }) =>
-        `flex w-full items-center gap-3 border-b border-r-4 border-border-subtle/60 px-4 py-3 text-left transition-colors ${
+        `flex h-[68px] w-full items-center gap-3 border-b border-r-4 border-border-subtle/60 px-4 text-left transition-colors ${
           isActive ? 'border-r-accent bg-accent-soft' : `border-r-transparent hover:bg-surface-2 ${urgency ? URGENCY_ROW_CLASS[urgency] : ''}`
         }`
       }
@@ -128,9 +135,9 @@ function ChatRow({
         />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex items-baseline justify-between gap-2">
           <p className="truncate text-body font-medium text-fg">{chat.displayName}</p>
-          <span className="shrink-0 text-meta text-fg-muted">{formatTime(chat.lastMessageAt)}</span>
+          <span className="shrink-0 tabular-nums text-meta text-fg-muted">{formatTime(chat.lastMessageAt)}</span>
         </div>
         <div className="mt-0.5 flex items-center gap-1.5">
           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${AI_MODE_DOT[chat.aiMode]}`} />
@@ -161,8 +168,9 @@ export function ChatListPane({ className = '' }: Props) {
   // hand to find the 1-2 chats actually being pointed at.
   const [searchParams, setSearchParams] = useSearchParams();
   const initialFilter = searchParams.get('filter');
-  const [filter, setFilterState] = useState<FilterPill>(isFilterPill(initialFilter) ? initialFilter : 'all');
+  const [filter, setFilterState] = useState<FilterPill>(initialFilter ?? 'all');
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [lists, setLists] = useState<ListDto[]>([]);
 
   function setFilter(next: FilterPill) {
     setFilterState(next);
@@ -185,6 +193,12 @@ export function ChatListPane({ className = '' }: Props) {
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    // Loaded once, not on the same poll cadence as chats - a business's own
+    // Lists change far less often than its messages do.
+    api.getLists().then(({ lists: real }) => setLists(real)).catch(() => setLists([]));
+  }, []);
+
   const { connected } = useWhatsAppSync((event: RealtimeEvent) => {
     if (event.type === 'chat.updated' || event.type === 'message.new') void load();
   });
@@ -192,10 +206,15 @@ export function ChatListPane({ className = '' }: Props) {
   const filtered = (chats ?? [])
     .filter((chat) => chat.displayName.toLowerCase().includes(search.toLowerCase()))
     .filter((chat) => {
-      if (filter === 'unread') return chat.unreadCount > 0;
-      if (filter === 'groups') return chat.chatType === 'group';
-      if (filter === 'needsHuman') return chat.aiMode === 'HUMAN_TAKEOVER';
-      return true;
+      if (isBuiltinFilterPill(filter)) {
+        if (filter === 'unread') return chat.unreadCount > 0;
+        if (filter === 'groups') return chat.chatType === 'group';
+        if (filter === 'needsHuman') return chat.aiMode === 'HUMAN_TAKEOVER';
+        return true;
+      }
+      // filter is a real List's id - membership only, real WhatsApp's own
+      // "lists remain applied until you change the filter view" behavior.
+      return chat.listIds.includes(filter);
     });
 
   // Pinned first, mirroring WhatsApp's own ordering - driven by the real
@@ -225,8 +244,8 @@ export function ChatListPane({ className = '' }: Props) {
           placeholder="Search or start a new chat"
           className="mt-3 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg placeholder:text-fg-muted focus:border-accent focus:outline-none"
         />
-        <div className="mt-3 flex gap-1.5">
-          {FILTER_PILLS.map((pill) => (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {[...BUILTIN_FILTER_PILLS, ...lists.map((list) => ({ value: list.id, label: list.name }))].map((pill) => (
             <button
               key={pill.value}
               type="button"

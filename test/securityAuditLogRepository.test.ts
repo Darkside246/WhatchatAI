@@ -59,3 +59,50 @@ describe('SecurityAuditLogRepository - platform-wide events (real Postgres, migr
     expect(events[0]?.eventType).toBe('vertical_assigned');
   });
 });
+
+describe('SecurityAuditLogRepository - governance aggregation methods (real Postgres, AI Governance & Oversight v1)', () => {
+  it('countGroupedByAgentSince groups ai_tool_denied by (business, agent), ignoring rows with no agentId or too old', async () => {
+    const repo = new SecurityAuditLogRepository(pool);
+    const businessA = await createTestBusiness('A');
+    const businessB = await createTestBusiness('B');
+    const sinceIso = new Date(Date.now() - 60_000).toISOString();
+
+    await repo.record({ businessId: businessA, eventType: 'ai_tool_denied', rawMetadata: { agentId: 'agent-1' } });
+    await repo.record({ businessId: businessA, eventType: 'ai_tool_denied', rawMetadata: { agentId: 'agent-1' } });
+    await repo.record({ businessId: businessA, eventType: 'ai_tool_denied', rawMetadata: { agentId: 'agent-2' } });
+    await repo.record({ businessId: businessB, eventType: 'ai_tool_denied', rawMetadata: { agentId: 'agent-3' } });
+    await repo.record({ businessId: businessA, eventType: 'ai_tool_denied', rawMetadata: {} }); // no agentId - excluded
+    await repo.record({ businessId: businessA, eventType: 'ai_tool_invoked', rawMetadata: { agentId: 'agent-1' } }); // wrong event type - excluded
+
+    const grouped = await repo.countGroupedByAgentSince('ai_tool_denied', sinceIso);
+    const forBusinessA = grouped.filter((g) => g.businessId === businessA);
+    expect(forBusinessA.find((g) => g.agentId === 'agent-1')?.count).toBe(2);
+    expect(forBusinessA.find((g) => g.agentId === 'agent-2')?.count).toBe(1);
+    expect(grouped.find((g) => g.businessId === businessB && g.agentId === 'agent-3')?.count).toBe(1);
+  });
+
+  it('countGroupedByAgentSince excludes rows created before the given sinceIso', async () => {
+    const repo = new SecurityAuditLogRepository(pool);
+    const businessId = await createTestBusiness();
+    await repo.record({ businessId, eventType: 'ai_tool_denied', rawMetadata: { agentId: 'agent-1' } });
+    const sinceIso = new Date(Date.now() + 60_000).toISOString(); // one minute in the future - nothing should match
+    const grouped = await repo.countGroupedByAgentSince('ai_tool_denied', sinceIso);
+    expect(grouped.find((g) => g.businessId === businessId)).toBeUndefined();
+  });
+
+  it('countGroupedByBusinessSince sums across multiple event types, grouped by business only', async () => {
+    const repo = new SecurityAuditLogRepository(pool);
+    const businessA = await createTestBusiness('A');
+    const businessB = await createTestBusiness('B');
+    const sinceIso = new Date(Date.now() - 60_000).toISOString();
+
+    await repo.record({ businessId: businessA, eventType: 'sentinel_heuristic_block', rawMetadata: {} });
+    await repo.record({ businessId: businessA, eventType: 'sentinel_ai_block', rawMetadata: {} });
+    await repo.record({ businessId: businessA, eventType: 'sentinel_pass', rawMetadata: {} }); // not in the requested set - excluded
+    await repo.record({ businessId: businessB, eventType: 'sentinel_heuristic_block', rawMetadata: {} });
+
+    const grouped = await repo.countGroupedByBusinessSince(['sentinel_heuristic_block', 'sentinel_ai_block'], sinceIso);
+    expect(grouped.find((g) => g.businessId === businessA)?.count).toBe(2);
+    expect(grouped.find((g) => g.businessId === businessB)?.count).toBe(1);
+  });
+});

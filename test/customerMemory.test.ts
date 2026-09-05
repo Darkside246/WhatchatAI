@@ -6,7 +6,10 @@ import { applyCustomerMemoryUpdate } from '../src/services/state/conversationSta
 import { gatherAiHandoffContext } from '../src/services/aiContextGathererService.js';
 import { WhatsAppContactRepository } from '../src/repositories/whatsappContactRepository.js';
 import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
-import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.js';
+import { EntitlementService } from '../src/services/entitlementService.js';
+import { PlanRepository } from '../src/repositories/planRepository.js';
+import { SubscriptionRepository } from '../src/repositories/subscriptionRepository.js';
+import { createTestAccount, createTestBusiness, createTestPlan, createTestSubscription, resetDatabase } from './helpers.js';
 
 describe('CustomerMemoryRepository (real Postgres - migration 959, layer 2 of layered memory)', () => {
   let businessId: string;
@@ -81,6 +84,77 @@ describe('CustomerMemoryRepository (real Postgres - migration 959, layer 2 of la
   });
 });
 
+describe('CustomerMemoryRepository.countByBusiness (AI Agents Page Consolidation)', () => {
+  beforeEach(resetDatabase);
+
+  it('counts real memory rows for this business only, never another business\'s', async () => {
+    const repo = new CustomerMemoryRepository(pool);
+    const businessA = await createTestBusiness('Business A');
+    const businessB = await createTestBusiness('Business B');
+    const { rows: customersA } = await pool.query<{ id: string }>('INSERT INTO customers (business_id) VALUES ($1), ($1) RETURNING id', [businessA]);
+    const { rows: customersB } = await pool.query<{ id: string }>('INSERT INTO customers (business_id) VALUES ($1) RETURNING id', [businessB]);
+
+    await repo.getOrCreate(businessA, customersA[0]!.id);
+    await repo.getOrCreate(businessA, customersA[1]!.id);
+    await repo.getOrCreate(businessB, customersB[0]!.id);
+
+    expect(await repo.countByBusiness(businessA)).toBe(2);
+    expect(await repo.countByBusiness(businessB)).toBe(1);
+  });
+
+  it('returns zero for a business with no memory rows at all', async () => {
+    const repo = new CustomerMemoryRepository(pool);
+    const businessId = await createTestBusiness();
+    expect(await repo.countByBusiness(businessId)).toBe(0);
+  });
+});
+
+describe('EntitlementService.canCreateCustomerMemory (AI Agents Page Consolidation)', () => {
+  let entitlements: EntitlementService;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    entitlements = new EntitlementService(pool);
+  });
+
+  it('allows creating memory under the plan\'s real cap', async () => {
+    const businessId = await createTestBusiness();
+    await createTestSubscription(businessId, 'starter');
+    const result = await entitlements.canCreateCustomerMemory(businessId);
+    expect(result.allowed).toBe(true);
+    expect(result.limit).toBe(100); // migration 982's seeded starter cap
+  });
+
+  it('denies once the plan\'s cap is reached', async () => {
+    // A throwaway plan (never the real seeded 'starter') - resetDatabase()
+    // deliberately never truncates plans/plan_entitlements (reference data,
+    // not per-test state, per helpers.ts's own NOTE), so mutating a real
+    // seed plan's entitlement in place would leak into every other test in
+    // the same process for the rest of the run (planAdmin.test.ts's own
+    // doc comment: "exactly what happened the first time this file was
+    // written" - repeated here once already before this fix).
+    const planId = await createTestPlan();
+    await new PlanRepository(pool).upsertEntitlement(planId, 'max_customer_memory_profiles', { limitValue: 1, isEnabled: true });
+    const businessId = await createTestBusiness();
+    await new SubscriptionRepository(pool).ensureDefault(businessId, planId);
+
+    const memoryRepo = new CustomerMemoryRepository(pool);
+    const { rows } = await pool.query<{ id: string }>('INSERT INTO customers (business_id) VALUES ($1) RETURNING id', [businessId]);
+    await memoryRepo.getOrCreate(businessId, rows[0]!.id);
+
+    const result = await entitlements.canCreateCustomerMemory(businessId);
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('ENTITLEMENT_LIMIT_REACHED');
+  });
+
+  it('treats a NULL plan limit as genuinely unlimited (enterprise)', async () => {
+    const businessId = await createTestBusiness();
+    await createTestSubscription(businessId, 'enterprise');
+    const result = await entitlements.canCreateCustomerMemory(businessId);
+    expect(result.allowed).toBe(true);
+  });
+});
+
 describe('applyCustomerMemoryUpdate (real Postgres write-through)', () => {
   let businessId: string;
   let customerId: string;
@@ -133,6 +207,40 @@ describe('applyCustomerMemoryUpdate (real Postgres write-through)', () => {
     expect(final?.confirmedFacts).toEqual(
       expect.arrayContaining([expect.objectContaining({ key: 'concurrent', value: 'writer' }), expect.objectContaining({ key: 'k', value: 'v' })]),
     );
+  });
+
+  describe('AI Agents Page Consolidation: options-gated writes', () => {
+    it('customerMemoryEnabled: false is a real no-op - no row created, no error thrown', async () => {
+      await applyCustomerMemoryUpdate(repo, businessId, customerId, [{ key: 'k', value: 'v' }], undefined, { customerMemoryEnabled: false });
+      expect(await repo.find(businessId, customerId)).toBeNull();
+    });
+
+    it('omitting customerMemoryEnabled behaves exactly like true - every pre-existing caller unaffected', async () => {
+      await applyCustomerMemoryUpdate(repo, businessId, customerId, [{ key: 'k', value: 'v' }]);
+      expect(await repo.find(businessId, customerId)).not.toBeNull();
+    });
+
+    it('canCreateNewProfile denying blocks only a brand-new customer\'s first row, never an existing one\'s update', async () => {
+      const canCreateNewProfile = vi.fn().mockResolvedValue(false);
+      await applyCustomerMemoryUpdate(repo, businessId, customerId, [{ key: 'k', value: 'v' }], undefined, { canCreateNewProfile });
+      expect(await repo.find(businessId, customerId)).toBeNull();
+      expect(canCreateNewProfile).toHaveBeenCalledTimes(1);
+    });
+
+    it('an existing customer keeps updating normally even when canCreateNewProfile denies (a plan downgrade never breaks a customer already remembered)', async () => {
+      await applyCustomerMemoryUpdate(repo, businessId, customerId, [{ key: 'unit_number', value: '4B' }]);
+      const canCreateNewProfile = vi.fn().mockResolvedValue(false);
+      await applyCustomerMemoryUpdate(repo, businessId, customerId, [{ key: 'unit_number', value: '5C' }], undefined, { canCreateNewProfile });
+      const memory = await repo.find(businessId, customerId);
+      expect(memory?.confirmedFacts[0]?.value).toBe('5C');
+      expect(canCreateNewProfile).not.toHaveBeenCalled();
+    });
+
+    it('canCreateNewProfile allowing lets a brand-new customer get a real row', async () => {
+      const canCreateNewProfile = vi.fn().mockResolvedValue(true);
+      await applyCustomerMemoryUpdate(repo, businessId, customerId, [{ key: 'k', value: 'v' }], undefined, { canCreateNewProfile });
+      expect(await repo.find(businessId, customerId)).not.toBeNull();
+    });
   });
 
   describe('Section 20 (cross-conversation preferred-name carry-over)', () => {

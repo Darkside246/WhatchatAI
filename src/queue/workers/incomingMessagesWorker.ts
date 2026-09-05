@@ -54,7 +54,12 @@ import { runSecurityScan } from '../../services/securityScanService.js';
 import { runSecurityWatcher } from '../../services/openclawSecurityWatcherService.js';
 import { sweepDueAccountDeletions } from '../../services/accountDeletionService.js';
 import { sweepExpiredTrials } from '../../services/billing/subscriptionExpiryService.js';
+import { sweepExpiredProductTrials } from '../../services/productAccountService.js';
 import { sweepExpiredWritingTwinRawEvents } from '../../services/writingTwinService.js';
+import { runLearnAnalysisSweep } from '../../services/learn/writingStyleAnalyzer.js';
+import { sweepEmailOAuthSync } from '../../services/emailSyncService.js';
+import { runBusinessIntelligenceSweep } from '../../services/businessIntelligence/businessIntelligenceSweepService.js';
+import { runGovernanceSweep, GOVERNANCE_SWEEP_INTERVAL_MS } from '../../services/governance/governanceSweepService.js';
 import type { WhatsAppMessageRecord } from '../../repositories/whatsappMessageRepository.js';
 import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaRepository.js';
 import type { MediaDownloadErrorCategory } from '../../domain/whatsapp/types.js';
@@ -1432,11 +1437,43 @@ const ACCOUNT_DELETION_PURGE_SWEEP_INTERVAL_MS = 3_600_000;
 // minutes of trial access past its real expiry.
 const TRIAL_EXPIRY_SWEEP_INTERVAL_MS = 900_000;
 
+// Same "no minute-level precision needed" reasoning as TRIAL_EXPIRY_SWEEP
+// above, for the separate product_trials (Property/Food vertical) system -
+// getControlPlaneStats' own live ends_at > NOW() check keeps the dashboard
+// honest in between runs regardless of this cadence.
+const PRODUCT_TRIAL_EXPIRY_SWEEP_INTERVAL_MS = 900_000;
+
 // Section 75-91: a raw writing sample already past its documented 60-day
 // retention window sitting around for a few extra hours is not
 // time-critical - same "not time-critical" cadence as the account-
 // deletion purge sweep above.
 const WRITING_TWIN_RETENTION_SWEEP_INTERVAL_MS = 3_600_000;
+
+// AURA Learn Agent: real analysis work (promote raw events -> style
+// examples -> a recomputed profile) never runs inline on the message-send
+// path (the spec's own async/non-blocking requirement) - a few hours'
+// staleness on "how the owner currently writes" is harmless, same
+// reasoning as the retention sweep above.
+const LEARN_ANALYSIS_SWEEP_INTERVAL_MS = 3_600_000;
+
+// Email Redesign follow-up: a connected Gmail/Outlook inbox previously
+// only ever synced when a person clicked "Sync" in Settings. Every real
+// external-provider sync elsewhere in this app already runs on a
+// schedule (WhatsApp itself is push-driven, but Writing Twin's own
+// retention sweep is the closer analog) - 15 minutes keeps a mailbox
+// reasonably fresh without hammering Gmail/Graph API quota across every
+// connected business.
+const EMAIL_OAUTH_SYNC_SWEEP_INTERVAL_MS = 900_000;
+
+// Business Intelligence Agent: extraction + trend/insight generation is
+// real analysis work over a rolling window, never time-critical - a
+// 6-hour cadence (the directive's own stated default) keeps Trends
+// reasonably current without re-running the full pipeline on every tick.
+const BUSINESS_INTELLIGENCE_SWEEP_INTERVAL_MS = 21_600_000;
+
+// AI Governance & Oversight (v1): see governanceSweepService.ts's own
+// GOVERNANCE_SWEEP_INTERVAL_MS export - imported directly here rather than
+// re-declared, so the two can never drift out of sync.
 
 export async function sweepStaleEmails(): Promise<void> {
   const stale = await emailMessageRepository.findStalePending(EMAIL_STALE_SECONDS);
@@ -1511,8 +1548,18 @@ async function processRealtimeEventJob(
     await sweepCompletedMeetings();
   } else if (job.name === 'trial-expiry-sweep') {
     await sweepExpiredTrials();
+  } else if (job.name === 'product-trial-expiry-sweep') {
+    await sweepExpiredProductTrials();
   } else if (job.name === 'writing-twin-raw-event-retention-sweep') {
     await sweepExpiredWritingTwinRawEvents();
+  } else if (job.name === 'learn-analysis-sweep') {
+    await runLearnAnalysisSweep();
+  } else if (job.name === 'email-oauth-sync-sweep') {
+    await sweepEmailOAuthSync();
+  } else if (job.name === 'business-intelligence-sweep') {
+    await runBusinessIntelligenceSweep();
+  } else if (job.name === 'governance-sweep') {
+    await runGovernanceSweep();
   } else if (job.name === 'media-download-timeout-sweep') {
     await sweepStaleDownloadingMedia();
   } else if (job.name === 'ai-handoff-sweep') {
@@ -1779,6 +1826,15 @@ void realtimeEventsQueue
 
 void realtimeEventsQueue
   .upsertJobScheduler(
+    'product-trial-expiry-sweep',
+    { every: PRODUCT_TRIAL_EXPIRY_SWEEP_INTERVAL_MS },
+    { name: 'product-trial-expiry-sweep' },
+  )
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled product-trial-expiry-sweep every ${PRODUCT_TRIAL_EXPIRY_SWEEP_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule product-trial-expiry-sweep:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler(
     'writing-twin-raw-event-retention-sweep',
     { every: WRITING_TWIN_RETENTION_SWEEP_INTERVAL_MS },
     { name: 'writing-twin-raw-event-retention-sweep' },
@@ -1787,4 +1843,36 @@ void realtimeEventsQueue
     console.log(`[RealtimeEventsWorker] Scheduled writing-twin-raw-event-retention-sweep every ${WRITING_TWIN_RETENTION_SWEEP_INTERVAL_MS}ms`),
   )
   .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule writing-twin-raw-event-retention-sweep:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler(
+    'learn-analysis-sweep',
+    { every: LEARN_ANALYSIS_SWEEP_INTERVAL_MS },
+    { name: 'learn-analysis-sweep' },
+  )
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled learn-analysis-sweep every ${LEARN_ANALYSIS_SWEEP_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule learn-analysis-sweep:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler(
+    'email-oauth-sync-sweep',
+    { every: EMAIL_OAUTH_SYNC_SWEEP_INTERVAL_MS },
+    { name: 'email-oauth-sync-sweep' },
+  )
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled email-oauth-sync-sweep every ${EMAIL_OAUTH_SYNC_SWEEP_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule email-oauth-sync-sweep:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler(
+    'business-intelligence-sweep',
+    { every: BUSINESS_INTELLIGENCE_SWEEP_INTERVAL_MS },
+    { name: 'business-intelligence-sweep' },
+  )
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled business-intelligence-sweep every ${BUSINESS_INTELLIGENCE_SWEEP_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule business-intelligence-sweep:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler('governance-sweep', { every: GOVERNANCE_SWEEP_INTERVAL_MS }, { name: 'governance-sweep' })
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled governance-sweep every ${GOVERNANCE_SWEEP_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule governance-sweep:', error.message));
 }

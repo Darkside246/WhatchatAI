@@ -150,13 +150,18 @@ describe('Tiered Security Sentinel (real heuristics, real Redis rate limit, real
 
   describe('Stage 2: AI sentinel (real GEMINI_API_KEY state in this environment)', () => {
     it('never fabricates a safe verdict when the AI stage cannot run', async () => {
-      const verdict = await evaluateAiSentinel('some real message text');
-      // This environment has no GEMINI_API_KEY configured - assert the honest
-      // "unavailable" outcome rather than assuming a live API call succeeds.
-      if (!process.env.GEMINI_API_KEY) {
+      // Forces the key-absent condition regardless of this machine's own .env
+      // (test/globalSetup.ts loads dotenv, and a real key may genuinely be
+      // configured here) - otherwise this test silently stops asserting the
+      // "AI stage cannot run" path it's named for and instead makes a real,
+      // flaky live Gemini call that can exceed vitest's 15s testTimeout.
+      const originalKey = process.env.GEMINI_API_KEY;
+      delete process.env.GEMINI_API_KEY;
+      try {
+        const verdict = await evaluateAiSentinel('some real message text');
         expect(verdict.status).toBe('unavailable');
-      } else {
-        expect(['safe', 'unsafe', 'unavailable']).toContain(verdict.status);
+      } finally {
+        if (originalKey !== undefined) process.env.GEMINI_API_KEY = originalKey;
       }
     });
   });

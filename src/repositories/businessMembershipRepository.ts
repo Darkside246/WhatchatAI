@@ -85,6 +85,20 @@ export class BusinessMembershipRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /**
+   * Learn Agent (v1, owner-only per the user's own scoping decision): the
+   * one real human identity Learn attributes a business's writing style
+   * to. Oldest active OWNER membership wins on the rare chance a business
+   * somehow has more than one - deterministic, never ambiguous.
+   */
+  async findOwnerUserId(businessId: string): Promise<string | null> {
+    const { rows } = await this.db.query<{ user_id: string }>(
+      `SELECT user_id FROM business_memberships WHERE business_id = $1 AND role = 'OWNER' AND status = 'active' ORDER BY created_at LIMIT 1`,
+      [businessId],
+    );
+    return rows[0]?.user_id ?? null;
+  }
+
   async findByUserAndBusiness(userId: string, businessId: string): Promise<BusinessMembershipRecord | null> {
     const { rows } = await this.db.query<MembershipRow>(
       'SELECT * FROM business_memberships WHERE user_id = $1 AND business_id = $2',

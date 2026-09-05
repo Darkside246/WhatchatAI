@@ -3,6 +3,8 @@ import type { PasswordParams } from '../services/passwordHashService.js';
 import { getEncryptionService } from '../security/encryption/index.js';
 
 export type PlatformRole = 'CLIENT' | 'DEVELOPER';
+/** Meaningful only when platformRole is DEVELOPER (migration 1002) - ADMIN can manage other developers' accounts and grant/revoke a business's tier_unrestricted flag; STANDARD keeps every other existing DEVELOPER capability unchanged. Null for CLIENT rows. */
+export type DeveloperTier = 'ADMIN' | 'STANDARD';
 
 export interface UserRecord {
   id: string;
@@ -21,6 +23,7 @@ export interface UserRecord {
   timezone: string;
   status: 'active' | 'suspended' | 'deactivated';
   platformRole: PlatformRole;
+  developerTier: DeveloperTier | null;
   lastLoginAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -44,6 +47,7 @@ interface UserRow {
   timezone: string;
   status: UserRecord['status'];
   platform_role: PlatformRole;
+  developer_tier: DeveloperTier | null;
   last_login_at: string | null;
   created_at: string;
   updated_at: string;
@@ -66,6 +70,7 @@ function toRecord(row: UserRow): UserRecord {
     timezone: row.timezone,
     status: row.status,
     platformRole: row.platform_role,
+    developerTier: row.developer_tier,
     lastLoginAt: row.last_login_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -139,5 +144,40 @@ export class UserRepository {
       'UPDATE users SET phone_number = $2, phone_number_hash = $3, updated_at = now() WHERE id = $1',
       [userId, getEncryptionService().serialize(envelope), phoneHash],
     );
+  }
+
+  /** Every real developer account, any tier - the Admin-only "Developers" section's own listing. */
+  async listDevelopers(): Promise<UserRecord[]> {
+    const { rows } = await this.db.query<UserRow>(
+      `SELECT * FROM users WHERE platform_role = 'DEVELOPER' AND deleted_at IS NULL ORDER BY created_at`,
+    );
+    return rows.map(toRecord);
+  }
+
+  /** Promotes an existing CLIENT user to DEVELOPER at the given tier - Admin-only at the route layer (requireDeveloperAdmin), not enforced here. */
+  async promoteToDeveloper(id: string, tier: DeveloperTier): Promise<UserRecord | null> {
+    const { rows } = await this.db.query<UserRow>(
+      `UPDATE users SET platform_role = 'DEVELOPER', developer_tier = $2, updated_at = now() WHERE id = $1 RETURNING *`,
+      [id, tier],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /** Demotes a developer back to a plain CLIENT - developer_tier reset to null since it's meaningless outside platform_role=DEVELOPER (matches the migration's own CHECK constraint). */
+  async demoteToClient(id: string): Promise<UserRecord | null> {
+    const { rows } = await this.db.query<UserRow>(
+      `UPDATE users SET platform_role = 'CLIENT', developer_tier = NULL, updated_at = now() WHERE id = $1 RETURNING *`,
+      [id],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /** Changes an existing developer's own tier (ADMIN <-> STANDARD) without touching platform_role. */
+  async setDeveloperTier(id: string, tier: DeveloperTier): Promise<UserRecord | null> {
+    const { rows } = await this.db.query<UserRow>(
+      `UPDATE users SET developer_tier = $2, updated_at = now() WHERE id = $1 AND platform_role = 'DEVELOPER' RETURNING *`,
+      [id, tier],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
   }
 }

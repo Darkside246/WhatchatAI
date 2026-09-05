@@ -18,6 +18,8 @@ export const NOTIFICATION_TYPES = [
   'SYSTEM',
   'AI_BUDGET_EXCEEDED',
   'AI_TOKENS_ADDED',
+  'AI_MEMORY_ADDED',
+  'PLAN_UPGRADED',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 export type NotificationSeverity = 'info' | 'warning' | 'critical';

@@ -70,6 +70,15 @@ export class CustomerMemoryRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /** Backs EntitlementService.canCreateCustomerMemory - every customer this business has ever recorded real memory for, regardless of how long ago. */
+  async countByBusiness(businessId: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM customer_memory WHERE business_id = $1`,
+      [businessId],
+    );
+    return Number(rows[0]?.count ?? '0');
+  }
+
   /** Idempotent: a customer that already has memory gets it back unchanged; one that doesn't gets a fresh, empty row. Never overwrites an existing row. */
   async getOrCreate(businessId: string, customerId: string): Promise<CustomerMemoryRecord> {
     const existing = await this.find(businessId, customerId);

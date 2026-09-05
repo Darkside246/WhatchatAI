@@ -15,7 +15,7 @@ type NavItem = { to: string; label: string; icon: LucideIcon };
 const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
   platform: [
     { to: '/chats',               label: 'Inbox',              icon: MessageCircle },
-    { to: '/dashboard',           label: 'Dashboard',          icon: BarChart3 },
+    { to: '/trends',              label: 'Trends',             icon: BarChart3 },
     { to: '/agents',              label: 'AI Agents',          icon: Bot },
     { to: '/crm',                 label: 'CRM & Leads',        icon: Contact },
     { to: '/property-operations', label: 'Property Ops',       icon: Building2 },
@@ -222,7 +222,7 @@ export function SaasNavRail() {
   return (
     <nav className="hidden w-16 shrink-0 flex-col items-center gap-1 border-r border-border-subtle bg-surface-1 py-4 md:flex">
       <NavLink
-        to="/"
+        to="/dashboard"
         className="mb-4 flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-accent-soft text-body font-bold text-accent"
         title={business?.name ?? 'AURA'}
       >

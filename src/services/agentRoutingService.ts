@@ -35,6 +35,43 @@ function firstMatch(text: string, keywords: string[]): string | null {
 }
 
 /**
+ * Every keyword that matches, not just the first - reuses the same
+ * whole-word matchesKeyword check above. Exported for
+ * relationshipConfidenceService.ts's own deterministic keyword-count
+ * scoring (Phase 3) - a real match count, never a fabricated confidence
+ * float, over a candidate List's assigned agent's own configured
+ * triggerKeywords.
+ */
+export function countMatchedKeywords(text: string, keywords: string[]): string[] {
+  return keywords.filter((keyword) => matchesKeyword(text, keyword));
+}
+
+/**
+ * Blocked-keyword safety escalation - extracted so both routeInboundMessage
+ * below AND AURA Lists' listRoutingService.ts (which needs this same check
+ * to run first, before any List-based routing) share one implementation
+ * rather than risk two copies drifting apart. Pure extraction, zero
+ * behavior change - routeInboundMessage's own test suite is the proof.
+ */
+export function checkBlockedKeywordEscalation(agentsByPriority: AiAgentRecord[], messageText: string): AgentRoutingDecision | null {
+  const text = messageText.trim();
+  if (!text) return null;
+
+  for (const agent of agentsByPriority) {
+    const blocked = firstMatch(text, agent.blockedKeywords);
+    if (blocked) {
+      return {
+        outcome: 'escalate_to_human',
+        agent,
+        matchedKeyword: blocked,
+        reason: `Blocked keyword "${blocked}" matched - handing to a human instead of replying`,
+      };
+    }
+  }
+  return null;
+}
+
+/**
  * Picks which of a business's active agents should handle a real inbound
  * message, using the configuration the operator actually set.
  *
@@ -66,17 +103,8 @@ export async function routeInboundMessage(businessId: string, messageText: strin
 
   const byPriority = agents.slice().sort((a, b) => b.priority - a.priority || a.name.localeCompare(b.name));
 
-  for (const agent of byPriority) {
-    const blocked = firstMatch(text, agent.blockedKeywords);
-    if (blocked) {
-      return {
-        outcome: 'escalate_to_human',
-        agent,
-        matchedKeyword: blocked,
-        reason: `Blocked keyword "${blocked}" matched - handing to a human instead of replying`,
-      };
-    }
-  }
+  const escalation = checkBlockedKeywordEscalation(byPriority, text);
+  if (escalation) return escalation;
 
   for (const agent of byPriority) {
     const triggered = firstMatch(text, agent.triggerKeywords);

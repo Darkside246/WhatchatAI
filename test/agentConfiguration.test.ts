@@ -34,7 +34,7 @@ describe('AI agent configuration (real persisted config, real tenant isolation)'
       tone: 'reassuring',
       triggerKeywords: ['leak', 'burst', 'flood'],
       blockedKeywords: ['refund', 'legal'],
-      protectedFacts: ['Hasani', 'Hachiko'],
+      protectedFacts: ['Alex', 'Rex'],
       blockedReplyMessage: 'One of our plumbers will call you back shortly.',
       responseDelaySeconds: 12,
       priority: 50,
@@ -45,7 +45,7 @@ describe('AI agent configuration (real persisted config, real tenant isolation)'
     expect(updated.specialization).toBe('emergency callouts only');
     expect(updated.triggerKeywords).toEqual(['leak', 'burst', 'flood']);
     expect(updated.blockedKeywords).toEqual(['refund', 'legal']);
-    expect(updated.protectedFacts).toEqual(['Hasani', 'Hachiko']);
+    expect(updated.protectedFacts).toEqual(['Alex', 'Rex']);
     expect(updated.blockedReplyMessage).toBe('One of our plumbers will call you back shortly.');
     expect(updated.responseDelaySeconds).toBe(12);
     expect(updated.priority).toBe(50);
@@ -54,7 +54,7 @@ describe('AI agent configuration (real persisted config, real tenant isolation)'
     const reloaded = (await workspaceService.listAgents(businessId)).find((agent) => agent.id === created.id);
     expect(reloaded?.category).toBe('plumbing');
     expect(reloaded?.triggerKeywords).toEqual(['leak', 'burst', 'flood']);
-    expect(reloaded?.protectedFacts).toEqual(['Hasani', 'Hachiko']);
+    expect(reloaded?.protectedFacts).toEqual(['Alex', 'Rex']);
     expect(reloaded?.blockedReplyMessage).toBe('One of our plumbers will call you back shortly.');
   });
 

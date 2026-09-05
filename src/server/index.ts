@@ -24,9 +24,21 @@ import {
   isLeadNotFoundError,
 } from '../services/workspaceService.js';
 import { whatsappOutboundMessageService, isChatNotFoundError as isOutboundChatNotFoundError } from '../services/whatsappOutboundMessageService.js';
+import { learnCaptureService } from '../services/learn/learnCaptureService.js';
+import { EmailNotesRepository } from '../repositories/emailNotesRepository.js';
+import { listConnectedAccounts } from '../services/emailOAuthService.js';
+import { getDistinctSenders } from '../services/emailSyncService.js';
+import { getCachedDigest as getCachedEmailDigest, regenerateDigest as regenerateEmailDigest } from '../services/emailDigestService.js';
+import { writingTwinService, UnauthorizedActorError as WritingTwinUnauthorizedActorError, AgentNotFoundError as WritingTwinAgentNotFoundError } from '../services/writingTwinService.js';
+import { WritingTwinRepository } from '../repositories/writingTwinRepository.js';
+import { getBusinessIntelligenceStats, setBusinessIntelligenceEnabled, getApprovedInsightsByCategory } from '../services/businessIntelligence/businessIntelligenceService.js';
+import * as listsService from '../services/listsService.js';
+import { AutonomyOverrideExceedsAgentError } from '../repositories/listAgentAssignmentRepository.js';
+import { businessExecutionContextForUser } from '../domain/businessExecutionContext.js';
 import { openclawAdapterRouter } from './openclawAdapterRouter.js';
 import { openclawMcpRouter } from './openclawMcpRouter.js';
 import { productAccountRouter } from './productAccountRoutes.js';
+import { governanceRouter } from './governanceRoutes.js';
 import { mountPlatformRoutes } from './platformRoutes.js';
 import { initializePlatformFoundation } from '../services/platform/platformBootstrap.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
@@ -35,7 +47,7 @@ import { CrmContactRepository } from '../repositories/crmContactRepository.js';
 import { UserPreferenceRepository } from '../repositories/userPreferenceRepository.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { toCsv } from '../services/export/csvExport.js';
-import { checkDatabaseHealth, pool } from '../db/pool.js';
+import { checkDatabaseHealth, pool, queryAsTenant } from '../db/pool.js';
 import { checkRedisHealth } from '../redis/client.js';
 import { checkQueueHealth } from '../queue/queueHealth.js';
 import { verifyMasterKeyStability } from '../security/encryption/keyStabilityCheck.js';
@@ -59,6 +71,7 @@ import { listHumanTakeoverAlerts } from '../services/securityAlertService.js';
 import { timeService } from '../services/time/timeService.js';
 import { zonedWallClockToUtc } from '../services/time/timeContext.js';
 import { BusinessRepository, isValidTimezone } from '../repositories/businessRepository.js';
+import { DEFAULT_INVOICE_CUSTOMIZATION, invoiceCustomizationSchema } from '../services/invoice/invoiceTemplates.js';
 import {
   listNotifications,
   markNotificationRead,
@@ -163,6 +176,7 @@ import {
   isCannotModifyOwnerError,
 } from '../services/workspaceMemberService.js';
 import { requireAuth, requirePermission, requireActiveSubscription, requireDeveloper, setSessionCookie, clearSessionCookie, readSessionToken, type AuthContext } from './authMiddleware.js';
+import { isMaintenanceModeOn } from '../services/platform/platformConfigService.js';
 import { BUSINESS_ROLES, isBusinessRole } from '../domain/auth/permissions.js';
 // Runs the real outbound-send BullMQ worker in this process, not the
 // separate incomingMessagesWorker.ts process - every tenant's live Baileys
@@ -211,6 +225,8 @@ import {
   isInvalidScheduledStatusError,
 } from '../services/scheduledStatusService.js';
 import { getAiEngineStatus, testGeminiConnection } from '../services/aiEngineStatusService.js';
+import { getGeminiClient } from '../services/geminiClient.js';
+import { checkAiConnectionTestGate } from '../services/ai/aiConnectionTestGate.js';
 import {
   createDraft as createEmailDraft,
   listEmails,
@@ -224,6 +240,7 @@ import {
   updateEmailSettings,
   sendTestEmail,
   draftWithAi as draftEmailWithAi,
+  draftReplyToOAuthMessage,
   isEmailNotFoundError,
   isInvalidEmailError,
   isEmailNotApprovableError,
@@ -311,6 +328,31 @@ app.use('/api/workspace/campaigns', expensiveActionLimiter);
 // this is one global parser, so every route's real ceiling moved with it.
 app.use(express.json({ limit: '20mb' }));
 
+const MAINTENANCE_EXEMPT_PREFIXES = ['/api/health', '/api/auth/login', '/api/auth/me', '/api/auth/logout', '/api/auth/bootstrap-status', '/api/developer'];
+
+/**
+ * Developer Master Control page's maintenance-mode kill switch
+ * (platform_settings key maintenance_mode). Deliberately mounted this
+ * early - before every other route - and deliberately narrow: never
+ * touches anything outside /api/*, so the built frontend shell always
+ * still loads (the SPA renders its own "unavailable" state from the 503
+ * body). A DEVELOPER's own request always passes through, including to
+ * every /api/developer/* route - this very control page - so the toggle
+ * can never lock out the person who flipped it on.
+ */
+app.use(async (req, res, next) => {
+  if (!req.path.startsWith('/api/')) return next();
+  if (MAINTENANCE_EXEMPT_PREFIXES.some((prefix) => req.path.startsWith(prefix))) return next();
+  if (!(await isMaintenanceModeOn())) return next();
+
+  const token = readSessionToken(req);
+  if (token) {
+    const session = await validateSession(token);
+    if (session?.user.platformRole === 'DEVELOPER') return next();
+  }
+  return res.status(503).json({ error: 'MAINTENANCE_MODE', message: 'AURA is temporarily down for maintenance. Please check back shortly.' });
+});
+
 // Registers the AiGateway provider chain, agent runtimes, and the property
 // maintenance triage skill before any request can reach them - previously
 // this only ran inside tests, so every real request to the AiGateway path
@@ -325,6 +367,7 @@ mountPlatformRoutes(app);
 // account routes) - creates a genuinely new business per signup, unlike
 // the bootstrap-only /api/auth/register below. See productAccountRoutes.ts.
 app.use('/api', productAccountRouter);
+app.use('/api', governanceRouter);
 
 
 // OpenClaw's own tool-call adapter - authenticates via a per-cell
@@ -416,6 +459,29 @@ function deviceContextFrom(req: Request) {
   return { ipAddress: req.ip ?? null, userAgent: req.headers['user-agent'] ?? null };
 }
 
+/**
+ * Real bug found live (2026-09-05): register()/login() returned the raw
+ * BusinessRecord straight from authService.ts, missing the two fields
+ * only /api/auth/me ever computed (productKey, isDeveloper) - a business
+ * whose platform_role was changed to DEVELOPER never saw the Developer
+ * Control Plane nav icon after logging back in, only after some other
+ * action happened to trigger a later refresh() to /api/auth/me. Every
+ * route that hands the frontend a `business` object now goes through this
+ * one shared enrichment so the three can never drift again.
+ */
+async function enrichBusinessForAuthResponse(businessId: string, platformRole: string) {
+  const paResult = await pool.query<{ product_key: string }>(
+    `SELECT pc.product_key FROM product_accounts pa
+       JOIN product_catalog pc ON pa.product_id = pc.id
+      WHERE pa.business_id = $1 AND pa.status NOT IN ('CLOSED','SUSPENDED')
+      LIMIT 1`,
+    [businessId],
+  );
+  const productKey = paResult.rows[0]?.product_key ?? null;
+  const isDeveloper = platformRole === 'DEVELOPER';
+  return { productKey, isDeveloper };
+}
+
 app.get('/api/auth/bootstrap-status', async (_req, res) => {
   const registrationOpen = await isRegistrationOpen();
   return res.status(200).json({ registrationOpen });
@@ -434,7 +500,8 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     const result = await register(parsed.data, deviceContextFrom(req));
     setSessionCookie(req, res, result.token, SESSION_MAX_AGE_SECONDS);
-    return res.status(201).json({ user: result.user, business: result.business, role: result.membership.role });
+    const extra = await enrichBusinessForAuthResponse(result.business.id, result.user.platformRole);
+    return res.status(201).json({ user: result.user, business: { ...result.business, ...extra }, role: result.membership.role });
   } catch (error) {
     if (isRegistrationClosedError(error)) return res.status(403).json({ error: 'REGISTRATION_CLOSED', message: error.message });
     if (isEmailAlreadyRegisteredError(error)) return res.status(409).json({ error: 'EMAIL_ALREADY_REGISTERED', message: error.message });
@@ -452,7 +519,8 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const result = await login(parsed.data.email, parsed.data.password, deviceContextFrom(req));
     setSessionCookie(req, res, result.token, parsed.data.rememberMe ? SESSION_MAX_AGE_SECONDS : undefined);
-    return res.status(200).json({ user: result.user, business: result.business, role: result.membership.role });
+    const extra = await enrichBusinessForAuthResponse(result.business.id, result.user.platformRole);
+    return res.status(200).json({ user: result.user, business: { ...result.business, ...extra }, role: result.membership.role });
   } catch (error) {
     if (isRateLimitedError(error)) return res.status(429).json({ error: 'RATE_LIMITED', message: error.message });
     if (isInvalidCredentialsError(error)) return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: error.message });
@@ -479,16 +547,8 @@ app.get('/api/auth/me', requireAuth, async (_req, res) => {
   const auth = res.locals.auth as AuthContext;
   const business = await new BusinessRepository(pool).findById(auth.businessId);
   if (!business) return res.status(404).json({ error: 'BUSINESS_NOT_FOUND' });
-  const paResult = await pool.query<{ product_key: string }>(
-    `SELECT pc.product_key FROM product_accounts pa
-       JOIN product_catalog pc ON pa.product_id = pc.id
-      WHERE pa.business_id = $1 AND pa.status NOT IN ('CLOSED','SUSPENDED')
-      LIMIT 1`,
-    [auth.businessId],
-  );
-  const productKey = paResult.rows[0]?.product_key ?? null;
-  const isDeveloper = auth.platformRole === 'DEVELOPER';
-  return res.status(200).json({ user: auth.user, business: { ...business, productKey, isDeveloper }, role: auth.role });
+  const extra = await enrichBusinessForAuthResponse(auth.businessId, auth.platformRole);
+  return res.status(200).json({ user: auth.user, business: { ...business, ...extra }, role: auth.role });
 });
 
 app.get('/api/auth/sessions', requireAuth, async (_req, res) => {
@@ -587,6 +647,7 @@ app.get('/api/auth/preferences', requireAuth, async (_req, res) => {
 const updatePreferencesSchema = z.object({
   country: z.string().length(2).toUpperCase().nullable().optional(),
   navigationOrder: z.array(z.string()).nullable().optional(),
+  emailPanelCardOrder: z.array(z.string()).nullable().optional(),
   timezone: z.string().min(1).optional(),
   language: z.string().min(2).optional(),
 });
@@ -776,9 +837,27 @@ app.patch('/api/workspace/capacity/me', requireAuth, async (req, res) => {
 // /api/health/whatsapp instead, which stays open).
 app.use('/api/whatsapp', requireAuth);
 
-app.get('/api/whatsapp/status', (_req, res) => {
+/**
+ * Real bug found live (2026-09-05): a brand-new browser tab starts with no
+ * memory of ever having seen this business connected (useAppGate.ts's own
+ * pairedOnce is per-tab, per-page-load state). If the in-memory connection
+ * manager's live snapshot happens to be mid-reconnect (e.g. right after a
+ * backend restart - Baileys re-establishing the socket from its on-disk
+ * session takes a couple of real seconds) at the exact moment that fresh
+ * tab's first poll lands, the frontend had no way to tell "genuinely never
+ * paired" apart from "was paired, just reconnecting" - it showed the QR
+ * onboarding screen either way, forcing an unnecessary "Generate a new
+ * code" click even though the real session was fine. everConnectedBefore
+ * is the missing signal: a real, persisted fact (whatsapp_accounts.
+ * last_connected_at, set once on first real connect and never cleared by
+ * a mere disconnect) that survives every in-memory reset, so a fresh tab
+ * can correctly treat a transient reconnect as exactly that.
+ */
+app.get('/api/whatsapp/status', async (_req, res) => {
   const { businessId } = res.locals.auth as AuthContext;
-  res.status(200).json(whatsappConnectionManager.getSnapshot(businessId));
+  const snapshot = whatsappConnectionManager.getSnapshot(businessId);
+  const account = await whatsappAccountRepository.findActiveByBusiness(businessId);
+  res.status(200).json({ ...snapshot, everConnectedBefore: Boolean(account?.lastConnectedAt) });
 });
 
 app.get('/api/whatsapp/qr', (_req, res) => {
@@ -1049,6 +1128,21 @@ app.post('/api/workspace/chats/:chatId/messages', requireWorkspaceContext, requi
             ...(input.caption !== undefined && { caption: input.caption }),
           }),
     });
+
+    // AURA Learn Agent capture (v1, owner-only): fire-and-forget, never
+    // awaited inline - a capture failure or slow encryption call must
+    // never delay this 202 response. No-ops internally unless the
+    // sender is OWNER and learning is actually enabled for them.
+    if (input.messageType === 'text') {
+      const auth = res.locals.auth as AuthContext;
+      void learnCaptureService.captureWhatsAppSend({
+        businessId,
+        senderUserId: auth.userId,
+        text: input.text,
+        outboundMessageId: outboundMessage.id,
+      });
+    }
+
     return res.status(202).json({ outboundMessage });
   } catch (error) {
     if (isOutboundChatNotFoundError(error)) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
@@ -1753,6 +1847,26 @@ app.post('/api/workspace/email/ai-draft', expensiveActionLimiter, requirePermiss
   }
 });
 
+const aiDraftReplySchema = z.object({
+  oauthMessageId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  instruction: z.string().trim().min(1).max(2000),
+});
+
+app.post('/api/workspace/email/ai-draft-reply', expensiveActionLimiter, requirePermission('email.draft'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = aiDraftReplySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_REPLY_DRAFT', details: parsed.error.flatten() });
+  try {
+    const result = await draftReplyToOAuthMessage(auth.businessId, auth.userId, parsed.data);
+    return res.status(result.status === 'drafted' ? 201 : 200).json(result);
+  } catch (error) {
+    const handled = emailErrorResponse(error, res);
+    if (handled) return handled;
+    throw error;
+  }
+});
+
 const updateEmailSchema = z.object({
   toEmail: z.string().trim().min(3).max(320),
   toName: z.string().trim().max(200).nullish(),
@@ -1778,6 +1892,19 @@ app.post('/api/workspace/email/:id/approve', requirePermission('email.send'), re
   const auth = res.locals.auth as AuthContext;
   try {
     const email = await approveAndSendEmail(auth.businessId, String(req.params.id ?? ''), auth.userId);
+
+    // AURA Learn Agent capture: only a human-authored email (never one
+    // drafted by an agent) is an honest 'human_authored' sample - see
+    // learnCaptureService.ts's own doc comment.
+    if (!email.draftedByAgentId) {
+      void learnCaptureService.captureEmailSend({
+        businessId: auth.businessId,
+        authorUserId: email.createdBy ?? auth.userId,
+        bodyText: email.bodyText,
+        emailMessageId: email.id,
+      });
+    }
+
     return res.status(202).json({ email });
   } catch (error) {
     const handled = emailErrorResponse(error, res);
@@ -2219,6 +2346,351 @@ app.patch(
   },
 );
 
+const updateNameUsageLevelSchema = z.object({ level: z.number().int().min(1).max(5) });
+
+app.patch(
+  '/api/workspace/business/name-usage-level',
+  requireWorkspaceContext,
+  requirePermission('settings.manage'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const parsed = updateNameUsageLevelSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_NAME_USAGE_LEVEL' });
+    const business = await workspaceService.setNameUsageLevel(businessId, parsed.data.level);
+    return res.status(200).json({ business });
+  },
+);
+
+const updateNameUsageEnabledSchema = z.object({ enabled: z.boolean() });
+
+app.patch(
+  '/api/workspace/business/name-usage-enabled',
+  requireWorkspaceContext,
+  requirePermission('settings.manage'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const parsed = updateNameUsageEnabledSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_NAME_USAGE_TOGGLE' });
+    const business = await workspaceService.setNameUsageEnabled(businessId, parsed.data.enabled);
+    return res.status(200).json({ business });
+  },
+);
+
+const updateMemoryEnabledSchema = z.object({ enabled: z.boolean() });
+
+app.patch(
+  '/api/workspace/business/memory-enabled',
+  requireWorkspaceContext,
+  requirePermission('settings.manage'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const parsed = updateMemoryEnabledSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_MEMORY_TOGGLE' });
+    const business = await workspaceService.setCustomerMemoryEnabled(businessId, parsed.data.enabled);
+    return res.status(200).json({ business });
+  },
+);
+
+app.get('/api/workspace/business/memory-stats', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  return res.status(200).json(await workspaceService.getCustomerMemoryStats(businessId));
+});
+
+// ── AURA Learn Agent ─────────────────────────────────────────────────────
+//
+// Everything here acts on the CALLING user's own Writing Twin row - and
+// since v1 is deliberately scoped to the business OWNER only (the user's
+// own scoping decision), every write route below requires the caller to
+// actually be that OWNER: this is the owner's own writing profile, not a
+// setting an ADMIN manages on someone else's behalf. Stats are readable
+// by any authenticated member for transparency (a non-owner's own row is
+// simply empty/disabled, matching getSettings()'s own safe default).
+
+function requireOwnerForLearn(req: Request, res: Response, next: NextFunction): void {
+  const auth = res.locals.auth as AuthContext;
+  if (auth.role !== 'OWNER') return void res.status(403).json({ error: 'OWNER_ACCESS_REQUIRED' });
+  next();
+}
+
+const learnRepository = new WritingTwinRepository(pool);
+
+app.get('/api/workspace/learn/stats', requireWorkspaceContext, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const context = businessExecutionContextForUser(auth.businessId, auth.userId);
+  const settings = await writingTwinService.getSettings(context);
+  const profile = await learnRepository.getCurrentProfile(auth.businessId, auth.userId, 'global');
+  const whatsappProfile = profile ?? (await learnRepository.getCurrentProfile(auth.businessId, auth.userId, 'whatsapp'));
+  return res.status(200).json({
+    enabled: settings.learningEnabled,
+    shareEnabled: settings.shareWithAgentsEnabled,
+    exampleCount: whatsappProfile?.exampleCount ?? 0,
+    profileVersion: whatsappProfile?.versionNumber ?? null,
+    lastComputedAt: whatsappProfile?.computedAt ?? null,
+  });
+});
+
+const learnToggleSchema = z.object({ enabled: z.boolean() });
+
+app.patch('/api/workspace/learn/enabled', requireWorkspaceContext, requireOwnerForLearn, async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = learnToggleSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_LEARN_TOGGLE' });
+  const settings = await writingTwinService.setLearningEnabled(businessExecutionContextForUser(auth.businessId, auth.userId), parsed.data.enabled);
+  return res.status(200).json({ settings });
+});
+
+app.patch('/api/workspace/learn/share-enabled', requireWorkspaceContext, requireOwnerForLearn, async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = learnToggleSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_LEARN_TOGGLE' });
+  const settings = await writingTwinService.setShareWithAgentsEnabled(businessExecutionContextForUser(auth.businessId, auth.userId), parsed.data.enabled);
+  return res.status(200).json({ settings });
+});
+
+app.post('/api/workspace/learn/reset', requireWorkspaceContext, requireOwnerForLearn, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  await writingTwinService.resetProfile(businessExecutionContextForUser(auth.businessId, auth.userId));
+  return res.status(200).json({ ok: true });
+});
+
+app.delete('/api/workspace/learn', requireWorkspaceContext, requireOwnerForLearn, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  await writingTwinService.deleteAll(businessExecutionContextForUser(auth.businessId, auth.userId));
+  return res.status(200).json({ ok: true });
+});
+
+app.get('/api/workspace/learn/agent-access', requireWorkspaceContext, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const access = await learnRepository.listAgentAccess(auth.businessId, auth.userId);
+  return res.status(200).json({ access });
+});
+
+const learnAgentAccessSchema = z.object({ allowed: z.boolean() });
+
+app.patch('/api/workspace/learn/agent-access/:agentId', requireWorkspaceContext, requireOwnerForLearn, async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = learnAgentAccessSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_AGENT_ACCESS' });
+  try {
+    const access = await writingTwinService.setAgentAccess(
+      businessExecutionContextForUser(auth.businessId, auth.userId),
+      String(req.params.agentId ?? ''),
+      parsed.data.allowed,
+    );
+    return res.status(200).json({ access });
+  } catch (error) {
+    if (error instanceof WritingTwinAgentNotFoundError) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });
+    if (error instanceof WritingTwinUnauthorizedActorError) return res.status(403).json({ error: 'FORBIDDEN' });
+    throw error;
+  }
+});
+
+// ── Business Intelligence Agent ──────────────────────────────────────────
+//
+// Completely separate from Learn (its own migration, own tables, own
+// pipeline) - this only exposes the per-business opt-in toggle and the
+// Trends API's own read of already-approved insights. All real analysis
+// happens on the scheduled sweep (businessIntelligenceSweepService.ts),
+// never inline on a request.
+
+app.get('/api/workspace/business-intelligence/stats', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  return res.status(200).json(await getBusinessIntelligenceStats(businessId));
+});
+
+const biToggleSchema = z.object({ enabled: z.boolean() });
+
+app.patch(
+  '/api/workspace/business-intelligence/enabled',
+  requireWorkspaceContext,
+  requirePermission('settings.manage'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const parsed = biToggleSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_BI_TOGGLE' });
+    return res.status(200).json(await setBusinessIntelligenceEnabled(businessId, parsed.data.enabled));
+  },
+);
+
+app.get('/api/workspace/trends', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  return res.status(200).json({ insights: await getApprovedInsightsByCategory(businessId) });
+});
+
+const updateMissionStatementSchema = z.object({
+  motto: z.string().trim().max(500).nullable(),
+  vision: z.string().trim().max(2000).nullable(),
+  mission: z.string().trim().max(2000).nullable(),
+  aiVisible: z.boolean(),
+});
+
+app.patch(
+  '/api/workspace/business/mission-statement',
+  requireWorkspaceContext,
+  requirePermission('settings.manage'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const auth = res.locals.auth as AuthContext;
+    const parsed = updateMissionStatementSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_MISSION_STATEMENT', details: parsed.error.flatten() });
+    const { business, kbSyncWarning } = await workspaceService.setMissionStatement(businessId, auth.userId, parsed.data);
+    return res.status(200).json({ business, kbSyncWarning });
+  },
+);
+
+const updateContactDetailsSchema = z.object({
+  address: z.string().trim().max(500).nullable(),
+  phone: z.string().trim().max(50).nullable(),
+});
+
+app.patch(
+  '/api/workspace/business/contact-details',
+  requireWorkspaceContext,
+  requirePermission('settings.manage'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const parsed = updateContactDetailsSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_CONTACT_DETAILS', details: parsed.error.flatten() });
+    const business = await workspaceService.setBusinessContactDetails(businessId, parsed.data);
+    return res.status(200).json({ business });
+  },
+);
+
+app.get('/api/workspace/business/invoice-customization', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const business = await new BusinessRepository(pool).findById(businessId);
+  const stored = business?.invoiceCustomization;
+  const customization = invoiceCustomizationSchema.safeParse(stored);
+  return res.status(200).json({ customization: customization.success ? customization.data : DEFAULT_INVOICE_CUSTOMIZATION });
+});
+
+app.patch(
+  '/api/workspace/business/invoice-customization',
+  requireWorkspaceContext,
+  requirePermission('settings.manage'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const parsed = invoiceCustomizationSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_INVOICE_CUSTOMIZATION', details: parsed.error.flatten() });
+    const business = await workspaceService.setInvoiceCustomization(businessId, parsed.data);
+    return res.status(200).json({ customization: business.invoiceCustomization });
+  },
+);
+
+/**
+ * AI Agents Page Consolidation: a real, normal-user (never DEVELOPER-only)
+ * status signal - deliberately just a boolean. Gemini/Goose are never
+ * named to a business member; canGenerate already reflects "at least one
+ * real engine can answer" exactly the way a green/red status bar needs.
+ */
+app.get('/api/workspace/ai/status', requireWorkspaceContext, async (_req, res) => {
+  const status = await getAiEngineStatus();
+  return res.status(200).json({ active: status.canGenerate });
+});
+
+/**
+ * The normal-user counterpart to the Developer Control Plane's detailed
+ * testGeminiConnection() - same underlying real live check, but the
+ * response is deliberately generic (never which engine, never the raw
+ * error text) and rate-limited so a business can't spend real API quota
+ * by mashing the button.
+ */
+app.post('/api/workspace/ai/test-connection', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const business = await new BusinessRepository(pool).findById(businessId);
+  if (!business) return res.status(404).json({ error: 'BUSINESS_NOT_FOUND' });
+  // pool.ts's own type parser returns every TIMESTAMPTZ column as a real
+  // ISO string, not a Date, regardless of what BusinessRecord's own type
+  // annotation (matching aiActionsPausedAt's pre-existing convention in
+  // this same file) claims - wrap before doing real Date math.
+  const gate = checkAiConnectionTestGate(business.aiConnectionTestedAt ? new Date(business.aiConnectionTestedAt) : null);
+  if (!gate.allowed) return res.status(429).json({ error: 'RATE_LIMITED', retryAfterSeconds: gate.retryAfterSeconds });
+
+  // Goose's real, already-live-probed reachability (and whether a developer
+  // has since switched the fallback off, see platformConfigService.ts's
+  // isGooseFallbackEnabled) - reused from getAiEngineStatus() rather than a
+  // second raw gooseService.healthCheck() call, so this never drifts from
+  // what a real reply would actually do.
+  const [geminiResult, engineStatus] = await Promise.all([
+    getGeminiClient() !== null ? testGeminiConnection() : Promise.resolve(null),
+    getAiEngineStatus(),
+  ]);
+  await new BusinessRepository(pool).recordAiConnectionTest(businessId);
+  const gooseAvailable = engineStatus.engines.find((e) => e.id === 'goose')?.state === 'available';
+  const active = geminiResult?.status === 'ok' || gooseAvailable;
+  return res.status(200).json({ status: active ? 'active' : 'unavailable' });
+});
+
+// ── Email Redesign Phase C/D: notes, reminders, contacts, AI digest ─────────
+
+app.get('/api/workspace/email/notes', requireWorkspaceContext, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const repo = new EmailNotesRepository(queryAsTenant(auth.businessId));
+  const notes = await repo.list(auth.businessId, auth.userId);
+  return res.status(200).json({ notes });
+});
+
+const createEmailNoteSchema = z.object({ body: z.string().trim().min(1).max(2000), remindAt: z.string().datetime().nullish() });
+
+app.post('/api/workspace/email/notes', requireWorkspaceContext, async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = createEmailNoteSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_NOTE' });
+  const repo = new EmailNotesRepository(queryAsTenant(auth.businessId));
+  const note = await repo.create(auth.businessId, auth.userId, parsed.data.body, parsed.data.remindAt);
+  return res.status(201).json({ note });
+});
+
+app.delete('/api/workspace/email/notes/:id', requireWorkspaceContext, async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const repo = new EmailNotesRepository(queryAsTenant(auth.businessId));
+  const removed = await repo.delete(auth.businessId, auth.userId, String(req.params.id ?? ''));
+  return res.status(200).json({ ok: removed });
+});
+
+/** Real, deduped senders across every connected account - the tools panel's Contacts card, never a fabricated address book. */
+app.get('/api/workspace/email/contacts', requireWorkspaceContext, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const accounts = await listConnectedAccounts(auth.businessId);
+  const perAccount = await Promise.all(accounts.map((account) => getDistinctSenders(account.id, auth.businessId)));
+  const merged = new Map<string, { address: string; name: string | null }>();
+  for (const senders of perAccount) for (const sender of senders) if (!merged.has(sender.address)) merged.set(sender.address, sender);
+  return res.status(200).json({ contacts: [...merged.values()] });
+});
+
+/**
+ * The tools panel's "Reminders" card - notes with a real due date,
+ * soonest first. Deliberately NOT built on the app's existing
+ * `reminders` table: that table only ever delivers by messaging a real,
+ * existing WhatsApp chat (see migration 992's comment) - there is no
+ * "notify the signed-in staff member" concept anywhere in this app, so
+ * reusing it here would need a WhatsApp-chat picker with no honest
+ * connection to the email being read. This surfaces due notes only;
+ * nothing is ever sent anywhere.
+ */
+app.get('/api/workspace/email/reminders', requireWorkspaceContext, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const repo = new EmailNotesRepository(queryAsTenant(auth.businessId));
+  const reminders = await repo.listUpcomingReminders(auth.businessId, auth.userId);
+  return res.status(200).json({ reminders });
+});
+
+app.get('/api/workspace/email/suggestions', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const result = await getCachedEmailDigest(businessId);
+  return res.status(200).json(result);
+});
+
+app.post('/api/workspace/email/suggestions/regenerate', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const existing = await getCachedEmailDigest(businessId);
+  if (existing.status === 'ok' && existing.cached) {
+    return res.status(429).json({ error: 'ALREADY_GENERATED_TODAY', message: 'Suggestions are only regenerated once per day.' });
+  }
+  const result = await regenerateEmailDigest(businessId);
+  return res.status(200).json(result);
+});
+
 const updateBusinessBrandingSchema = z.object({
   brandColor: z.string().trim().nullable().optional(),
   logoDataUrl: z.string().nullable().optional(),
@@ -2640,6 +3112,169 @@ app.patch('/api/workspace/agents/:agentId/autonomy-level', requireWorkspaceConte
   }
 });
 
+// ── AURA Lists (Phase 1) ──────────────────────────────────────────────────
+//
+// A List does not automatically grant an AI Agent access to conversations -
+// assignment and access are always explicit. Reuses the 'ai.view'/'ai.edit'
+// permission pair since Lists are, in this phase, fundamentally an AI
+// routing/agent-assignment concept, the same reasoning as the agent routes
+// immediately above.
+
+app.get('/api/workspace/lists', requireWorkspaceContext, requirePermission('ai.view'), async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  return res.status(200).json({ lists: await listsService.listLists(businessId) });
+});
+
+const createListSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  description: z.string().trim().min(1).max(500).nullish(),
+  color: z.string().trim().min(1).max(20).nullish(),
+});
+
+app.post('/api/workspace/lists', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = createListSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_LIST', details: parsed.error.flatten() });
+  const list = await listsService.createList({ businessId, ...parsed.data });
+  return res.status(201).json({ list });
+});
+
+const updateListSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  description: z.string().trim().min(1).max(500).nullable().optional(),
+  color: z.string().trim().min(1).max(20).nullable().optional(),
+});
+
+app.patch('/api/workspace/lists/:listId', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = updateListSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_LIST', details: parsed.error.flatten() });
+  const list = await listsService.updateList(businessId, String(req.params.listId ?? ''), parsed.data);
+  if (!list) return res.status(404).json({ error: 'LIST_NOT_FOUND' });
+  return res.status(200).json({ list });
+});
+
+app.delete('/api/workspace/lists/:listId', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const deleted = await listsService.deleteList(businessId, String(req.params.listId ?? ''));
+  if (!deleted) return res.status(404).json({ error: 'LIST_NOT_FOUND' });
+  return res.status(200).json({ ok: true });
+});
+
+app.get('/api/workspace/lists/:listId/members', requireWorkspaceContext, requirePermission('ai.view'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const members = await listsService.listMembers(businessId, String(req.params.listId ?? ''));
+  return res.status(200).json({ members });
+});
+
+const addListMemberSchema = z.object({
+  memberType: z.enum(['chat', 'contact', 'group']),
+  memberId: z.string().uuid(),
+});
+
+app.post('/api/workspace/lists/:listId/members', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = addListMemberSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_LIST_MEMBER', details: parsed.error.flatten() });
+  const member = await listsService.addMember(businessId, String(req.params.listId ?? ''), parsed.data.memberType, parsed.data.memberId);
+  return res.status(201).json({ member });
+});
+
+app.delete('/api/workspace/lists/:listId/members/:memberId', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const removed = await listsService.removeMember(businessId, String(req.params.listId ?? ''), String(req.params.memberId ?? ''));
+  if (!removed) return res.status(404).json({ error: 'LIST_MEMBER_NOT_FOUND' });
+  return res.status(200).json({ ok: true });
+});
+
+app.get('/api/workspace/lists/:listId/agent-assignment', requireWorkspaceContext, requirePermission('ai.view'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const assignments = await listsService.listAssignments(businessId, String(req.params.listId ?? ''));
+  return res.status(200).json({ assignments });
+});
+
+const upsertListAssignmentSchema = z.object({
+  agentId: z.string().uuid(),
+  enabled: z.boolean().optional(),
+  useConversationHistory: z.boolean().optional(),
+  useLearnProfile: z.boolean().optional(),
+  rememberListSpecificInfo: z.boolean().optional(),
+  requireApproval: z.boolean().optional(),
+  autonomyOverride: z.number().int().min(1).max(5).nullable().optional(),
+});
+
+app.put('/api/workspace/lists/:listId/agent-assignment', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = upsertListAssignmentSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_LIST_ASSIGNMENT', details: parsed.error.flatten() });
+  try {
+    const assignment = await listsService.upsertAssignment({ businessId, listId: String(req.params.listId ?? ''), ...parsed.data });
+    return res.status(200).json({ assignment });
+  } catch (error) {
+    if (error instanceof AutonomyOverrideExceedsAgentError) {
+      return res.status(400).json({ error: 'AUTONOMY_OVERRIDE_EXCEEDS_AGENT', message: error.message });
+    }
+    throw error;
+  }
+});
+
+app.delete('/api/workspace/lists/:listId/agent-assignment/:agentId', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const removed = await listsService.removeAssignment(businessId, String(req.params.listId ?? ''), String(req.params.agentId ?? ''));
+  if (!removed) return res.status(404).json({ error: 'LIST_ASSIGNMENT_NOT_FOUND' });
+  return res.status(200).json({ ok: true });
+});
+
+app.get('/api/workspace/chats/:chatId/lists', requireWorkspaceContext, requirePermission('ai.view'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const result = await listsService.getListsForChat(businessId, String(req.params.chatId ?? ''));
+  return res.status(200).json(result);
+});
+
+const setActiveListSchema = z.object({ listId: z.string().uuid().nullable() });
+
+/**
+ * The one place a human explicitly resolves the ambiguous-multi-List case
+ * (directive section 12/13) - never auto-guessed. Also the general
+ * "change/clear the active List for this chat" endpoint.
+ */
+app.patch('/api/workspace/chats/:chatId/active-list', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = setActiveListSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_ACTIVE_LIST', details: parsed.error.flatten() });
+  const chat = await listsService.setActiveList(businessId, String(req.params.chatId ?? ''), parsed.data.listId);
+  if (!chat) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
+  return res.status(200).json({ chat });
+});
+
+// ── Relationship-Confidence Engine (Phase 3) ─────────────────────────────
+//
+// Advisory only - never writes whatsapp_chats.active_list_id itself (see
+// relationshipConfidenceService.ts's own doc comment). The business's own
+// owner/admin must be able to see and adjust this at all times: the
+// enable/disable toggle and the real, always-current ambiguous-chat list
+// below are exactly that surface.
+
+const setRelationshipConfidenceEnabledSchema = z.object({ enabled: z.boolean() });
+
+app.patch(
+  '/api/workspace/business/relationship-confidence-enabled',
+  requireWorkspaceContext,
+  requirePermission('ai.edit'),
+  async (req, res) => {
+    const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const parsed = setRelationshipConfidenceEnabledSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_RELATIONSHIP_CONFIDENCE_TOGGLE', details: parsed.error.flatten() });
+    const business = await listsService.setRelationshipConfidenceEnabled(businessId, parsed.data.enabled);
+    return res.status(200).json({ business });
+  },
+);
+
+app.get('/api/workspace/relationship-signals', requireWorkspaceContext, requirePermission('ai.view'), async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  return res.status(200).json({ signals: await listsService.listAmbiguousRelationshipSignals(businessId) });
+});
+
 /**
  * The controlled interface for the separate, offline DSPy prompt-optimizer
  * (services/prompt-optimizer/, a real Python process an operator runs
@@ -2990,6 +3625,14 @@ app.get('/api/workspace/statuses', requireWorkspaceContext, async (_req, res) =>
   };
   const statuses = await workspaceService.listStatuses(businessId, whatsappAccountId);
   return res.status(200).json({ statuses });
+});
+
+app.patch('/api/workspace/statuses/:id/view', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const id = z.string().uuid().safeParse(req.params.id);
+  if (!id.success) return res.status(400).json({ error: 'INVALID_STATUS_ID' });
+  await workspaceService.markStatusViewed(businessId, id.data);
+  return res.status(200).json({ ok: true });
 });
 
 // Notifications don't require an active WhatsApp connection (requireWorkspaceContext) -

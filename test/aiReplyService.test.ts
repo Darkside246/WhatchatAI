@@ -74,6 +74,8 @@ function fakeContext(overrides: Partial<AiHandoffContext> = {}): AiHandoffContex
     timeContext: buildTimeContext(Date.now(), 'UTC', { status: 'SYNCED', lastSyncedAt: new Date(), source: 'test' }),
     media: null,
     conversationState: emptyConversationState('business-1', 'chat-1'),
+    nameUsageEnabled: true,
+    queryText: '',
     ...overrides,
   };
 }
@@ -575,6 +577,30 @@ describe('Durable conversation state (Phase 3 - supplements raw history, never r
       const state = { ...emptyConversationState('business-1', 'chat-1'), preferredName: 'Mike', lastNameUsedAt: new Date().toISOString(), customerReadiness: 'INTERESTED' as const };
       const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state }));
       expect(instruction).not.toContain('may naturally address');
+    });
+  });
+
+  describe('Personalisation Budget (directive §27) - the business\'s real nameUsageLevel reaches buildSystemInstruction, not a hardcoded default', () => {
+    it('a name used 20 minutes ago is withheld under a Minimal (level 1, 60-minute) budget, even though the old hardcoded 15-minute default would have allowed it', () => {
+      const usedTwentyMinutesAgo = new Date(Date.now() - 20 * 60_000).toISOString();
+      const state = { ...emptyConversationState('business-1', 'chat-1'), preferredName: 'Mike', lastNameUsedAt: usedTwentyMinutesAgo };
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state, nameUsageLevel: 1 }));
+      expect(instruction).not.toContain('may naturally address');
+      expect(instruction).toContain("already used the customer's name recently");
+    });
+
+    it('the same 20-minutes-ago name is offered again under a Frequent (level 4, 5-minute) budget', () => {
+      const usedTwentyMinutesAgo = new Date(Date.now() - 20 * 60_000).toISOString();
+      const state = { ...emptyConversationState('business-1', 'chat-1'), preferredName: 'Mike', lastNameUsedAt: usedTwentyMinutesAgo };
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state, nameUsageLevel: 4 }));
+      expect(instruction).toContain('may naturally address');
+    });
+
+    it('falls back to the Natural (level 3, 15-minute) default when nameUsageLevel is not set on the context at all - an unconfigured business behaves exactly as it did before this setting existed', () => {
+      const usedTwentyMinutesAgo = new Date(Date.now() - 20 * 60_000).toISOString();
+      const state = { ...emptyConversationState('business-1', 'chat-1'), preferredName: 'Mike', lastNameUsedAt: usedTwentyMinutesAgo };
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ conversationState: state }));
+      expect(instruction).toContain('may naturally address');
     });
   });
 

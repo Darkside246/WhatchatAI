@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Check, Minus, Sparkles, Info, CreditCard } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Check, Minus, Sparkles, Info, CreditCard, ArrowRight } from 'lucide-react';
 import {
   api,
   type WorkspaceBillingOverview,
   type PlanCatalogueDto,
   type PlanCatalogueEntryDto,
+  type AiAgentSummary,
 } from '../lib/api.js';
 
 type SubscriptionStatus = NonNullable<WorkspaceBillingOverview['subscription']>['status'];
@@ -55,9 +57,12 @@ function limitText(limit: number | null, isEnabled: boolean): string {
 function UsageMeter({ label, current, limit }: { label: string; current: number; limit: number | null }) {
   if (limit === null) {
     return (
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="min-w-0-safe text-body text-fg">{label}</span>
-        <span className="shrink-0 text-caption text-fg-muted">{current.toLocaleString()} used · unlimited</span>
+      <div>
+        <p className="truncate text-caption font-medium text-fg-secondary">{label}</p>
+        <p className="mt-1 tabular-nums text-body-lg font-semibold text-fg">
+          {current.toLocaleString()}
+          <span className="ml-1 text-caption font-normal text-fg-muted">unlimited</span>
+        </p>
       </div>
     );
   }
@@ -65,49 +70,58 @@ function UsageMeter({ label, current, limit }: { label: string; current: number;
   const ratio = current / Math.max(limit, 1);
   const percent = Math.min(100, Math.round(ratio * 100));
   const tone = ratio >= 1 ? 'bg-error' : ratio >= 0.8 ? 'bg-warning' : 'bg-accent';
+  const noteTone = ratio >= 1 ? 'text-error' : 'text-warning';
 
   return (
     <div>
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="min-w-0-safe text-body text-fg">{label}</span>
-        <span className="shrink-0 tabular-nums text-caption text-fg-secondary">
-          <span className="font-semibold text-fg">{current.toLocaleString()}</span> / {limit.toLocaleString()}
-        </span>
-      </div>
+      <p className="truncate text-caption font-medium text-fg-secondary">{label}</p>
+      <p className="mt-1 tabular-nums text-body-lg font-semibold text-fg">
+        {current.toLocaleString()}
+        <span className="text-caption font-normal text-fg-muted"> / {limit.toLocaleString()}</span>
+      </p>
       <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-surface-3">
         <div className={`h-full rounded-full transition-[width] ${tone}`} style={{ width: `${percent}%` }} />
       </div>
-      {ratio >= 1 && <p className="mt-1 text-meta text-error">At your plan limit.</p>}
-      {ratio >= 0.8 && ratio < 1 && <p className="mt-1 text-meta text-warning">Approaching your plan limit.</p>}
+      {ratio >= 0.8 && (
+        <p className={`mt-1 text-meta ${noteTone}`}>{ratio >= 1 ? 'At your plan limit' : 'Approaching your plan limit'}</p>
+      )}
     </div>
   );
 }
 
-function PlanCard({ plan }: { plan: PlanCatalogueEntryDto }) {
+function PlanCard({
+  plan,
+  currentPlanPriceCents,
+  selfServeChangeAvailable,
+}: {
+  plan: PlanCatalogueEntryDto;
+  currentPlanPriceCents: number | undefined;
+  selfServeChangeAvailable: boolean;
+}) {
   return (
     <div
-      className={`relative flex flex-col rounded-2xl border p-5 transition-shadow ${
+      className={`relative flex h-full flex-col rounded-2xl border p-4 transition-shadow ${
         plan.isCurrent
           ? 'border-accent bg-surface-1 shadow-lg ring-1 ring-accent/20'
           : 'border-border-subtle bg-surface-2 hover:shadow-md'
       }`}
     >
       {plan.isCurrent && (
-        <span className="control-sm absolute -top-3 left-5 bg-accent font-semibold text-white">
+        <span className="control-sm absolute -top-3 left-4 bg-accent font-semibold text-white">
           <Sparkles size={12} aria-hidden />
           Current plan
         </span>
       )}
 
       <p className="text-body font-semibold text-fg">{plan.name}</p>
-      <p className="mt-2 flex items-baseline gap-1">
+      <p className="mt-1.5 flex items-baseline gap-1">
         <span className="text-display font-semibold tracking-tight text-fg">
           {formatPrice(plan.priceMonthlyCents, plan.currency)}
         </span>
         <span className="text-caption text-fg-muted">/ month</span>
       </p>
 
-      <ul className="mt-4 space-y-2 border-t border-border-subtle pt-4">
+      <ul className="mt-3 space-y-1.5 border-t border-border-subtle pt-3">
         {plan.entitlements.map((entitlement) => (
           <li key={entitlement.key} className="flex items-baseline justify-between gap-3">
             <span className="flex min-w-0-safe items-baseline gap-1.5 text-caption text-fg-secondary">
@@ -126,44 +140,113 @@ function PlanCard({ plan }: { plan: PlanCatalogueEntryDto }) {
           </li>
         ))}
       </ul>
+
+      {!plan.isCurrent && selfServeChangeAvailable && (
+        <Link
+          to={`/billing/plans/${plan.planKey}`}
+          className="mt-auto flex items-center justify-center gap-1.5 rounded-lg border border-accent px-3 pt-3 py-2 text-caption font-semibold text-accent transition hover:bg-accent hover:text-white"
+        >
+          {currentPlanPriceCents !== undefined && plan.priceMonthlyCents > currentPlanPriceCents ? 'Upgrade' : 'See details'}
+          <ArrowRight size={13} aria-hidden />
+        </Link>
+      )}
     </div>
   );
 }
+
+type AgentUsageRow = { agentId: string | null; agentName: string; totalTokens: number; callCount: number };
 
 /**
  * Section 34-40 (Token economy) follow-up: real per-agent token spend for
  * the current calendar month - before this, a business owner could see
  * their total AI usage (the UsageMeter above) but nothing telling them
- * WHICH agent was actually spending it. Fetches on its own, same
- * established pattern as DashboardRoute.tsx's MessageVolumeTrend/
- * FunnelStageSnapshot.
+ * WHICH agent was actually spending it. Divided into real agent slots
+ * (agentLimit, the plan's own max_ai_agents entitlement) rather than one
+ * row per agent with recorded usage - a plan with room for more agents
+ * than the business has actually activated shows those remaining slots as
+ * genuinely empty, not just absent, so "you have room to add more" reads
+ * at a glance instead of only being discoverable on the Usage tile above.
+ * Falls back to a plain list on an unlimited plan (agentLimit === null),
+ * since there's no fixed slot count to divide into there.
  */
-function AiUsageByAgentBreakdown() {
-  const [usage, setUsage] = useState<{ agentId: string | null; agentName: string; totalTokens: number; callCount: number }[] | null>(null);
+function AiUsageByAgentBreakdown({ agentLimit }: { agentLimit: number | null }) {
+  const [usage, setUsage] = useState<AgentUsageRow[] | null>(null);
+  const [agents, setAgents] = useState<AiAgentSummary[] | null>(null);
 
   useEffect(() => {
     api.getAiUsageByAgent().then((res) => setUsage(res.usage)).catch(() => setUsage([]));
+    api.listAgents().then((res) => setAgents(res.agents)).catch(() => setAgents([]));
   }, []);
 
-  if (usage === null) return <p className="text-caption text-fg-muted">Loading…</p>;
-  if (usage.length === 0) return <p className="text-caption text-fg-muted">No AI usage recorded yet this month.</p>;
+  if (usage === null || agents === null) return <p className="text-caption text-fg-muted">Loading…</p>;
 
-  const max = Math.max(1, ...usage.map((row) => row.totalTokens));
-  return (
-    <div className="space-y-2">
-      {usage.map((row) => (
-        <div key={row.agentId ?? 'unattributed'}>
-          <div className="flex items-baseline justify-between gap-3">
-            <span className="min-w-0-safe truncate text-caption text-fg-secondary">{row.agentName}</span>
-            <span className="shrink-0 tabular-nums text-meta text-fg-muted">
-              <span className="font-medium text-fg">{row.totalTokens.toLocaleString()}</span> tokens · {row.callCount.toLocaleString()} call{row.callCount === 1 ? '' : 's'}
-            </span>
+  const activeAgents = agents.filter((agent) => agent.status === 'ACTIVE' || agent.status === 'PAUSED');
+  if (activeAgents.length === 0 && usage.length === 0) {
+    return <p className="text-caption text-fg-muted">No AI usage recorded yet this month.</p>;
+  }
+
+  if (agentLimit === null) {
+    const max = Math.max(1, ...usage.map((row) => row.totalTokens));
+    return (
+      <div className="space-y-2">
+        {usage.map((row) => (
+          <div key={row.agentId ?? 'unattributed'}>
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="min-w-0-safe truncate text-caption text-fg-secondary">{row.agentName}</span>
+              <span className="shrink-0 tabular-nums text-meta text-fg-muted">
+                <span className="font-medium text-fg">{row.totalTokens.toLocaleString()}</span> tokens · {row.callCount.toLocaleString()} call{row.callCount === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-3">
+              <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, Math.round((row.totalTokens / max) * 100))}%` }} />
+            </div>
           </div>
-          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-3">
-            <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, Math.round((row.totalTokens / max) * 100))}%` }} />
+        ))}
+      </div>
+    );
+  }
+
+  const usageByAgentId = new Map(usage.filter((row) => row.agentId).map((row) => [row.agentId as string, row]));
+  const filled = activeAgents.slice(0, agentLimit).map((agent) => ({
+    id: agent.id,
+    name: agent.name,
+    totalTokens: usageByAgentId.get(agent.id)?.totalTokens ?? 0,
+    callCount: usageByAgentId.get(agent.id)?.callCount ?? 0,
+  }));
+  const vacantCount = Math.max(0, agentLimit - filled.length);
+  const maxTokens = Math.max(1, ...filled.map((agent) => agent.totalTokens));
+
+  return (
+    <div>
+      <p className="mb-2 text-meta text-fg-muted">
+        {filled.length} of {agentLimit} agent{agentLimit === 1 ? '' : 's'} used · {vacantCount} remaining
+      </p>
+      {/* Exactly agentLimit equal columns filling the full width - a 2-agent
+          plan splits into real halves, an 8-agent plan into real eighths,
+          never a fixed responsive column count that leaves the rest of the
+          row visibly empty when the plan allows fewer agents than that. */}
+      <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${agentLimit}, minmax(0, 1fr))` }}>
+      {filled.map((agent) => (
+        <div key={agent.id} className="rounded-lg border border-border-subtle bg-surface-1 p-3">
+          <p className="truncate text-caption font-medium text-fg">{agent.name}</p>
+          <p className="mt-0.5 truncate tabular-nums text-meta text-fg-muted">
+            {agent.totalTokens.toLocaleString()} tokens · {agent.callCount.toLocaleString()} call{agent.callCount === 1 ? '' : 's'}
+          </p>
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-3">
+            <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, Math.round((agent.totalTokens / maxTokens) * 100))}%` }} />
           </div>
         </div>
       ))}
+      {Array.from({ length: vacantCount }, (_, index) => (
+        <div
+          key={`vacant-${index}`}
+          className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border-subtle/70 p-3 text-center"
+        >
+          <p className="text-caption text-fg-muted">Empty slot</p>
+          <p className="mt-0.5 text-meta text-fg-muted">Not yet activated</p>
+        </div>
+      ))}
+      </div>
     </div>
   );
 }
@@ -220,6 +303,78 @@ function AiTokenTopupOffer() {
           className="mt-3 rounded-lg bg-accent px-4 py-2 text-caption font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
         >
           {busy ? 'Starting checkout…' : `Buy ${offer.tokens.toLocaleString()} tokens`}
+        </button>
+      )}
+
+      {error && <p className="mt-2 text-caption text-error">{error}</p>}
+
+      {instructions && (
+        <div className="mt-3 rounded-lg bg-surface-1 p-3">
+          {approvalUrl ? (
+            <a href={approvalUrl} target="_blank" rel="noreferrer" className="text-caption font-semibold text-accent underline">
+              Continue to PayPal to complete payment →
+            </a>
+          ) : memoInstruction ? (
+            <p className="text-caption text-fg-secondary">{memoInstruction}</p>
+          ) : (
+            <p className="text-caption text-fg-secondary">Checkout started - follow the payment provider's instructions to complete it.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The AI-memory-capacity sibling of AiTokenTopupOffer above - same card
+ * shape, same minimal (no wizard) checkout flow, but this purchase adds
+ * capacity permanently rather than for the rest of the current calendar
+ * month (see aiMemoryTopupService.ts's own doc comment).
+ */
+function AiMemoryTopupOffer() {
+  const [offer, setOffer] = useState<{ planKey: string; profiles: number; priceCents: number; currency: string } | null | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [instructions, setInstructions] = useState<Record<string, unknown> | null>(null);
+
+  useEffect(() => {
+    api.getAiMemoryTopupOffer().then((res) => setOffer(res.offer)).catch(() => setOffer(null));
+  }, []);
+
+  const handleBuy = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.createAiMemoryTopupCheckout();
+      setInstructions(result.instructions);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not start checkout.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (offer === undefined) return null;
+  if (offer === null) return null;
+
+  const approvalUrl = typeof instructions?.approvalUrl === 'string' ? instructions.approvalUrl : null;
+  const memoInstruction = typeof instructions?.memoInstruction === 'string' ? instructions.memoInstruction : null;
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+      <p className="text-body font-medium text-fg">
+        Need more AI memory capacity? Buy {offer.profiles.toLocaleString()} extra customer-memory slots for {formatPrice(offer.priceCents, offer.currency)}.
+      </p>
+      <p className="mt-1 text-caption text-fg-muted">Added to your account permanently once the payment is confirmed - unlike AI tokens, this never resets or expires.</p>
+
+      {!instructions && (
+        <button
+          type="button"
+          onClick={() => void handleBuy()}
+          disabled={busy}
+          className="mt-3 rounded-lg bg-accent px-4 py-2 text-caption font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+        >
+          {busy ? 'Starting checkout…' : `Buy ${offer.profiles.toLocaleString()} memory slots`}
         </button>
       )}
 
@@ -332,9 +487,9 @@ export function BillingRoute() {
             <p className="mt-1 text-caption text-fg-muted">
               Counted live from your real agents and connected accounts — not an estimate.
             </p>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid items-start gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {metered.map((entitlement) => (
-                <div key={entitlement.key} className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+                <div key={entitlement.key} className="rounded-xl border border-border-subtle bg-surface-2 p-3.5">
                   <UsageMeter label={entitlement.label} current={entitlement.current ?? 0} limit={entitlement.limit} />
                 </div>
               ))}
@@ -349,16 +504,15 @@ export function BillingRoute() {
               Where this month's AI token spend actually went, broken down by agent.
             </p>
             <div className="mt-3 rounded-xl border border-border-subtle bg-surface-2 p-4">
-              <AiUsageByAgentBreakdown />
+              <AiUsageByAgentBreakdown agentLimit={billing?.entitlements.find((entitlement) => entitlement.key === 'max_ai_agents')?.limit ?? null} />
             </div>
           </section>
         )}
 
-        {metered.some((entitlement) => entitlement.key === 'max_ai_tokens_per_month') && (
-          <section className="mt-6">
-            <AiTokenTopupOffer />
-          </section>
-        )}
+        <section className="mt-6 grid gap-4 sm:grid-cols-2">
+          {metered.some((entitlement) => entitlement.key === 'max_ai_tokens_per_month') && <AiTokenTopupOffer />}
+          <AiMemoryTopupOffer />
+        </section>
 
         {catalogue && catalogue.plans.length > 0 && (
           <section className="mt-8 pb-4">
@@ -370,7 +524,12 @@ export function BillingRoute() {
 
             <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {catalogue.plans.map((entry) => (
-                <PlanCard key={entry.planKey} plan={entry} />
+                <PlanCard
+                  key={entry.planKey}
+                  plan={entry}
+                  currentPlanPriceCents={plan?.priceMonthlyCents}
+                  selfServeChangeAvailable={catalogue.selfServeChangeAvailable}
+                />
               ))}
             </div>
 

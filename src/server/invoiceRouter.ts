@@ -2,8 +2,10 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { pool } from '../db/pool.js';
 import { InvoiceService } from '../services/invoice/invoiceService.js';
+import { computeInvoiceTotals, computeLineTotalCents } from '../repositories/invoiceRepository.js';
 import { BusinessRepository } from '../repositories/businessRepository.js';
 import { requireAuth, requireActiveSubscription, type AuthContext } from './authMiddleware.js';
+import { invoiceCustomizationSchema, DEFAULT_INVOICE_CUSTOMIZATION, type InvoiceCustomization } from '../services/invoice/invoiceTemplates.js';
 
 const router = Router();
 const svc = new InvoiceService(pool);
@@ -25,6 +27,7 @@ const CreateSchema = z.object({
   documentType: z.enum(['INVOICE', 'QUOTE', 'RECEIPT']).optional(),
   currencyCode: z.string().length(3).optional(),
   taxBasisPoints: z.number().int().min(0).max(10000).optional(),
+  issueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   notes: z.string().max(2000).optional(),
   terms: z.string().max(2000).optional(),
@@ -78,6 +81,7 @@ router.post('/', async (req, res) => {
     ...(d.documentType !== undefined ? { documentType: d.documentType } : {}),
     ...(d.currencyCode !== undefined ? { currencyCode: d.currencyCode } : {}),
     ...(d.taxBasisPoints !== undefined ? { taxBasisPoints: d.taxBasisPoints } : {}),
+    ...(d.issueDate !== undefined ? { issueDate: d.issueDate } : {}),
     ...(d.dueDate !== undefined ? { dueDate: d.dueDate } : {}),
     ...(d.notes !== undefined ? { notes: d.notes } : {}),
     ...(d.terms !== undefined ? { terms: d.terms } : {}),
@@ -102,11 +106,109 @@ router.get('/:id/html', async (req, res) => {
   const result = await svc.get(auth.businessId, req.params['id']!);
   if (!result) return res.status(404).json({ error: 'NOT_FOUND' });
   const business = await businessRepository.findById(auth.businessId);
-  const html = svc.renderHtml(result.invoice, result.lineItems, {
-    name: business?.name ?? 'Invoice',
-    brandColor: business?.brandColor ?? null,
-    logoDataUrl: business?.logoDataUrl ?? null,
-  });
+  const storedCustomization = invoiceCustomizationSchema.safeParse(business?.invoiceCustomization);
+  const html = svc.renderHtml(
+    result.invoice,
+    result.lineItems,
+    {
+      name: business?.name ?? 'Invoice',
+      brandColor: business?.brandColor ?? null,
+      logoDataUrl: business?.logoDataUrl ?? null,
+      motto: business?.motto ?? null,
+      address: business?.address ?? null,
+      phone: business?.phone ?? null,
+    },
+    storedCustomization.success ? storedCustomization.data : DEFAULT_INVOICE_CUSTOMIZATION,
+  );
+  return res.type('html').send(html);
+});
+
+const PreviewLineItemSchema = z.object({
+  description: z.string().max(500),
+  quantity: z.number().positive().max(1_000_000),
+  unitPriceCents: z.number().int().min(0),
+  discountBasisPoints: z.number().int().min(0).max(10000).optional(),
+});
+
+const PreviewSchema = z.object({
+  documentType: z.enum(['INVOICE', 'QUOTE', 'RECEIPT']).optional(),
+  currencyCode: z.string().length(3).optional(),
+  taxBasisPoints: z.number().int().min(0).max(10000).optional(),
+  issueDate: z.string().optional(),
+  dueDate: z.string().optional(),
+  notes: z.string().max(2000).optional(),
+  terms: z.string().max(2000).optional(),
+  footerText: z.string().max(500).optional(),
+  lineItems: z.array(PreviewLineItemSchema).max(100).optional(),
+  customization: invoiceCustomizationSchema.optional(),
+});
+
+/**
+ * A real, unsaved-draft preview - "as he or she works on it" (the live
+ * preview pane, InvoicesPage.tsx) and the Customize panel's template/color
+ * picker both call this with in-progress data that has never been (and
+ * for the Customize panel, never will be) persisted as a real invoice.
+ * Reuses computeInvoiceTotals/computeLineTotalCents from
+ * invoiceRepository.ts - the exact same math a real save performs - so a
+ * preview's numbers never drift from what actually gets saved.
+ */
+router.post('/preview', async (req, res) => {
+  const auth = res.locals['auth'] as AuthContext;
+  const parsed = PreviewSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY', detail: parsed.error.flatten() });
+  const d = parsed.data;
+
+  const lineItemsInput = (d.lineItems ?? []).length > 0
+    ? d.lineItems!
+    : [{ description: 'Sample item', quantity: 1, unitPriceCents: 10000, discountBasisPoints: 0 }];
+
+  const enrichedLines = lineItemsInput.map((li) => ({ ...li, discountBasisPoints: li.discountBasisPoints ?? 0 }));
+  const taxBp = d.taxBasisPoints ?? 0;
+  const totals = computeInvoiceTotals(enrichedLines, taxBp);
+  const documentType = d.documentType ?? 'INVOICE';
+  const prefix = documentType === 'INVOICE' ? 'INV' : documentType === 'QUOTE' ? 'QUO' : 'REC';
+
+  const previewInvoice = {
+    documentType,
+    invoiceNumber: `${prefix}-PREVIEW`,
+    status: 'DRAFT' as const,
+    currencyCode: d.currencyCode ?? 'BBD',
+    subtotalCents: totals.subtotalCents,
+    taxBasisPoints: taxBp,
+    discountCents: totals.discountCents,
+    totalCents: totals.totalCents,
+    issueDate: d.issueDate ?? new Date().toISOString().slice(0, 10),
+    dueDate: d.dueDate ?? null,
+    notes: d.notes ?? null,
+    terms: d.terms ?? null,
+    footerText: d.footerText ?? null,
+    createdAt: new Date().toISOString(),
+  };
+  const previewLineItems = enrichedLines.map((li) => ({
+    description: li.description || 'Item',
+    quantity: String(li.quantity),
+    unitPriceCents: li.unitPriceCents,
+    discountBasisPoints: li.discountBasisPoints,
+    totalCents: computeLineTotalCents(li.unitPriceCents, li.quantity, li.discountBasisPoints),
+  }));
+
+  const business = await businessRepository.findById(auth.businessId);
+  const storedCustomization = invoiceCustomizationSchema.safeParse(business?.invoiceCustomization);
+  const customization: InvoiceCustomization = d.customization ?? (storedCustomization.success ? storedCustomization.data : DEFAULT_INVOICE_CUSTOMIZATION);
+
+  const html = svc.renderHtml(
+    previewInvoice as Parameters<typeof svc.renderHtml>[0],
+    previewLineItems as Parameters<typeof svc.renderHtml>[1],
+    {
+      name: business?.name ?? 'Your Business',
+      brandColor: business?.brandColor ?? null,
+      logoDataUrl: business?.logoDataUrl ?? null,
+      motto: business?.motto ?? null,
+      address: business?.address ?? null,
+      phone: business?.phone ?? null,
+    },
+    customization,
+  );
   return res.type('html').send(html);
 });
 

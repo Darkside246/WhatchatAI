@@ -2,6 +2,7 @@ import type { Content } from '@google/genai';
 import { ApiError } from '@google/genai';
 import { getGeminiClient } from '../geminiClient.js';
 import * as gooseService from '../gooseService.js';
+import { getGeminiModelOverride, isGooseFallbackEnabled } from '../platform/platformConfigService.js';
 import type { RegisteredAiProvider, GatewayMedia, GatewayToolDefinition, GatewayToolCall, GatewayToolResponse } from './aiGateway.js';
 import { aiGateway, ProviderConfigRejectedError } from './aiGateway.js';
 import { looksLikeRawReasoningTrace } from './reasoningLeakGuard.js';
@@ -60,6 +61,11 @@ export class GeminiProvider implements RegisteredAiProvider {
     return { text: available, vision: available, audio: false, video: false, documents: false, functionCalling: available };
   }
 
+  /** Developer Master Control page override (platform_settings key gemini_model_override) - not a secret, so safe to make live-editable, unlike GEMINI_API_KEY. Wins over this.model's own env-var fallback chain when set. */
+  private async resolveModel(): Promise<string> {
+    return (await getGeminiModelOverride()) ?? this.model;
+  }
+
   async generate(input: ProviderGenerateInput) {
     const client = getGeminiClient();
     if (!client) throw new Error('GEMINI_API_KEY is not configured');
@@ -84,8 +90,9 @@ export class GeminiProvider implements RegisteredAiProvider {
     };
     if (input.temperature !== undefined) config.temperature = input.temperature;
 
+    const model = await this.resolveModel();
     const response = await client.models
-      .generateContent({ model: this.model, contents: [{ role: 'user', parts }], config })
+      .generateContent({ model, contents: [{ role: 'user', parts }], config })
       .catch(asConfigRejection);
     const text = response.text?.trim() ?? '';
     if (!text) throw new Error('Gemini returned an empty response');
@@ -120,7 +127,8 @@ export class GeminiProvider implements RegisteredAiProvider {
         parts: [{ text: message.content }],
       }));
     const config = { systemInstruction, maxOutputTokens: input.maxOutputTokens ?? 1024 };
-    const response = await client.models.generateContent({ model: this.model, contents, config });
+    const model = await this.resolveModel();
+    const response = await client.models.generateContent({ model, contents, config });
     const text = response.text?.trim() ?? '';
     if (!text) throw new Error('Gemini returned an empty response on the reduced retry');
     return { provider: this.name, text };
@@ -171,9 +179,10 @@ export class GeminiProvider implements RegisteredAiProvider {
       tools: [{ functionDeclarations: input.tools! }],
     };
     if (input.temperature !== undefined) config.temperature = input.temperature;
+    const model = await this.resolveModel();
     let response;
     try {
-      response = await client.models.generateContent({ model: this.model, contents, config });
+      response = await client.models.generateContent({ model, contents, config });
     } catch (error) {
       // A vague 400 with no field-level detail is a real, recurring Gemini
       // quirk this codebase has already hit twice (see aiReplyService.ts's
@@ -187,7 +196,7 @@ export class GeminiProvider implements RegisteredAiProvider {
       // to do. One retry, tools/temperature/systemInstruction unchanged.
       if (!(error instanceof ApiError) || error.status !== 400) throw error;
       const { thinkingConfig: _unused, ...configWithoutThinking } = config;
-      response = await client.models.generateContent({ model: this.model, contents, config: configWithoutThinking }).catch(asConfigRejection);
+      response = await client.models.generateContent({ model, contents, config: configWithoutThinking }).catch(asConfigRejection);
     }
     const toolCalls: GatewayToolCall[] | undefined = response.functionCalls?.length
       ? response.functionCalls.map((call) => ({ name: call.name ?? '', args: (call.args ?? {}) as Record<string, unknown> }))
@@ -387,7 +396,7 @@ export class GooseProvider implements RegisteredAiProvider {
   }
 
   async capabilities(): Promise<ProviderCapabilities> {
-    const available = gooseService.getCapabilities().configured;
+    const available = gooseService.getCapabilities().configured && (await isGooseFallbackEnabled());
     return { text: available, vision: false, audio: false, video: false, documents: false, functionCalling: false };
   }
 
@@ -396,6 +405,9 @@ export class GooseProvider implements RegisteredAiProvider {
     if (input.tools?.length) throw new Error('Goose provider does not support tool calling');
     if (!gooseService.getCapabilities().configured) {
       throw new Error('Goose failover is not configured');
+    }
+    if (!(await isGooseFallbackEnabled())) {
+      throw new Error('Goose failover has been switched off from the Developer Control Plane');
     }
 
     const systemMessages = input.messages.filter((message) => message.role === 'system').map((message) => message.content);
@@ -414,14 +426,23 @@ export class GooseProvider implements RegisteredAiProvider {
   }
 }
 
+/**
+ * Real failover order, ascending priority (AiGateway.listProviders/generate
+ * both sort by this - lower number tried first): Gemini(10) -> Goose(15) ->
+ * OpenAI(20) -> OpenRouter(30). Goose's own class default (40, last) is
+ * deliberately overridden here to sit right after Gemini, per the explicit
+ * product decision to try the real emergency text-only failover before
+ * ever spending real OpenAI quota - OpenRouter stays last since nothing
+ * has asked to reorder it.
+ */
 export function registerDefaultAiProviders(gateway = aiGateway): void {
   const providers: RegisteredAiProvider[] = [];
   if (process.env.GEMINI_API_KEY) providers.push(new GeminiProvider());
+  if (process.env.GOOSE_SERVICE_URL) providers.push(new GooseProvider(15));
   if (process.env.OPENAI_API_KEY) providers.push(new OpenAIProvider());
   if (process.env.OPENROUTER_API_KEY && (process.env.OPENROUTER_GATEWAY_MODEL || process.env.OPENROUTER_MODEL)) {
     providers.push(new OpenRouterProvider());
   }
-  if (process.env.GOOSE_SERVICE_URL) providers.push(new GooseProvider());
   for (const provider of providers) {
     if (!gateway.listProviders().some((entry) => entry.name === provider.name)) gateway.register(provider);
   }

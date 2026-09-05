@@ -467,7 +467,7 @@ describe('OpenAICompatibleProvider rejects a truncated response instead of relay
               finish_reason: 'stop',
               message: {
                 content:
-                  "The user is saying that Haji told them I did not send the message, and they want me to send a message to Haji now via kai. I need to be careful here.",
+                  "The user is saying that Alex told them I did not send the message, and they want me to send a message to Alex now via kai. I need to be careful here.",
               },
             },
           ],

@@ -13,14 +13,14 @@ describe('aiOrchestrator Outbound Leak Guard wiring (real Postgres agent + real 
     const agent = await agentRepo.create({
       businessId,
       name: 'Kai',
-      protectedFacts: ['Hasani', 'Hachiko'],
+      protectedFacts: ['Alex', 'Rex'],
     });
 
-    const outcome = await guardGeneratedText(businessId, agent, 'Nah that was Hasani on your phone, don\'t tell anyone!');
+    const outcome = await guardGeneratedText(businessId, agent, 'Nah that was Alex on your phone, don\'t tell anyone!');
 
     expect(outcome.kind).toBe('blocked_leak');
     if (outcome.kind === 'blocked_leak') {
-      expect(outcome.reason).toContain('Hasani');
+      expect(outcome.reason).toContain('Alex');
     }
     expect(JSON.stringify(outcome)).not.toContain('phone');
 
@@ -37,7 +37,7 @@ describe('aiOrchestrator Outbound Leak Guard wiring (real Postgres agent + real 
     const agent = await agentRepo.create({
       businessId,
       name: 'Kai',
-      protectedFacts: ['Hasani', 'Hachiko'],
+      protectedFacts: ['Alex', 'Rex'],
     });
 
     const outcome = await guardGeneratedText(businessId, agent, 'Sure, we open at 9am tomorrow.');

@@ -106,6 +106,32 @@ export class PlanRepository {
   }
 
   /**
+   * Developer Master Control page: a brand-new plan tier, not just edits
+   * to one of the four seeded ones (migration 025). `planKey` collisions
+   * are left to the column's own UNIQUE constraint - the caller (the
+   * route) catches the resulting pg error code 23505 and returns a clean
+   * 409, rather than this method pre-checking with a separate query.
+   */
+  async createPlan(input: {
+    planKey: string;
+    name: string;
+    description?: string | null | undefined;
+    priceMonthlyCents: number;
+    priceYearlyCents?: number | null | undefined;
+    currency?: string | undefined;
+  }): Promise<PlanRecord> {
+    const { rows } = await this.db.query<PlanRow>(
+      `INSERT INTO plans (plan_key, name, description, price_monthly_cents, price_yearly_cents, currency)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [input.planKey, input.name, input.description ?? null, input.priceMonthlyCents, input.priceYearlyCents ?? null, input.currency ?? 'USD'],
+    );
+    const row = rows[0];
+    if (!row) throw new Error('plans insert returned no row');
+    return toPlan(row);
+  }
+
+  /**
    * Real developer-editable pricing - before this, the "illustrative
    * starting values" migration 025's own comment promised ("the business
    * can change") were only ever changeable by hand-editing a migration.

@@ -15,6 +15,8 @@ interface Props {
   statusCount?: number;
   /** The real, authenticated media URL for this contact/account's downloaded profile picture - never a raw WhatsApp CDN link, never a placeholder. */
   photoUrl?: string | null;
+  /** Escape hatch for callers that track "has this been viewed" (the Status panel) - false suppresses the ring outright even when statusCount > 0, matching WhatsApp's own "no ring once you've seen it" rule. Defaults to true so every existing caller (which has no such concept) is unaffected. */
+  ringVisible?: boolean;
 }
 
 /**
@@ -58,7 +60,7 @@ function StatusRing({ count, boxSize }: { count: number; boxSize: number }) {
  * falls back to the actual first letter of whatever real identity string
  * the caller has - never a stock image or placeholder person icon.
  */
-export function Avatar({ label, size = 'md', className = '', statusCount = 0, photoUrl = null }: Props) {
+export function Avatar({ label, size = 'md', className = '', statusCount = 0, photoUrl = null, ringVisible = true }: Props) {
   const initial = label.trim().slice(0, 1).toUpperCase() || '?';
   const circle = photoUrl ? (
     <img
@@ -76,7 +78,7 @@ export function Avatar({ label, size = 'md', className = '', statusCount = 0, ph
     </div>
   );
 
-  if (statusCount <= 0) {
+  if (statusCount <= 0 || !ringVisible) {
     return <div className={`shrink-0 ${className}`}>{circle}</div>;
   }
 

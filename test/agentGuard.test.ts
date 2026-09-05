@@ -8,6 +8,7 @@ import {
   SystemTierToolDeniedError,
   ToolRateLimitExceededError,
   AiActionsPausedError,
+  AgentAutonomyRestrictedError,
 } from '../src/services/ai/agentGuard.js';
 import { isToolRegistered, listRegisteredTools, isTierAlwaysDenied } from '../src/services/ai/aiToolPolicy.js';
 import { SecurityAuditLogRepository } from '../src/repositories/securityAuditLogRepository.js';
@@ -173,6 +174,69 @@ describe('agentGuard / AI Security Governor (real Postgres tenant, actor, and ra
 
     await expect(
       guardToolInvocation('update_conversation_memory', { businessId, whatsappAccountId: null, chatId: null, agentId }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('agentGuard / AURA Lists (Phase 1) - restrict-only List autonomy override, real Postgres', () => {
+  let businessId: string;
+  let agentId: string;
+  let chatId: string;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    const agent = await new AiAgentRepository(pool).create({ businessId, name: 'Reception Agent', autonomyLevel: 3 });
+    agentId = agent.id;
+
+    const account = await pool.query<{ id: string }>(
+      `INSERT INTO whatsapp_accounts (business_id, whatsapp_jid, jid_kind, phone_number, connection_status) VALUES ($1, '15550009999@s.whatsapp.net', 'individual', '+15550009999', 'CONNECTED') RETURNING id`,
+      [businessId],
+    );
+    const chat = await pool.query<{ id: string }>(
+      `INSERT INTO whatsapp_chats (business_id, whatsapp_account_id, chat_jid, jid_kind, chat_type) VALUES ($1, $2, 'agentguard-1@s.whatsapp.net', 'individual', 'individual') RETURNING id`,
+      [businessId, account.rows[0]!.id],
+    );
+    chatId = chat.rows[0]!.id;
+  });
+
+  it('denies a WRITE-tier tool when the chat\'s active List restricts this agent to autonomyOverride=1, even though the agent\'s own autonomyLevel is 3', async () => {
+    const { ListRepository } = await import('../src/repositories/listRepository.js');
+    const { ListAgentAssignmentRepository } = await import('../src/repositories/listAgentAssignmentRepository.js');
+    const { WhatsAppChatRepository } = await import('../src/repositories/whatsappChatRepository.js');
+
+    const list = await new ListRepository(pool).create({ businessId, name: 'Work' });
+    await new ListAgentAssignmentRepository(pool).upsert({ businessId, listId: list.id, agentId, enabled: true, autonomyOverride: 1 });
+    await new WhatsAppChatRepository(pool).setActiveList(chatId, businessId, list.id);
+
+    await expect(
+      guardToolInvocation('update_conversation_memory', { businessId, whatsappAccountId: null, chatId, agentId }),
+    ).rejects.toThrow(AgentAutonomyRestrictedError);
+
+    // READ tools are unaffected by the restriction, same as the agent-level check.
+    await expect(
+      guardToolInvocation('get_current_time', { businessId, whatsappAccountId: null, chatId, agentId }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('fails open (no restriction) when the chat has no active List at all - identical behavior to before Lists existed', async () => {
+    await expect(
+      guardToolInvocation('update_conversation_memory', { businessId, whatsappAccountId: null, chatId, agentId }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('fails open when the active List\'s assignment is for a DIFFERENT agent', async () => {
+    const { ListRepository } = await import('../src/repositories/listRepository.js');
+    const { ListAgentAssignmentRepository } = await import('../src/repositories/listAgentAssignmentRepository.js');
+    const { WhatsAppChatRepository } = await import('../src/repositories/whatsappChatRepository.js');
+
+    const otherAgent = await new AiAgentRepository(pool).create({ businessId, name: 'Other Agent' });
+    const list = await new ListRepository(pool).create({ businessId, name: 'Work' });
+    await new ListAgentAssignmentRepository(pool).upsert({ businessId, listId: list.id, agentId: otherAgent.id, enabled: true, autonomyOverride: 1 });
+    await new WhatsAppChatRepository(pool).setActiveList(chatId, businessId, list.id);
+
+    await expect(
+      guardToolInvocation('update_conversation_memory', { businessId, whatsappAccountId: null, chatId, agentId }),
     ).resolves.toBeUndefined();
   });
 });

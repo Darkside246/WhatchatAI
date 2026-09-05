@@ -1,7 +1,7 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { Search } from 'lucide-react';
-import type { SyncStatusResponse, WhatsAppConnectionSnapshot } from '../lib/api.js';
+import { api, type SyncStatusResponse, type WhatsAppConnectionSnapshot, type WorkspaceBillingEntitlement } from '../lib/api.js';
 import { SaasNavRail, SaasNavBottomBar } from '../components/SaasNavRail.js';
 import { NotificationCenter } from '../components/NotificationCenter.js';
 import { CommandPalette } from '../components/CommandPalette.js';
@@ -10,6 +10,7 @@ const ChatsRoute = lazy(() => import('./ChatsRoute.js').then((m) => ({ default: 
 const AgentsPage = lazy(() => import('./AgentsPage.js').then((m) => ({ default: m.AgentsPage })));
 const CrmRoute = lazy(() => import('./CrmRoute.js').then((m) => ({ default: m.CrmRoute })));
 const BillingRoute = lazy(() => import('./BillingRoute.js').then((m) => ({ default: m.BillingRoute })));
+const PlanCheckoutRoute = lazy(() => import('./PlanCheckoutRoute.js').then((m) => ({ default: m.PlanCheckoutRoute })));
 const SettingsRoute = lazy(() => import('./SettingsRoute.js').then((m) => ({ default: m.SettingsRoute })));
 const DashboardRoute = lazy(() => import('./DashboardRoute.js').then((m) => ({ default: m.DashboardRoute })));
 const MarketingRoute = lazy(() => import('./MarketingRoute.js').then((m) => ({ default: m.MarketingRoute })));
@@ -22,6 +23,8 @@ const FoodOperationsPage = lazy(() => import('./FoodOperationsPage.js').then((m)
 const PlaceholderPage = lazy(() => import('./PlaceholderPage.js').then((m) => ({ default: m.PlaceholderPage })));
 const DeveloperControlPlanePage = lazy(() => import('./DeveloperControlPlanePage.js').then((m) => ({ default: m.DeveloperControlPlanePage })));
 const InvoicesPage = lazy(() => import('./InvoicesPage.js').then((m) => ({ default: m.InvoicesPage })));
+const TrendsRoute = lazy(() => import('./TrendsRoute.js').then((m) => ({ default: m.TrendsRoute })));
+const ListsRoute = lazy(() => import('./ListsRoute.js').then((m) => ({ default: m.ListsRoute })));
 const ActivityLogPage = lazy(() => import('./ActivityLogPage.js').then((m) => ({ default: m.ActivityLogPage })));
 const ApprovalsPage = lazy(() => import('./ApprovalsPage.js').then((m) => ({ default: m.ApprovalsPage })));
 const AppointmentsPage = lazy(() => import('./AppointmentsPage.js').then((m) => ({ default: m.AppointmentsPage })));
@@ -30,13 +33,103 @@ const IntegrationHealthPage = lazy(() => import('./IntegrationHealthPage.js').th
 function RouteFallback() { return <div className="flex h-full flex-1 items-center justify-center text-caption text-fg-muted">Loading…</div>; }
 interface Props { connection: WhatsAppConnectionSnapshot | null; sync: SyncStatusResponse | null; }
 
+const BATTERY_SEGMENTS = 4;
+
+/**
+ * A real, current-month AI token allotment gauge in the top bar - reuses
+ * the same api.getBilling() entitlement the Billing page's own usage meter
+ * reads (max_ai_tokens_per_month). Styled as a 4-segment phone-battery
+ * gauge (each segment skewed slightly so the gaps between them read as
+ * diagonal cuts) that depletes as tokens are used. Full digit counts, never
+ * abbreviated ("125,000 / 500,000", not "125K/500K") - a real countdown
+ * should read as real numbers. The count and "Connected as X" sit on the
+ * same text line (so they line up at the same level even though the bar
+ * above is shrunk to a thin, uniform strip) but stay two distinguishable
+ * blocks - a small vertical divider between them, not one merged sentence.
+ * Hidden entirely for an unlimited plan (limit === null) - never fakes a
+ * gauge for something that isn't actually capped; "Connected as X" still
+ * renders alone in that case.
+ */
+function AiTokenAllowanceBar({ connectionLabel }: { connectionLabel: string }) {
+  const [entitlement, setEntitlement] = useState<WorkspaceBillingEntitlement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const billing = await api.getBilling();
+        if (cancelled) return;
+        setEntitlement(billing.entitlements.find((e) => e.key === 'max_ai_tokens_per_month') ?? null);
+      } catch {
+        if (!cancelled) setEntitlement(null);
+      }
+    }
+    void load();
+    const timer = setInterval(load, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const hasGauge = Boolean(entitlement && entitlement.isEnabled && entitlement.limit !== null && entitlement.current !== null);
+  let remaining = 0;
+  let limit = 0;
+  let current = 0;
+  let percent = 0;
+  let tone = 'bg-success';
+  if (hasGauge) {
+    limit = entitlement!.limit as number;
+    current = entitlement!.current as number;
+    remaining = Math.max(0, limit - current);
+    const remainingRatio = remaining / Math.max(limit, 1);
+    percent = Math.min(100, Math.round(remainingRatio * 100));
+    tone = remainingRatio <= 0.05 ? 'bg-error' : remainingRatio <= 0.1 ? 'bg-warning' : 'bg-success';
+  }
+
+  return (
+    <div
+      className="mr-1 hidden items-end gap-4 md:flex"
+      title={hasGauge ? `${current.toLocaleString()} / ${limit.toLocaleString()} AI tokens used this month` : undefined}
+    >
+      {hasGauge && (
+        <div className="flex translate-x-[3mm] flex-col gap-1">
+          {/* No fixed width here on purpose - this column's width is set by
+              its widest child (the number below), and the bar row stretches
+              to match it (default flex-col cross-axis stretch), so the bar
+              is always exactly as long as the number it represents.
+              translate-x is a purely visual shift (no reflow), so the
+              divider/"Connected as" after it stay exactly where they are. */}
+          <div className="flex h-1.5 gap-1">
+            {Array.from({ length: BATTERY_SEGMENTS }).map((_, i) => {
+              const segStart = (i / BATTERY_SEGMENTS) * 100;
+              const segEnd = ((i + 1) / BATTERY_SEGMENTS) * 100;
+              const segFill = Math.max(0, Math.min(100, ((percent - segStart) / (segEnd - segStart)) * 100));
+              return (
+                <div key={i} className="relative flex-1 -skew-x-[12deg] overflow-hidden rounded-[2px] bg-surface-3">
+                  <div className={`absolute inset-y-0 left-0 transition-[width] ${tone}`} style={{ width: `${segFill}%` }} />
+                </div>
+              );
+            })}
+          </div>
+          <span className="whitespace-nowrap text-center tabular-nums text-caption font-medium text-fg-secondary">
+            {remaining.toLocaleString()} / {limit.toLocaleString()} left
+          </span>
+        </div>
+      )}
+      {hasGauge && <span className="h-3 w-px shrink-0 bg-border-subtle" aria-hidden />}
+      <span className="whitespace-nowrap text-caption text-fg-muted">Connected as {connectionLabel}</span>
+    </div>
+  );
+}
+
 export function WorkspaceShell({ connection, sync }: Props) {
   const [searchOpen, setSearchOpen] = useState(false);
   return <div className="flex h-full flex-col bg-surface-0">
     {sync?.syncStatus === 'failed' && <div className="shrink-0 bg-warning/10 px-4 py-1.5 text-center text-caption text-warning">History sync did not fully complete ({sync.lastSyncError ?? 'unknown error'}). Some data may be missing.</div>}
     <CommandPalette open={searchOpen} onOpenChange={setSearchOpen} />
     <div className="flex min-h-0 flex-1"><SaasNavRail /><div className="flex min-w-0 flex-1 flex-col">
-      <header className="flex shrink-0 items-center justify-between border-b border-border-subtle bg-surface-1 px-4 py-2"><button type="button" onClick={() => setSearchOpen(true)} aria-label="Open global search" className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-caption text-fg-muted hover:bg-surface-3"><Search size={13} aria-hidden /><span className="hidden sm:inline">Search…</span><kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-meta sm:inline">⌘K</kbd></button><div className="flex items-center gap-3"><p className="hidden text-caption text-fg-muted md:block">Connected as {connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'}</p><NotificationCenter /><span className="rounded-full bg-success/15 px-2 py-0.5 text-meta text-success">Live</span><AccountMenu /></div></header>
+      <header className="flex shrink-0 items-center justify-between border-b border-border-subtle bg-surface-1 px-4 py-2"><button type="button" onClick={() => setSearchOpen(true)} aria-label="Open global search" className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-caption text-fg-muted hover:bg-surface-3"><Search size={13} aria-hidden /><span className="hidden sm:inline">Search…</span><kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-meta sm:inline">⌘K</kbd></button><div className="flex items-center gap-3"><AiTokenAllowanceBar connectionLabel={connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'} /><NotificationCenter /><span className="rounded-full bg-success/15 px-2 py-0.5 text-meta text-success">Live</span><AccountMenu /></div></header>
       <div className="flex min-h-0 flex-1"><Suspense fallback={<RouteFallback />}><Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/property" element={<ProductDashboardPage product="property" />} />
@@ -60,7 +153,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
         <Route path="/logistics" element={<ProductDashboardPage product="logistics" />} />
         <Route path="/logistics/operations" element={<PlaceholderPage title="Deliveries & Routes" description="Delivery tracking, route optimisation and driver dispatch — coming soon." />} />
         <Route path="/developer" element={<DeveloperControlPlanePage />} />
-        <Route path="/chats" element={<ChatsRoute />} /><Route path="/chats/:chatId" element={<ChatsRoute />} /><Route path="/agents" element={<AgentsPage />} /><Route path="/dashboard" element={<DashboardRoute />} /><Route path="/crm" element={<CrmRoute />} /><Route path="/property-operations" element={<PropertyOperationsPage />} /><Route path="/retail-operations" element={<RetailOperationsPage />} /><Route path="/invoices" element={<InvoicesPage />} /><Route path="/activity-log" element={<ActivityLogPage />} /><Route path="/approvals" element={<ApprovalsPage />} /><Route path="/appointments" element={<AppointmentsPage />} /><Route path="/integrations" element={<IntegrationHealthPage />} /><Route path="/automations" element={<FunnelsRoute />} /><Route path="/marketing" element={<MarketingRoute />} /><Route path="/email" element={<EmailRoute />} /><Route path="/billing" element={<BillingRoute />} /><Route path="/settings" element={<SettingsRoute connection={connection} />} /><Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/chats" element={<ChatsRoute />} /><Route path="/chats/:chatId" element={<ChatsRoute />} /><Route path="/agents" element={<AgentsPage />} /><Route path="/dashboard" element={<DashboardRoute />} /><Route path="/trends" element={<TrendsRoute />} /><Route path="/lists" element={<ListsRoute />} /><Route path="/crm" element={<CrmRoute />} /><Route path="/property-operations" element={<PropertyOperationsPage />} /><Route path="/retail-operations" element={<RetailOperationsPage />} /><Route path="/invoices" element={<InvoicesPage />} /><Route path="/activity-log" element={<ActivityLogPage />} /><Route path="/approvals" element={<ApprovalsPage />} /><Route path="/appointments" element={<AppointmentsPage />} /><Route path="/integrations" element={<IntegrationHealthPage />} /><Route path="/automations" element={<FunnelsRoute />} /><Route path="/marketing" element={<MarketingRoute />} /><Route path="/email" element={<EmailRoute />} /><Route path="/billing" element={<BillingRoute />} /><Route path="/billing/plans/:planKey" element={<PlanCheckoutRoute />} /><Route path="/settings" element={<SettingsRoute connection={connection} />} /><Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes></Suspense></div>
     </div></div><SaasNavBottomBar />
   </div>;

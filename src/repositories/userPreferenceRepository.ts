@@ -14,6 +14,8 @@ export interface UserPreferenceRecord {
   chatFontSize: 'small' | 'medium' | 'large';
   defaultWhatsappAccountId: string | null;
   navigationOrder: string[] | null;
+  /** Email Redesign Phase C: the right-hand tools panel's card order (quick_actions/contacts/reminders/notes/ai_suggestions) - same previously-unused JSONB-array shape navigationOrder already proved out. */
+  emailPanelCardOrder: string[] | null;
   country: string | null;
   createdAt: string;
   updatedAt: string;
@@ -33,6 +35,7 @@ interface UserPreferenceRow {
   chat_font_size: UserPreferenceRecord['chatFontSize'];
   default_whatsapp_account_id: string | null;
   navigation_order: string[] | null;
+  email_panel_card_order: string[] | null;
   country: string | null;
   created_at: string;
   updated_at: string;
@@ -53,6 +56,7 @@ function toRecord(row: UserPreferenceRow): UserPreferenceRecord {
     chatFontSize: row.chat_font_size,
     defaultWhatsappAccountId: row.default_whatsapp_account_id,
     navigationOrder: row.navigation_order,
+    emailPanelCardOrder: row.email_panel_card_order,
     country: row.country,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -73,7 +77,7 @@ type UserPreferenceUpdatableFields = Pick<
   | 'chatFontSize'
   | 'defaultWhatsappAccountId'
   | 'country'
-> & { navigationOrder: string[] | null };
+> & { navigationOrder: string[] | null; emailPanelCardOrder: string[] | null };
 
 // Explicit `| undefined` per field (rather than a bare Partial<...>) so
 // zod's .optional() output - which really can carry an explicit `undefined`
@@ -115,6 +119,7 @@ export class UserPreferenceRepository {
       chat_font_size: update.chatFontSize,
       default_whatsapp_account_id: update.defaultWhatsappAccountId,
       navigation_order: update.navigationOrder !== undefined ? JSON.stringify(update.navigationOrder) : undefined,
+      email_panel_card_order: update.emailPanelCardOrder !== undefined ? JSON.stringify(update.emailPanelCardOrder) : undefined,
       country: update.country,
     };
     const entries = Object.entries(columns).filter(([, value]) => value !== undefined);

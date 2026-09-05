@@ -2,7 +2,7 @@ import { ApiError } from '@google/genai';
 import type { GoogleGenAI, Content, GenerateContentResponse, FunctionCall } from '@google/genai';
 import { getGeminiClient } from './geminiClient.js';
 import { aiGateway } from './ai/aiGateway.js';
-import { pool } from '../db/pool.js';
+import { pool, queryAsTenant } from '../db/pool.js';
 import { ADVICE_RESTRICTED_CATEGORIES, type AiAgentRecord } from '../repositories/aiAgentRepository.js';
 import type { AiHandoffContext } from './aiContextGathererService.js';
 import { ConversationStateRepository, type OpenQuestionPriority } from '../repositories/conversationStateRepository.js';
@@ -10,7 +10,9 @@ import { CustomerMemoryRepository } from '../repositories/customerMemoryReposito
 import { describeTimeContext } from './time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME, getCurrentTimeFunctionDeclaration } from './time/getCurrentTimeTool.js';
 import { UPDATE_CONVERSATION_STATE_TOOL_NAME, updateConversationStateFunctionDeclaration, type UpdateConversationStateToolArgs } from './state/updateConversationStateTool.js';
-import { applyConversationStateUpdate, applyCustomerMemoryUpdate, recordNameUsed } from './state/conversationStateWriter.js';
+import { applyConversationStateUpdate, applyCustomerMemoryUpdate, applyListScopedMemoryUpdate, recordNameUsed } from './state/conversationStateWriter.js';
+import { ListScopedMemoryRepository } from '../repositories/listScopedMemoryRepository.js';
+import { describeCommunicationStyle } from './learn/writingStyleAnalyzer.js';
 import { randomUUID } from 'node:crypto';
 import { SCHEDULE_MEETING_TOOL_NAME, scheduleMeetingFunctionDeclaration, type ScheduleMeetingToolArgs } from './meeting/scheduleMeetingTool.js';
 import { SCHEDULE_ZOOM_MEETING_TOOL_NAME, scheduleZoomMeetingFunctionDeclaration, type ScheduleZoomMeetingToolArgs } from './meeting/scheduleZoomMeetingTool.js';
@@ -39,11 +41,13 @@ import { mediaFallbackText, type InlineMediaPart } from './ai/mediaContext.js';
 import { classifyAiError } from './ai/aiErrorClassification.js';
 import { notifyBusiness } from './notificationService.js';
 import { classifyMessage } from './ai/conversationIntentClassifier.js';
-import { resolveNameEvidence, shouldUseName, replyUsesName } from './ai/identityEngine.js';
+import { resolveNameEvidence, shouldUseName, replyUsesName, customerAskedToUseName } from './ai/identityEngine.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
+import { EntitlementService } from './entitlementService.js';
 
 const conversationStateRepository = new ConversationStateRepository(pool);
 const customerMemoryRepository = new CustomerMemoryRepository(pool);
+const entitlementService = new EntitlementService(pool);
 const propertyOperationsRepository = new PropertyOperationsRepository(pool);
 const propertyConversationBindingRepository = new PropertyConversationBindingRepository(pool);
 const retailOperationsRepository = new RetailOperationsRepository(pool);
@@ -417,6 +421,23 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
     lines.push(`Known facts about this customer from earlier conversations: ${facts}.`);
   }
 
+  /**
+   * AURA Learn Agent: purely additive stylistic context, sibling to
+   * customerMemory above - never a replacement for this agent's own
+   * persona/tone (already set earlier in the prompt) and never
+   * instructions about content. Gated on all three required checks
+   * together: the two business-level ones already resolved into
+   * context.communicationStyle by aiContextGathererService.ts (null
+   * whenever learning or sharing is off), and this agent's own per-agent
+   * access here, since that's the one gate not known until the agent is
+   * actually selected (see aiOrchestrator.ts). Any one of the three being
+   * false means this line is never added - "most restrictive wins."
+   */
+  if (context.communicationStyle?.available && context.communicationStyle.profile && context.learnAllowedAgentIds.has(agent.id)) {
+    const description = describeCommunicationStyle(context.communicationStyle.profile.signals);
+    if (description) lines.push(description);
+  }
+
   const state = context.conversationState;
   if (state?.currentGoal) {
     lines.push(`Current goal for this conversation: ${state.currentGoal.description}`);
@@ -485,11 +506,23 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
   // more right now than avoiding repetition. Deliberately reuses that
   // existing signal rather than adding a new AI call or heuristic just for
   // this; see identityEngine.ts's shouldUseName for the actual bypass.
-  if (nameEvidence && shouldUseName({ evidence: nameEvidence, lastNameUsedAt: state?.lastNameUsedAt ?? null, customerReadiness: state?.customerReadiness ?? null }) === 'USE_NAME_NATURALLY') {
+  if (
+    nameEvidence &&
+    shouldUseName({
+      evidence: nameEvidence,
+      lastNameUsedAt: state?.lastNameUsedAt ?? null,
+      customerReadiness: state?.customerReadiness ?? null,
+      nameUsageLevel: context.nameUsageLevel,
+      nameUsageEnabled: context.nameUsageEnabled,
+      customerAskedForName: customerAskedToUseName(context.queryText),
+    }) === 'USE_NAME_NATURALLY'
+  ) {
     lines.push(
       `You may naturally address the customer as "${nameEvidence.name}" if it fits this reply - not in every reply, ` +
         `and never more than once per message.`,
     );
+  } else if (nameEvidence && context.nameUsageEnabled === false) {
+    lines.push(`Do not address the customer by name in this reply - name usage is turned off for this business unless the customer specifically asks you to use it.`);
   } else if (nameEvidence) {
     lines.push(`You already used the customer's name recently in this conversation - do not use it again this reply, keep it natural.`);
   }
@@ -819,7 +852,25 @@ async function executeOneToolCall(
       // into a failed reply, so it shares this same try/catch rather than
       // its own separate one that could swallow a real problem silently.
       if (context.customerId) {
-        await applyCustomerMemoryUpdate(customerMemoryRepository, context.businessId, context.customerId, args.confirmFacts, args.preferredName);
+        // AURA Lists (Phase 1): mirrors aiContextGathererService.ts's own
+        // read-side table swap - a conversation actively routed through a
+        // List with rememberListSpecificInfo enabled writes to that List's
+        // own isolated list_scoped_memory row instead of the cross-list
+        // customer_memory table, never both. Every other conversation
+        // (activeListId null, or the flag off) takes the exact existing
+        // customer_memory path, unchanged.
+        if (context.listScopedMemoryEnabled && context.activeListId) {
+          const listScopedMemoryRepository = new ListScopedMemoryRepository(queryAsTenant(context.businessId));
+          await applyListScopedMemoryUpdate(listScopedMemoryRepository, context.businessId, context.activeListId, context.customerId, args.confirmFacts, args.preferredName, {
+            customerMemoryEnabled: context.customerMemoryEnabled,
+            canCreateNewProfile: async () => (await entitlementService.canCreateCustomerMemory(context.businessId)).allowed,
+          });
+        } else {
+          await applyCustomerMemoryUpdate(customerMemoryRepository, context.businessId, context.customerId, args.confirmFacts, args.preferredName, {
+            customerMemoryEnabled: context.customerMemoryEnabled,
+            canCreateNewProfile: async () => (await entitlementService.canCreateCustomerMemory(context.businessId)).allowed,
+          });
+        }
       }
       // Section 11 (lead qualification): a fresh funnel_stage/customer_readiness
       // signal is exactly when a lead's computed score can genuinely change -

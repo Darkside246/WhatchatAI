@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Bot, ShieldAlert, Plus, ArrowLeft, Clock, GitBranch, LayoutGrid, Network, Sparkles, Lightbulb } from 'lucide-react';
+import { Bot, ShieldAlert, Plus, ArrowLeft, Clock, GitBranch, LayoutGrid, Network, Sparkles, Lightbulb, PlugZap } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -13,9 +13,10 @@ import {
 } from '../lib/api.js';
 import { ToggleSwitch } from '../components/ToggleSwitch.js';
 import { AgentCanvas } from '../components/AgentCanvas.js';
-import { AiEngineStrip } from '../components/AiEngineStrip.js';
 import { PromptOptimizationsPanel } from '../components/PromptOptimizationsPanel.js';
 import { BuildAgentWizard } from '../components/BuildAgentWizard.js';
+import { AiActionsPauseCard, PersonaliseCard, MemoryCard, LearnCard, LearnShareCard, LearnAgentAccessList, BusinessIntelligenceCard } from '../components/AiAgentSettingsPanels.js';
+import { KnowledgeBaseCard } from '../components/KnowledgeBaseCard.js';
 
 /** Real tool names this codebase actually registers (aiToolPolicy.ts) - never a capability toggle with nothing behind it. */
 const TOGGLEABLE_TOOLS: { name: string; label: string }[] = [
@@ -358,7 +359,7 @@ function AgentEditor({
           <input
             value={form.protectedFacts}
             onChange={(e) => setForm({ ...form, protectedFacts: e.target.value })}
-            placeholder="Hasani, Hachiko, The Lodge School"
+            placeholder="Alex, Rex, Lincoln Elementary"
             className={FIELD}
           />
         </Field>
@@ -383,7 +384,7 @@ function AgentEditor({
             <input
               value={testReply}
               onChange={(e) => setTestReply(e.target.value)}
-              placeholder="e.g. Nah that was Hasani on your phone!"
+              placeholder="e.g. Nah that was Alex on your phone!"
               className={`${FIELD} flex-1`}
             />
             <button
@@ -652,6 +653,73 @@ function AgentEditor({
   );
 }
 
+const AI_TEST_COOLDOWN_SECONDS = 15 * 60;
+
+/**
+ * AI Agents Page Consolidation: a single green/red signal, deliberately
+ * generic - Gemini and Goose are developer-provisioned secrets (see
+ * aiEngineStatusService.ts's own doc comment), never a business-facing
+ * concept, so this never names either one. Green means "at least one real
+ * engine can answer" (the exact same canGenerate this reuses from
+ * GET /api/workspace/ai/status), whether that's the primary engine, the
+ * fallback, or both - the business never needs to know which.
+ */
+function AiStatusBar() {
+  const [active, setActive] = useState<boolean | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [cooldownSeconds, setCooldownSeconds] = useState(0);
+
+  useEffect(() => {
+    api.getAiStatus().then((r) => setActive(r.active)).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (cooldownSeconds <= 0) return;
+    const timer = setInterval(() => setCooldownSeconds((s) => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(timer);
+  }, [cooldownSeconds > 0]);
+
+  async function handleTest() {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await api.testAiConnection();
+      if ('rateLimited' in result) {
+        setCooldownSeconds(result.retryAfterSeconds);
+        setTestResult(`Please wait a few minutes before testing again.`);
+      } else {
+        setActive(result.status === 'active');
+        setTestResult(result.status === 'active' ? 'AI is active.' : 'AI is not responding right now.');
+        setCooldownSeconds(AI_TEST_COOLDOWN_SECONDS);
+      }
+    } catch {
+      setTestResult('Could not run the test right now.');
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border-subtle bg-surface-2 px-3 py-2.5">
+      <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-meta font-medium ${active ? 'bg-success/15 text-success' : active === false ? 'bg-error/15 text-error' : 'bg-fg-muted/15 text-fg-muted'}`}>
+        <span className={`h-1.5 w-1.5 rounded-full ${active ? 'bg-success' : active === false ? 'bg-error' : 'bg-fg-muted/60'}`} aria-hidden />
+        {active === null ? 'Checking…' : active ? 'AI is active' : 'AI is unavailable'}
+      </span>
+      <button
+        type="button"
+        onClick={() => void handleTest()}
+        disabled={testing || cooldownSeconds > 0}
+        className="flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-meta font-medium text-fg-secondary hover:border-accent hover:text-accent disabled:opacity-40"
+      >
+        <PlugZap size={11} aria-hidden />
+        {testing ? 'Testing…' : cooldownSeconds > 0 ? `Test again in ${Math.ceil(cooldownSeconds / 60)}m` : 'Test connection'}
+      </button>
+      {testResult && <span className="text-meta text-fg-muted">{testResult}</span>}
+    </div>
+  );
+}
+
 export function AgentsPage() {
   const [agents, setAgents] = useState<AiAgentSummary[] | null>(null);
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
@@ -664,6 +732,7 @@ export function AgentsPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [tab, setTab] = useState<'tiles' | 'canvas'>('tiles');
+  const [agentLimitReached, setAgentLimitReached] = useState(false);
 
   function load() {
     api
@@ -714,6 +783,7 @@ export function AgentsPage() {
     if (!form.name.trim()) return;
     setSaving(true);
     setFormError(null);
+    setAgentLimitReached(false);
     try {
       if (view.mode === 'edit') {
         await api.updateAgent(view.agentId, toBody(form));
@@ -724,7 +794,12 @@ export function AgentsPage() {
       setForm(EMPTY_FORM);
       load();
     } catch (err) {
-      setFormError(err instanceof ApiError ? err.message : 'Could not save that agent.');
+      if (err instanceof ApiError && err.code === 'ENTITLEMENT_DENIED') {
+        setAgentLimitReached(true);
+        setFormError('You\'ve reached your plan\'s agent limit.');
+      } else {
+        setFormError(err instanceof ApiError ? err.message : 'Could not save that agent.');
+      }
     } finally {
       setSaving(false);
     }
@@ -770,6 +845,11 @@ export function AgentsPage() {
           onCancel={() => setView({ mode: 'list' })}
           sourceTemplate={form.sourceTemplateKey ? (templates.find((t) => t.templateKey === form.sourceTemplateKey) ?? null) : null}
         />
+        {agentLimitReached && (
+          <p className="mx-auto mt-3 max-w-3xl text-caption">
+            <a href="/billing" className="font-semibold text-accent hover:underline">Buy more agents →</a>
+          </p>
+        )}
         {view.mode === 'edit' && (
           <div className="mx-auto mt-6 max-w-3xl">
             <PromptOptimizationsPanel agentId={view.agentId} />
@@ -803,7 +883,7 @@ export function AgentsPage() {
           </div>
         </div>
         <div className="shrink-0 px-6 pt-3">
-          <AiEngineStrip />
+          <AiStatusBar />
         </div>
         <AgentCanvas agents={agents ?? []} onChanged={load} />
       </div>
@@ -812,14 +892,15 @@ export function AgentsPage() {
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      <div className="mx-auto max-w-4xl">
-        <div className="flex items-center justify-between">
+      <div className="mx-auto max-w-6xl">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-title font-semibold text-fg">AI agents</h1>
             <p className="mt-1 text-body text-fg-muted">
               Each agent replies on WhatsApp using only real conversation and CRM data.
             </p>
           </div>
+
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -853,120 +934,136 @@ export function AgentsPage() {
         </div>
 
         <div className="mt-4">
-          <AiEngineStrip />
+          <AiStatusBar />
         </div>
 
-        {agents && agents.length > 0 && agents.every((agent) => agent.status !== 'ACTIVE' || agent.triggerKeywords.length > 0) && (
-          <div className="mt-4 flex gap-2.5 rounded-lg border border-warning/40 bg-warning/10 p-3">
-            <ShieldAlert size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden />
-            <p className="text-caption text-fg-secondary">
-              <span className="font-semibold text-fg">No agent can catch everything.</span> Every active agent here has trigger
-              keywords, so a message that matches none of them gets no AI reply at all - it is handed to a human instead. If you
-              want one agent to answer anything else, remove its trigger keywords (or add a second agent with none).
-            </p>
+        {/* Two columns: settings (left, narrower - Personalise/AI & Knowledge consolidation) and the agents you've actually created (right, wider). */}
+        <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[380px_1fr]">
+          <div className="space-y-4">
+            <PersonaliseCard />
+            <MemoryCard />
+            <LearnCard />
+            <LearnShareCard />
+            <LearnAgentAccessList agents={(agents ?? []).map((a) => ({ id: a.id, name: a.name }))} />
+            <BusinessIntelligenceCard />
+            <AiActionsPauseCard />
+            <KnowledgeBaseCard />
           </div>
-        )}
 
-        {approvalSuggestions.map((suggestion) => (
-          <div key={suggestion.agentId} className="mt-4 flex items-start gap-2.5 rounded-lg border border-accent/40 bg-accent-soft p-3">
-            <Lightbulb size={16} className="mt-0.5 shrink-0 text-accent" aria-hidden />
-            <div className="flex flex-1 flex-wrap items-center justify-between gap-2">
-              <p className="text-caption text-fg-secondary">
-                <span className="font-semibold text-fg">{suggestion.agentName}</span> has had its last {suggestion.approvedStreak} action
-                requests approved, with none rejected. Turn off approval so it can act on its own from now on?
-              </p>
-              <button
-                type="button"
-                onClick={() => handleDismissApprovalRequirement(suggestion)}
-                disabled={dismissingApprovalFor === suggestion.agentId}
-                className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
-              >
-                {dismissingApprovalFor === suggestion.agentId ? 'Updating…' : 'Turn off approval'}
-              </button>
-            </div>
-          </div>
-        ))}
-
-        {error && <p className="mt-4 text-caption text-error">{error}</p>}
-
-        <div className="mt-5 grid gap-3 sm:grid-cols-2">
-          {agents === null && <p className="text-caption text-fg-muted">Loading…</p>}
-          {agents?.length === 0 && (
-            <div className="col-span-full flex flex-col items-center gap-3 rounded-xl border border-dashed border-border-subtle p-10 text-center">
-              <Bot size={22} className="text-fg-muted" aria-hidden />
-              <div>
-                <p className="text-body text-fg-secondary">No agents yet.</p>
-                <p className="text-caption text-fg-muted">Let AURA build your first one - pick a template and it's ready in about a minute.</p>
+          <div className="min-w-0 space-y-4">
+            {agents && agents.length > 0 && agents.every((agent) => agent.status !== 'ACTIVE' || agent.triggerKeywords.length > 0) && (
+              <div className="flex gap-2.5 rounded-lg border border-warning/40 bg-warning/10 p-3">
+                <ShieldAlert size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden />
+                <p className="text-caption text-fg-secondary">
+                  <span className="font-semibold text-fg">No agent can catch everything.</span> Every active agent here has trigger
+                  keywords, so a message that matches none of them gets no AI reply at all - it is handed to a human instead. If you
+                  want one agent to answer anything else, remove its trigger keywords (or add a second agent with none).
+                </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setView({ mode: 'wizard' })}
-                className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-body font-medium text-white hover:bg-accent-dim"
-              >
-                <Sparkles size={14} aria-hidden />
-                Build my agent
-              </button>
-            </div>
-          )}
-          {agents?.map((agent) => {
-            const parent = agents.find((candidate) => candidate.id === agent.parentAgentId);
-            return (
-              <div key={agent.id} className="flex flex-col gap-3 rounded-xl border border-border-subtle bg-surface-1 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="truncate text-body font-semibold text-fg">{agent.name}</p>
-                      <span className="shrink-0 rounded-full bg-surface-3 px-2 py-0.5 text-meta font-medium text-fg-secondary">
-                        {CATEGORY_LABEL[agent.category]}
-                      </span>
-                    </div>
-                    {agent.specialization && <p className="mt-0.5 truncate text-caption text-fg-muted">{agent.specialization}</p>}
+            )}
+
+            {approvalSuggestions.map((suggestion) => (
+              <div key={suggestion.agentId} className="flex items-start gap-2.5 rounded-lg border border-accent/40 bg-accent-soft p-3">
+                <Lightbulb size={16} className="mt-0.5 shrink-0 text-accent" aria-hidden />
+                <div className="flex flex-1 flex-wrap items-center justify-between gap-2">
+                  <p className="text-caption text-fg-secondary">
+                    <span className="font-semibold text-fg">{suggestion.agentName}</span> has had its last {suggestion.approvedStreak} action
+                    requests approved, with none rejected. Turn off approval so it can act on its own from now on?
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => handleDismissApprovalRequirement(suggestion)}
+                    disabled={dismissingApprovalFor === suggestion.agentId}
+                    className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+                  >
+                    {dismissingApprovalFor === suggestion.agentId ? 'Updating…' : 'Turn off approval'}
+                  </button>
+                </div>
+              </div>
+            ))}
+
+            {error && <p className="text-caption text-error">{error}</p>}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {agents === null && <p className="text-caption text-fg-muted">Loading…</p>}
+              {agents?.length === 0 && (
+                <div className="col-span-full flex flex-col items-center gap-3 rounded-xl border border-dashed border-border-subtle p-10 text-center">
+                  <Bot size={22} className="text-fg-muted" aria-hidden />
+                  <div>
+                    <p className="text-body text-fg-secondary">No agents yet.</p>
+                    <p className="text-caption text-fg-muted">Let AURA build your first one - pick a template and it's ready in about a minute.</p>
                   </div>
-                  <ToggleSwitch
-                    checked={agent.status === 'ACTIVE'}
-                    disabled={togglingId === agent.id}
-                    onChange={() => void handleToggleStatus(agent)}
-                    label={agent.status === 'ACTIVE' ? 'Active' : 'Paused'}
-                  />
+                  <button
+                    type="button"
+                    onClick={() => setView({ mode: 'wizard' })}
+                    className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-body font-medium text-white hover:bg-accent-dim"
+                  >
+                    <Sparkles size={14} aria-hidden />
+                    Build my agent
+                  </button>
                 </div>
+              )}
+              {agents?.map((agent) => {
+                const parent = agents.find((candidate) => candidate.id === agent.parentAgentId);
+                return (
+                  <div key={agent.id} className="flex flex-col gap-3 rounded-xl border border-border-subtle bg-surface-1 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="truncate text-body font-semibold text-fg">{agent.name}</p>
+                          <span className="shrink-0 rounded-full bg-surface-3 px-2 py-0.5 text-meta font-medium text-fg-secondary">
+                            {CATEGORY_LABEL[agent.category]}
+                          </span>
+                        </div>
+                        {agent.specialization && <p className="mt-0.5 truncate text-caption text-fg-muted">{agent.specialization}</p>}
+                      </div>
+                      <ToggleSwitch
+                        checked={agent.status === 'ACTIVE'}
+                        disabled={togglingId === agent.id}
+                        onChange={() => void handleToggleStatus(agent)}
+                        label={agent.status === 'ACTIVE' ? 'Active' : 'Paused'}
+                      />
+                    </div>
 
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-fg-muted">
-                  {ADVICE_RESTRICTED_CATEGORIES.includes(agent.category) && (
-                    <span className="flex items-center gap-1 text-warning">
-                      <ShieldAlert size={11} aria-hidden />
-                      Operations only
-                    </span>
-                  )}
-                  {agent.responseDelaySeconds > 0 && (
-                    <span className="flex items-center gap-1">
-                      <Clock size={11} aria-hidden />
-                      {agent.responseDelaySeconds}s delay
-                    </span>
-                  )}
-                  {parent && (
-                    <span className="flex items-center gap-1">
-                      <GitBranch size={11} aria-hidden />
-                      Reports to {parent.name}
-                    </span>
-                  )}
-                  {agent.triggerKeywords.length > 0 && <span>{agent.triggerKeywords.length} trigger keywords</span>}
-                  {agent.blockedKeywords.length > 0 && <span>{agent.blockedKeywords.length} blocked</span>}
-                </div>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-fg-muted">
+                      {ADVICE_RESTRICTED_CATEGORIES.includes(agent.category) && (
+                        <span className="flex items-center gap-1 text-warning">
+                          <ShieldAlert size={11} aria-hidden />
+                          Operations only
+                        </span>
+                      )}
+                      {agent.responseDelaySeconds > 0 && (
+                        <span className="flex items-center gap-1">
+                          <Clock size={11} aria-hidden />
+                          {agent.responseDelaySeconds}s delay
+                        </span>
+                      )}
+                      {parent && (
+                        <span className="flex items-center gap-1">
+                          <GitBranch size={11} aria-hidden />
+                          Reports to {parent.name}
+                        </span>
+                      )}
+                      {agent.triggerKeywords.length > 0 && <span>{agent.triggerKeywords.length} trigger keywords</span>}
+                      {agent.blockedKeywords.length > 0 && <span>{agent.blockedKeywords.length} blocked</span>}
+                    </div>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setForm(toForm(agent));
-                    setFormError(null);
-                    setView({ mode: 'edit', agentId: agent.id });
-                  }}
-                  className="self-start rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:border-accent hover:text-accent"
-                >
-                  Edit agent
-                </button>
-              </div>
-            );
-          })}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setForm(toForm(agent));
+                        setFormError(null);
+                        setView({ mode: 'edit', agentId: agent.id });
+                      }}
+                      className="self-start rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:border-accent hover:text-accent"
+                    >
+                      Edit agent
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { pool } from '../db/pool.js';
 import { withTransaction } from '../db/transaction.js';
-import { WritingTwinRepository, type WritingTwinSettingsRecord } from '../repositories/writingTwinRepository.js';
+import { WritingTwinRepository, type WritingTwinSettingsRecord, type WritingTwinAgentAccessRecord } from '../repositories/writingTwinRepository.js';
+import { AiAgentRepository } from '../repositories/aiAgentRepository.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import type { BusinessExecutionContext } from '../domain/businessExecutionContext.js';
 import type { ChannelScope, WritingTwinSignals } from '../domain/writingTwin/types.js';
@@ -33,6 +34,9 @@ function assertHumanActor(context: BusinessExecutionContext): asserts context is
 
 const repository = new WritingTwinRepository(pool);
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
+const aiAgentRepository = new AiAgentRepository(pool);
+
+export class AgentNotFoundError extends Error {}
 
 export interface WritingTwinStyleSummary {
   channelScope: ChannelScope;
@@ -58,6 +62,7 @@ export class WritingTwinService {
       businessId: context.businessId,
       userId: context.actorId,
       learningEnabled: false,
+      shareWithAgentsEnabled: false,
       historicalBackfillRequestedAt: null,
       historicalBackfillCompletedAt: null,
       createdAt: '',
@@ -72,6 +77,43 @@ export class WritingTwinService {
       businessId: context.businessId,
       eventType: enabled ? 'writing_twin_learning_enabled' : 'writing_twin_learning_disabled',
       rawMetadata: { userId: context.actorId, requestId: context.requestId },
+    });
+    return result;
+  }
+
+  /**
+   * Deliberately independent from setLearningEnabled - the spec's 4-state
+   * matrix requires Learn and Share to be toggled separately, both
+   * enforced server-side (see aiContextGathererService.ts's three-gate
+   * check, which reads both flags plus per-agent access).
+   */
+  async setShareWithAgentsEnabled(context: BusinessExecutionContext, enabled: boolean): Promise<WritingTwinSettingsRecord> {
+    assertHumanActor(context);
+    const result = await repository.setShareWithAgentsEnabled(context.businessId, context.actorId, enabled);
+    await securityAuditLogRepository.record({
+      businessId: context.businessId,
+      eventType: enabled ? 'writing_twin_share_enabled' : 'writing_twin_share_disabled',
+      rawMetadata: { userId: context.actorId, requestId: context.requestId },
+    });
+    return result;
+  }
+
+  async listAgentAccess(context: BusinessExecutionContext): Promise<WritingTwinAgentAccessRecord[]> {
+    assertHumanActor(context);
+    return repository.listAgentAccess(context.businessId, context.actorId);
+  }
+
+  /** Validates agentId belongs to this business before writing - the FK on writing_twin_agent_access only proves the agent exists somewhere, not that it's this business's own. */
+  async setAgentAccess(context: BusinessExecutionContext, agentId: string, allowed: boolean): Promise<WritingTwinAgentAccessRecord> {
+    assertHumanActor(context);
+    const agent = await aiAgentRepository.findByIdForBusiness(agentId, context.businessId);
+    if (!agent) throw new AgentNotFoundError('That agent does not belong to this business.');
+
+    const result = await repository.setAgentAccess(context.businessId, context.actorId, agentId, allowed);
+    await securityAuditLogRepository.record({
+      businessId: context.businessId,
+      eventType: 'writing_twin_agent_access_changed',
+      rawMetadata: { userId: context.actorId, agentId, allowed, requestId: context.requestId },
     });
     return result;
   }
@@ -106,6 +148,7 @@ export class WritingTwinService {
       await repo.deleteRawEvents(businessId, userId);
       await repo.deleteStyleExamples(businessId, userId);
       await repo.deleteProfiles(businessId, userId);
+      await repo.deleteAgentAccess(businessId, userId);
       await repo.deleteSettings(businessId, userId);
     });
 

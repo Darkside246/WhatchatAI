@@ -18,12 +18,29 @@ export type EmailOAuthAccountRecord = {
   updatedAt: string;
 };
 
+export type WellKnownFolderType = 'inbox' | 'sent' | 'drafts' | 'spam' | 'trash' | 'archive' | 'other';
+
+export type EmailOAuthFolderRecord = {
+  id: string;
+  accountId: string;
+  providerFolderId: string;
+  displayName: string;
+  wellKnownType: WellKnownFolderType;
+  parentProviderFolderId: string | null;
+  syncCursor: string | null;
+  lastSyncedAt: string | null;
+  unreadCount: number;
+  totalCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type EmailOAuthMessageRecord = {
   id: string;
   accountId: string;
   providerMessageId: string;
   providerThreadId: string | null;
-  folder: string;
+  folderId: string;
   subject: string | null;
   fromAddress: string | null;
   fromName: string | null;
@@ -133,6 +150,16 @@ export class EmailOAuthRepository {
     return result.rows.map((r) => this.mapAccount(r as Record<string, unknown>));
   }
 
+  /** The one deliberately tenant-agnostic listing method - a scheduled sweep genuinely needs every sync-enabled account across every business, same reasoning as writingTwinRepository.ts's own sweepExpiredRawEvents(). */
+  async listAllSyncEnabled(): Promise<EmailOAuthAccountRecord[]> {
+    const result = await this.db.query(
+      `SELECT id, business_id, provider, email_address, display_name, token_expires_at,
+              scopes, sync_cursor, last_synced_at, sync_enabled, created_at, updated_at
+       FROM email_oauth_accounts WHERE sync_enabled = true ORDER BY created_at`,
+    );
+    return result.rows.map((r) => this.mapAccount(r as Record<string, unknown>));
+  }
+
   async getById(accountId: string): Promise<EmailOAuthAccountRecord | null> {
     const result = await this.db.query(
       `SELECT id, business_id, provider, email_address, display_name, token_expires_at,
@@ -141,6 +168,22 @@ export class EmailOAuthRepository {
       [accountId],
     );
     return result.rows[0] ? this.mapAccount(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  /**
+   * Tenant-scoped lookup - an accountId belonging to another business
+   * returns null, identically to a genuinely nonexistent id (same
+   * convention as AiAgentRepository.findByIdForBusiness). Every caller
+   * that has a real businessId in scope (the sync service, the router)
+   * must use this instead of the bare getById() above, which was
+   * previously called with an attacker-suppliable accountId and no
+   * ownership check at all - a real cross-tenant read of another
+   * business's plaintext synced email content, found and fixed as part
+   * of the Email Redesign's folder-sync rework.
+   */
+  async getByIdForBusiness(accountId: string, businessId: string): Promise<EmailOAuthAccountRecord | null> {
+    const account = await this.getById(accountId);
+    return account && account.businessId === businessId ? account : null;
   }
 
   /** Returns decrypted tokens — only call from service layer, never expose in HTTP response. */
@@ -167,10 +210,64 @@ export class EmailOAuthRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
-  async upsertMessage(accountId: string, msg: {
+  // --- Folders (Email Redesign Phase A) ---
+
+  async upsertFolder(accountId: string, businessId: string, folder: {
+    providerFolderId: string;
+    displayName: string;
+    wellKnownType: WellKnownFolderType;
+    parentProviderFolderId?: string | null;
+  }): Promise<EmailOAuthFolderRecord> {
+    const result = await this.db.query(
+      `INSERT INTO email_oauth_folders (account_id, business_id, provider_folder_id, display_name, well_known_type, parent_provider_folder_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (account_id, provider_folder_id) DO UPDATE SET
+         display_name = EXCLUDED.display_name,
+         well_known_type = EXCLUDED.well_known_type,
+         parent_provider_folder_id = EXCLUDED.parent_provider_folder_id,
+         updated_at = now()
+       RETURNING *`,
+      [accountId, businessId, folder.providerFolderId, folder.displayName, folder.wellKnownType, folder.parentProviderFolderId ?? null],
+    );
+    return this.mapFolder(result.rows[0] as Record<string, unknown>);
+  }
+
+  async listFolders(accountId: string): Promise<EmailOAuthFolderRecord[]> {
+    const result = await this.db.query(
+      `SELECT * FROM email_oauth_folders WHERE account_id = $1 ORDER BY well_known_type, display_name`,
+      [accountId],
+    );
+    return result.rows.map((r) => this.mapFolder(r as Record<string, unknown>));
+  }
+
+  async getFolderById(folderId: string): Promise<EmailOAuthFolderRecord | null> {
+    const result = await this.db.query(`SELECT * FROM email_oauth_folders WHERE id = $1`, [folderId]);
+    return result.rows[0] ? this.mapFolder(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async updateFolderSyncCursor(folderId: string, cursor: string | null): Promise<void> {
+    await this.db.query(
+      `UPDATE email_oauth_folders SET sync_cursor = $1, last_synced_at = now(), updated_at = now() WHERE id = $2`,
+      [cursor, folderId],
+    );
+  }
+
+  /** Real counts from the messages actually stored, never estimated - refreshed after each folder sync. */
+  async refreshFolderCounts(folderId: string): Promise<void> {
+    await this.db.query(
+      `UPDATE email_oauth_folders f SET
+         total_count = (SELECT count(*) FROM email_oauth_messages m WHERE m.folder_id = f.id),
+         unread_count = (SELECT count(*) FROM email_oauth_messages m WHERE m.folder_id = f.id AND m.is_read = false),
+         updated_at = now()
+       WHERE f.id = $1`,
+      [folderId],
+    );
+  }
+
+  async upsertMessage(accountId: string, businessId: string, msg: {
     providerMessageId: string;
     providerThreadId?: string | null;
-    folder?: string;
+    folderId: string;
     subject?: string | null;
     fromAddress?: string | null;
     fromName?: string | null;
@@ -185,20 +282,21 @@ export class EmailOAuthRepository {
   }): Promise<void> {
     await this.db.query(
       `INSERT INTO email_oauth_messages
-         (account_id, provider_message_id, provider_thread_id, folder, subject,
+         (account_id, business_id, provider_message_id, provider_thread_id, folder_id, subject,
           from_address, from_name, to_addresses, snippet, body_html, body_text,
           is_read, is_starred, labels, received_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-       ON CONFLICT (account_id, provider_message_id) DO UPDATE SET
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+       ON CONFLICT (account_id, folder_id, provider_message_id) DO UPDATE SET
          is_read   = EXCLUDED.is_read,
          is_starred = EXCLUDED.is_starred,
          labels    = EXCLUDED.labels,
          synced_at = now()`,
       [
         accountId,
+        businessId,
         msg.providerMessageId,
         msg.providerThreadId ?? null,
-        msg.folder ?? 'INBOX',
+        msg.folderId,
         msg.subject ?? null,
         msg.fromAddress ?? null,
         msg.fromName ?? null,
@@ -214,16 +312,42 @@ export class EmailOAuthRepository {
     );
   }
 
-  async listMessages(accountId: string, opts?: { limit?: number; unreadOnly?: boolean }): Promise<EmailOAuthMessageRecord[]> {
+  /** Tenant-scoped single-message lookup (joined through the owning account, since messages carry no direct business_id) - used by the AI reply-drafting flow, never exposed to a route accepting a bare messageId with no businessId check. */
+  async getMessageByIdForBusiness(messageId: string, businessId: string): Promise<EmailOAuthMessageRecord | null> {
+    const result = await this.db.query(
+      `SELECT m.* FROM email_oauth_messages m
+       JOIN email_oauth_accounts a ON a.id = m.account_id
+       WHERE m.id = $1 AND a.business_id = $2`,
+      [messageId, businessId],
+    );
+    return result.rows[0] ? this.mapMessage(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async listMessages(accountId: string, opts?: { limit?: number; unreadOnly?: boolean; folderId?: string }): Promise<EmailOAuthMessageRecord[]> {
     const conditions = ['account_id = $1'];
     const params: unknown[] = [accountId];
     if (opts?.unreadOnly) { conditions.push('is_read = false'); }
+    if (opts?.folderId) { conditions.push(`folder_id = $${params.push(opts.folderId)}`); }
     const result = await this.db.query(
       `SELECT * FROM email_oauth_messages WHERE ${conditions.join(' AND ')}
        ORDER BY received_at DESC NULLS LAST LIMIT $${params.push(opts?.limit ?? 50)}`,
       params,
     );
     return result.rows.map((r) => this.mapMessage(r as Record<string, unknown>));
+  }
+
+  /** Real, distinct senders seen across this account's synced mail - the Email panel's Contacts card, never a fabricated address book. */
+  async listDistinctSenders(accountId: string, limit = 25): Promise<{ address: string; name: string | null }[]> {
+    const result = await this.db.query(
+      `SELECT from_address AS address, max(from_name) AS name, count(*) AS message_count
+       FROM email_oauth_messages
+       WHERE account_id = $1 AND from_address IS NOT NULL
+       GROUP BY from_address
+       ORDER BY message_count DESC
+       LIMIT $2`,
+      [accountId, limit],
+    );
+    return result.rows.map((r) => ({ address: (r as Record<string, unknown>)['address'] as string, name: (r as Record<string, unknown>)['name'] as string | null }));
   }
 
   // Timestamp columns come back as plain ISO strings, not Date objects - the
@@ -248,13 +372,30 @@ export class EmailOAuthRepository {
     };
   }
 
+  private mapFolder(row: Record<string, unknown>): EmailOAuthFolderRecord {
+    return {
+      id: row['id'] as string,
+      accountId: row['account_id'] as string,
+      providerFolderId: row['provider_folder_id'] as string,
+      displayName: row['display_name'] as string,
+      wellKnownType: row['well_known_type'] as WellKnownFolderType,
+      parentProviderFolderId: row['parent_provider_folder_id'] as string | null,
+      syncCursor: row['sync_cursor'] as string | null,
+      lastSyncedAt: row['last_synced_at'] as string | null,
+      unreadCount: row['unread_count'] as number,
+      totalCount: row['total_count'] as number,
+      createdAt: row['created_at'] as string,
+      updatedAt: row['updated_at'] as string,
+    };
+  }
+
   private mapMessage(row: Record<string, unknown>): EmailOAuthMessageRecord {
     return {
       id: row['id'] as string,
       accountId: row['account_id'] as string,
       providerMessageId: row['provider_message_id'] as string,
       providerThreadId: row['provider_thread_id'] as string | null,
-      folder: row['folder'] as string,
+      folderId: row['folder_id'] as string,
       subject: row['subject'] as string | null,
       fromAddress: row['from_address'] as string | null,
       fromName: row['from_name'] as string | null,

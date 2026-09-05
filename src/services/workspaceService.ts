@@ -16,6 +16,8 @@ import { AiAgentRepository, type AiAgentRecord, type AgentCategory } from '../re
 import { AgentTemplateRepository, type AgentTemplateRecord } from '../repositories/agentTemplateRepository.js';
 import { AiCommitmentRepository, type AiCommitmentRecord } from '../repositories/aiCommitmentRepository.js';
 import { EntitlementService, type EntitlementDenialReason } from './entitlementService.js';
+import { listKnowledgeBaseDocuments, createKnowledgeBaseDocument, updateKnowledgeBaseDocument, deleteKnowledgeBaseDocument } from './knowledgeBaseService.js';
+import type { InvoiceCustomization } from './invoice/invoiceTemplates.js';
 import { SubscriptionRepository } from '../repositories/subscriptionRepository.js';
 import { PlanRepository } from '../repositories/planRepository.js';
 import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMappingRepository.js';
@@ -26,6 +28,7 @@ import { WhatsAppPresenceRepository } from '../repositories/whatsappPresenceRepo
 import { WhatsAppMessageReactionRepository } from '../repositories/whatsappMessageReactionRepository.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import type { WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
+import { ListMemberRepository } from '../repositories/listMemberRepository.js';
 import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { describeMessageType } from '../domain/whatsapp/messagePreview.js';
 import { whatsappConnectionManager } from './whatsappConnectionManager.js';
@@ -51,7 +54,7 @@ import * as googleMeetingOAuthService from './googleMeetingOAuthService.js';
 import * as zoomMeetingOAuthService from './zoomMeetingOAuthService.js';
 import * as emailOAuthService from './emailOAuthService.js';
 import { getAiEngineStatus } from './aiEngineStatusService.js';
-import { isProviderConfigured, isProviderEnabled, PAYMENT_PROVIDER_KINDS } from './billing/paymentProviderStatusService.js';
+import { isProviderConfigured, isProviderEnabled, isProviderUsable, PAYMENT_PROVIDER_KINDS } from './billing/paymentProviderStatusService.js';
 import type {
   CallStatus,
   CallType,
@@ -66,6 +69,8 @@ const HEX_COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/;
 const LOGO_DATA_URL_PATTERN = /^data:image\/(?:png|jpeg|webp);base64,([A-Za-z0-9+/]+=*)$/;
 // A logo icon, not a photo - generous enough for a real crisp PNG/WebP mark, small enough to store inline on every businesses row read.
 const MAX_LOGO_BYTES = 512 * 1024;
+/** The one well-known KB doc title setMissionStatement() auto-manages - same "recognizable fixed title" convention SettingsRoute.tsx's own PROFILE_KB_TITLE ("Business Profile") already uses. */
+const MISSION_STATEMENT_KB_TITLE = 'Motto, Vision & Mission';
 
 export interface WorkspaceChatSummary {
   id: string;
@@ -88,6 +93,8 @@ export interface WorkspaceChatSummary {
   activeStatusCount: number;
   /** This contact's real, downloaded profile picture media row - null for groups and until a sync has actually succeeded. */
   avatarMediaId: string | null;
+  /** Real List memberships (AURA Lists, Phase 1) resolved in one batched query - [] when this chat isn't in any List, never fabricated. Drives the dynamic List filter pills in ChatListPane.tsx. */
+  listIds: string[];
 }
 
 export interface WorkspaceCallSummary {
@@ -116,6 +123,8 @@ export interface WorkspaceStatusSummary {
   mediaAvailable: boolean;
   createdAt: string;
   expiresAt: string | null;
+  /** Null until a business user has opened this status in our own UI - see whatsappStatusRepository.ts's markViewed. */
+  viewedAt: string | null;
 }
 
 export interface WorkspaceMediaSummary {
@@ -344,6 +353,8 @@ const BILLING_ENTITLEMENT_LABELS: Record<string, string> = {
   max_knowledge_base_documents: 'Knowledge Base Documents',
   max_business_documents: 'Business Documents',
   max_ai_tokens_per_month: 'AI Tokens / Month',
+  max_campaign_storage_mb: 'Campaign Storage (MB)',
+  max_customer_memory_profiles: 'Customer Memory Profiles',
 };
 
 export interface CreateAgentInput {
@@ -485,10 +496,12 @@ export class WorkspaceService {
   private readonly knowledgeBaseRepository = new KnowledgeBaseRepository(pool);
   private readonly businessDocumentRepository = new BusinessDocumentRepository(pool);
   private readonly agentWorkJournalRepository = new AgentWorkJournalRepository(pool);
+  private readonly listMemberRepository = new ListMemberRepository(pool);
 
   async listChats(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
     const activeStatusCounts = await this.statusRepository.countActiveByPublisher(businessId, whatsappAccountId);
+    const chatListMemberships = await this.listMemberRepository.resolveListsForChats(businessId, chats.map((chat) => chat.id));
     const summaries: WorkspaceChatSummary[] = [];
 
     for (const chat of chats) {
@@ -557,6 +570,7 @@ export class WorkspaceService {
         hasActiveStatus: activeStatusCounts.has(chat.chatJid),
         activeStatusCount: activeStatusCounts.get(chat.chatJid) ?? 0,
         avatarMediaId,
+        listIds: chatListMemberships.get(chat.id) ?? [],
       });
     }
 
@@ -665,10 +679,16 @@ export class WorkspaceService {
         mediaAvailable: media?.downloadStatus === 'downloaded',
         createdAt: status.createdAt,
         expiresAt: status.expiresAt,
+        viewedAt: status.viewedAt,
       });
     }
 
     return summaries;
+  }
+
+  /** Idempotent, tenant-scoped - see whatsappStatusRepository.ts's markViewed. */
+  async markStatusViewed(businessId: string, statusId: string): Promise<void> {
+    await this.statusRepository.markViewed(businessId, statusId);
   }
 
   private notFound(): ChatNotFoundError {
@@ -1471,11 +1491,15 @@ export class WorkspaceService {
       integrations.push({ id: `ai_${engine.id}`, label: engine.label, category: 'ai', state, detail: engine.reason ?? null });
     }
 
+    const paymentProviderEnvHints: Record<string, string> = {
+      bimpay: 'BIMPAY_BRIDGE_SECRET',
+      paypal: 'PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET / PAYPAL_WEBHOOK_ID',
+    };
     for (const { kind, configured, enabled } of paymentProviders) {
       integrations.push({
         id: `payment_${kind}`, label: kind.toUpperCase(), category: 'payments',
         ...(!configured
-          ? { state: 'not_configured' as const, detail: null }
+          ? { state: 'not_configured' as const, detail: paymentProviderEnvHints[kind] ? `Server credentials (${paymentProviderEnvHints[kind]}) are not set.` : null }
           : !enabled
             ? { state: 'degraded' as const, detail: 'Configured, but switched off from the Control Plane.' }
             : { state: 'connected' as const, detail: null }),
@@ -1615,6 +1639,63 @@ export class WorkspaceService {
   }
 
   /**
+   * Motto/Vision/Mission: the raw text is always saved to businesses
+   * regardless of aiVisible - toggling AI visibility off only removes the
+   * auto-managed knowledge-base document that actually reaches the AI (via
+   * the existing searchKnowledgeBase() mechanism, no new retrieval path),
+   * it never discards what was typed. If creating that document is blocked
+   * by this business's own max_knowledge_base_documents entitlement, the
+   * text still saves - kbSyncWarning tells the caller the AI-visible copy
+   * couldn't be created, rather than silently failing the whole save.
+   */
+  async setMissionStatement(
+    businessId: string,
+    userId: string,
+    input: { motto: string | null; vision: string | null; mission: string | null; aiVisible: boolean },
+  ): Promise<{ business: BusinessRecord; kbSyncWarning: string | null }> {
+    const updated = await this.businessRepository.setMissionStatement(businessId, input);
+    if (!updated) throw new Error(`Business ${businessId} not found`);
+
+    const existing = (await listKnowledgeBaseDocuments(businessId)).find((d) => d.title === MISSION_STATEMENT_KB_TITLE);
+    const hasContent = Boolean(input.motto?.trim() || input.vision?.trim() || input.mission?.trim());
+    let kbSyncWarning: string | null = null;
+
+    if (input.aiVisible && hasContent) {
+      const lines = ['[Auto-generated from Motto, Vision & Mission settings]\n'];
+      if (input.motto?.trim()) lines.push(`Motto: ${input.motto.trim()}`);
+      if (input.vision?.trim()) lines.push(`Vision: ${input.vision.trim()}`);
+      if (input.mission?.trim()) lines.push(`Mission: ${input.mission.trim()}`);
+      const content = lines.join('\n');
+      try {
+        if (existing) await updateKnowledgeBaseDocument(businessId, existing.id, MISSION_STATEMENT_KB_TITLE, content);
+        else await createKnowledgeBaseDocument(businessId, userId, MISSION_STATEMENT_KB_TITLE, content);
+      } catch (error) {
+        kbSyncWarning = isEntitlementDeniedError(error)
+          ? 'Saved, but could not add this to your AI knowledge base - you\'re at your plan\'s knowledge base document limit.'
+          : 'Saved, but could not update your AI knowledge base right now.';
+      }
+    } else if (existing) {
+      await deleteKnowledgeBaseDocument(businessId, existing.id);
+    }
+
+    return { business: updated, kbSyncWarning };
+  }
+
+  /** Real contact details for the invoice header block - alongside the existing motto ("slogan"). */
+  async setBusinessContactDetails(businessId: string, input: { address: string | null; phone: string | null }): Promise<BusinessRecord> {
+    const updated = await this.businessRepository.setContactDetails(businessId, input);
+    if (!updated) throw new Error(`Business ${businessId} not found`);
+    return updated;
+  }
+
+  /** Validated in the route (zod, matching this codebase's own convention) before it ever reaches here - see invoiceTemplates.ts's InvoiceCustomization shape. */
+  async setInvoiceCustomization(businessId: string, customization: InvoiceCustomization): Promise<BusinessRecord> {
+    const updated = await this.businessRepository.setInvoiceCustomization(businessId, customization);
+    if (!updated) throw new Error(`Business ${businessId} not found`);
+    return updated;
+  }
+
+  /**
    * Emergency "Stop All Agents" kill switch. The authoritative enforcement
    * is server-side in agentGuard.ts's guardToolInvocation - this setter
    * only flips the stored flag every tool call is checked against.
@@ -1623,6 +1704,37 @@ export class WorkspaceService {
     const updated = await this.businessRepository.setAiActionsPaused(businessId, paused);
     if (!updated) throw new Error(`Business ${businessId} not found`);
     return updated;
+  }
+
+  /** Personalisation Budget (directive §27) - caller must have already validated `level` is an integer 1-5. */
+  async setNameUsageLevel(businessId: string, level: number): Promise<BusinessRecord> {
+    const updated = await this.businessRepository.setNameUsageLevel(businessId, level);
+    if (!updated) throw new Error(`Business ${businessId} not found`);
+    return updated;
+  }
+
+  /** Master on/off for name usage - real enforcement lives in identityEngine.ts's shouldUseName. */
+  async setNameUsageEnabled(businessId: string, enabled: boolean): Promise<BusinessRecord> {
+    const updated = await this.businessRepository.setNameUsageEnabled(businessId, enabled);
+    if (!updated) throw new Error(`Business ${businessId} not found`);
+    return updated;
+  }
+
+  /** AI Agents Page Consolidation - real enforcement lives in conversationStateWriter.ts's applyCustomerMemoryUpdate. */
+  async setCustomerMemoryEnabled(businessId: string, enabled: boolean): Promise<BusinessRecord> {
+    const updated = await this.businessRepository.setCustomerMemoryEnabled(businessId, enabled);
+    if (!updated) throw new Error(`Business ${businessId} not found`);
+    return updated;
+  }
+
+  /** Real, current customer-memory count against this business's real plan entitlement - "Unlimited" (limit: null) matches every other entitlement's own documented meaning. */
+  async getCustomerMemoryStats(businessId: string): Promise<{ enabled: boolean; current: number; limit: number | null }> {
+    const business = await this.businessRepository.findById(businessId);
+    const [current, check] = await Promise.all([
+      this.customerMemoryRepository.countByBusiness(businessId),
+      this.entitlementService.canCreateCustomerMemory(businessId),
+    ]);
+    return { enabled: business?.customerMemoryEnabled ?? true, current, limit: check.limit ?? null };
   }
 
   /**
@@ -1732,15 +1844,20 @@ export class WorkspaceService {
       }),
     );
 
+    // Real provider status (planUpgradeService.ts's own checkout route
+    // gates on the exact same isProviderUsable check before ever creating
+    // a checkout row) - never the hardcoded false this used to be. A
+    // business only ever sees a working Upgrade button once at least one
+    // real, developer-enabled payment provider actually exists.
+    const providerUsability = await Promise.all(PAYMENT_PROVIDER_KINDS.map((kind) => isProviderUsable(kind)));
+    const selfServeChangeAvailable = providerUsability.some(Boolean);
+
     return {
       plans: entries,
-      /*
-       * No payment provider is wired up, so a plan genuinely cannot be
-       * changed from this screen. The UI must say so rather than showing an
-       * Upgrade button that silently does nothing.
-       */
-      selfServeChangeAvailable: false,
-      selfServeUnavailableReason: 'No payment provider is connected yet, so plan changes are handled manually.',
+      selfServeChangeAvailable,
+      ...(selfServeChangeAvailable
+        ? {}
+        : { selfServeUnavailableReason: 'No payment provider is connected yet, so plan changes are handled manually.' }),
     };
   }
 

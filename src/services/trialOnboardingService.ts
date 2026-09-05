@@ -2,19 +2,21 @@ import type { PoolClient } from 'pg';
 import { pool } from '../db/pool.js';
 import { hashPassword, validatePasswordStrength } from './passwordHashService.js';
 import { createAuthenticatedSession, type DeviceContext } from './authService.js';
-import { normalizeTrialEmail, TRIAL_DURATION_MS, TRIAL_ABANDONMENT_WINDOW_MS } from './trialPolicy.js';
+import { normalizeTrialEmail, TRIAL_ABANDONMENT_WINDOW_MS } from './trialPolicy.js';
 import { productEntitlements } from './productAccountService.js';
 import type { ProductKey } from '../domain/platform/productAccounts.js';
 import { UserRepository, toPublicUser } from '../repositories/userRepository.js';
 import { normalizePhoneToE164, InvalidPhoneNumberError } from './phoneNormalizationService.js';
 import { fingerprintPhoneNumber } from '../security/phoneFingerprint.js';
 import { getEncryptionService } from '../security/encryption/index.js';
+import { isRegistrationPaused, getTrialDurationHours } from './platform/platformConfigService.js';
 
 const users = new UserRepository(pool);
 
 export class TrialAlreadyUsedOnboardingError extends Error {}
 export class TrialPhoneAlreadyUsedOnboardingError extends Error {}
 export class TrialProductUnavailableOnboardingError extends Error {}
+export class RegistrationPausedOnboardingError extends Error {}
 export { InvalidPhoneNumberError };
 
 /**
@@ -121,6 +123,7 @@ export async function registerTrial(input: {
   productKey: ProductKey;
   device: DeviceContext;
 }) {
+  if (await isRegistrationPaused()) throw new RegistrationPausedOnboardingError('New trial signups are paused right now. Try again shortly.');
   const name = input.name.trim();
   const email = normalizeTrialEmail(input.email);
   const phone = input.phone.trim();
@@ -207,7 +210,8 @@ export async function registerTrial(input: {
     if (!businessId) throw new Error('Trial business creation returned no id');
 
     const startsAt = new Date();
-    const endsAt = new Date(startsAt.getTime() + TRIAL_DURATION_MS);
+    const trialDurationHours = await getTrialDurationHours();
+    const endsAt = new Date(startsAt.getTime() + trialDurationHours * 60 * 60 * 1000);
 
     // Without a real subscriptions row, every entitlement-gated action
     // (connecting WhatsApp, creating an AI agent, launching a campaign -

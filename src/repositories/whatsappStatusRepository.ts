@@ -13,6 +13,8 @@ export interface WhatsAppStatusRecord {
   createdAt: string;
   expiresAt: string | null;
   viewCount: number | null;
+  /** Set the moment any business user has opened this status in our own UI - distinct from viewCount (WhatsApp's own real per-status viewer count). Null until then. */
+  viewedAt: string | null;
   /** True only when this call itself created the row - false when the unique (business, account, status_id) index already had it. */
   wasInserted: boolean;
 }
@@ -29,6 +31,7 @@ interface StatusRow {
   created_at: string;
   expires_at: string | null;
   view_count: number | null;
+  viewed_at: string | null;
 }
 
 function toRecord(row: StatusRow, wasInserted: boolean): WhatsAppStatusRecord {
@@ -44,6 +47,7 @@ function toRecord(row: StatusRow, wasInserted: boolean): WhatsAppStatusRecord {
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     viewCount: row.view_count,
+    viewedAt: row.viewed_at,
     wasInserted,
   };
 }
@@ -94,6 +98,14 @@ export class WhatsAppStatusRepository {
 
   async attachMedia(id: string, mediaId: string): Promise<void> {
     await this.db.query('UPDATE whatsapp_statuses SET media_id = $2 WHERE id = $1', [id, mediaId]);
+  }
+
+  /** Idempotent - only ever sets viewed_at once, never re-stamps an already-viewed status. Scoped by business so one tenant can never mark another's status viewed. */
+  async markViewed(businessId: string, id: string): Promise<void> {
+    await this.db.query(
+      'UPDATE whatsapp_statuses SET viewed_at = now() WHERE id = $1 AND business_id = $2 AND viewed_at IS NULL',
+      [id, businessId],
+    );
   }
 
   async listByAccount(businessId: string, whatsappAccountId: string, limit = 100): Promise<WhatsAppStatusRecord[]> {

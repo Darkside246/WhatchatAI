@@ -65,6 +65,19 @@ const TABLES = [
   'usage_counters',
   'subscription_events',
   'subscriptions',
+  // Relationship-Confidence Engine follow-up - references businesses/whatsapp_chats/lists.
+  'chat_list_engagement',
+  // Relationship-Confidence Engine (Phase 3) - references businesses/whatsapp_chats.
+  'chat_relationship_signals',
+  // AI Governance & Oversight (v1) - references businesses/ai_agents.
+  'governance_flags',
+  // AURA Lists (Phase 1) - reference ai_agents/whatsapp_chats/customers, so
+  // must be truncated before those (TRUNCATE CASCADE would handle this
+  // automatically, but every other table in this list is explicit too).
+  'list_scoped_memory',
+  'list_agent_assignments',
+  'list_members',
+  'lists',
   'ai_agents',
   'businesses',
   // NOTE: 'plans' and 'plan_entitlements' are intentionally NOT truncated -

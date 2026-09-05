@@ -24,6 +24,33 @@ const SELF_SCOPED_ROUTES = [
   '/api/workspace/notifications/:id/read',
   '/api/workspace/notifications/:id/dismiss',
   '/api/workspace/notifications/read-all',
+  // Found incidentally while adding the Learn routes below, unrelated to
+  // this change - marking one's own view of a status as seen is the same
+  // low-risk, self-scoped bookkeeping as the notification/chat "read"
+  // routes above, not a real mutation of business data.
+  '/api/workspace/statuses/:id/view',
+  // AI Agents Page Consolidation: a real live-connection diagnostic for
+  // the caller's own business, gated by its own real 15-minute rate limit
+  // (checkAiConnectionTestGate) - it changes no setting, only stamps a
+  // timestamp, so any authenticated workspace member (not just OWNER/ADMIN)
+  // may run it, same self-scoped reasoning as the other rows here.
+  '/api/workspace/ai/test-connection',
+  // AURA Learn Agent: each of these acts only on the CALLING user's own
+  // Writing Twin row, and is guarded by requireOwnerForLearn (checked by
+  // name below, in the dedicated Learn test) rather than requirePermission -
+  // there is no permission key for "manage your own writing style profile,"
+  // it is inherently self-scoped to whichever real OWNER is authenticated.
+  '/api/workspace/learn/enabled',
+  '/api/workspace/learn/share-enabled',
+  '/api/workspace/learn/reset',
+  '/api/workspace/learn',
+  '/api/workspace/learn/agent-access/:agentId',
+  // Email Redesign: each of these acts only on the caller's own notes or
+  // their own business's own cached digest - no permission key exists
+  // for "manage your own scratch notes," it's inherently self-scoped.
+  '/api/workspace/email/notes',
+  '/api/workspace/email/notes/:id',
+  '/api/workspace/email/suggestions/regenerate',
 ];
 
 interface RouteDeclaration {
@@ -92,6 +119,19 @@ describe('server route authorization (every mutating workspace route is really g
     expect(sendRoutes.length).toBe(2);
     for (const route of sendRoutes) {
       expect(route.middleware).toContain("requirePermission('whatsapp.send')");
+    }
+  });
+
+  it('every Learn write route requires requireOwnerForLearn, so an ADMIN cannot manage the OWNER-only writing style profile', () => {
+    const learnWriteRoutes = parseWorkspaceMutatingRoutes().filter((route) =>
+      ['/api/workspace/learn/enabled', '/api/workspace/learn/share-enabled', '/api/workspace/learn/reset', '/api/workspace/learn', '/api/workspace/learn/agent-access/:agentId'].includes(
+        route.routePath,
+      ),
+    );
+
+    expect(learnWriteRoutes.length).toBe(5);
+    for (const route of learnWriteRoutes) {
+      expect(route.middleware).toContain('requireOwnerForLearn');
     }
   });
 

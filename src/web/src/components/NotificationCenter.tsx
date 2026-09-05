@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bell, Check } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { Bell, Check, X } from 'lucide-react';
 import { api, type NotificationDto } from '../lib/api.js';
 import { useWhatsAppSync } from '../hooks/useWhatsAppSync.js';
 import { useAuth } from '../hooks/useAuth.js';
@@ -93,6 +93,17 @@ export function NotificationCenter() {
     }
   }
 
+  async function handleDismiss(notification: NotificationDto, event: ReactMouseEvent) {
+    event.stopPropagation();
+    setNotifications((prev) => prev.filter((n) => n.id !== notification.id));
+    if (!notification.readAt) setUnreadCount((count) => Math.max(0, count - 1));
+    try {
+      await api.dismissNotification(notification.id);
+    } catch {
+      await load();
+    }
+  }
+
   return (
     <div ref={containerRef} className="relative">
       <button
@@ -121,24 +132,36 @@ export function NotificationCenter() {
             )}
           </div>
 
-          <div className="max-h-96 overflow-y-auto">
+          <div className="max-h-96 overflow-y-auto overflow-x-hidden">
             {notifications.length === 0 && <p className="px-3 py-6 text-center text-caption text-fg-muted">No notifications yet.</p>}
             {notifications.map((notification) => (
-              <button
+              <div
                 key={notification.id}
-                type="button"
+                role="button"
+                tabIndex={0}
                 onClick={() => handleMarkRead(notification)}
-                className={`flex w-full items-start gap-2.5 border-b border-border-subtle px-3 py-2.5 text-left last:border-b-0 hover:bg-surface-3 ${
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') handleMarkRead(notification);
+                }}
+                className={`group flex w-full items-start gap-2.5 border-b border-border-subtle px-3 py-2.5 text-left last:border-b-0 hover:bg-surface-3 ${
                   notification.readAt ? '' : 'bg-accent-soft/40'
                 }`}
               >
                 <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${SEVERITY_DOT[notification.severity]}`} aria-hidden />
-                <div className="min-w-0 flex-1">
-                  <p className="text-caption font-medium text-fg">{notification.title}</p>
-                  {notification.body && <p className="mt-0.5 text-caption text-fg-muted">{notification.body}</p>}
+                <div className="min-w-0 flex-1 overflow-hidden">
+                  <p className="break-words text-caption font-medium text-fg">{notification.title}</p>
+                  {notification.body && <p className="mt-0.5 break-words text-caption text-fg-muted">{notification.body}</p>}
                   <p className="mt-1 text-meta text-fg-muted">{formatRelativeTime(notification.createdAt)}</p>
                 </div>
-              </button>
+                <button
+                  type="button"
+                  onClick={(event) => handleDismiss(notification, event)}
+                  aria-label="Dismiss notification"
+                  className="shrink-0 rounded-md p-1 text-fg-muted opacity-0 hover:bg-surface-2 hover:text-fg group-hover:opacity-100 focus:opacity-100"
+                >
+                  <X size={14} aria-hidden />
+                </button>
+              </div>
             ))}
           </div>
         </div>

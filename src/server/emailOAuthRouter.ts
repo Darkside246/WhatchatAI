@@ -6,7 +6,7 @@ import {
   listConnectedAccounts,
   disconnectAccount,
 } from '../services/emailOAuthService.js';
-import { syncAccount, getInboxMessages } from '../services/emailSyncService.js';
+import { syncAccount, getFolders, getFolderMessages } from '../services/emailSyncService.js';
 import type { OAuthProvider } from '../repositories/emailOAuthRepository.js';
 
 const router = Router();
@@ -82,11 +82,20 @@ router.post('/sync/:accountId', async (req, res) => {
   }
 });
 
-/** Get synced inbox messages for one account. */
+/** List this account's real, provider-discovered folders (Inbox/Sent/Spam/Trash/custom labels, etc). */
+router.get('/accounts/:accountId/folders', async (req, res) => {
+  const auth = res.locals['auth'] as AuthContext;
+  const folders = await getFolders(req.params['accountId']!, auth.businessId);
+  res.json({ folders });
+});
+
+/** Get synced messages for one account, optionally scoped to a real folder. */
 router.get('/messages/:accountId', async (req, res) => {
+  const auth = res.locals['auth'] as AuthContext;
   const limit = Math.min(parseInt(typeof req.query['limit'] === 'string' ? req.query['limit'] : '50', 10) || 50, 200);
   const unreadOnly = req.query['unread'] === 'true';
-  const messages = await getInboxMessages(req.params['accountId']!, { limit, unreadOnly });
+  const folderId = typeof req.query['folderId'] === 'string' ? req.query['folderId'] : undefined;
+  const messages = await getFolderMessages(req.params['accountId']!, auth.businessId, { limit, unreadOnly, ...(folderId ? { folderId } : {}) });
   res.json({ messages });
 });
 

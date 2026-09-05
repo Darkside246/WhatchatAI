@@ -1,6 +1,7 @@
 import { ApiError } from '@google/genai';
 import { getGeminiClient } from './geminiClient.js';
 import * as gooseService from './gooseService.js';
+import { getGeminiModelOverride, isGooseFallbackEnabled } from './platform/platformConfigService.js';
 
 export type EngineState = 'configured' | 'available' | 'unavailable' | 'not_configured';
 export interface EngineStatus { id: 'gemini' | 'goose'; label: string; role: 'primary' | 'failover'; state: EngineState; checkedBy: 'configuration' | 'live_probe'; reason?: string; }
@@ -21,12 +22,15 @@ export async function getAiEngineStatus(): Promise<AiEngineStatus> {
     ...(geminiConfigured ? { state: 'configured' as const } : { state: 'not_configured' as const, reason: 'GEMINI_API_KEY is not set' }),
   };
 
+  const gooseFallbackEnabled = await isGooseFallbackEnabled();
   const health = await gooseService.healthCheck();
-  const goose: EngineStatus = {
-    id: 'goose', label: 'Goose', role: 'failover', state: health.status,
-    checkedBy: health.status === 'not_configured' ? 'configuration' : 'live_probe',
-    ...(health.reason ? { reason: health.reason } : {}),
-  };
+  const goose: EngineStatus = !gooseFallbackEnabled
+    ? { id: 'goose', label: 'Goose', role: 'failover', state: 'unavailable', checkedBy: 'configuration', reason: 'Switched off from the Developer Control Plane' }
+    : {
+        id: 'goose', label: 'Goose', role: 'failover', state: health.status,
+        checkedBy: health.status === 'not_configured' ? 'configuration' : 'live_probe',
+        ...(health.reason ? { reason: health.reason } : {}),
+      };
 
   return { engines: [gemini, goose], canGenerate: geminiConfigured || goose.state === 'available' };
 }
@@ -36,7 +40,7 @@ export type GeminiTestResult = { status: 'ok'; detail: string } | { status: 'fai
 export async function testGeminiConnection(): Promise<GeminiTestResult> {
   const genAi = getGeminiClient();
   if (!genAi) return { status: 'failed', reason: 'GEMINI_API_KEY is not set' };
-  const model = process.env.GEMINI_REPLY_MODEL || process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+  const model = (await getGeminiModelOverride()) || process.env.GEMINI_REPLY_MODEL || process.env.GEMINI_MODEL || 'gemini-3.5-flash';
   const contents = [{ role: 'user' as const, parts: [{ text: 'Reply with the single word: ok' }] }];
   try {
     const response = await genAi.models.generateContent({ model, contents, config: { temperature: 0.6, thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 16 } });

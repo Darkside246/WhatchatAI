@@ -1,5 +1,5 @@
 import { type ComponentType, type ReactNode, useEffect, useRef, useState, type FormEvent } from 'react';
-import { AlertTriangle, Bot, Building2, Camera, Check, ChevronDown, ChevronRight, Clipboard, Clock, KeyRound, Lock, LogOut, Mail, Monitor, Palette, PanelLeft, PanelLeftClose, Pencil, RefreshCw, ShieldCheck, Trash2, UserPlus, Users, Plus, Video, X } from 'lucide-react';
+import { AlertTriangle, Building2, Camera, Check, ChevronDown, ChevronRight, Clipboard, Clock, KeyRound, Lock, LogOut, Mail, Monitor, Palette, PanelLeft, PanelLeftClose, Pencil, RefreshCw, ShieldCheck, Trash2, UserPlus, Users, Plus, Video, X } from 'lucide-react';
 import {
   api,
   mediaUrl,
@@ -16,7 +16,6 @@ import {
 } from '../lib/api.js';
 import { Avatar } from '../components/Avatar.js';
 import { IntegrationSettingsPanel } from '../components/IntegrationSettingsPanel.js';
-import { KnowledgeBaseCard } from '../components/KnowledgeBaseCard.js';
 import { MediaLightbox } from '../components/MediaLightbox.js';
 import { QrPanel, PhonePairingPanel } from '../components/WhatsAppPairingPanels.js';
 import { ToggleSwitch } from '../components/ToggleSwitch.js';
@@ -340,10 +339,9 @@ function defaultHours(): WeekHours {
 
 const PROFILE_KB_TITLE = 'Business Profile';
 
-function buildProfileContent(s: string, m: string, addr: string, ph: string, em: string, web: string, hours: WeekHours): string {
+function buildProfileContent(s: string, addr: string, ph: string, em: string, web: string, hours: WeekHours): string {
   const lines: string[] = ['[Auto-generated from business profile settings]\n'];
   if (s) lines.push(`Slogan: ${s}`);
-  if (m) lines.push(`Motto: ${m}`);
   if (addr) lines.push(`Address: ${addr}`);
   if (ph) lines.push(`Alt Phone: ${ph}`);
   if (em) lines.push(`Alt Email: ${em}`);
@@ -356,7 +354,7 @@ function buildProfileContent(s: string, m: string, addr: string, ph: string, em:
   return lines.join('\n');
 }
 
-function parseProfileContent(content: string): { slogan: string; motto: string; address: string; altPhone: string; altEmail: string; website: string; hours: WeekHours } {
+function parseProfileContent(content: string): { slogan: string; address: string; altPhone: string; altEmail: string; website: string; hours: WeekHours } {
   const get = (key: string) => content.match(new RegExp(`^${key}: (.+)`, 'mi'))?.[1]?.trim() ?? '';
   const hours = defaultHours();
   for (const day of DAYS) {
@@ -371,7 +369,7 @@ function parseProfileContent(content: string): { slogan: string; motto: string; 
       }
     }
   }
-  return { slogan: get('Slogan'), motto: get('Motto'), address: get('Address'), altPhone: get('Alt Phone'), altEmail: get('Alt Email'), website: get('Website'), hours };
+  return { slogan: get('Slogan'), address: get('Address'), altPhone: get('Alt Phone'), altEmail: get('Alt Email'), website: get('Website'), hours };
 }
 
 function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | null }) {
@@ -384,7 +382,6 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
   // Rich profile (saved as KB doc)
   const [profileDocId, setProfileDocId] = useState<string | null>(null);
   const [slogan, setSlogan] = useState('');
-  const [motto, setMotto] = useState('');
   const [address, setAddress] = useState('');
   const [altPhone, setAltPhone] = useState('');
   const [altEmail, setAltEmail] = useState('');
@@ -395,6 +392,24 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
+
+  // Motto/Vision/Mission (real businesses columns, not the KB doc above) - one combined AI-visibility switch
+  const [motto, setMotto] = useState('');
+  const [vision, setVision] = useState('');
+  const [mission, setMission] = useState('');
+  const [missionAiVisible, setMissionAiVisible] = useState(true);
+  const [showMission, setShowMission] = useState(false);
+  const [savingMission, setSavingMission] = useState(false);
+  const [missionSaved, setMissionSaved] = useState<string | null>(null);
+  const [missionError, setMissionError] = useState<string | null>(null);
+
+  // Invoice contact details (real businesses columns, migration 989) - shown in the invoice/quote/receipt header, deliberately separate from the AI-knowledge "Business details" address/alt-phone above (those feed the AI's knowledge base; these feed documents customers actually receive).
+  const [invoiceAddress, setInvoiceAddress] = useState('');
+  const [invoicePhone, setInvoicePhone] = useState('');
+  const [showInvoiceContact, setShowInvoiceContact] = useState(false);
+  const [savingInvoiceContact, setSavingInvoiceContact] = useState(false);
+  const [invoiceContactSaved, setInvoiceContactSaved] = useState(false);
+  const [invoiceContactError, setInvoiceContactError] = useState<string | null>(null);
 
   // WA photo
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -467,13 +482,21 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
   }
 
   useEffect(() => {
-    api.getBusiness().then((res) => setBizName(res.business.name)).catch(() => undefined);
+    api.getBusiness().then((res) => {
+      setBizName(res.business.name);
+      setMotto(res.business.motto ?? '');
+      setVision(res.business.vision ?? '');
+      setMission(res.business.mission ?? '');
+      setMissionAiVisible(res.business.missionStatementAiVisible);
+      setInvoiceAddress(res.business.address ?? '');
+      setInvoicePhone(res.business.phone ?? '');
+    }).catch(() => undefined);
     api.listKnowledgeBaseDocuments().then((res) => {
       const doc = res.documents.find((d) => d.title === PROFILE_KB_TITLE);
       if (doc) {
         setProfileDocId(doc.id);
         const parsed = parseProfileContent(doc.content);
-        setSlogan(parsed.slogan); setMotto(parsed.motto); setAddress(parsed.address);
+        setSlogan(parsed.slogan); setAddress(parsed.address);
         setAltPhone(parsed.altPhone); setAltEmail(parsed.altEmail); setWebsite(parsed.website);
         setHours(parsed.hours);
       }
@@ -491,7 +514,7 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
   async function handleSaveProfile(e: FormEvent) {
     e.preventDefault();
     setSavingProfile(true); setProfileSaved(false); setProfileError(null);
-    const content = buildProfileContent(slogan, motto, address, altPhone, altEmail, website, hours);
+    const content = buildProfileContent(slogan, address, altPhone, altEmail, website, hours);
     try {
       if (profileDocId) {
         await api.updateKnowledgeBaseDocument(profileDocId, PROFILE_KB_TITLE, content);
@@ -504,6 +527,37 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
       setProfileError(err instanceof ApiError ? err.message : 'Failed to save profile.');
     } finally {
       setSavingProfile(false);
+    }
+  }
+
+  async function handleSaveMission(e: FormEvent) {
+    e.preventDefault();
+    setSavingMission(true); setMissionSaved(null); setMissionError(null);
+    try {
+      const res = await api.setMissionStatement({
+        motto: motto.trim() || null,
+        vision: vision.trim() || null,
+        mission: mission.trim() || null,
+        aiVisible: missionAiVisible,
+      });
+      setMissionSaved(res.kbSyncWarning ?? 'Saved.');
+    } catch (err) {
+      setMissionError(err instanceof ApiError ? err.message : 'Failed to save.');
+    } finally {
+      setSavingMission(false);
+    }
+  }
+
+  async function handleSaveInvoiceContact(e: FormEvent) {
+    e.preventDefault();
+    setSavingInvoiceContact(true); setInvoiceContactSaved(false); setInvoiceContactError(null);
+    try {
+      await api.setBusinessContactDetails({ address: invoiceAddress.trim() || null, phone: invoicePhone.trim() || null });
+      setInvoiceContactSaved(true);
+    } catch (err) {
+      setInvoiceContactError(err instanceof ApiError ? err.message : 'Failed to save.');
+    } finally {
+      setSavingInvoiceContact(false);
     }
   }
 
@@ -663,17 +717,10 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
 
         {showDetails && (
           <form onSubmit={handleSaveProfile} className="space-y-2 pl-4">
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <div>
-                <label className="text-meta font-medium text-fg-muted">Slogan</label>
-                <input value={slogan} onChange={(e) => setSlogan(e.target.value)} placeholder="Your tagline"
-                  className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
-              </div>
-              <div>
-                <label className="text-meta font-medium text-fg-muted">Motto</label>
-                <input value={motto} onChange={(e) => setMotto(e.target.value)} placeholder="Internal guiding phrase"
-                  className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
-              </div>
+            <div>
+              <label className="text-meta font-medium text-fg-muted">Slogan</label>
+              <input value={slogan} onChange={(e) => setSlogan(e.target.value)} placeholder="Your tagline"
+                className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
             </div>
             <div>
               <label className="text-meta font-medium text-fg-muted">Business address</label>
@@ -752,6 +799,80 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
             </button>
           </form>
         )}
+
+        {/* Motto, Vision & Mission accordion - a real, first-class home for all three (previously only Motto existed, buried as free text inside Business details), with one combined switch for whether they reach the AI at all. */}
+        <button type="button" onClick={() => setShowMission((v) => !v)}
+          className="flex w-full items-center justify-between text-caption font-medium text-fg-secondary hover:text-fg">
+          <span className="flex items-center gap-1.5">
+            {showMission ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+            Motto, Vision &amp; Mission
+          </span>
+          <span className="text-meta text-fg-muted">{missionAiVisible ? 'AI-visible · saved to knowledge base' : 'Hidden from AI'}</span>
+        </button>
+
+        {showMission && (
+          <form onSubmit={handleSaveMission} className="space-y-2 pl-4">
+            <div>
+              <label className="text-meta font-medium text-fg-muted">Motto</label>
+              <input value={motto} onChange={(e) => setMotto(e.target.value)} placeholder="Internal guiding phrase"
+                className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
+            </div>
+            <div>
+              <label className="text-meta font-medium text-fg-muted">Vision</label>
+              <textarea rows={2} value={vision} onChange={(e) => setVision(e.target.value)} placeholder="Where the business is headed"
+                className="mt-0.5 block w-full resize-none rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
+            </div>
+            <div>
+              <label className="text-meta font-medium text-fg-muted">Mission</label>
+              <textarea rows={2} value={mission} onChange={(e) => setMission(e.target.value)} placeholder="What the business does, and for whom"
+                className="mt-0.5 block w-full resize-none rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
+            </div>
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <label className="flex items-center gap-2 text-meta text-fg-secondary">
+                <ToggleSwitch checked={missionAiVisible} onChange={() => setMissionAiVisible((v) => !v)} label="Include Motto, Vision & Mission in AI knowledge" />
+                Include in AI knowledge
+              </label>
+            </div>
+            {missionError && <p className="text-meta text-error">{missionError}</p>}
+            {missionSaved && <p className="text-meta text-success">{missionSaved}</p>}
+            <button type="submit" disabled={savingMission}
+              className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+              {savingMission ? 'Saving…' : 'Save'}
+            </button>
+          </form>
+        )}
+
+        {/* Invoice contact details accordion - real businesses columns (migration 989), deliberately separate from the AI-knowledge Business details section above: this address/phone appear in the header of every invoice/quote/receipt this business generates, never fed to the AI. */}
+        <button type="button" onClick={() => setShowInvoiceContact((v) => !v)}
+          className="flex w-full items-center justify-between text-caption font-medium text-fg-secondary hover:text-fg">
+          <span className="flex items-center gap-1.5">
+            {showInvoiceContact ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+            Invoice contact details
+          </span>
+          <span className="text-meta text-fg-muted">Shown on invoices, quotes &amp; receipts</span>
+        </button>
+
+        {showInvoiceContact && (
+          <form onSubmit={handleSaveInvoiceContact} className="space-y-2 pl-4">
+            <p className="text-meta text-fg-muted">Separate from the business details above - this is what appears in the header of documents your customers actually receive.</p>
+            <div>
+              <label className="text-meta font-medium text-fg-muted">Address</label>
+              <input value={invoiceAddress} onChange={(e) => setInvoiceAddress(e.target.value)} placeholder="Street, city, country"
+                className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
+            </div>
+            <div>
+              <label className="text-meta font-medium text-fg-muted">Phone</label>
+              <input value={invoicePhone} onChange={(e) => setInvoicePhone(e.target.value)} placeholder="+1 246 …"
+                className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
+            </div>
+            {invoiceContactError && <p className="text-meta text-error">{invoiceContactError}</p>}
+            {invoiceContactSaved && <p className="text-meta text-success">Saved.</p>}
+            <button type="submit" disabled={savingInvoiceContact}
+              className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+              {savingInvoiceContact ? 'Saving…' : 'Save'}
+            </button>
+          </form>
+        )}
       </div>
     </div>
   );
@@ -769,59 +890,6 @@ const LOGO_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
  * auth business record after each save is what makes that, and the nav
  * rail logo, update immediately with no reload.
  */
-/**
- * A real, server-enforced emergency stop - not a frontend-only toggle.
- * Turning this off blocks every AI tool call above a plain read (booking a
- * meeting, and any future action tool) at the one gate every call passes
- * through (agentGuard.ts's guardToolInvocation), regardless of which agent
- * or which chat. The AI still replies to plain questions; it just cannot
- * take any real-world action while paused.
- */
-function AiActionsPauseCard() {
-  const auth = useAuth();
-  const canEdit = auth.role === 'OWNER' || auth.role === 'ADMIN';
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const paused = auth.business?.aiActionsPaused ?? false;
-
-  async function handleToggle() {
-    setSaving(true); setError(null);
-    try { await api.setAiActionsPaused(!paused); await auth.refresh(); }
-    catch (err) { setError(err instanceof ApiError ? err.message : 'Failed to update.'); }
-    finally { setSaving(false); }
-  }
-
-  return (
-    <div className={`rounded-xl border p-5 ${paused ? 'border-error/40 bg-error/5' : 'border-border-subtle bg-surface-2'}`}>
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="flex items-center gap-2 text-body font-semibold text-fg">
-            {paused && <AlertTriangle size={15} className="text-error" aria-hidden />}
-            AI actions
-          </h2>
-          <p className="mt-1 max-w-lg text-caption text-fg-muted">
-            {paused
-              ? 'AI actions are paused. Every agent can still read and reply to messages, but no meeting booking or other real-world action will run for any agent or chat until you turn this back on.'
-              : 'Emergency stop for every AI agent on this business. Turning this off immediately blocks meeting booking and any other action-taking tool, everywhere - agents still reply, they just can\'t act.'}
-          </p>
-          {paused && auth.business?.aiActionsPausedAt && (
-            <p className="mt-1 text-meta text-fg-muted">
-              Paused since {new Date(auth.business.aiActionsPausedAt).toLocaleString()}
-            </p>
-          )}
-          {error && <p className="mt-1 text-caption text-error">{error}</p>}
-        </div>
-        {canEdit && (
-          <div className="flex shrink-0 items-center gap-2">
-            <span className="text-caption font-medium text-fg-secondary">{paused ? 'Paused' : 'Enabled'}</span>
-            <ToggleSwitch checked={!paused} onChange={() => void handleToggle()} disabled={saving} label="AI actions enabled" />
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function BrandingCard() {
   const auth = useAuth();
   const canEdit = auth.role === 'OWNER' || auth.role === 'ADMIN'; // matches settings.manage in domain/auth/permissions.ts
@@ -2056,11 +2124,16 @@ const COUNTRIES: [string, string][] = [
 ];
 
 
-type SettingsView = 'business' | 'ai' | 'email' | 'appearance' | 'team' | 'account' | 'inbox' | 'meetings';
+/**
+ * AI Agents Page Consolidation: the former 'ai' (AI & Knowledge) and
+ * 'personalise' tabs moved to the "AI agents" page itself - not a
+ * developer page, and the natural home for "my AI," per the developer's
+ * own explicit request. See AgentsPage.tsx's list-mode view.
+ */
+type SettingsView = 'business' | 'email' | 'appearance' | 'team' | 'account' | 'inbox' | 'meetings';
 
 const SETTINGS_NAV: { id: SettingsView; label: string; sub: string; Icon: ComponentType<{ size?: number; className?: string; 'aria-hidden'?: boolean }> }[] = [
   { id: 'business',   label: 'Business',           sub: 'Profile · Time & location',       Icon: Building2   },
-  { id: 'ai',         label: 'AI & Knowledge',      sub: 'Knowledge base',                  Icon: Bot         },
   { id: 'email',      label: 'Email',               sub: 'Sending transport',               Icon: Mail        },
   { id: 'inbox',      label: 'Connected Inbox',     sub: 'Gmail · Outlook · App mail',      Icon: Mail        },
   { id: 'meetings',   label: 'Meetings',            sub: 'Google Meet · Zoom',              Icon: Video       },
@@ -2132,14 +2205,6 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
               <TimeLocationCard />
             </div>
             <BrandingCard />
-          </div>
-        )}
-
-        {view === 'ai' && (
-          <div className="space-y-4">
-            <SectionTitle title="AI & Knowledge" desc="What your AI agents know." />
-            <AiActionsPauseCard />
-            <KnowledgeBaseCard />
           </div>
         )}
 
@@ -2500,8 +2565,8 @@ function OperatorModeCard() {
    * failed - a transient network error would leave the toggle showing
    * "Enabled" while the backend was still Disabled (or vice versa), for a
    * security-relevant admin-command gate. AiActionsPauseCard's own
-   * handleToggle (above, same file) already gets this right - only
-   * update local state after a real success, surface a real failure
+   * handleToggle (AiAgentSettingsPanels.tsx) already gets this right -
+   * only update local state after a real success, surface a real failure
    * instead of silently swallowing it.
    */
   async function handleToggle() {
