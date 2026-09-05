@@ -73,6 +73,8 @@ function fakeContext(overrides: Partial<AiHandoffContext> = {}): AiHandoffContex
     knowledgeBase: { available: false, results: [], reason: 'not configured' },
     documentContext: { available: false, results: [], reason: 'not configured' },
     conversationHistory: [fakeMessage()],
+    aiGeneratedMessageIds: new Set(),
+    groupSenderNameByContactId: new Map(),
     businessTimezone,
     timeContext,
     // Offered to Gemini by default so schedule_google_meet is even in the

@@ -149,6 +149,7 @@ function fakeMessage(overrides: Partial<WhatsAppMessageRecord> = {}): WhatsAppMe
     rawMetadata: {},
     createdAt: new Date().toISOString(),
     wasInserted: true,
+    ...overrides,
   } as WhatsAppMessageRecord;
 }
 
@@ -160,6 +161,8 @@ function fakeContext(overrides: Partial<AiHandoffContext> = {}): AiHandoffContex
     knowledgeBase: { available: false, results: [], reason: 'not configured' },
     documentContext: { available: false, results: [], reason: 'not configured' },
     conversationHistory: [fakeMessage()],
+    aiGeneratedMessageIds: new Set(),
+    groupSenderNameByContactId: new Map(),
     businessTimezone: 'UTC',
     timeContext: buildTimeContext(Date.now(), 'UTC', { status: 'SYNCED', lastSyncedAt: new Date(), source: 'test' }),
     media: null,
@@ -259,6 +262,65 @@ describe('classifyAiError - the five-way taxonomy (pure unit tests, no mocking)'
   it('1j. a non-Error thrown value still classifies safely as programming, never throws itself', () => {
     expect(classifyAiError('a raw string throw').category).toBe('programming');
     expect(classifyAiError(undefined).category).toBe('programming');
+  });
+});
+
+describe('generateAiReply - sender attribution (a real reported bug: a team member\'s own personal remark got misattributed to the customer)', () => {
+  beforeEach(() => {
+    aiReplyGenerateContentMock.mockReset();
+    resetAllGeminiCircuitBreakers();
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('labels a human-sent fromMe turn distinctly from an AI-generated one, so the model never treats the team member\'s own words as the customer\'s', async () => {
+    aiReplyGenerateContentMock.mockResolvedValueOnce({ text: 'Sure, happy to help!' });
+
+    const aiTurn = fakeMessage({ id: 'ai-msg-1', fromMe: true, textContent: 'a real prior AI-generated reply' });
+    const humanTurn = fakeMessage({ id: 'human-msg-1', fromMe: true, textContent: 'my father will give me a piece of his chicken' });
+    const customerTurn = fakeMessage({ id: 'customer-msg-1', fromMe: false, textContent: 'ok sounds good' });
+
+    await generateAiReply(fakeAgent(), fakeContext({
+      // Newest-first, matching WhatsAppMessageRepository.listByChat's own
+      // real ordering (toContents reverses this into chronological order).
+      conversationHistory: [customerTurn, humanTurn, aiTurn],
+      aiGeneratedMessageIds: new Set(['ai-msg-1']),
+    }));
+
+    const sentContents = aiReplyGenerateContentMock.mock.calls[0]?.[0]?.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
+    const aiSentTurn = sentContents.find((c) => c.parts[0]?.text.includes('a real prior AI-generated reply'));
+    const humanSentTurn = sentContents.find((c) => c.parts[0]?.text.includes('my father will give me a piece of his chicken'));
+
+    // The AI's own prior turn is unprefixed - it really is the model's own words.
+    expect(aiSentTurn?.role).toBe('model');
+    expect(aiSentTurn?.parts[0]?.text).toBe('a real prior AI-generated reply');
+
+    // The human team member's turn stays role 'model' (it's still outbound
+    // from the business side), but is explicitly labeled as NOT the AI's
+    // own words - the actual fix, since role alone can't distinguish them.
+    expect(humanSentTurn?.role).toBe('model');
+    expect(humanSentTurn?.parts[0]?.text).toContain('A real team member replied here personally, not you');
+    expect(humanSentTurn?.parts[0]?.text).toContain('my father will give me a piece of his chicken');
+  });
+
+  it('labels each group participant\'s own turn with their real, verified name - never lets one participant\'s remark blend into another\'s', async () => {
+    aiReplyGenerateContentMock.mockResolvedValueOnce({ text: 'Sure, happy to help!' });
+
+    const aliceTurn = fakeMessage({ id: 'alice-msg-1', fromMe: false, senderContactId: 'contact-alice', textContent: 'my father will give me a piece of his chicken' });
+    const bobTurn = fakeMessage({ id: 'bob-msg-1', fromMe: false, senderContactId: 'contact-bob', textContent: 'ok sounds good' });
+
+    await generateAiReply(fakeAgent(), fakeContext({
+      conversationHistory: [bobTurn, aliceTurn],
+      groupSenderNameByContactId: new Map([['contact-alice', 'Alice'], ['contact-bob', 'Bob']]),
+    }));
+
+    const sentContents = aiReplyGenerateContentMock.mock.calls[0]?.[0]?.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
+    const aliceSentTurn = sentContents.find((c) => c.parts[0]?.text.includes('my father will give me a piece of his chicken'));
+    const bobSentTurn = sentContents.find((c) => c.parts[0]?.text.includes('ok sounds good'));
+
+    expect(aliceSentTurn?.parts[0]?.text).toContain('Message from "Alice" in this group');
+    expect(bobSentTurn?.parts[0]?.text).toContain('Message from "Bob" in this group');
   });
 });
 
@@ -920,8 +982,12 @@ describe('Group-chat participation gate wiring (real BullMQ worker + real Postgr
     // The real guarantee under test is narrower: the mention is the FINAL
     // turn, i.e. what the AI is actually being asked to respond to right
     // now - not one of the 13 unrelated messages that happened to precede it.
+    // toContains, not toBe: this real group message now correctly carries
+    // its real sender's own name-attribution prefix (see toContents() in
+    // aiReplyService.ts) - this assertion only cares that the mention is
+    // genuinely the final turn's real text, not the exact full string.
     const sentContents = aiReplyGenerateContentMock.mock.calls[0]?.[0]?.contents as Array<{ parts: Array<{ text: string }> }>;
-    expect(sentContents.at(-1)?.parts[0]?.text).toBe('hey what are your hours');
+    expect(sentContents.at(-1)?.parts[0]?.text).toContain('hey what are your hours');
 
     const { rows } = await pool.query('SELECT count(*) AS count FROM whatsapp_outbound_messages WHERE business_id = $1', [businessId]);
     expect(Number(rows[0].count)).toBe(1);

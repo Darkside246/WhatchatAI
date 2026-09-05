@@ -688,7 +688,36 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
  * one - every earlier media turn is described, never actually seen, since
  * this codebase never stored image/audio understanding retroactively.
  */
-function toContents(history: AiHandoffContext['conversationHistory'], media: InlineMediaPart | null) {
+/**
+ * A fromMe turn whose id is NOT in aiGeneratedMessageIds was typed by a
+ * real human team member replying manually as the business (bypassing the
+ * AI), not by the AI itself. Labeled explicitly rather than left as an
+ * indistinguishable 'model' turn - a real, reported bug had the AI
+ * misattribute a team member's own casual remark ("my father will give me
+ * some chicken") to the customer in its next reply, because nothing in
+ * the transcript told it that line wasn't its own prior words.
+ */
+const HUMAN_REPLY_PREFIX = "[A real team member replied here personally, not you - never treat anything in this line as the customer's own words or circumstances]: ";
+
+/**
+ * The same "never infer sender from context, only a real verified id"
+ * principle, generalized to a group chat's multiple real customers - see
+ * HUMAN_REPLY_PREFIX's own doc comment for the outbound-side version of
+ * this. senderName here is always resolved from message.senderContactId
+ * (aiContextGathererService.ts's groupSenderNameByContactId), never
+ * guessed, so this label is exactly as reliable as the message-list UI's
+ * own per-message sender name.
+ */
+function groupSenderPrefix(senderName: string): string {
+  return `[Message from "${senderName}" in this group - only this exact turn is theirs, never any other line in this transcript]: `;
+}
+
+function toContents(
+  history: AiHandoffContext['conversationHistory'],
+  media: InlineMediaPart | null,
+  aiGeneratedMessageIds: Set<string>,
+  groupSenderNameByContactId: Map<string, string>,
+) {
   const chronological = history
     .filter((message) => Boolean(message.textContent) || message.hasMedia)
     .slice()
@@ -703,7 +732,14 @@ function toContents(history: AiHandoffContext['conversationHistory'], media: Inl
   return ordered.map((message, index) => {
     const isTriggeringMessage = index === ordered.length - 1;
     const attachMedia = isTriggeringMessage && Boolean(media);
-    const text = message.textContent ?? mediaFallbackText(message.messageType, isTriggeringMessage ? attachMedia : true);
+    const isHumanReply = message.fromMe && !aiGeneratedMessageIds.has(message.id);
+    const groupSenderName = !message.fromMe && message.senderContactId ? groupSenderNameByContactId.get(message.senderContactId) : undefined;
+    const rawText = message.textContent ?? mediaFallbackText(message.messageType, isTriggeringMessage ? attachMedia : true);
+    const text = isHumanReply
+      ? `${HUMAN_REPLY_PREFIX}${rawText}`
+      : groupSenderName
+        ? `${groupSenderPrefix(groupSenderName)}${rawText}`
+        : rawText;
 
     const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [{ text }];
     if (attachMedia && media) parts.push({ inlineData: { mimeType: media.mimeType, data: media.data } });
@@ -1174,7 +1210,7 @@ async function resolveToolCalls(
 }
 
 export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffContext): Promise<AiReplyResult> {
-  const contents = toContents(context.conversationHistory, context.media);
+  const contents = toContents(context.conversationHistory, context.media, context.aiGeneratedMessageIds, context.groupSenderNameByContactId);
   if (contents.length === 0) {
     return { status: 'unavailable', reason: 'No real message text to reply to', skipEscalation: true };
   }

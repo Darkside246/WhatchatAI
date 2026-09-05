@@ -1,11 +1,12 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
-import { Navigate, Route, Routes } from 'react-router-dom';
-import { Search } from 'lucide-react';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Search, ArrowLeft } from 'lucide-react';
 import { api, type SyncStatusResponse, type WhatsAppConnectionSnapshot, type WorkspaceBillingEntitlement } from '../lib/api.js';
 import { SaasNavRail, SaasNavBottomBar } from '../components/SaasNavRail.js';
 import { NotificationCenter } from '../components/NotificationCenter.js';
 import { CommandPalette } from '../components/CommandPalette.js';
 import { AccountMenu } from '../components/AccountMenu.js';
+import { AlertNotifier } from '../components/AlertNotifier.js';
 const ChatsRoute = lazy(() => import('./ChatsRoute.js').then((m) => ({ default: m.ChatsRoute })));
 const AgentsPage = lazy(() => import('./AgentsPage.js').then((m) => ({ default: m.AgentsPage })));
 const CrmRoute = lazy(() => import('./CrmRoute.js').then((m) => ({ default: m.CrmRoute })));
@@ -31,6 +32,31 @@ const AppointmentsPage = lazy(() => import('./AppointmentsPage.js').then((m) => 
 const IntegrationHealthPage = lazy(() => import('./IntegrationHealthPage.js').then((m) => ({ default: m.IntegrationHealthPage })));
 
 function RouteFallback() { return <div className="flex h-full flex-1 items-center justify-center text-caption text-fg-muted">Loading…</div>; }
+
+/**
+ * One shared back arrow for every SaaS page reached from SaasNavRail
+ * (Dashboard, Trends, CRM, Billing, Settings, etc.) - rendered once here
+ * rather than duplicated into each page component. Hidden on /chats: the
+ * inbox has its own distinct navigation (its own chat-thread back arrow)
+ * and isn't a "dashboard" page in this sense. Plain SPA history-back
+ * (navigate(-1)), matching "get back to the previous page" literally.
+ */
+function PageBackButton() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  if (location.pathname === '/chats' || location.pathname.startsWith('/chats/')) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => navigate(-1)}
+      title="Back"
+      aria-label="Go back to the previous page"
+      className="absolute right-4 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-border-subtle bg-surface-1/90 text-fg-muted shadow-sm backdrop-blur transition hover:bg-surface-2 hover:text-fg"
+    >
+      <ArrowLeft size={16} strokeWidth={1.75} aria-hidden />
+    </button>
+  );
+}
 interface Props { connection: WhatsAppConnectionSnapshot | null; sync: SyncStatusResponse | null; }
 
 const BATTERY_SEGMENTS = 4;
@@ -129,8 +155,8 @@ export function WorkspaceShell({ connection, sync }: Props) {
     {sync?.syncStatus === 'failed' && <div className="shrink-0 bg-warning/10 px-4 py-1.5 text-center text-caption text-warning">History sync did not fully complete ({sync.lastSyncError ?? 'unknown error'}). Some data may be missing.</div>}
     <CommandPalette open={searchOpen} onOpenChange={setSearchOpen} />
     <div className="flex min-h-0 flex-1"><SaasNavRail /><div className="flex min-w-0 flex-1 flex-col">
-      <header className="flex shrink-0 items-center justify-between border-b border-border-subtle bg-surface-1 px-4 py-2"><button type="button" onClick={() => setSearchOpen(true)} aria-label="Open global search" className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-caption text-fg-muted hover:bg-surface-3"><Search size={13} aria-hidden /><span className="hidden sm:inline">Search…</span><kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-meta sm:inline">⌘K</kbd></button><div className="flex items-center gap-3"><AiTokenAllowanceBar connectionLabel={connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'} /><NotificationCenter /><span className="rounded-full bg-success/15 px-2 py-0.5 text-meta text-success">Live</span><AccountMenu /></div></header>
-      <div className="flex min-h-0 flex-1"><Suspense fallback={<RouteFallback />}><Routes>
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle bg-surface-1 px-4 py-2"><button type="button" onClick={() => setSearchOpen(true)} aria-label="Open global search" className="flex shrink-0 items-center gap-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-caption text-fg-muted hover:bg-surface-3"><Search size={13} aria-hidden /><span className="hidden sm:inline">Search…</span><kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-meta sm:inline">⌘K</kbd></button><div className="flex min-w-0 flex-1 justify-center"><AlertNotifier /></div><div className="flex shrink-0 items-center gap-3"><AiTokenAllowanceBar connectionLabel={connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'} /><NotificationCenter /><span className="rounded-full bg-success/15 px-2 py-0.5 text-meta text-success">Live</span><AccountMenu /></div></header>
+      <div className="relative flex min-h-0 flex-1"><PageBackButton /><Suspense fallback={<RouteFallback />}><Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/property" element={<ProductDashboardPage product="property" />} />
         <Route path="/property/operations" element={<PropertyOperationsPage />} />

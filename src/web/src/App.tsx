@@ -16,15 +16,17 @@ import { PrivacyPage } from './pages/PrivacyPage.js';
 import { ConsentConfirmPage } from './pages/ConsentConfirmPage.js';
 
 /**
- * ScreenLock (and the AlertNotifier it mounts) wraps ONLY the final,
- * fully-ready workspace - never onboarding/syncing/operator-setup. Those
- * earlier phases are still real pre-workspace screens (QR pairing, initial
- * sync progress) even though the human dashboard user is already
- * authenticated - alert banners naming the business's WhatsApp line and
- * urgency of unresolved handoffs have no business appearing on a screen
- * whose entire purpose is "connect WhatsApp," and a screen left open on
- * that step (a disconnected/re-pairing account, mid-onboarding) must never
- * surface live operational data to whoever can see the monitor.
+ * ScreenLock wraps ONLY the final, fully-ready workspace - never
+ * onboarding/syncing/operator-setup. Those earlier phases are still real
+ * pre-workspace screens (QR pairing, initial sync progress) even though the
+ * human dashboard user is already authenticated - so a screen left open
+ * mid-onboarding (a disconnected/re-pairing account) never surfaces live
+ * operational data to whoever can see the monitor. AlertNotifier (the
+ * urgent lead-handover pill) is mounted twice for the same reason and
+ * nowhere else: inside WorkspaceShell's own header for the normal unlocked
+ * view, and again inside ScreenLock's own lock overlay (off to the side of
+ * the PIN card) so a live handoff stays visible while locked instead of
+ * disappearing along with the rest of the header underneath.
  */
 function AuthenticatedApp() {
   const gate = useAppGate();

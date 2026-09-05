@@ -36,9 +36,8 @@ export function InboxNavRail({ view, onChange }: Props) {
         Lists (real WhatsApp's own native chat-organizing feature) moved
         here from the general SaaS product nav (SaasNavRail) - it's a
         WhatsApp-native concept, not an AURA "module", so it belongs beside
-        Chats/Calls. Red, deliberately distinct from Chats/Calls' own
-        accent color, signals "this mirrors a genuine WhatsApp feature"
-        rather than something AURA invented. Opens List management
+        Chats/Calls. Uses the same accent color as Chats/Calls, matching
+        the rest of this rail's theme. Opens List management
         (ListsRoute.tsx) directly; the actual per-chat filtering by List
         lives as pills inside ChatListPane.tsx's own filter bar.
       */}
@@ -46,7 +45,7 @@ export function InboxNavRail({ view, onChange }: Props) {
         type="button"
         onClick={() => navigate('/lists')}
         title="Lists"
-        className="flex h-10 w-10 items-center justify-center rounded-lg text-red-500 transition-colors hover:bg-red-500/10"
+        className="flex h-10 w-10 items-center justify-center rounded-lg text-accent transition-colors hover:bg-accent-soft"
       >
         <ListChecks size={19} strokeWidth={1.75} aria-hidden />
       </button>

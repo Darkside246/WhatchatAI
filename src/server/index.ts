@@ -4022,6 +4022,13 @@ async function closeWorkers(): Promise<void> {
 async function shutdown(signal: string): Promise<void> {
   console.log(`[AURA] Received ${signal}, closing outbound dispatch worker...`);
   await closeWorkers();
+  // Real bug fix: without this, every live Baileys socket this process
+  // holds was left open when the process exited (a dev-server restart on
+  // every file save included) - see disconnectAll()'s own doc comment for
+  // the full "self-inflicted CONFLICT_REPLACED on the next boot" story
+  // this was causing.
+  console.log('[AURA] Disconnecting live WhatsApp sessions before exit...');
+  await whatsappConnectionManager.disconnectAll();
   process.exit(0);
 }
 

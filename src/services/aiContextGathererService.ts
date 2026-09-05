@@ -21,6 +21,7 @@ import { RetailOperationsRepository } from '../repositories/retailOperationsRepo
 import { DEFAULT_NAME_USAGE_LEVEL } from './ai/identityEngine.js';
 import { BusinessMembershipRepository } from '../repositories/businessMembershipRepository.js';
 import { WritingTwinRepository } from '../repositories/writingTwinRepository.js';
+import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import { writingTwinService, type WritingTwinContextResult } from './writingTwinService.js';
 
 export interface GatherAiHandoffContextInput {
@@ -42,6 +43,43 @@ export interface AiHandoffContext {
   /** D4-B: AI-retrievable business documents (D3-C's retrieveAiDocumentContext), gathered the same way and with the same {available, results, reason} contract as knowledgeBase above - never a second retrieval/trust pattern. */
   documentContext: AiDocumentRetrievalResponse;
   conversationHistory: WhatsAppMessageRecord[];
+  /**
+   * Real bug fix: every fromMe message in conversationHistory used to be
+   * fed to Gemini as an undifferentiated 'model' turn, whether it was the
+   * AI's own prior reply or a human team member manually typing AS the
+   * business (bypassing the AI entirely - a real, supported thing this app
+   * lets an operator do from WhatsApp directly). A team member's own
+   * casual, personal remark in one of those turns ("my father will give me
+   * some chicken") then got misattributed back to the CUSTOMER by the next
+   * AI-generated reply, since nothing in the transcript distinguished "you
+   * (the AI) said this" from "a real person on the business side said
+   * this, in their own voice." Resolved the same way workspaceService.ts's
+   * own message-list view already does (listAiGeneratedMessageIds) - the
+   * ids here are AI-generated fromMe messages; any fromMe id NOT in this
+   * set was a human team member's own manual reply, and toContents()
+   * (aiReplyService.ts) labels it as such in the prompt.
+   */
+  aiGeneratedMessageIds: Set<string>;
+  /**
+   * The same generalized principle: a group chat has multiple real
+   * customers posting into one thread, and the AI must never infer WHO
+   * said a given line from conversational context alone - only a real,
+   * verified sender id counts. Resolved from message.senderContactId (a
+   * real, persisted fact, never guessed). Empty for a DM (there, "the
+   * chat" already is the one customer - no second identity to confuse a
+   * reply with).
+   *
+   * Privacy note: this is NOT the same value the message-list UI shows.
+   * The UI's own senderName (workspaceService.ts) can fall all the way
+   * back to a raw phone number when no real name is on file - correct
+   * there (a human always needs some label), wrong here, since this
+   * label leaves the server in a prompt sent to Gemini. A contact with no
+   * real name/username/pushName gets a synthetic "Participant N" label
+   * instead - assigned once per call, deterministically, so the same real
+   * person keeps the same label across all their own turns in this call
+   * and never collides with another real participant's label.
+   */
+  groupSenderNameByContactId: Map<string, string>;
   /**
    * Durable structured state for this conversation (current goal, confirmed
    * facts, open questions) - supplements the raw history/CRM/knowledge-base
@@ -225,6 +263,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
   const zoomMeetingRepository = new ZoomMeetingRepository(pool);
   const propertyOperationsRepository = new PropertyOperationsRepository(pool);
   const retailOperationsRepository = new RetailOperationsRepository(pool);
+  const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
 
   // A single, fast indexed lookup - resolved before the main batch below
   // since whether/what to fetch for customerMemory depends on it. null for
@@ -279,6 +318,62 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     resolveLearnContext(input.businessId),
   ]);
 
+  // Depends on conversationHistory's own resolved ids, so this can't join
+  // the big Promise.all above - a second, cheap, indexed lookup rather
+  // than restructuring that batch for one dependent query.
+  const fromMeHistoryIds = conversationHistory.filter((message) => message.fromMe).map((message) => message.id);
+  const aiGeneratedMessageIds = new Set(await outboundMessageRepository.listAiGeneratedMessageIds(fromMeHistoryIds));
+
+  // Same "only matters for a group chat" reasoning as workspaceService.ts's
+  // own getMessages: a DM's sender is always the one contact this whole
+  // chat already is, so there is no second identity to confuse a reply
+  // with. Only resolved when there is real work to do (a group chat with
+  // at least one real senderContactId in this history window).
+  //
+  // Real privacy fix: resolveDisplayName's own fallback chain ends in
+  // phoneNumber, then the raw whatsappJid - exactly right for the UI (a
+  // human always needs SOME label to show), but wrong here, since this
+  // label is about to leave the server in a prompt sent to Gemini. A
+  // contact with no real name/username/pushName on file would otherwise
+  // have their raw phone number sent to a third party as if it were a
+  // name. Deliberately NOT "solved" by routing the number through several
+  // AI hops that each randomly re-scramble it - that adds real cost,
+  // latency, and prompt-injection surface without adding real protection,
+  // since this server process already IS the trusted boundary holding the
+  // real mapping; obscuring data from yourself protects nothing. Instead:
+  // a real name/username is used as-is (it's not sensitive in the way a
+  // phone number is, and the business already has it on file from this
+  // exact contact messaging them), and anyone with no real name gets a
+  // synthetic "Participant N" label instead - assigned once, deterministically,
+  // in order of first appearance in this call's own history, so the same
+  // real person keeps the same label across every one of their turns and
+  // never collides with another real participant's label or name. Built
+  // fresh per gatherAiHandoffContext call (never persisted) - nothing to
+  // reverse-map on the way back, since Gemini's output here is just reply
+  // text for the whole group, never a per-participant routing target.
+  const groupSenderNameByContactId = new Map<string, string>();
+  if (activeListChat?.chatType === 'group') {
+    const senderContactIds = [...new Set(conversationHistory.map((message) => message.senderContactId).filter((id): id is string => id !== null))];
+    if (senderContactIds.length > 0) {
+      const senderContacts = await whatsappContactRepository.findByIds(senderContactIds);
+      const contactById = new Map(senderContacts.map((contact) => [contact.id, contact]));
+      let anonymousCount = 0;
+      for (const contactId of senderContactIds) {
+        const contact = contactById.get(contactId);
+        const realName = contact ? [
+          contact.verifiedName, contact.businessName,
+          contact.displayName, contact.username, contact.pushName, contact.shortName,
+        ].find((value): value is string => typeof value === 'string' && value.trim().length > 0) : undefined;
+        if (realName) {
+          groupSenderNameByContactId.set(contactId, realName);
+        } else {
+          anonymousCount += 1;
+          groupSenderNameByContactId.set(contactId, `Participant ${anonymousCount}`);
+        }
+      }
+    }
+  }
+
   const businessTimezone = resolveBusinessTimezone({ timezone: business?.timezone ?? null });
   const timeContext = timeService.buildContextForTimezone(businessTimezone, business ?? undefined);
 
@@ -294,6 +389,8 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     knowledgeBase,
     documentContext,
     conversationHistory,
+    aiGeneratedMessageIds,
+    groupSenderNameByContactId,
     conversationState: conversationState ?? emptyConversationState(input.businessId, input.chatId),
     customerId,
     customerMemory: customerId

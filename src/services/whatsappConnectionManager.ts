@@ -200,6 +200,27 @@ export class WhatsAppConnectionManager {
     return this.tenants.size;
   }
 
+  /**
+   * Real bug fix: process shutdown (SIGTERM/SIGINT - a dev-server restart on
+   * every file save included) used to close only the BullMQ workers, never
+   * any live WhatsApp socket. Baileys' own `socket.end()` was never called,
+   * so the dying process's linked-device session could still look "alive"
+   * to WhatsApp's servers for a moment after this process had already
+   * exited - and the very next boot's reconnectAllPersisted() (server/
+   * index.ts) opens a fresh socket for the same account immediately,
+   * before that stale one is gone. WhatsApp then sees two live devices in
+   * the same linked-device slot and kicks one with a real
+   * DisconnectReason.connectionReplaced - a genuine protocol-level event,
+   * but entirely self-inflicted by our own restart, not an actual outside
+   * device taking over. Calling this before the process exits gives the
+   * old socket a clean, acknowledged close first, so the next boot's
+   * reconnect never races it. Promise.allSettled so one tenant's failed
+   * disconnect never blocks or fails the rest.
+   */
+  async disconnectAll(): Promise<void> {
+    await Promise.allSettled([...this.tenants.values()].map((tenant) => tenant.disconnect()));
+  }
+
   /** Only tenants whose socket is genuinely CONNECTED right now - a real subset of activeTenantCount(). */
   connectedTenantCount(): number {
     let count = 0;

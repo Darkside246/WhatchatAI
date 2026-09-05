@@ -70,6 +70,8 @@ function fakeContext(overrides: Partial<AiHandoffContext> = {}): AiHandoffContex
     knowledgeBase: { available: false, results: [], reason: 'not configured' },
     documentContext: { available: false, results: [], reason: 'not configured' },
     conversationHistory: [fakeMessage()],
+    aiGeneratedMessageIds: new Set(),
+    groupSenderNameByContactId: new Map(),
     businessTimezone: 'UTC',
     timeContext: buildTimeContext(Date.now(), 'UTC', { status: 'SYNCED', lastSyncedAt: new Date(), source: 'test' }),
     media: null,

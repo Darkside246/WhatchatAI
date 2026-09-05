@@ -162,10 +162,15 @@ export function ScreenLock({ children }: Props) {
   return (
     <>
       {children}
-      <AlertNotifier />
 
       {overlayVisible && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-0/95 p-4 backdrop-blur-md">
+          {/* Live handoffs keep arriving while locked - this stays visible
+              off to the side rather than being hidden behind the PIN card,
+              or disappearing along with the rest of the header underneath. */}
+          <div className="absolute right-4 top-16 max-w-[min(90vw,20rem)]">
+            <AlertNotifier />
+          </div>
           <div className="w-full max-w-sm rounded-2xl border border-border-subtle bg-surface-1 p-6 shadow-2xl">
             <div className="mb-4 flex flex-col items-center gap-2 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-surface-2 text-accent">

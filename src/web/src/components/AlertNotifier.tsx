@@ -4,34 +4,10 @@ import { X } from 'lucide-react';
 import { api, type HumanTakeoverAlertDto } from '../lib/api.js';
 
 const POLL_MS = 5000;
-
-export const ALERT_SCALE_KEY = 'alert_banner_scale';
-const DEFAULT_ALERT_SCALE = 1;
-export const ALERT_SCALE_MIN = 0.75;
-export const ALERT_SCALE_MAX = 1.5;
-
-export const ALERT_POSITION_KEY = 'alert_banner_position';
-export type AlertBannerPosition = 'left' | 'center' | 'right';
-const DEFAULT_ALERT_POSITION: AlertBannerPosition = 'center';
+const ROTATE_MS = 5000;
 
 export const ALERT_SHOW_IDENTITY_KEY = 'alert_banner_show_identity';
 const DEFAULT_SHOW_IDENTITY = false;
-
-function getAlertScale(): number {
-  try {
-    const n = parseFloat(localStorage.getItem(ALERT_SCALE_KEY) ?? '');
-    if (!isNaN(n) && n >= ALERT_SCALE_MIN && n <= ALERT_SCALE_MAX) return n;
-  } catch {}
-  return DEFAULT_ALERT_SCALE;
-}
-
-function getAlertPosition(): AlertBannerPosition {
-  try {
-    const v = localStorage.getItem(ALERT_POSITION_KEY);
-    if (v === 'left' || v === 'center' || v === 'right') return v;
-  } catch {}
-  return DEFAULT_ALERT_POSITION;
-}
 
 export function getAlertShowIdentity(): boolean {
   try {
@@ -40,17 +16,6 @@ export function getAlertShowIdentity(): boolean {
     return DEFAULT_SHOW_IDENTITY;
   }
 }
-
-const POSITION_CONTAINER_CLASS: Record<AlertBannerPosition, string> = {
-  left: 'justify-start',
-  center: 'justify-center',
-  right: 'justify-end',
-};
-const POSITION_ORIGIN: Record<AlertBannerPosition, string> = {
-  left: 'top left',
-  center: 'top center',
-  right: 'top right',
-};
 
 /** A short, in-browser tone via Web Audio - no external audio file or third-party fetch involved. */
 function playChime(): void {
@@ -96,7 +61,7 @@ function groupAlerts(alerts: HumanTakeoverAlertDto[], showIdentity: boolean): Al
     else groups.set(key, { key, lineLabel: alert.lineLabel, urgency: alert.urgency, alerts: [alert] });
   }
   // HIGH-urgency groups always lead, regardless of arrival order - the most
-  // urgent handoff should never be scrolled past a pile of lower ones.
+  // urgent handoff should never be cycled past a pile of lower ones.
   return [...groups.values()].sort((a, b) => (a.urgency === b.urgency ? 0 : a.urgency === 'HIGH' ? -1 : 1));
 }
 
@@ -110,39 +75,42 @@ function groupLabel(group: AlertGroup, showIdentity: boolean): string {
 }
 
 /**
- * Polls the real HUMAN_TAKEOVER_REQUIRED alert feed and renders a single,
- * contained top panel for anything unresolved - never floating pills that
- * can overlap or bleed past other UI. Mounted only once the workspace is
- * genuinely ready (see App.tsx) - never during onboarding/QR pairing/sync,
- * so a screen left open mid-setup never surfaces live operational data.
+ * A compact, color-coded pill mounted in exactly two places: the
+ * workspace's own top header bar (WorkspaceShell.tsx) for the normal
+ * unlocked view, and again inside ScreenLock's lock overlay (off to the
+ * side of the PIN card) so a live handoff stays visible while locked - not
+ * a floating overlay that follows the viewport around on its own anymore.
+ * With more than one unresolved handoff, it automatically cycles through
+ * them one at a time every few seconds, so a busy line with several
+ * waiting customers is never represented by just the first (or loudest)
+ * one. Clicking the pill opens that chat WITHOUT dismissing it - only the
+ * X removes it (or the underlying handoff genuinely resolving
+ * server-side), so glancing at a chat to check on it never silently loses
+ * the alert. Each mount polls/dismisses independently (component-local
+ * state), so dismissing one on the lock screen and the other in the
+ * header is expected, not a bug.
  *
  * Zero-Leak Rule (default): the API response carries only the business's
  * own WhatsApp line label and an urgency tier - no customer name, phone
  * number, or message text. "Show customer name/number" (Settings -> Alerts,
  * off by default) opts into requesting real per-customer identity instead;
  * see securityAlertService.ts for why that's an explicit, request-scoped
- * opt-in rather than always-fetched-but-hidden. With identity off, several
- * unresolved handoffs on the same line are visually identical to each other
- * for that same reason, so they're grouped into one entry with a count
- * rather than repeated.
+ * opt-in rather than always-fetched-but-hidden.
  */
 export function AlertNotifier() {
   const navigate = useNavigate();
   const [alerts, setAlerts] = useState<HumanTakeoverAlertDto[]>([]);
   const [dismissed, setDismissed] = useState<Record<string, string>>({});
-  const [scale, setScale] = useState<number>(getAlertScale);
-  const [position, setPosition] = useState<AlertBannerPosition>(getAlertPosition);
   const [showIdentity, setShowIdentity] = useState<boolean>(getAlertShowIdentity);
+  const [rotationIndex, setRotationIndex] = useState(0);
   const seenChatIds = useRef<Set<string>>(new Set());
 
-  // Appearance -> Alerts writes these same keys and dispatches this same
+  // Appearance -> Alerts writes this same key and dispatches this same
   // event (see SettingsRoute.tsx's AlertBannerCard) - the exact pattern
   // ScreenLock.tsx already uses for LOCK_TIMEOUT_KEY, so a change applies
   // live without a reload.
   useEffect(() => {
     function onStorage(e: StorageEvent) {
-      if (e.key === ALERT_SCALE_KEY) setScale(getAlertScale());
-      if (e.key === ALERT_POSITION_KEY) setPosition(getAlertPosition());
       if (e.key === ALERT_SHOW_IDENTITY_KEY) setShowIdentity(getAlertShowIdentity());
     }
     window.addEventListener('storage', onStorage);
@@ -185,77 +153,57 @@ export function AlertNotifier() {
     });
   }
 
-  function clearAll() {
-    setDismissed((prev) => {
-      const next = { ...prev };
-      for (const alert of alerts) next[alert.chatId] = alert.triggeredAt;
-      return next;
-    });
-  }
-
   const visibleAlerts = alerts.filter((alert) => dismissed[alert.chatId] !== alert.triggeredAt);
   const groups = groupAlerts(visibleAlerts, showIdentity);
 
-  if (groups.length === 0) return null;
+  // Keeps the rotation index in range as groups resolve/get dismissed out
+  // from under it, rather than pointing past the end of a shrunk list.
+  useEffect(() => {
+    if (rotationIndex >= groups.length) setRotationIndex(0);
+  }, [groups.length, rotationIndex]);
 
-  // Newest-first within a group so clicking it opens the chat that most
-  // needs attention right now, not whichever happened to arrive first.
+  useEffect(() => {
+    if (groups.length <= 1) return;
+    const timer = setInterval(() => setRotationIndex((i) => (i + 1) % groups.length), ROTATE_MS);
+    return () => clearInterval(timer);
+  }, [groups.length]);
+
+  if (groups.length === 0) return null;
+  const current = groups[rotationIndex % groups.length]!;
+
   function mostRecent(group: AlertGroup): HumanTakeoverAlertDto {
     return [...group.alerts].sort((a, b) => b.triggeredAt.localeCompare(a.triggeredAt))[0]!;
   }
 
   return (
-    <div className={`pointer-events-none fixed inset-x-0 top-0 z-[60] flex p-3 ${POSITION_CONTAINER_CLASS[position]}`}>
-      <div
-        className="pointer-events-auto flex w-full max-w-xl flex-col gap-1.5 rounded-2xl border border-border-subtle bg-surface-1/95 p-2 shadow-2xl backdrop-blur"
-        style={{ transform: `scale(${scale})`, transformOrigin: POSITION_ORIGIN[position] }}
+    <button
+      type="button"
+      onClick={() => navigate(`/chats/${mostRecent(current).chatId}`)}
+      title="Open this chat"
+      className={`flex max-w-xs items-center gap-2 rounded-full border px-3 py-1 text-caption font-medium transition ${
+        current.urgency === 'HIGH' ? 'border-error/60 bg-error/15 text-error' : 'border-warning/60 bg-warning/15 text-warning'
+      }`}
+    >
+      <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-current" />
+      <span className="min-w-0 truncate">{groupLabel(current, showIdentity)}</span>
+      {groups.length > 1 && <span className="shrink-0 opacity-70">{rotationIndex + 1}/{groups.length}</span>}
+      <span
+        role="button"
+        tabIndex={0}
+        title="Dismiss"
+        onClick={(event) => {
+          event.stopPropagation();
+          dismissGroup(current);
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.stopPropagation();
+          dismissGroup(current);
+        }}
+        className="shrink-0 rounded-full p-0.5 opacity-70 transition hover:bg-black/10 hover:opacity-100 dark:hover:bg-white/10"
       >
-        <div className="flex max-h-80 flex-col gap-1.5 overflow-y-auto">
-          {groups.map((group) => (
-            <div
-              key={group.key}
-              role="button"
-              tabIndex={0}
-              onClick={() => {
-                dismissGroup(group);
-                navigate(`/chats/${mostRecent(group).chatId}`);
-              }}
-              onKeyDown={(event) => {
-                if (event.key !== 'Enter' && event.key !== ' ') return;
-                dismissGroup(group);
-                navigate(`/chats/${mostRecent(group).chatId}`);
-              }}
-              className={`flex animate-pulse cursor-pointer items-start gap-2 rounded-xl border px-3 py-2 text-body font-medium transition hover:animate-none ${
-                group.urgency === 'HIGH' ? 'border-error/60 bg-error/15 text-error' : 'border-warning/60 bg-warning/15 text-warning'
-              }`}
-            >
-              <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-current" />
-              <span className="min-w-0 flex-1 whitespace-normal break-words">{groupLabel(group, showIdentity)}</span>
-              <button
-                type="button"
-                title="Dismiss"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  dismissGroup(group);
-                }}
-                className="shrink-0 rounded-full p-0.5 opacity-70 transition hover:bg-black/10 hover:opacity-100 dark:hover:bg-white/10"
-              >
-                <X size={14} aria-hidden />
-              </button>
-            </div>
-          ))}
-        </div>
-
-        {visibleAlerts.length > 1 && (
-          <button
-            type="button"
-            onClick={clearAll}
-            className="self-center rounded-full px-3 py-1 text-caption font-medium text-fg-muted transition hover:bg-surface-2 hover:text-fg"
-          >
-            Clear all
-          </button>
-        )}
-      </div>
-    </div>
+        <X size={13} aria-hidden />
+      </span>
+    </button>
   );
 }

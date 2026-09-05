@@ -856,7 +856,11 @@ export class WorkspaceService {
           type: 'HUMAN_HANDOFF',
           severity: 'critical',
           title: 'A conversation needs a human',
-          body: chat.phoneNumber ? `WhatsApp conversation with +${chat.phoneNumber} needs your attention.` : 'A WhatsApp conversation needs your attention.',
+          // chat.phoneNumber's own stored format isn't guaranteed digits-only
+          // (a real reported bug: it can already carry a leading "+", which
+          // produced a literal "++" here) - stripping any existing one before
+          // adding it back guarantees exactly one, regardless of that format.
+          body: chat.phoneNumber ? `WhatsApp conversation with +${chat.phoneNumber.replace(/^\+/, '')} needs your attention.` : 'A WhatsApp conversation needs your attention.',
           targetType: 'chat',
           targetId: chatId,
         });
@@ -923,7 +927,7 @@ export class WorkspaceService {
           type: 'ASSIGNMENT',
           severity: 'info',
           title: 'A conversation was assigned to you',
-          body: chat.phoneNumber ? `WhatsApp conversation with +${chat.phoneNumber}.` : null,
+          body: chat.phoneNumber ? `WhatsApp conversation with +${chat.phoneNumber.replace(/^\+/, '')}.` : null,
           targetType: 'chat',
           targetId: chatId,
         });

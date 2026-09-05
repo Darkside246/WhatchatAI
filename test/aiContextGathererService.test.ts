@@ -11,6 +11,7 @@ import { uploadDocument } from '../src/services/documentService.js';
 import { processDocumentParseJob, documentParseWorker } from '../src/queue/workers/documentParseWorker.js';
 import { MAX_QUERY_LENGTH } from '../src/services/aiDocumentRetrievalService.js';
 import { createTestAccount, createTestBusiness, createTestSubscription, createTestUser, resetDatabase } from './helpers.js';
+import { WhatsAppOutboundMessageRepository } from '../src/repositories/whatsappOutboundMessageRepository.js';
 
 function toBase64(text: string): string {
   return Buffer.from(text, 'utf8').toString('base64');
@@ -89,6 +90,173 @@ describe('gatherAiHandoffContext (real Promise.all over Postgres, including real
     // result is expected: available, zero results, never fabricated matches.
     expect(context.knowledgeBase.available).toBe(true);
     expect(context.knowledgeBase.results).toEqual([]);
+  });
+
+  it('aiGeneratedMessageIds distinguishes a real AI-sent fromMe message from a real human-sent one - the fix for a reported bug where a team member\'s own personal remark got misattributed to the customer', async () => {
+    const chatRepo = new WhatsAppChatRepository(pool);
+    const messageRepo = new WhatsAppMessageRepository(pool);
+    const outboundRepo = new WhatsAppOutboundMessageRepository(pool);
+
+    const chat = await chatRepo.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550001234@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+
+    const aiMessage = await messageRepo.insert({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId: chat.id,
+      whatsappMessageId: 'CTX-AI-SENT-1',
+      remoteJid: '15550001234@s.whatsapp.net',
+      senderJid: accountId,
+      direction: 'outbound',
+      messageType: 'text',
+      textContent: 'a real AI-generated reply',
+      timestamp: new Date().toISOString(),
+      fromMe: true,
+      isHistorical: false,
+    });
+    const aiOutbound = await outboundRepo.createIdempotent({
+      businessId, whatsappAccountId: accountId, chatId: chat.id, toJid: '15550001234@s.whatsapp.net',
+      idempotencyKey: 'ctx-test-ai-1', messageType: 'text', textContent: 'a real AI-generated reply', requestedBy: 'ai',
+    });
+    await outboundRepo.markSent(aiOutbound.id, 'CTX-AI-SENT-1');
+    await outboundRepo.linkPersistedMessage(accountId, 'CTX-AI-SENT-1', aiMessage.id);
+
+    const humanMessage = await messageRepo.insert({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId: chat.id,
+      whatsappMessageId: 'CTX-HUMAN-SENT-1',
+      remoteJid: '15550001234@s.whatsapp.net',
+      senderJid: accountId,
+      direction: 'outbound',
+      messageType: 'text',
+      textContent: 'my father will give me a piece of his chicken',
+      timestamp: new Date().toISOString(),
+      fromMe: true,
+      isHistorical: false,
+    });
+    const humanOutbound = await outboundRepo.createIdempotent({
+      businessId, whatsappAccountId: accountId, chatId: chat.id, toJid: '15550001234@s.whatsapp.net',
+      idempotencyKey: 'ctx-test-human-1', messageType: 'text', textContent: 'my father will give me a piece of his chicken', requestedBy: 'human',
+    });
+    await outboundRepo.markSent(humanOutbound.id, 'CTX-HUMAN-SENT-1');
+    await outboundRepo.linkPersistedMessage(accountId, 'CTX-HUMAN-SENT-1', humanMessage.id);
+
+    const context = await gatherAiHandoffContext({ businessId, chatId: chat.id, contactId: null, queryText: 'anything' });
+
+    expect(context.aiGeneratedMessageIds.has(aiMessage.id)).toBe(true);
+    expect(context.aiGeneratedMessageIds.has(humanMessage.id)).toBe(false);
+  });
+
+  it('groupSenderNameByContactId resolves a real, verified name per group participant, never a guess from conversational context - and stays empty for a DM', async () => {
+    const chatRepo = new WhatsAppChatRepository(pool);
+    const contactRepo = new WhatsAppContactRepository(pool);
+    const messageRepo = new WhatsAppMessageRepository(pool);
+
+    const alice = await contactRepo.upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, whatsappJid: '15550001111@s.whatsapp.net',
+      jidKind: 'individual', phoneNumber: '+15550001111', pushName: 'Alice',
+    });
+    const bob = await contactRepo.upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, whatsappJid: '15550002222@s.whatsapp.net',
+      jidKind: 'individual', phoneNumber: '+15550002222', pushName: 'Bob',
+    });
+
+    const groupChat = await chatRepo.upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, chatJid: '120363000000001111@g.us',
+      jidKind: 'group', chatType: 'group',
+    });
+
+    await messageRepo.insert({
+      businessId, whatsappAccountId: accountId, chatId: groupChat.id, whatsappMessageId: 'CTX-GROUP-ALICE-1',
+      remoteJid: '120363000000001111@g.us', senderJid: '15550001111@s.whatsapp.net', senderContactId: alice.id,
+      direction: 'inbound', messageType: 'text', textContent: 'my father will give me a piece of his chicken',
+      timestamp: new Date().toISOString(), fromMe: false, isHistorical: false,
+    });
+    await messageRepo.insert({
+      businessId, whatsappAccountId: accountId, chatId: groupChat.id, whatsappMessageId: 'CTX-GROUP-BOB-1',
+      remoteJid: '120363000000001111@g.us', senderJid: '15550002222@s.whatsapp.net', senderContactId: bob.id,
+      direction: 'inbound', messageType: 'text', textContent: 'ok sounds good',
+      timestamp: new Date().toISOString(), fromMe: false, isHistorical: false,
+    });
+
+    const groupContext = await gatherAiHandoffContext({ businessId, chatId: groupChat.id, contactId: null, queryText: 'anything' });
+    expect(groupContext.groupSenderNameByContactId.get(alice.id)).toBe('Alice');
+    expect(groupContext.groupSenderNameByContactId.get(bob.id)).toBe('Bob');
+
+    // A DM never needs this - the chat itself already is the one contact,
+    // so resolving it would be pure wasted work, not just an empty map.
+    const dmChat = await chatRepo.upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, chatJid: '15550001111@s.whatsapp.net',
+      jidKind: 'individual', chatType: 'individual', contactId: alice.id,
+    });
+    await messageRepo.insert({
+      businessId, whatsappAccountId: accountId, chatId: dmChat.id, whatsappMessageId: 'CTX-DM-ALICE-1',
+      remoteJid: '15550001111@s.whatsapp.net', senderJid: '15550001111@s.whatsapp.net', senderContactId: alice.id,
+      direction: 'inbound', messageType: 'text', textContent: 'hello',
+      timestamp: new Date().toISOString(), fromMe: false, isHistorical: false,
+    });
+    const dmContext = await gatherAiHandoffContext({ businessId, chatId: dmChat.id, contactId: alice.id, queryText: 'anything' });
+    expect(dmContext.groupSenderNameByContactId.size).toBe(0);
+  });
+
+  it('a group participant with no real name on file gets a synthetic "Participant N" label - their real phone number never reaches the AI, not even as a fallback', async () => {
+    const chatRepo = new WhatsAppChatRepository(pool);
+    const contactRepo = new WhatsAppContactRepository(pool);
+    const messageRepo = new WhatsAppMessageRepository(pool);
+
+    // No pushName/displayName/username/verifiedName/businessName/shortName
+    // at all - only a phone number, exactly the real case that used to
+    // leak a raw phone number into the prompt as a fake "name".
+    const nameless = await contactRepo.upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, whatsappJid: '15559990000@s.whatsapp.net',
+      jidKind: 'individual', phoneNumber: '+15559990000',
+    });
+    const named = await contactRepo.upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, whatsappJid: '15550003333@s.whatsapp.net',
+      jidKind: 'individual', phoneNumber: '+15550003333', pushName: 'Carol',
+    });
+
+    const groupChat = await chatRepo.upsertFromWhatsApp({
+      businessId, whatsappAccountId: accountId, chatJid: '120363000000002222@g.us',
+      jidKind: 'group', chatType: 'group',
+    });
+
+    await messageRepo.insert({
+      businessId, whatsappAccountId: accountId, chatId: groupChat.id, whatsappMessageId: 'CTX-ANON-1',
+      remoteJid: '120363000000002222@g.us', senderJid: '15559990000@s.whatsapp.net', senderContactId: nameless.id,
+      direction: 'inbound', messageType: 'text', textContent: 'first message from the nameless one',
+      timestamp: new Date().toISOString(), fromMe: false, isHistorical: false,
+    });
+    await messageRepo.insert({
+      businessId, whatsappAccountId: accountId, chatId: groupChat.id, whatsappMessageId: 'CTX-NAMED-1',
+      remoteJid: '120363000000002222@g.us', senderJid: '15550003333@s.whatsapp.net', senderContactId: named.id,
+      direction: 'inbound', messageType: 'text', textContent: 'a real named participant',
+      timestamp: new Date().toISOString(), fromMe: false, isHistorical: false,
+    });
+    await messageRepo.insert({
+      businessId, whatsappAccountId: accountId, chatId: groupChat.id, whatsappMessageId: 'CTX-ANON-2',
+      remoteJid: '120363000000002222@g.us', senderJid: '15559990000@s.whatsapp.net', senderContactId: nameless.id,
+      direction: 'inbound', messageType: 'text', textContent: 'second message from the same nameless one',
+      timestamp: new Date().toISOString(), fromMe: false, isHistorical: false,
+    });
+
+    const context = await gatherAiHandoffContext({ businessId, chatId: groupChat.id, contactId: null, queryText: 'anything' });
+
+    const namelessLabel = context.groupSenderNameByContactId.get(nameless.id);
+    expect(namelessLabel).toBe('Participant 1');
+    expect(namelessLabel).not.toContain('9990000');
+    expect(namelessLabel).not.toContain('+1');
+    expect(context.groupSenderNameByContactId.get(named.id)).toBe('Carol');
+
+    // The same real person keeps the identical label across both of their
+    // own turns - never two different pseudonyms for the same contact.
+    expect(context.groupSenderNameByContactId.size).toBe(2);
   });
 
   it('returns a null CRM contact for a group chat with no contactId, without failing the other lookups', async () => {
