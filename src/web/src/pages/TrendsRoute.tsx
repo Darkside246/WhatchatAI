@@ -35,6 +35,18 @@ const CONFIDENCE_LABEL: Record<BiInsight['confidence'], string> = {
   high: 'High confidence',
 };
 
+const RISK_BADGE: Record<NonNullable<BiInsight['riskLevel']>, string> = {
+  low: 'bg-fg-muted/15 text-fg-muted',
+  medium: 'bg-warning/15 text-warning',
+  high: 'bg-error/15 text-error',
+};
+
+const RISK_LABEL: Record<NonNullable<BiInsight['riskLevel']>, string> = {
+  low: 'Risk: Low',
+  medium: 'Risk: Medium',
+  high: 'Risk: High',
+};
+
 function DirectionIcon({ direction }: { direction: BiInsight['direction'] }) {
   if (direction === 'increasing' || direction === 'emerging') return <TrendingUp size={14} className="text-success" aria-hidden />;
   if (direction === 'decreasing' || direction === 'declining') return <TrendingDown size={14} className="text-error" aria-hidden />;
@@ -49,11 +61,19 @@ function InsightCard({ insight }: { insight: BiInsight }) {
   return (
     <div className="space-y-2 rounded-xl border border-border-subtle bg-surface-1 p-4">
       <div className="flex items-start justify-between gap-3">
-        <h3 className="text-body font-semibold text-fg">{insight.title}</h3>
-        <span className={`shrink-0 rounded-full px-2 py-0.5 text-meta font-medium ${CONFIDENCE_BADGE[insight.confidence]}`}>
-          {CONFIDENCE_LABEL[insight.confidence]}
-        </span>
+        <h3 className="text-body font-semibold text-fg">{insight.product ?? insight.title}</h3>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {insight.riskLevel && (
+            <span className={`rounded-full px-2 py-0.5 text-meta font-medium ${RISK_BADGE[insight.riskLevel]}`}>
+              {RISK_LABEL[insight.riskLevel]}
+            </span>
+          )}
+          <span className={`rounded-full px-2 py-0.5 text-meta font-medium ${CONFIDENCE_BADGE[insight.confidence]}`}>
+            {CONFIDENCE_LABEL[insight.confidence]}
+          </span>
+        </div>
       </div>
+      {insight.product && <h4 className="text-caption font-medium text-fg-secondary">{insight.title}</h4>}
       <p className="text-caption text-fg-secondary">{insight.body}</p>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-fg-muted">
         {insight.direction && (
@@ -68,6 +88,11 @@ function InsightCard({ insight }: { insight: BiInsight }) {
           {insight.evidenceConversationCount.toLocaleString()} conversation{insight.evidenceConversationCount === 1 ? '' : 's'}
         </span>
         <span>{fmtDate(insight.periodStart)} – {fmtDate(insight.periodEnd)}</span>
+        {insight.consecutivePeriods > 1 && (
+          <span>
+            {insight.consecutivePeriods === 2 ? '2nd' : insight.consecutivePeriods === 3 ? '3rd' : `${insight.consecutivePeriods}th`} consecutive period
+          </span>
+        )}
       </div>
     </div>
   );

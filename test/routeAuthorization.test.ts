@@ -7,6 +7,10 @@ const serverSource = readFileSync(
   path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/server/index.ts'),
   'utf8',
 );
+const productAccountRoutesSource = readFileSync(
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/server/productAccountRoutes.ts'),
+  'utf8',
+);
 
 /**
  * Routes that intentionally carry no requirePermission guard because they
@@ -142,5 +146,36 @@ describe('server route authorization (every mutating workspace route is really g
 
     expect(statusRoute).toBeDefined();
     expect(statusRoute?.middleware).toContain("requirePermission('ai.activate')");
+  });
+});
+
+/**
+ * Migration 1002: a real, explicit allowlist (same shape as
+ * SELF_SCOPED_ROUTES above) for the developer-plane's own mutating
+ * routes in productAccountRoutes.ts, which parseWorkspaceMutatingRoutes
+ * above can't see (different file, different path prefix, requireDeveloperAdmin
+ * instead of requirePermission). Defense-in-depth: a future developer-admin
+ * route added without this guard should fail this test loudly, matching
+ * this whole file's own stated purpose for the /api/workspace routes.
+ */
+describe('developer-plane route authorization (productAccountRoutes.ts)', () => {
+  const ADMIN_ONLY_ROUTES: { method: string; routePath: string }[] = [
+    { method: 'post', routePath: "'/developer/developers'" },
+    { method: 'patch', routePath: "'/developer/developers/:userId/tier'" },
+    { method: 'delete', routePath: "'/developer/developers/:userId'" },
+    { method: 'patch', routePath: "'/developer/businesses/:businessId/tier-unrestricted'" },
+  ];
+
+  it('every developer-admin-only route is really guarded by requireDeveloperAdmin, not just requireDeveloper', () => {
+    for (const { method, routePath } of ADMIN_ONLY_ROUTES) {
+      const declarationPattern = new RegExp(`router\\.${method}\\(\\s*${routePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^)]*?\\basync`, 's');
+      const match = declarationPattern.exec(productAccountRoutesSource);
+      expect(match, `${method.toUpperCase()} ${routePath} declaration not found`).not.toBeNull();
+      expect(match?.[0], `${method.toUpperCase()} ${routePath} is missing requireDeveloperAdmin`).toContain('requireDeveloperAdmin');
+    }
+  });
+
+  it('found a meaningful number of admin-only routes to check - guards the test itself against a silently-empty list', () => {
+    expect(ADMIN_ONLY_ROUTES.length).toBeGreaterThan(0);
   });
 });

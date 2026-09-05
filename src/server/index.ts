@@ -1786,17 +1786,6 @@ app.get('/api/workspace/email', requirePermission('email.view'), async (req, res
   return res.status(200).json({ emails: await listEmails(businessId, status) });
 });
 
-app.get('/api/workspace/email/:id', requirePermission('email.view'), async (req, res) => {
-  const { businessId } = res.locals.auth as AuthContext;
-  try {
-    return res.status(200).json({ email: await getEmail(businessId, String(req.params.id ?? '')) });
-  } catch (error) {
-    const handled = emailErrorResponse(error, res);
-    if (handled) return handled;
-    throw error;
-  }
-});
-
 const createEmailSchema = z.object({
   kind: z.enum(EMAIL_KINDS),
   toEmail: z.string().trim().min(3).max(320),
@@ -2689,6 +2678,24 @@ app.post('/api/workspace/email/suggestions/regenerate', requireWorkspaceContext,
   }
   const result = await regenerateEmailDigest(businessId);
   return res.status(200).json(result);
+});
+
+// Registered AFTER the literal /email/notes, /email/contacts, /email/reminders,
+// /email/suggestions routes above - Express matches routes in registration
+// order, and this wildcard :id route was previously registered BEFORE them,
+// so a request to e.g. /api/workspace/email/suggestions matched here first
+// with id="suggestions", which then failed at the DB layer as an invalid
+// UUID. Real bug, found via the server's own error logs - fixed by ordering,
+// not by excluding these path segments from the param.
+app.get('/api/workspace/email/:id', requirePermission('email.view'), async (req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  try {
+    return res.status(200).json({ email: await getEmail(businessId, String(req.params.id ?? '')) });
+  } catch (error) {
+    const handled = emailErrorResponse(error, res);
+    if (handled) return handled;
+    throw error;
+  }
 });
 
 const updateBusinessBrandingSchema = z.object({

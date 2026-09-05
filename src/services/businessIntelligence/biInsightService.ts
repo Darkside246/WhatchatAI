@@ -10,7 +10,7 @@
  */
 
 import { queryAsTenant } from '../../db/pool.js';
-import { computeProductTopicTrends, type ProductTopicTrend } from './biTrendService.js';
+import { computeProductTopicTrends, classifyRisk, type ProductTopicTrend } from './biTrendService.js';
 import { validateInsight } from './biQualityGateService.js';
 import { BiInsightRepository, type BiInsightCategory, type BiInsightDirection } from '../../repositories/biInsightRepository.js';
 import { SecurityAuditLogRepository } from '../../repositories/securityAuditLogRepository.js';
@@ -123,6 +123,10 @@ export async function generateInsightsForBusiness(businessId: string, periodStar
       confidence: gateResult.confidence,
       status: gateResult.status,
       qualityFlags: gateResult.qualityFlags,
+      product: trend.product,
+      topic: trend.topic,
+      riskLevel: classifyRisk(trend),
+      consecutivePeriods: trend.consecutivePeriods,
     });
 
     if (gateResult.status === 'approved') {

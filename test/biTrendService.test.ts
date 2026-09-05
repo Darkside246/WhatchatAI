@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { queryAsTenant } from '../src/db/pool.js';
 import { BiObservationRepository } from '../src/repositories/biObservationRepository.js';
-import { computeProductTopicTrends, MIN_SAMPLE_SIZE, EARLY_SIGNAL_THRESHOLD } from '../src/services/businessIntelligence/biTrendService.js';
+import { computeProductTopicTrends, classifyRisk, MIN_SAMPLE_SIZE, EARLY_SIGNAL_THRESHOLD, MAX_CONSECUTIVE_PERIOD_LOOKBACK } from '../src/services/businessIntelligence/biTrendService.js';
 import { createTestBusiness, resetDatabase } from './helpers.js';
 
 const CURRENT_START = '2024-01-02T00:00:00.000Z';
@@ -132,5 +132,78 @@ describe('biTrendService (real Postgres) - deterministic period-over-period tren
     const first = await computeProductTopicTrends(businessId, CURRENT_START, CURRENT_END);
     const second = await computeProductTopicTrends(businessId, CURRENT_START, CURRENT_END);
     expect(second).toEqual(first);
+  });
+});
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+/** i=0 is CURRENT_MID, i=1 is PREVIOUS_MID, i=2+ walks further back one equal-length period at a time. */
+function midForPeriodsBack(i: number): string {
+  return new Date(new Date(CURRENT_MID).getTime() - i * ONE_DAY_MS).toISOString();
+}
+
+describe('biTrendService - consecutivePeriods (real Postgres, multi-period streak)', () => {
+  it('counts a real, unbroken streak across consecutive periods', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    const repo = new BiObservationRepository(queryAsTenant(businessId));
+    await seedObservations(repo, businessId, midForPeriodsBack(0), 12);
+    await seedObservations(repo, businessId, midForPeriodsBack(1), 12);
+    await seedObservations(repo, businessId, midForPeriodsBack(2), 12);
+
+    const trends = await computeProductTopicTrends(businessId, CURRENT_START, CURRENT_END);
+    expect(trends.find((t) => t.product === 'Widget X')?.consecutivePeriods).toBe(3);
+  });
+
+  it('a genuine gap stops the count immediately - never overcounts past it', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    const repo = new BiObservationRepository(queryAsTenant(businessId));
+    await seedObservations(repo, businessId, midForPeriodsBack(0), 12);
+    // Period 1 (immediately preceding) deliberately skipped.
+    await seedObservations(repo, businessId, midForPeriodsBack(2), 12);
+
+    const trends = await computeProductTopicTrends(businessId, CURRENT_START, CURRENT_END);
+    expect(trends.find((t) => t.product === 'Widget X')?.consecutivePeriods).toBe(1);
+  });
+
+  it('never counts past the documented MAX_CONSECUTIVE_PERIOD_LOOKBACK cap', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    const repo = new BiObservationRepository(queryAsTenant(businessId));
+    for (let i = 0; i <= MAX_CONSECUTIVE_PERIOD_LOOKBACK; i++) {
+      await seedObservations(repo, businessId, midForPeriodsBack(i), 12);
+    }
+
+    const trends = await computeProductTopicTrends(businessId, CURRENT_START, CURRENT_END);
+    expect(trends.find((t) => t.product === 'Widget X')?.consecutivePeriods).toBe(1 + MAX_CONSECUTIVE_PERIOD_LOOKBACK);
+  });
+});
+
+describe('classifyRisk - real risk-tier boundaries (pure, deterministic, no LLM)', () => {
+  it('is always null when sentiment is not negative, regardless of direction/confidence', () => {
+    for (const sentiment of ['positive', 'neutral', 'mixed', 'unclear', null]) {
+      expect(classifyRisk({ sentiment, direction: 'increasing', confidence: 'high' })).toBeNull();
+    }
+  });
+
+  it('is high: negative + worsening (increasing/emerging) + strong confidence (moderate/high)', () => {
+    expect(classifyRisk({ sentiment: 'negative', direction: 'increasing', confidence: 'moderate' })).toBe('high');
+    expect(classifyRisk({ sentiment: 'negative', direction: 'increasing', confidence: 'high' })).toBe('high');
+    expect(classifyRisk({ sentiment: 'negative', direction: 'emerging', confidence: 'moderate' })).toBe('high');
+    expect(classifyRisk({ sentiment: 'negative', direction: 'emerging', confidence: 'high' })).toBe('high');
+  });
+
+  it('is medium: negative + worsening + early_signal, OR negative + stable/anomalous + strong confidence', () => {
+    expect(classifyRisk({ sentiment: 'negative', direction: 'increasing', confidence: 'early_signal' })).toBe('medium');
+    expect(classifyRisk({ sentiment: 'negative', direction: 'emerging', confidence: 'early_signal' })).toBe('medium');
+    expect(classifyRisk({ sentiment: 'negative', direction: 'stable', confidence: 'moderate' })).toBe('medium');
+    expect(classifyRisk({ sentiment: 'negative', direction: 'anomalous', confidence: 'high' })).toBe('medium');
+  });
+
+  it('is low: every other negative combination', () => {
+    expect(classifyRisk({ sentiment: 'negative', direction: 'decreasing', confidence: 'high' })).toBe('low');
+    expect(classifyRisk({ sentiment: 'negative', direction: 'declining', confidence: 'moderate' })).toBe('low');
+    expect(classifyRisk({ sentiment: 'negative', direction: 'stable', confidence: 'early_signal' })).toBe('low');
+    expect(classifyRisk({ sentiment: 'negative', direction: 'anomalous', confidence: 'early_signal' })).toBe('low');
   });
 });

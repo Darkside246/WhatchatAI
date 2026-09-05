@@ -425,6 +425,10 @@ export interface BiInsight {
   evidenceObservationCount: number;
   evidenceConversationCount: number;
   confidence: 'insufficient_data' | 'early_signal' | 'moderate' | 'high';
+  product: string | null;
+  topic: string | null;
+  riskLevel: 'low' | 'medium' | 'high' | null;
+  consecutivePeriods: number;
 }
 
 export interface ListDto {

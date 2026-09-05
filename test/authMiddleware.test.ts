@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { requireActiveSubscription, requireDeveloper, requirePermission, type AuthContext } from '../src/server/authMiddleware.js';
+import { requireActiveSubscription, requireDeveloper, requireDeveloperAdmin, requirePermission, type AuthContext } from '../src/server/authMiddleware.js';
 import { createTestBusiness, createTestSubscription, resetDatabase } from './helpers.js';
 
 // Real gap this closes: invoicing, meeting-provider connections, and email-
@@ -165,6 +165,73 @@ describe('requireDeveloper', () => {
     const next = vi.fn();
 
     requireDeveloper({} as never, res as never, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+  });
+});
+
+/**
+ * Migration 1002: the one real gate exclusive to the Admin developer
+ * tier - managing other developer accounts and granting/revoking a
+ * business's tier_unrestricted flag. Every other requireDeveloper route
+ * stays open to a Standard developer unchanged (per the user's own
+ * confirmed scope) - this middleware is the only new thing that narrows
+ * access further, so it's the one piece that needs its own direct test.
+ */
+describe('requireDeveloperAdmin', () => {
+  it('blocks a real business OWNER whose platformRole is the ordinary CLIENT default', () => {
+    const res = fakeRes();
+    res.locals.auth = fakeAuth({ role: 'OWNER', platformRole: 'CLIENT' });
+    const next = vi.fn();
+
+    requireDeveloperAdmin({} as never, res as never, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toEqual({ error: 'DEVELOPER_ACCESS_REQUIRED' });
+  });
+
+  it('blocks a real Standard-tier developer - only Admin passes this gate', () => {
+    const res = fakeRes();
+    res.locals.auth = fakeAuth({ platformRole: 'DEVELOPER', user: { developerTier: 'STANDARD' } as AuthContext['user'] });
+    const next = vi.fn();
+
+    requireDeveloperAdmin({} as never, res as never, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toEqual({ error: 'DEVELOPER_ADMIN_ACCESS_REQUIRED' });
+  });
+
+  it('blocks a developer whose tier is null (a pre-migration or malformed row) the same way as Standard - never fails open', () => {
+    const res = fakeRes();
+    res.locals.auth = fakeAuth({ platformRole: 'DEVELOPER', user: { developerTier: null } as AuthContext['user'] });
+    const next = vi.fn();
+
+    requireDeveloperAdmin({} as never, res as never, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toEqual({ error: 'DEVELOPER_ADMIN_ACCESS_REQUIRED' });
+  });
+
+  it('allows a real Admin-tier developer through', () => {
+    const res = fakeRes();
+    res.locals.auth = fakeAuth({ platformRole: 'DEVELOPER', user: { developerTier: 'ADMIN' } as AuthContext['user'] });
+    const next = vi.fn();
+
+    requireDeveloperAdmin({} as never, res as never, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.statusCode).toBeUndefined();
+  });
+
+  it('rejects an unauthenticated request', () => {
+    const res = fakeRes();
+    const next = vi.fn();
+
+    requireDeveloperAdmin({} as never, res as never, next);
 
     expect(next).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(401);

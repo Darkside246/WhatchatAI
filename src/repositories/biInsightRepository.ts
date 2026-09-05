@@ -5,6 +5,8 @@ export type BiInsightDirection = 'increasing' | 'decreasing' | 'stable' | 'emerg
 export type BiInsightConfidence = 'insufficient_data' | 'early_signal' | 'moderate' | 'high';
 export type BiInsightStatus = 'processing' | 'approved' | 'rejected' | 'held';
 
+export type BiInsightRiskLevel = 'low' | 'medium' | 'high';
+
 export interface BiInsightRecord {
   id: string;
   businessId: string;
@@ -22,6 +24,13 @@ export interface BiInsightRecord {
   qualityFlags: string[];
   createdAt: string;
   approvedAt: string | null;
+  /** Denormalized from the trend that generated this insight - the real product/topic headline for the UI. */
+  product: string | null;
+  topic: string | null;
+  /** Informational only - null whenever the underlying trend's sentiment wasn't negative. Never cross-checked by the quality gate. */
+  riskLevel: BiInsightRiskLevel | null;
+  /** How many consecutive periods (including this one) this same product+topic+sentiment has shown up as a real trend. */
+  consecutivePeriods: number;
 }
 
 interface BiInsightRow {
@@ -41,6 +50,10 @@ interface BiInsightRow {
   quality_flags: string[];
   created_at: string;
   approved_at: string | null;
+  product: string | null;
+  topic: string | null;
+  risk_level: BiInsightRiskLevel | null;
+  consecutive_periods: number;
 }
 
 function toRecord(row: BiInsightRow): BiInsightRecord {
@@ -61,6 +74,10 @@ function toRecord(row: BiInsightRow): BiInsightRecord {
     qualityFlags: row.quality_flags ?? [],
     createdAt: row.created_at,
     approvedAt: row.approved_at,
+    product: row.product,
+    topic: row.topic,
+    riskLevel: row.risk_level,
+    consecutivePeriods: row.consecutive_periods,
   };
 }
 
@@ -78,6 +95,10 @@ export interface CreateBiInsightInput {
   confidence: BiInsightConfidence;
   status: BiInsightStatus;
   qualityFlags: string[];
+  product?: string | null;
+  topic?: string | null;
+  riskLevel?: BiInsightRiskLevel | null;
+  consecutivePeriods?: number;
 }
 
 /**
@@ -94,13 +115,14 @@ export class BiInsightRepository {
       `INSERT INTO bi_insights
          (business_id, category, title, body, direction, metric_change_pct, period_start, period_end,
           evidence_observation_count, evidence_conversation_count, confidence, status, quality_flags,
-          approved_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, CASE WHEN $12 = 'approved' THEN now() ELSE NULL END)
+          approved_at, product, topic, risk_level, consecutive_periods)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, CASE WHEN $12 = 'approved' THEN now() ELSE NULL END, $14,$15,$16,$17)
        RETURNING *`,
       [
         input.businessId, input.category, input.title, input.body, input.direction ?? null, input.metricChangePct ?? null,
         input.periodStart, input.periodEnd, input.evidenceObservationCount, input.evidenceConversationCount,
         input.confidence, input.status, JSON.stringify(input.qualityFlags),
+        input.product ?? null, input.topic ?? null, input.riskLevel ?? null, input.consecutivePeriods ?? 1,
       ],
     );
     const row = rows[0];
