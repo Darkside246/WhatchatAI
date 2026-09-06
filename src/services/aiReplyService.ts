@@ -1256,7 +1256,7 @@ async function resolveToolCalls(
   const followUpResponse = await genAi.models.generateContent({
     model,
     contents: followUpContents,
-    config: { systemInstruction, temperature: 0.6, thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 1024 },
+    config: { systemInstruction, temperature: 0.6, maxOutputTokens: 1024 },
   });
   await recordAiUsage(model, 'tool_follow_up', followUpResponse, agent, context);
   return followUpResponse;
@@ -1307,14 +1307,14 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
         config: {
           systemInstruction,
           temperature: 0.6,
-          // A short WhatsApp reply doesn't need the model to reason before
-          // answering, and those internal "thinking" tokens draw from the
-          // same budget as the visible reply - left enabled, a real reply
-          // could still be cut off mid-word even with a generous
-          // maxOutputTokens. thinkingBudget: 0 is the SDK's own documented
-          // way to disable it outright, removing the failure mode entirely
-          // rather than just making it less likely.
-          thinkingConfig: { thinkingBudget: 0 },
+          // thinkingConfig: { thinkingBudget: 0 } used to be here, meant to
+          // stop internal "thinking" tokens from eating into the visible
+          // reply's budget - removed after confirming live in production
+          // that it made this exact request (with tools + temperature
+          // together) fail outright with a 400 INVALID_ARGUMENT for the
+          // currently deployed model, silently falling back to the
+          // no-tools bare retry below on every single reply. maxOutputTokens
+          // alone is the safety net for response length now.
           maxOutputTokens: 1024,
           tools: buildReplyTools(context.connectedMeetingProviders ?? [], agent, context.aiActionsPaused ?? false, context.hasPropertyData ?? false, context.hasRetailData ?? false),
         },
