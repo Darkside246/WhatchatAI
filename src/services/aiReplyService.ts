@@ -1241,9 +1241,19 @@ async function resolveToolCalls(
   console.log(`[aiReplyService] chat ${context.chatId}: Gemini returned tool calls: ${calls.length === 0 ? '(none)' : calls.map((c) => c.name).join(', ')}`);
   if (calls.length === 0) return response;
 
+  // Real, confirmed production failure: reconstructing bare {functionCall}
+  // parts here (discarding everything else on the original part) drops
+  // thoughtSignature - an opaque per-part field Gemini's newer models
+  // attach to a function-call part and require echoed back verbatim on
+  // the very next turn ("Function call is missing a thought_signature...").
+  // response.functionCalls itself already strips this (it maps down to
+  // just the FunctionCall objects), so the original parts array - the one
+  // place thoughtSignature actually lives - has to be read directly.
+  const modelParts = response.candidates?.[0]?.content?.parts?.filter((part) => part.functionCall) ?? calls.map((call) => ({ functionCall: call }));
+
   const followUpContents: Content[] = [
     ...contents,
-    { role: 'model', parts: calls.map((call) => ({ functionCall: call })) },
+    { role: 'model', parts: modelParts },
   ];
 
   const responseParts = await Promise.all(
