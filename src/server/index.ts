@@ -2981,7 +2981,10 @@ app.post('/api/workspace/agents/from-template', requireWorkspaceContext, require
   }
 });
 
-const parseAgentDescriptionSchema = z.object({ description: z.string().trim().min(1).max(2000) });
+const parseAgentDescriptionSchema = z.object({ description: z.string().trim().min(1).max(6000) });
+/** The real, business-facing limit for everyone except a platform DEVELOPER - kept separate from the schema's own max so the schema itself can accept the higher developer-only ceiling below without a second route/duplicate validation path. */
+const AGENT_DESCRIPTION_MAX_CHARS_DEFAULT = 2000;
+const AGENT_DESCRIPTION_MAX_CHARS_DEVELOPER = 6000;
 
 /**
  * "Build Custom Agent" - converts a free-text description into the exact
@@ -2998,6 +3001,7 @@ const parseAgentDescriptionSchema = z.object({ description: z.string().trim().mi
 // expensiveActionLimiter, but this one had no rate limit at all.
 app.post('/api/workspace/agents/parse-description', expensiveActionLimiter, requireWorkspaceContext, requirePermission('ai.create'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const auth = res.locals.auth as AuthContext;
   const parsed = parseAgentDescriptionSchema.safeParse(req.body);
   if (!parsed.success) {
     // A real gap this masked while debugging a "bad request" report:
@@ -3007,7 +3011,17 @@ app.post('/api/workspace/agents/parse-description', expensiveActionLimiter, requ
     // why. The real cause turned out to be elsewhere (a Gemini quirk, see
     // aiGateway.ts's stripJsonMarkdownFence), but this response would have
     // hidden a genuine future validation failure the same way.
-    return res.status(400).json({ error: 'INVALID_DESCRIPTION', message: 'A description between 1 and 2000 characters is required.', details: parsed.error.flatten() });
+    return res.status(400).json({ error: 'INVALID_DESCRIPTION', message: `A description between 1 and ${AGENT_DESCRIPTION_MAX_CHARS_DEVELOPER} characters is required.`, details: parsed.error.flatten() });
+  }
+  // The schema above accepts up to the developer ceiling so a DEVELOPER's
+  // own longer description never gets rejected before this check runs;
+  // every non-developer account is still held to the real, original
+  // business-facing limit here.
+  if (auth.platformRole !== 'DEVELOPER' && parsed.data.description.length > AGENT_DESCRIPTION_MAX_CHARS_DEFAULT) {
+    return res.status(400).json({
+      error: 'INVALID_DESCRIPTION',
+      message: `A description between 1 and ${AGENT_DESCRIPTION_MAX_CHARS_DEFAULT} characters is required.`,
+    });
   }
   try {
     const config = await parseAgentDescription(businessId, parsed.data.description);

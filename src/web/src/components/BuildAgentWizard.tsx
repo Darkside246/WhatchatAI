@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Bot, Check, X, Loader2, ArrowLeft, Clock, Brain, Video, Building2, Sparkles } from 'lucide-react';
 import { api, ApiError, type AgentTemplate, type AiAgentSummary, type ParsedAgentConfig } from '../lib/api.js';
+import { useAuth } from '../hooks/useAuth.js';
+
+/** Matches the server's own AGENT_DESCRIPTION_MAX_CHARS_DEFAULT/_DEVELOPER (server/index.ts) - kept as two named constants here too, not one shared import, since the frontend and backend build separately and this value rarely changes. */
+const AGENT_DESCRIPTION_MAX_CHARS_DEFAULT = 2000;
+const AGENT_DESCRIPTION_MAX_CHARS_DEVELOPER = 6000;
 
 /**
  * Real capability descriptions for the tool names a template can recommend
@@ -31,6 +36,8 @@ interface PreviewSource {
 }
 
 export function BuildAgentWizard({ onCreated, onCancel }: { onCreated: (agent: AiAgentSummary) => void; onCancel: () => void }) {
+  const { business } = useAuth();
+  const descriptionMaxChars = business?.isDeveloper ? AGENT_DESCRIPTION_MAX_CHARS_DEVELOPER : AGENT_DESCRIPTION_MAX_CHARS_DEFAULT;
   const [templates, setTemplates] = useState<AgentTemplate[] | null>(null);
   const [connected, setConnected] = useState<{ google_meet: boolean; zoom: boolean } | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<AgentTemplate | null>(null);
@@ -175,9 +182,11 @@ export function BuildAgentWizard({ onCreated, onCancel }: { onCreated: (agent: A
             rows={4}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+            maxLength={descriptionMaxChars}
             placeholder='e.g. "I want an agent that handles rental maintenance requests and can book a video walkthrough with the vendor."'
             className="mt-4 w-full resize-none rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-body text-fg placeholder:text-fg-muted focus:border-accent focus:outline-none"
           />
+          <p className="mt-1 text-meta text-fg-muted">{description.length} / {descriptionMaxChars} characters</p>
           {error && <p className="mt-3 text-caption text-error">{error}</p>}
           <button
             type="button"
