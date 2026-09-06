@@ -420,6 +420,19 @@ export function DashboardRoute() {
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load dashboard.'));
   }, []);
 
+  // The bell's own dropdown (NotificationCenter) has its own separate copy
+  // of the notification list - reading/dismissing there does nothing to
+  // this page's own copy, which would otherwise leave the "N unread
+  // important alerts" banner and System Pulse's counts stuck showing a
+  // stale number until a full reload.
+  useEffect(() => {
+    function onNotificationsChanged() {
+      api.listNotifications().then((n) => setNotifications(n.notifications)).catch(() => {});
+    }
+    window.addEventListener('aura:notifications-changed', onNotificationsChanged);
+    return () => window.removeEventListener('aura:notifications-changed', onNotificationsChanged);
+  }, []);
+
   if (error) return <div className="flex-1 p-6"><p className="text-caption text-error">{error}</p></div>;
   if (!overview || !chats || !notifications) return null;
 
@@ -727,7 +740,7 @@ export function DashboardRoute() {
             </div>
             {unreadImportant.length > 0 && (
               <div className="mt-3 rounded-lg border border-warning/30 bg-warning/8 px-3 py-2">
-                <button type="button" onClick={() => navigate('/settings')} className="w-full text-left">
+                <button type="button" onClick={() => window.dispatchEvent(new CustomEvent('aura:open-notifications'))} className="w-full text-left">
                   <p className="text-caption font-medium text-warning">
                     {unreadImportant.length} unread important alert{unreadImportant.length !== 1 ? 's' : ''} — tap to view notifications.
                   </p>

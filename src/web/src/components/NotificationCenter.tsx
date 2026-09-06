@@ -67,8 +67,24 @@ export function NotificationCenter() {
     return () => document.removeEventListener('mousedown', onClickOutside);
   }, []);
 
+  // Lets a link elsewhere on the page (e.g. the Dashboard's "N unread
+  // important alerts" banner) open this same dropdown, rather than each
+  // caller needing its own duplicate notification list/state.
+  useEffect(() => {
+    function onOpenRequest() {
+      setOpen(true);
+    }
+    window.addEventListener('aura:open-notifications', onOpenRequest);
+    return () => window.removeEventListener('aura:open-notifications', onOpenRequest);
+  }, []);
+
   async function handleOpen() {
     setOpen((value) => !value);
+  }
+
+  /** Other pages (the Dashboard's own "N unread important alerts" banner) fetch their own copy of the notification list on mount and have no way to know it just changed here - this tells them to refetch rather than showing a stale count/banner forever. */
+  function notifyChanged() {
+    window.dispatchEvent(new CustomEvent('aura:notifications-changed'));
   }
 
   async function handleMarkRead(notification: NotificationDto) {
@@ -77,6 +93,7 @@ export function NotificationCenter() {
     setUnreadCount((count) => Math.max(0, count - 1));
     try {
       await api.markNotificationRead(notification.id);
+      notifyChanged();
     } catch {
       await load();
     }
@@ -88,6 +105,7 @@ export function NotificationCenter() {
     setUnreadCount(0);
     try {
       await api.markAllNotificationsRead();
+      notifyChanged();
     } catch {
       await load();
     }
@@ -99,6 +117,7 @@ export function NotificationCenter() {
     if (!notification.readAt) setUnreadCount((count) => Math.max(0, count - 1));
     try {
       await api.dismissNotification(notification.id);
+      notifyChanged();
     } catch {
       await load();
     }
