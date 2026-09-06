@@ -609,6 +609,25 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
   );
 
   /**
+   * Real, confirmed production failure: the model told a customer "I've
+   * noted that down and left a message for [the owner]" - confident,
+   * specific, plausible-sounding - without ever actually calling
+   * take_a_message that turn. Nothing was saved; the customer was told a
+   * clean lie. The same shape of failure applies to any tool with a real
+   * side effect (scheduling a meeting, saving to memory) - a fluent
+   * confirmation costs the model nothing to generate, so without an
+   * explicit rule against it, claiming success is always the easier output
+   * than actually invoking the tool first.
+   */
+  lines.push(
+    'Never tell the customer you have saved, noted, recorded, relayed, scheduled, or booked something unless you ' +
+      'actually called the corresponding tool in this exact turn and it reported success. If you intend to say ' +
+      '"I\'ve let them know" or "I\'ve booked that," you must call the real tool for it first, in the same turn, and ' +
+      'base what you say on its real result - never describe an action as done when it was not, even to sound ' +
+      'helpful or avoid a pause.',
+  );
+
+  /**
    * Section 05 (human-like conversation): the only naturalness guidance
    * before this was a business-configured tone string passed through
    * verbatim - nothing here ever looked at what the assistant itself
