@@ -83,6 +83,61 @@ EXPOSE 3000
 # (API+in-process workers vs. the inbound-message worker process) - this
 # image is shared by both, distinguished only by the command it runs.
 
+# ---- goose-runtime: the real Gemini-failover container. Installs the
+#      actual Goose CLI at BUILD time (root, writable layer) rather than
+#      relying on gooseFallbackSupervisor.ts's own runtime auto-install -
+#      that path assumes a writable $HOME to install into, which this
+#      app's own read_only: true + non-root convention (see runtime stage
+#      above) would otherwise block outright. Installed to /usr/local/bin
+#      (world-executable by default) rather than wherever the installer's
+#      own default $HOME happens to be, so the non-root runtime user below
+#      can actually run it regardless of what user built this layer. ----
+FROM node:22-slim AS goose-build
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates bash \
+  && rm -rf /var/lib/apt/lists/*
+# $HOME/.local/bin/goose is not a guess - it's the exact path
+# gooseFallbackSupervisor.ts's own findExecutable() already checks first
+# after a bare PATH lookup (see that file), confirming this installer's
+# real, established behavior in this codebase. Build stage runs as root
+# by default, so $HOME is /root here.
+RUN curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh -o /tmp/install-goose.sh \
+  && chmod +x /tmp/install-goose.sh \
+  && CONFIGURE=false /tmp/install-goose.sh \
+  && test -x /root/.local/bin/goose \
+  && cp /root/.local/bin/goose /usr/local/bin/goose \
+  && chmod 755 /usr/local/bin/goose \
+  && rm -f /tmp/install-goose.sh \
+  && /usr/local/bin/goose --version
+
+FROM node:22-slim AS goose-runtime
+ENV NODE_ENV=production
+WORKDIR /app
+
+RUN groupadd --gid 10001 whatchatai \
+  && useradd --uid 10001 --gid whatchatai --shell /usr/sbin/nologin --no-create-home whatchatai
+
+COPY --from=goose-build /usr/local/bin/goose /usr/local/bin/goose
+COPY --from=prod-deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY package.json ./
+
+# GOOSE_AUTO_INSTALL=false (env, not a file change): the binary above is
+# already installed and on PATH - installGoose()'s own runtime fallback
+# should never run here, since it would try to write to the (read-only)
+# filesystem and fail. HOME points at /tmp (tmpfs, see docker-compose.yml)
+# since goose serve/run may want to write its own session/cache state
+# somewhere; --no-session --no-profile (runGoosePrompt's own real call)
+# already avoid needing persistent state for the actual reply path.
+RUN mkdir -p /app/data && chown -R whatchatai:whatchatai /app
+
+USER whatchatai
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.GOOSE_SERVICE_PORT||3284)+'/health',{headers:{authorization:'Bearer '+(process.env.GOOSE_SERVICE_API_KEY||'')}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "dist/services/gooseFallbackSupervisor.js"]
+
 # ---- relay-runtime: the per-cell network policy enforcement boundary -
 #      built separately, deliberately as small as possible. src/relay/**
 #      imports nothing but Node built-ins (node:http/https/dns/url/net),

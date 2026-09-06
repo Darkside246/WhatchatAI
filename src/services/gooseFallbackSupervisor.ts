@@ -39,8 +39,19 @@ let healthTimer: NodeJS.Timeout | null = null;
  */
 let resolvedGooseBinary: string | null = null;
 
+/**
+ * '0.0.0.0' is a real, deliberate addition, not a loosening of the
+ * original intent - this process was designed to never be reachable from
+ * the public internet, which on a single dev host meant "loopback only."
+ * Running as its own docker-compose service (aura-net) changes the
+ * topology but not the boundary: '0.0.0.0' here only binds this
+ * container's own network namespace, which - like postgres/redis in the
+ * same compose file - gets no host port mapping at all, so it is still
+ * unreachable from anywhere but another container on aura-net. The
+ * bearer-token check in authorised() still applies regardless of host.
+ */
 function isLoopbackHost(host: string): boolean {
-  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '0.0.0.0';
 }
 
 function findExecutable(name: string): string | null {

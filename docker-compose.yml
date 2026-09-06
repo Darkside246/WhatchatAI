@@ -41,6 +41,10 @@ x-app-common: &app-common
     # assumed safe.).
     WHATSAPP_SESSION_DIR: /app/data/whatsapp
     MEDIA_STORAGE_DIR: /app/data/media-storage
+    # The real goose container's own internal DNS name, not the dev-time
+    # 127.0.0.1 default .env still carries (that value only ever worked
+    # when the supervisor ran on the same host as the app itself).
+    GOOSE_SERVICE_URL: http://goose:3284
   user: "10001:10001"
   read_only: true
   tmpfs:
@@ -163,6 +167,59 @@ services:
     # during Phase 1 verification (unlike postgres's exception, which is
     # still only a documented-behaviour assumption, not yet re-tested with
     # cap_drop: [ALL] applied).
+
+  # The real Gemini-failover container - see Dockerfile's goose-runtime
+  # stage for why the CLI is installed at build time rather than relying
+  # on gooseFallbackSupervisor.ts's own runtime auto-install. No host port
+  # mapping at all (same "only reachable over aura-net" convention as
+  # postgres/redis above) - GOOSE_SERVICE_HOST=0.0.0.0 here only binds this
+  # container's own network namespace, never the public internet.
+  goose:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: goose-runtime
+    container_name: aura-goose
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      GOOSE_SERVICE_HOST: "0.0.0.0"
+      GOOSE_SERVICE_PORT: "3284"
+      HOME: /tmp
+      # Deliberately a DIFFERENT provider than this app's own primary
+      # (Gemini) - a Gemini-specific outage must not also take down its
+      # own fallback. OPENROUTER_API_KEY itself comes from .env via
+      # env_file above, never hardcoded here. Stated assumption, not
+      # independently verified against Goose's own current CLI/config
+      # docs: confirm GOOSE_PROVIDER is still the right variable name once
+      # this is live (docker compose logs goose after a real message), and
+      # adjust here if Goose's own config schema has since changed.
+      GOOSE_PROVIDER: openrouter
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    # A stated, revisitable starting budget (this is a CLI process calling
+    # out to a real provider, not itself hosting a model) - watch
+    # `docker stats` after this ships, same reactive-scaling posture
+    # already established for caddy's own budget in this file's history.
+    mem_limit: 512m
+    cpus: 0.5
+    networks:
+      - aura-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3284/health',{headers:{authorization:'Bearer '+(process.env.GOOSE_SERVICE_API_KEY||'')}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
   app-server:
     <<: *app-common
