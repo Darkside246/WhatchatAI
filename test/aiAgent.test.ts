@@ -165,4 +165,30 @@ describe('AiAgentRepository', () => {
       expect(enabled).not.toContain(otherBusinessId);
     });
   });
+
+  describe('softDelete - real, confirmed gap: there was previously no way to remove an agent at all', () => {
+    it('sets deleted_at and the agent stops appearing in every real read path that already filters on it', async () => {
+      const agent = await agents.create({ businessId, name: 'To Be Deleted' });
+      expect(await agents.findByIdForBusiness(agent.id, businessId)).not.toBeNull();
+
+      await agents.softDelete(agent.id);
+
+      const listed = await agents.listByBusiness(businessId);
+      expect(listed.find((a) => a.id === agent.id)).toBeUndefined();
+
+      const found = await agents.findByIdForBusiness(agent.id, businessId);
+      expect(found?.deletedAt).not.toBeNull();
+    });
+
+    it('is idempotent - deleting an already-deleted agent again is a safe no-op, never resurrects it', async () => {
+      const agent = await agents.create({ businessId, name: 'Twice Deleted' });
+      await agents.softDelete(agent.id);
+      const firstDeletedAt = (await agents.findByIdForBusiness(agent.id, businessId))?.deletedAt;
+
+      await agents.softDelete(agent.id);
+      const secondDeletedAt = (await agents.findByIdForBusiness(agent.id, businessId))?.deletedAt;
+
+      expect(secondDeletedAt).toBe(firstDeletedAt);
+    });
+  });
 });

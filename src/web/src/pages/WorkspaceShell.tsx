@@ -76,9 +76,14 @@ function useAppBackNavigation() {
 /**
  * One shared back arrow for every SaaS page reached from SaasNavRail
  * (Dashboard, Trends, CRM, Billing, Settings, etc.) - rendered once here
- * rather than duplicated into each page component. Hidden on /chats: the
- * inbox has its own distinct navigation (its own chat-thread back arrow)
- * and isn't a "dashboard" page in this sense.
+ * rather than duplicated into each page component. Real, confirmed gap
+ * this used to leave: /chats was excluded on the theory that "the inbox
+ * has its own distinct navigation," but ChatThread.tsx's own back arrow
+ * only ever handles thread -> chat list (and only on mobile, md:hidden) -
+ * nothing let a person leave the Inbox section entirely back to wherever
+ * they were before. No longer excluded; the two arrows serve different
+ * levels (this one leaves Inbox, ChatThread's own handles within it) and
+ * never overlap in when they're shown.
  *
  * Lives inline in the persistent top header bar's left-side cluster,
  * beside the global search button - not a floating overlay on the routed
@@ -90,9 +95,7 @@ function useAppBackNavigation() {
  * renders.
  */
 function PageBackButton() {
-  const location = useLocation();
   const goBack = useAppBackNavigation();
-  if (location.pathname === '/chats' || location.pathname.startsWith('/chats/')) return null;
   return (
     <button
       type="button"

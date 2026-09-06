@@ -367,6 +367,24 @@ export class AiAgentRepository {
     await this.db.query('UPDATE ai_agents SET status = $2, updated_at = now() WHERE id = $1', [id, status]);
   }
 
+  /**
+   * Soft delete only - deleted_at has existed on this table since migration
+   * 022 (with an index already scoped WHERE deleted_at IS NULL), and every
+   * real read path here (listByBusiness, findActiveForBusiness,
+   * findByIdForBusiness's own callers) already filters on it. Nothing ever
+   * actually set it until now - a real, confirmed gap (no delete UI/route
+   * existed at all), not a redesign. A hard DELETE would either cascade
+   * through or be blocked by every table that references this agent
+   * (conversation routing, list_agent_assignments, writing_twin_agent_access,
+   * governance_flags, oversight_findings, security_audit_logs) - soft
+   * delete leaves that history intact and matches this app's own
+   * established "reversible, never destructive" posture everywhere else
+   * (WhatsApp disconnect vs. logout, email trash vs. permanent delete).
+   */
+  async softDelete(id: string): Promise<void> {
+    await this.db.query('UPDATE ai_agents SET deleted_at = now(), updated_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+  }
+
   async updateAutonomyLevel(id: string, autonomyLevel: number): Promise<void> {
     await this.db.query('UPDATE ai_agents SET autonomy_level = $2, updated_at = now() WHERE id = $1', [id, autonomyLevel]);
   }

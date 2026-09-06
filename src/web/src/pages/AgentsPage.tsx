@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Bot, ShieldAlert, Plus, ArrowLeft, Clock, GitBranch, LayoutGrid, Network, Sparkles, Lightbulb, PlugZap } from 'lucide-react';
+import { Bot, ShieldAlert, Plus, ArrowLeft, Clock, GitBranch, LayoutGrid, Network, Sparkles, Lightbulb, PlugZap, Trash2 } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -733,6 +733,7 @@ export function AgentsPage() {
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [tab, setTab] = useState<'tiles' | 'canvas'>('tiles');
   const [agentLimitReached, setAgentLimitReached] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   function load() {
     api
@@ -805,6 +806,30 @@ export function AgentsPage() {
     }
   }
 
+  /**
+   * Real, confirmed gap: there was previously no way to remove an agent at
+   * all anywhere in this UI (only pause/archive its status). A soft
+   * delete server-side (agent_deleted audit event, deleted_at column) -
+   * this confirm dialog is deliberately framed as effectively permanent
+   * from the user's own perspective, matching how "Discard"/"Delete"
+   * dialogs already read elsewhere in this app, even though the row
+   * itself isn't physically destroyed.
+   */
+  async function handleDeleteAgent(agentId: string, name: string) {
+    if (!window.confirm(`Delete "${name}"? This agent will stop responding to any conversation and can't be recovered from here.`)) return;
+    setDeleting(true);
+    setFormError(null);
+    try {
+      await api.deleteAgent(agentId);
+      setView({ mode: 'list' });
+      load();
+    } catch (err) {
+      setFormError(err instanceof ApiError ? err.message : 'Could not delete that agent.');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   if (view.mode === 'wizard') {
     return (
       <div className="flex-1 overflow-y-auto p-6">
@@ -823,14 +848,27 @@ export function AgentsPage() {
     const editing = view.mode === 'edit' ? agents?.find((agent) => agent.id === view.agentId) : undefined;
     return (
       <div className="flex-1 overflow-y-auto p-6">
-        <button
-          type="button"
-          onClick={() => setView({ mode: 'list' })}
-          className="mb-4 flex items-center gap-1.5 text-caption font-medium text-fg-muted hover:text-fg"
-        >
-          <ArrowLeft size={13} aria-hidden />
-          Back to agents
-        </button>
+        <div className="mx-auto flex max-w-3xl items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setView({ mode: 'list' })}
+            className="mb-4 flex items-center gap-1.5 text-caption font-medium text-fg-muted hover:text-fg"
+          >
+            <ArrowLeft size={13} aria-hidden />
+            Back to agents
+          </button>
+          {view.mode === 'edit' && editing && (
+            <button
+              type="button"
+              onClick={() => void handleDeleteAgent(editing.id, editing.name)}
+              disabled={deleting}
+              className="mb-4 flex items-center gap-1.5 rounded-lg border border-transparent px-2.5 py-1 text-caption font-medium text-fg-muted hover:border-error/30 hover:bg-error/10 hover:text-error disabled:opacity-50"
+            >
+              <Trash2 size={13} aria-hidden />
+              {deleting ? 'Deleting…' : 'Delete agent'}
+            </button>
+          )}
+        </div>
         <h1 className="mx-auto mb-5 max-w-3xl text-title font-semibold text-fg">
           {view.mode === 'edit' ? `Edit ${editing?.name ?? 'agent'}` : 'New AI agent'}
         </h1>

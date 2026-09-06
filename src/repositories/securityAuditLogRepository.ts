@@ -26,6 +26,7 @@ export type SecurityEventType =
   | 'member_created'
   | 'member_role_changed'
   | 'agent_updated'
+  | 'agent_deleted'
   | 'message_revoke_requested'
   | 'campaign_recalled'
   | 'status_revoke_requested'

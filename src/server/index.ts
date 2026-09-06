@@ -3042,6 +3042,19 @@ app.patch('/api/workspace/agents/:agentId', requireWorkspaceContext, requirePerm
   }
 });
 
+/** Real, confirmed gap: no way to remove an agent existed anywhere in the UI/API. Soft delete (workspaceService.deleteAgent's own doc comment explains why not a hard delete) - same ai.edit permission as the config-edit route above. */
+app.delete('/api/workspace/agents/:agentId', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const auth = res.locals.auth as AuthContext;
+  try {
+    await workspaceService.deleteAgent(businessId, String(req.params.agentId ?? ''), auth.userId);
+    return res.status(200).json({ ok: true });
+  } catch (error) {
+    if (isChatNotFoundError(error)) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });
+    throw error;
+  }
+});
+
 const agentPositionSchema = z.object({
   x: z.number().finite(),
   y: z.number().finite(),

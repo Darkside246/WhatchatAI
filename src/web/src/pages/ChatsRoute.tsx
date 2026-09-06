@@ -7,6 +7,7 @@ import { ContactDetailPanel } from '../components/ContactDetailPanel.js';
 import { InboxNavRail, type InboxView } from '../components/InboxNavRail.js';
 import { CallHistoryPanel } from '../components/CallHistoryPanel.js';
 import { StatusesPanel } from '../components/StatusesPanel.js';
+import { ListsRoute } from './ListsRoute.js';
 
 const DETAIL_PANEL_OPEN_KEY = 'contact_detail_panel_open';
 
@@ -71,7 +72,7 @@ export function ChatsRoute() {
 
           <StatusesPanel className="hidden w-72 shrink-0 border-l border-border-subtle xl:flex" />
         </>
-      ) : (
+      ) : view === 'calls' ? (
         <>
           <CallHistoryPanel className="flex w-full shrink-0 border-r border-border-subtle md:flex md:w-80" />
           <div className="hidden min-w-0 flex-1 flex-col items-center justify-center gap-2 text-fg-muted md:flex">
@@ -79,6 +80,8 @@ export function ChatsRoute() {
             <p className="text-body">Select a call to view details</p>
           </div>
         </>
+      ) : (
+        <ListsRoute />
       )}
     </div>
   );

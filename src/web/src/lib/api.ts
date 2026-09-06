@@ -1684,6 +1684,7 @@ export const api = {
     request<{ agent: AiAgentSummary }>('/workspace/agents', { method: 'POST', body: JSON.stringify(body) }),
   updateAgent: (id: string, body: CreateAgentBody) =>
     request<{ agent: AiAgentSummary }>(`/workspace/agents/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteAgent: (id: string) => request<{ ok: true }>(`/workspace/agents/${id}`, { method: 'DELETE' }),
   updateAgentPosition: (id: string, x: number, y: number) =>
     request<void>(`/workspace/agents/${id}/position`, { method: 'PATCH', body: JSON.stringify({ x, y }) }),
   previewAgentRouting: (text: string) =>

@@ -1,7 +1,6 @@
-import { useNavigate } from 'react-router-dom';
 import { MessageCircle, Phone, ListChecks } from 'lucide-react';
 
-export type InboxView = 'chats' | 'calls';
+export type InboxView = 'chats' | 'calls' | 'lists';
 
 interface Props {
   view: InboxView;
@@ -19,7 +18,6 @@ interface Props {
  * WhatsApp, not a WhatsApp Web clone, so the global nav stays as-is.
  */
 export function InboxNavRail({ view, onChange }: Props) {
-  const navigate = useNavigate();
   return (
     <nav className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-border-subtle bg-surface-1 py-3">
       <button
@@ -37,15 +35,23 @@ export function InboxNavRail({ view, onChange }: Props) {
         here from the general SaaS product nav (SaasNavRail) - it's a
         WhatsApp-native concept, not an AURA "module", so it belongs beside
         Chats/Calls. Uses the same accent color as Chats/Calls, matching
-        the rest of this rail's theme. Opens List management
-        (ListsRoute.tsx) directly; the actual per-chat filtering by List
-        lives as pills inside ChatListPane.tsx's own filter bar.
+        the rest of this rail's theme. Real, confirmed bug fixed here: this
+        used to navigate('/lists'), a full page away from the Inbox -
+        every icon on this rail and in the header vanished along with the
+        whole 3-pane chat layout, reading as "the interface broke" rather
+        than "Lists opened." Switches this rail's own view instead, same
+        as Chats/Calls, so List management renders in place - matches the
+        directive's own explicit intent (a WhatsApp-native panel, not a
+        separate settings page). The actual per-chat filtering by List
+        still lives as pills inside ChatListPane.tsx's own filter bar.
       */}
       <button
         type="button"
-        onClick={() => navigate('/lists')}
+        onClick={() => onChange('lists')}
         title="Lists"
-        className="flex h-10 w-10 items-center justify-center rounded-lg text-accent transition-colors hover:bg-accent-soft"
+        className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+          view === 'lists' ? 'bg-accent-soft text-accent' : 'text-accent hover:bg-accent-soft'
+        }`}
       >
         <ListChecks size={19} strokeWidth={1.75} aria-hidden />
       </button>

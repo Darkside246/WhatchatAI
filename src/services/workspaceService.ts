@@ -1104,6 +1104,25 @@ export class WorkspaceService {
   }
 
   /**
+   * Real, confirmed gap fixed here: there was no way to remove an agent at
+   * all (only pause/archive its status). Soft delete via deleted_at - see
+   * AiAgentRepository.softDelete's own doc comment for why a hard delete
+   * isn't the right call here.
+   */
+  async deleteAgent(businessId: string, agentId: string, userId?: string): Promise<void> {
+    const agent = await this.agentRepository.findByIdForBusiness(agentId, businessId);
+    if (!agent || agent.deletedAt) throw this.notFound();
+
+    await this.agentRepository.softDelete(agentId);
+
+    await this.securityAuditLogRepository.record({
+      businessId,
+      eventType: 'agent_deleted',
+      rawMetadata: { agentId, category: agent.category, deletedBy: userId ?? null },
+    });
+  }
+
+  /**
    * Persists a real drag on the org canvas. Verifies ownership first, and
    * deliberately touches nothing but the coordinates - moving a tile must
    * never be able to alter routing behaviour.
