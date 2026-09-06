@@ -2945,7 +2945,8 @@ app.post('/api/workspace/agents', requireWorkspaceContext, requirePermission('ai
 });
 
 app.get('/api/workspace/agent-templates', requireWorkspaceContext, async (_req, res) => {
-  const templates = await workspaceService.listAgentTemplates();
+  const auth = res.locals.auth as AuthContext;
+  const templates = await workspaceService.listAgentTemplates(auth.user.email);
   return res.status(200).json({ templates });
 });
 
@@ -2957,12 +2958,13 @@ const createAgentFromTemplateSchema = z.object({
 /** "Build My Agent" - creates a real agent pre-filled from a system template. Same entitlement/permission surface as manual creation above. */
 app.post('/api/workspace/agents/from-template', requireWorkspaceContext, requirePermission('ai.create'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const auth = res.locals.auth as AuthContext;
   const parsed = createAgentFromTemplateSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: 'INVALID_TEMPLATE_REQUEST', details: parsed.error.flatten() });
   }
   try {
-    const agent = await workspaceService.createAgentFromTemplate(businessId, parsed.data.templateKey, parsed.data.name);
+    const agent = await workspaceService.createAgentFromTemplate(businessId, parsed.data.templateKey, parsed.data.name, auth.user.email);
     return res.status(201).json({ agent });
   } catch (error) {
     if (isChatNotFoundError(error)) return res.status(404).json({ error: 'TEMPLATE_NOT_FOUND' });

@@ -89,4 +89,40 @@ describe('AgentTemplateRepository (real Postgres, seeded by migration 951)', () 
     expect(property?.defaultSystemInstruction).toContain('checking on the real status of a maintenance issue');
     expect(property?.defaultSystemInstruction).toContain('never guess or invent a status');
   });
+
+  describe('restricted_to_email (migration 1007) - a template visible/usable only by one specific account', () => {
+    it('listAll hides the restricted template from a caller with no email and from a non-matching email, but shows it to the matching one', async () => {
+      await resetDatabase();
+      const repo = new AgentTemplateRepository(pool);
+
+      const noEmail = await repo.listAll();
+      expect(noEmail.map((t) => t.templateKey)).not.toContain('aura_personal_assistant');
+
+      const otherAccount = await repo.listAll('someone-else@example.com');
+      expect(otherAccount.map((t) => t.templateKey)).not.toContain('aura_personal_assistant');
+
+      const matching = await repo.listAll('hasan.alkins@gmail.com');
+      expect(matching.map((t) => t.templateKey)).toContain('aura_personal_assistant');
+
+      // Every other, unrestricted template stays visible to everyone regardless.
+      expect(otherAccount.map((t) => t.templateKey)).toEqual(expect.arrayContaining(['personal_assistant', 'property_operations_assistant', 'retail_operations_assistant']));
+    });
+
+    it('is case-insensitive - the same real account matches regardless of how the email was typed', async () => {
+      const repo = new AgentTemplateRepository(pool);
+      const matching = await repo.listAll('Hasan.Alkins@Gmail.com');
+      expect(matching.map((t) => t.templateKey)).toContain('aura_personal_assistant');
+    });
+
+    it('findByKey enforces the same restriction directly by key - hiding it from the list alone would not be real access control', async () => {
+      const repo = new AgentTemplateRepository(pool);
+
+      expect(await repo.findByKey('aura_personal_assistant')).toBeNull();
+      expect(await repo.findByKey('aura_personal_assistant', 'someone-else@example.com')).toBeNull();
+
+      const found = await repo.findByKey('aura_personal_assistant', 'hasan.alkins@gmail.com');
+      expect(found?.name).toBe('A.U.R.A.');
+      expect(found?.category).toBe('general');
+    });
+  });
 });

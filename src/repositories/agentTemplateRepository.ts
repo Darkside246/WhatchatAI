@@ -62,13 +62,33 @@ function toRecord(row: AgentTemplateRow): AgentTemplateRecord {
 export class AgentTemplateRepository {
   constructor(private readonly db: Queryable) {}
 
-  async listAll(): Promise<AgentTemplateRecord[]> {
-    const { rows } = await this.db.query<AgentTemplateRow>('SELECT * FROM agent_templates ORDER BY created_at ASC');
+  /**
+   * callerEmail gates migration 1007's restricted_to_email column - a
+   * template with a real value there is only ever returned to the account
+   * whose email matches it (case-insensitive, same defensive posture as
+   * this session's own earlier Google-OAuth-test-user casing bug). NULL
+   * (the default for every pre-existing template) means visible to
+   * everyone, unchanged from before this column existed.
+   */
+  async listAll(callerEmail?: string | null): Promise<AgentTemplateRecord[]> {
+    const { rows } = await this.db.query<AgentTemplateRow>(
+      'SELECT * FROM agent_templates WHERE restricted_to_email IS NULL OR LOWER(restricted_to_email) = LOWER($1) ORDER BY created_at ASC',
+      [callerEmail ?? null],
+    );
     return rows.map(toRecord);
   }
 
-  async findByKey(templateKey: string): Promise<AgentTemplateRecord | null> {
-    const { rows } = await this.db.query<AgentTemplateRow>('SELECT * FROM agent_templates WHERE template_key = $1', [templateKey]);
+  /**
+   * Same restriction enforced here too, not just in listAll() - hiding a
+   * restricted template from the list alone would be UI cosmetics, not
+   * real access control, since createAgentFromTemplate() resolves a
+   * template directly by its known key.
+   */
+  async findByKey(templateKey: string, callerEmail?: string | null): Promise<AgentTemplateRecord | null> {
+    const { rows } = await this.db.query<AgentTemplateRow>(
+      'SELECT * FROM agent_templates WHERE template_key = $1 AND (restricted_to_email IS NULL OR LOWER(restricted_to_email) = LOWER($2))',
+      [templateKey, callerEmail ?? null],
+    );
     return rows[0] ? toRecord(rows[0]) : null;
   }
 }

@@ -1014,8 +1014,8 @@ export class WorkspaceService {
     return this.agentRepository.create({ businessId, ...input });
   }
 
-  async listAgentTemplates(): Promise<AgentTemplateRecord[]> {
-    return this.agentTemplateRepository.listAll();
+  async listAgentTemplates(callerEmail?: string | null): Promise<AgentTemplateRecord[]> {
+    return this.agentTemplateRepository.listAll(callerEmail);
   }
 
   /**
@@ -1026,8 +1026,8 @@ export class WorkspaceService {
    * capability list (see buildReplyTools in aiReplyService.ts) - not just
    * a suggestion the agent ignores.
    */
-  async createAgentFromTemplate(businessId: string, templateKey: string, nameOverride?: string): Promise<AiAgentRecord> {
-    const template = await this.agentTemplateRepository.findByKey(templateKey);
+  async createAgentFromTemplate(businessId: string, templateKey: string, nameOverride?: string, callerEmail?: string | null): Promise<AiAgentRecord> {
+    const template = await this.agentTemplateRepository.findByKey(templateKey, callerEmail);
     if (!template) throw this.notFound();
 
     const check = await this.entitlementService.canCreateAgent(businessId);
