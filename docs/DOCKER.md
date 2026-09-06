@@ -26,7 +26,7 @@ Two services run the same built image, distinguished only by command:
 `postgres` (16-alpine) and `redis` (7-alpine, AOF persistence enabled) run
 as their own services with no host port mapping - only `app-server`/
 `app-worker` can reach them, over an explicit bridge network
-(`whatchatai-net`).
+(`aura-net`).
 
 ## Hardening applied
 

@@ -8,7 +8,7 @@
 # - it is a non-regressive bolt-on appropriate for this phase, documented
 # as a known gap in docs/DOCKER.md.
 
-x-app-image: &app-image whatchatai-app:phase1
+x-app-image: &app-image aura-app:production
 x-app-common: &app-common
   build:
     context: .
@@ -53,7 +53,7 @@ x-app-common: &app-common
   mem_limit: 512m
   cpus: 1.0
   networks:
-    - whatchatai-net
+    - aura-net
   depends_on:
     postgres:
       condition: service_healthy
@@ -70,7 +70,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-whatchatai_dev}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-    # No host port mapping - only app-server/app-worker (on whatchatai-net)
+    # No host port mapping - only app-server/app-worker (on aura-net)
     # can reach Postgres. Uncomment for local psql access during development:
     # ports:
     #   - "127.0.0.1:5432:5432"
@@ -86,7 +86,7 @@ services:
     mem_limit: 512m
     cpus: 1.0
     networks:
-      - whatchatai-net
+      - aura-net
     restart: unless-stopped
     # cap_drop: ALL is deliberately NOT applied here - the official Postgres
     # entrypoint needs CHOWN/DAC_OVERRIDE/SETUID/SETGID on first boot to
@@ -133,7 +133,7 @@ services:
     mem_limit: 128m
     cpus: 0.5
     networks:
-      - whatchatai-net
+      - aura-net
     restart: unless-stopped
 
   redis:
@@ -153,7 +153,7 @@ services:
     mem_limit: 256m
     cpus: 0.5
     networks:
-      - whatchatai-net
+      - aura-net
     restart: unless-stopped
     # cap_drop: ALL was tried here and broke startup: the official Redis
     # image's entrypoint uses setpriv/gosu to drop from root to the redis
@@ -166,7 +166,7 @@ services:
 
   app-server:
     <<: *app-common
-    container_name: whatchatai-app-server
+    container_name: aura-app-server
     # Migrations run once, here, before the HTTP server starts - this is
     # the process that owns the Baileys/WhatsApp connection and the five
     # in-process BullMQ workers (outbound dispatch, scheduled statuses,
@@ -174,7 +174,7 @@ services:
     # itself instantiates. Verified by reading the actual imports, not
     # assumed from file naming.
     command: ["sh", "-c", "node dist/db/migrate.js && node dist/server/index.js"]
-    # No host port mapping - same "only reachable over whatchatai-net"
+    # No host port mapping - same "only reachable over aura-net"
     # convention as postgres/redis above. The caddy service is now the
     # sole public entrypoint (see below); exposing 3000 directly here too
     # would let anyone bypass Caddy's TLS termination and rate limiting.
@@ -190,7 +190,7 @@ services:
 
   app-worker:
     <<: *app-common
-    container_name: whatchatai-app-worker
+    container_name: aura-app-worker
     # This is the ONLY process that instantiates incomingMessagesWorker,
     # realtimeEventsWorker (media-download jobs), and documentParseWorker
     # (PDF/DOCX parsing, deliberately moved out of app-server so a heavy
@@ -241,7 +241,7 @@ services:
   # convention as postgres/redis's own documented cap_drop exceptions.
   caddy:
     image: caddy:2-alpine
-    container_name: whatchatai-caddy
+    container_name: aura-caddy
     environment:
       DOMAIN: ${DOMAIN:?Set DOMAIN in .env to your real domain name before starting caddy}
     ports:
@@ -268,11 +268,11 @@ services:
     mem_limit: 96m
     cpus: 0.25
     networks:
-      - whatchatai-net
+      - aura-net
     restart: unless-stopped
 
 networks:
-  whatchatai-net:
+  aura-net:
     driver: bridge
 
 volumes:

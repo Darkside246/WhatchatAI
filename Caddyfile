@@ -5,7 +5,7 @@
 # instead of nginx. app-server itself is no longer exposed to the host at
 # all (see docker-compose.yml: its "3000:3000" mapping was removed once
 # this was added) - Caddy is the only public entrypoint, reverse-proxying
-# to app-server over the internal whatchatai-net bridge network.
+# to app-server over the internal aura-net bridge network.
 {$DOMAIN} {
 	reverse_proxy app-server:3000
 }
