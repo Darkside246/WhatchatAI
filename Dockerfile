@@ -27,6 +27,17 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY src/web/package.json src/web/package.json
 RUN npm ci --omit=dev
+# Real, confirmed bug: pdf-parse's hard dependency @napi-rs/canvas ships one
+# prebuilt native binary per platform+libc as separate optional packages
+# (canvas-linux-x64-gnu vs canvas-linux-x64-musl, etc.) - npm's optional-
+# dependency resolution installed the musl (Alpine-style) variant here even
+# though node:22-slim is Debian/glibc, leaving @napi-rs/canvas unable to
+# load its native binding at runtime and crashing any process that imports
+# pdf-parse (document parsing) at startup, before any actual PDF is ever
+# parsed - a whole worker process down for one document-parsing dependency.
+# Forces the correct variant in directly, --no-save so package-lock.json
+# (edited on Windows, where this ambiguity doesn't arise) is untouched.
+RUN npm install --no-save @napi-rs/canvas-linux-x64-gnu@0.1.80
 
 # ---- runtime: minimal, non-root, only what the running app needs ----
 FROM node:22-slim AS runtime
