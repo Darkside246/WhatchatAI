@@ -11,7 +11,8 @@ import { createTestAccount, createTestBusiness, resetDatabase } from './helpers.
 // suite controls per test.
 const isReadyMock = vi.fn<() => boolean>();
 const sendMessageMock = vi.fn<(jid: string, content: unknown) => Promise<{ key: { id: string } }>>();
-const getSocketMock = vi.fn(() => ({ sendMessage: sendMessageMock }));
+const sendPresenceUpdateMock = vi.fn<(type: string, jid: string) => Promise<void>>();
+const getSocketMock = vi.fn(() => ({ sendMessage: sendMessageMock, sendPresenceUpdate: sendPresenceUpdateMock }));
 
 vi.mock('../src/services/whatsappConnectionManager.js', () => ({
   whatsappConnectionManager: {
@@ -65,6 +66,7 @@ describe('outbound_messages BullMQ pipeline (real Redis queue + real worker + re
     chatId = chat.id;
     isReadyMock.mockReset();
     sendMessageMock.mockReset();
+    sendPresenceUpdateMock.mockReset().mockResolvedValue(undefined);
     getSocketMock.mockClear();
   });
 
@@ -101,6 +103,58 @@ describe('outbound_messages BullMQ pipeline (real Redis queue + real worker + re
     const updated = await repository.findById(record.id);
     expect(updated?.status).toBe('sent');
     expect(updated?.whatsappMessageId).toBe('WA-SENT-abc123');
+  });
+
+  it('an AI-originated text reply gets a real "composing" presence update and a real, non-instant delay before it sends', async () => {
+    isReadyMock.mockReturnValue(true);
+    sendMessageMock.mockResolvedValue({ key: { id: 'WA-SENT-ai-reply' } });
+
+    const repository = new WhatsAppOutboundMessageRepository(pool);
+    const record = await repository.createIdempotent({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      toJid,
+      idempotencyKey: 'dispatch-ai-reply',
+      messageType: 'text',
+      textContent: 'A real AI-generated reply that should feel like someone actually typed it.',
+      requestedBy: 'ai',
+    });
+
+    const startedAt = Date.now();
+    await enqueueOutboundMessage({ outboundMessageId: record.id });
+    const outcome = await waitForOutcome(repository, record.id);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(outcome).toBe('sent');
+    expect(sendPresenceUpdateMock).toHaveBeenCalledWith('composing', toJid);
+    expect(sendPresenceUpdateMock).toHaveBeenCalledWith('paused', toJid);
+    // The real proof this feature does anything at all: sendMessage must
+    // not have been reachable before the presence update + delay ran.
+    expect(sendPresenceUpdateMock.mock.invocationCallOrder[0]).toBeLessThan(sendMessageMock.mock.invocationCallOrder[0] as number);
+    expect(elapsedMs).toBeGreaterThanOrEqual(800); // MIN_TYPING_DELAY_MS in humanlikeTypingDelay.ts
+  });
+
+  it('never delays or shows a typing indicator for a human-composed send - only requestedBy: "ai" gets one', async () => {
+    isReadyMock.mockReturnValue(true);
+    sendMessageMock.mockResolvedValue({ key: { id: 'WA-SENT-human' } });
+
+    const repository = new WhatsAppOutboundMessageRepository(pool);
+    const record = await repository.createIdempotent({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      toJid,
+      idempotencyKey: 'dispatch-human-no-delay',
+      messageType: 'text',
+      textContent: 'A human on the team typed this themselves.',
+    });
+
+    await enqueueOutboundMessage({ outboundMessageId: record.id });
+    const outcome = await waitForOutcome(repository, record.id);
+
+    expect(outcome).toBe('sent');
+    expect(sendPresenceUpdateMock).not.toHaveBeenCalled();
   });
 
   it('retries a transient failure and only marks the row failed once every real attempt is exhausted', async () => {

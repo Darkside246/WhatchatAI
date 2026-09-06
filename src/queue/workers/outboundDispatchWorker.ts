@@ -11,6 +11,7 @@ import {
   WhatsAppOutboundMessageRepository,
   type WhatsAppOutboundMessageRecord,
 } from '../../repositories/whatsappOutboundMessageRepository.js';
+import { computeTypingDelayMs, sleep } from '../../services/humanlikeTypingDelay.js';
 
 /**
  * Deliberately run in the same process as the API server (imported from
@@ -131,6 +132,31 @@ async function processOutboundMessage(job: Job<OutboundMessageJobData>): Promise
   await outboundMessageRepository.markSending(record.id);
 
   const content = await buildOutboundContent(record);
+
+  // Real "typing…" indicator + a real, length-scaled delay before an
+  // AI-generated reply actually sends - never for a human-composed send
+  // (requestedBy: 'human'/'campaign'/'funnel'/'system'), which has already
+  // taken real human time to write. Must happen here, in this worker, not
+  // in whatsappOutboundMessageService.ts's own send() call - that method
+  // is also called from incomingMessagesWorker.ts, a separate process
+  // with no live Baileys socket of its own (see this file's own doc
+  // comment on why dispatch itself has to live in the server process).
+  // Presence-update failures are logged and swallowed, never allowed to
+  // block or fail the actual send - the indicator is a nicety, the
+  // message itself is not.
+  if (record.requestedBy === 'ai' && record.messageType === 'text' && record.textContent) {
+    try {
+      await socket.sendPresenceUpdate('composing', record.toJid);
+    } catch (error) {
+      console.error(`[OutboundDispatchWorker] Failed to send 'composing' presence for ${record.id}:`, error);
+    }
+    await sleep(computeTypingDelayMs(record.textContent));
+    try {
+      await socket.sendPresenceUpdate('paused', record.toJid);
+    } catch {
+      // Best-effort only - WhatsApp clears the indicator once the message itself arrives regardless.
+    }
+  }
 
   // Committed right before the real network call - see markSendAttempted's
   // own doc comment for why this must be a separate write from markSending.
