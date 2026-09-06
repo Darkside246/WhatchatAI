@@ -1332,6 +1332,9 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
       // proven-working bare request.
       if (!(configError instanceof ApiError) || configError.status !== 400) throw configError;
       toolsEnabled = false;
+      console.log(
+        `[aiReplyService] chat ${context.chatId}: primary Gemini call rejected with 400, retrying WITHOUT TOOLS (no get_current_time, no take_a_message, nothing): ${configError.message}`,
+      );
       response = await genAi.models.generateContent({
         model,
         contents,
