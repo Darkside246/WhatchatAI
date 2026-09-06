@@ -260,6 +260,14 @@ import type { Request, Response, NextFunction } from 'express';
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
 
+// Caddy (docker-compose.yml) reverse-proxies every request to this
+// container over the internal bridge network - without this, Express
+// treats every request as coming from Caddy's own container IP, breaking
+// IP-based rate limiting (auth/signup abuse guards) and X-Forwarded-Proto-
+// based secure-cookie/HTTPS detection. `1` trusts exactly one hop
+// (Caddy itself), never an arbitrary chain of proxies.
+app.set('trust proxy', 1);
+
 app.disable('x-powered-by');
 
 /**
