@@ -346,6 +346,33 @@ export class EmailOAuthRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
+  /**
+   * upsertMessage's own conflict target is (account_id, folder_id,
+   * provider_message_id) - folder_id is part of the natural key because
+   * each folder is synced independently, so one real Gmail/Outlook message
+   * carrying more than one label/folder (extremely common - e.g. INBOX
+   * plus a custom label) legitimately produces more than one local row for
+   * the exact same real email, each with its own id. The real provider-side
+   * trash/move already removes the message from every folder in the actual
+   * mailbox, so every local duplicate must go with it - deleting only the
+   * one row the reader happened to click would leave the "same" email
+   * still showing (and still deletable, confusingly 404ing on a retry once
+   * the surviving row's sibling was already removed) under whichever other
+   * folder it was also labeled into. Returns the distinct folder ids that
+   * had a row removed, so the caller can refresh every affected folder's
+   * counts, not just the one the reader was looking at.
+   */
+  async deleteMessagesByProviderMessage(accountId: string, businessId: string, providerMessageId: string): Promise<string[]> {
+    const result = await this.db.query<{ folder_id: string }>(
+      `DELETE FROM email_oauth_messages m
+       USING email_oauth_accounts a
+       WHERE m.account_id = $1 AND a.id = m.account_id AND a.business_id = $2 AND m.provider_message_id = $3
+       RETURNING m.folder_id`,
+      [accountId, businessId, providerMessageId],
+    );
+    return [...new Set(result.rows.map((row) => row.folder_id))];
+  }
+
   async listMessages(accountId: string, opts?: { limit?: number; unreadOnly?: boolean; folderId?: string }): Promise<EmailOAuthMessageRecord[]> {
     const conditions = ['account_id = $1'];
     const params: unknown[] = [accountId];

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Mail, Send, Check, X, Bot, AlertTriangle, Sparkles, Pencil, Trash2, Filter, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import {
   api,
@@ -77,6 +77,13 @@ export function EmailRoute() {
   const [selectedMessage, setSelectedMessage] = useState<OAuthMessageSummary | null>(null);
   const [searchFilter, setSearchFilter] = useState<EmailSearchFilter>(null);
 
+  // Owned here (not inside EmailMessageListPane) so the list and the
+  // reading pane share one real source of truth - deleting from either one
+  // updates the exact same array, so they can never drift out of sync with
+  // each other the way they could when each held its own copy.
+  const [oauthMessages, setOauthMessages] = useState<OAuthMessageSummary[] | null>(null);
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+
   const [emails, setEmails] = useState<EmailMessageDto[] | null>(null);
   const [capabilities, setCapabilities] = useState<EmailCapabilitiesDto | null>(null);
   const [settings, setSettings] = useState<EmailSettingsDto | null>(null);
@@ -93,10 +100,11 @@ export function EmailRoute() {
   const [aiBusy, setAiBusy] = useState(false);
   const [filter, setFilter] = useState<EmailStatus | 'all'>('all');
 
-  // Resizable panes (the message list and the right-hand tools panel) plus
-  // a collapsible tools panel - real per-viewer layout preferences, not
-  // data, so plain localStorage (via useResizableWidth) is the right place
-  // for them rather than a server-side setting.
+  // Resizable panes (the folder rail, the message list, and the right-hand
+  // tools panel) plus a collapsible tools panel - real per-viewer layout
+  // preferences, not data, so plain localStorage (via useResizableWidth) is
+  // the right place for them rather than a server-side setting.
+  const folderRailWidth = useResizableWidth('email.folderRailWidth', 256, 180, 400, 'right');
   const messageListWidth = useResizableWidth('email.messageListWidth', 384, 260, 640, 'right');
   const toolsPanelWidth = useResizableWidth('email.toolsPanelWidth', 320, 240, 520, 'left');
   const [toolsCollapsed, setToolsCollapsed] = useState<boolean>(() => {
@@ -116,6 +124,26 @@ export function EmailRoute() {
       }
       return next;
     });
+  }
+
+  // Hover-to-peek: while the tools panel is explicitly collapsed, hovering
+  // the collapsed strip reveals it as a temporary overlay (near-instant -
+  // no meaningful enter delay) without permanently un-collapsing it; moving
+  // away lets it slide back into hiding after a short grace period (long
+  // enough to cross from the strip into the revealed panel itself without
+  // it snapping shut mid-transit). Clicking the strip's own toggle still
+  // un-collapses it for real, same handler as before.
+  const [toolsPeeking, setToolsPeeking] = useState(false);
+  const peekCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function handlePeekEnter() {
+    if (peekCloseTimeoutRef.current) {
+      clearTimeout(peekCloseTimeoutRef.current);
+      peekCloseTimeoutRef.current = null;
+    }
+    setToolsPeeking(true);
+  }
+  function handlePeekLeave() {
+    peekCloseTimeoutRef.current = setTimeout(() => setToolsPeeking(false), 400);
   }
 
   async function load() {
@@ -140,6 +168,50 @@ export function EmailRoute() {
   function handleSelectFolder(next: EmailFolderSelection) {
     setSelection(next);
     setSelectedMessage(null);
+  }
+
+  function loadOAuthMessages(accountId: string, folderId: string) {
+    setOauthMessages(null);
+    return api
+      .getOAuthMessages(accountId, { folderId, limit: 50 })
+      .then((res) => setOauthMessages(res.messages))
+      .catch(() => setOauthMessages([]));
+  }
+
+  useEffect(() => {
+    if (selection.kind === 'oauth') void loadOAuthMessages(selection.accountId, selection.folderId);
+  }, [selection]);
+
+  // The one, shared delete path for both the list's per-row delete icon and
+  // the reading pane's own Delete button - confirms, calls the real
+  // provider-trashing API once, and updates the shared list/selection in
+  // one place so the two views can never disagree about what still exists.
+  // Auto-advances the reading pane to whichever message now sits in the
+  // deleted one's place (or the new last message, or nothing if the
+  // folder's now empty) rather than leaving the reader stuck on a blank
+  // pane needing a manual click.
+  async function handleDeleteOAuthMessage(message: OAuthMessageSummary) {
+    if (
+      !window.confirm(
+        `Delete this email from ${message.fromName || message.fromAddress || 'this sender'}? It moves to Trash/Deleted Items in the real mailbox - recoverable there, not permanently gone.`,
+      )
+    )
+      return;
+    setDeletingMessageId(message.id);
+    try {
+      await api.deleteOAuthMessage(message.id);
+      const currentList = oauthMessages ?? [];
+      const index = currentList.findIndex((m) => m.id === message.id);
+      const updatedList = currentList.filter((m) => m.id !== message.id);
+      setOauthMessages(updatedList);
+      if (selectedMessage?.id === message.id) {
+        setSelectedMessage(updatedList[index] ?? updatedList[index - 1] ?? null);
+      }
+    } catch (err) {
+      window.alert(err instanceof ApiError ? err.message : 'Could not delete this email. Try again in a moment.');
+    } finally {
+      setDeletingMessageId(null);
+    }
   }
 
   // Reply/Forward both open the SAME existing Compose-queue draft form
@@ -173,9 +245,6 @@ export function EmailRoute() {
     setSelection({ kind: 'compose' });
   }
 
-  function handleMessageDeleted(messageId: string) {
-    setSelectedMessage((prev) => (prev?.id === messageId ? null : prev));
-  }
 
   const canSend = capabilities?.providerConfigured === true && capabilities?.senderConfigured === true;
 
@@ -282,7 +351,9 @@ export function EmailRoute() {
         selection={selection}
         onSelect={handleSelectFolder}
         composeQueueCount={emails?.filter((e) => e.status === 'draft').length ?? 0}
+        width={folderRailWidth.width}
       />
+      <ResizeHandle onPointerDown={folderRailWidth.onHandlePointerDown} />
 
       {selection.kind === 'compose' ? (
         <div className="flex-1 overflow-y-auto p-6">
@@ -623,11 +694,11 @@ export function EmailRoute() {
       ) : (
         <>
           <EmailMessageListPane
-            accountId={selection.accountId}
-            folderId={selection.folderId}
+            messages={oauthMessages}
             selectedMessageId={selectedMessage?.id ?? null}
             onSelect={setSelectedMessage}
-            onDeleted={handleMessageDeleted}
+            onDeleteMessage={(m) => void handleDeleteOAuthMessage(m)}
+            deletingMessageId={deletingMessageId}
             filter={searchFilter}
             width={messageListWidth.width}
           />
@@ -641,7 +712,8 @@ export function EmailRoute() {
               }}
               onReply={handleReply}
               onForward={handleForward}
-              onDeleted={handleMessageDeleted}
+              onDeleteMessage={(m) => void handleDeleteOAuthMessage(m)}
+              deletingMessageId={deletingMessageId}
             />
           ) : (
             <div className="flex min-w-0 flex-1 items-center justify-center text-body text-fg-muted">
@@ -652,15 +724,25 @@ export function EmailRoute() {
       )}
 
       {toolsCollapsed ? (
-        <button
-          type="button"
-          onClick={toggleToolsCollapsed}
-          title="Show tools panel"
-          aria-label="Show tools panel"
-          className="flex w-6 shrink-0 items-center justify-center border-l border-border-subtle bg-surface-2 text-fg-muted hover:bg-surface-3 hover:text-fg"
-        >
-          <ChevronsLeft size={14} aria-hidden />
-        </button>
+        <div className="relative flex h-full shrink-0" onMouseEnter={handlePeekEnter} onMouseLeave={handlePeekLeave}>
+          <button
+            type="button"
+            onClick={toggleToolsCollapsed}
+            title="Show tools panel"
+            aria-label="Show tools panel"
+            className="z-10 flex w-6 shrink-0 items-center justify-center border-l border-accent/30 bg-accent-soft text-accent transition-colors hover:bg-accent hover:text-white"
+          >
+            <ChevronsLeft size={14} aria-hidden />
+          </button>
+          <div
+            className={`absolute right-0 top-0 z-20 flex h-full shadow-lg transition-transform duration-150 ease-out ${
+              toolsPeeking ? 'translate-x-0' : 'pointer-events-none translate-x-full'
+            }`}
+            style={{ width: toolsPanelWidth.width }}
+          >
+            <EmailToolsPanel onFilterChange={setSearchFilter} width={toolsPanelWidth.width} />
+          </div>
+        </div>
       ) : (
         <>
           <ResizeHandle onPointerDown={toolsPanelWidth.onHandlePointerDown} />

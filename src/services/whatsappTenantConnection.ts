@@ -88,6 +88,12 @@ function sessionRootDir(): string {
  */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** See conflictReplacedRetryCount's own doc comment - one bounded, short-delay auto-retry for a connectionReplaced disconnect before giving up and requiring a manual reconnect. */
+const MAX_CONFLICT_REPLACED_AUTO_RETRIES = 1;
+const CONFLICT_REPLACED_RETRY_DELAY_MS = 5_000;
+/** How long a reconnect must stay genuinely 'open' before conflictReplacedRetryCount resets - deliberately not the instant 'open' fires, so a real rapid replace/reconnect storm can't keep resetting it (mirrors the exact failure mode reconnectAttempt's own backoff already had to be protected against). */
+const SUSTAINED_CONNECTION_BEFORE_RESET_MS = 30_000;
+
 export class SessionDirError extends Error {}
 
 /**
@@ -180,6 +186,30 @@ export class WhatsAppTenantConnection {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempt = 0;
   private listenersAttached = false;
+  /**
+   * Bounded, one-shot auto-recovery for DisconnectReason.connectionReplaced
+   * - see that branch's own doc comment for why an UNBOUNDED retry there is
+   * dangerous (a genuine ongoing conflict would loop forever). Real,
+   * confirmed problem this fixes: this conflict fires for ANY duplicate
+   * process briefly touching the same session (e.g. a second `npm run dev`
+   * accidentally started against the same on-disk credentials) - not just
+   * a genuine "someone else's device took over" case - and until now every
+   * one of those required an explicit manual reconnect, permanently
+   * blocking the whole workspace behind the onboarding/pairing gate (see
+   * useAppGate.ts) even seconds after the duplicate process was gone. One
+   * bounded, short-delay retry gives a transient/self-resolved conflict a
+   * real chance to recover silently; a SECOND replacement shortly after
+   * still stops for real, exactly as before, since that pattern is the
+   * genuine ongoing-conflict signal the original fix was protecting
+   * against. Reset to 0 only once a reconnect stays genuinely 'open' for
+   * SUSTAINED_CONNECTION_BEFORE_RESET_MS - not the instant 'open' fires -
+   * so a real rapid open/conflict/open/conflict storm can't keep
+   * resetting this and defeating the bound the same way it used to defeat
+   * reconnectAttempt's own backoff (see the connectionReplaced branch's
+   * pre-existing comment).
+   */
+  private conflictReplacedRetryCount = 0;
+  private sustainedConnectionTimer: NodeJS.Timeout | null = null;
   /**
    * Re-entrancy guard for connect()'s own async setup window, deliberately
    * separate from snapshot.status - status's 'RECONNECTING' value is set by
@@ -834,6 +864,13 @@ export class WhatsAppTenantConnection {
         const pushName = user?.name ?? null;
 
         this.reconnectAttempt = 0;
+        // conflictReplacedRetryCount only resets once this connection has
+        // stayed open for a real, sustained window - not the instant this
+        // 'open' event fires - see its own doc comment for why.
+        if (this.sustainedConnectionTimer) clearTimeout(this.sustainedConnectionTimer);
+        this.sustainedConnectionTimer = setTimeout(() => {
+          this.conflictReplacedRetryCount = 0;
+        }, SUSTAINED_CONNECTION_BEFORE_RESET_MS);
         // A real pairing just succeeded, by whichever method - nothing left
         // to remember for a future reconnect to retry.
         this.lastPairingPhoneNumber = null;
@@ -867,6 +904,13 @@ export class WhatsAppTenantConnection {
       if (connection === 'close') {
         this.socket = null;
         this.listenersAttached = false;
+        // Cancel any pending conflictReplacedRetryCount reset - this
+        // disconnect proves the prior 'open' didn't actually stay up long
+        // enough to count as genuinely recovered.
+        if (this.sustainedConnectionTimer) {
+          clearTimeout(this.sustainedConnectionTimer);
+          this.sustainedConnectionTimer = null;
+        }
         this.snapshot = {
           ...this.snapshot,
           status: 'DISCONNECTED',
@@ -900,6 +944,42 @@ export class WhatsAppTenantConnection {
         // still works normally afterward; this only stops the automatic
         // loop).
         if (code === DisconnectReason.connectionReplaced) {
+          // One bounded, short-delay auto-retry first - this same disconnect
+          // reason fires for a merely transient/self-resolved duplicate
+          // (e.g. a second `npm run dev` briefly touching the same session
+          // during a dev restart) just as it does for a genuine ongoing
+          // conflict, and until this retry existed even the transient case
+          // permanently blocked the whole workspace behind the pairing gate
+          // (useAppGate.ts) until someone noticed and clicked "Generate a
+          // new code" - even though nothing about the real session was
+          // ever invalidated (unlike loggedOut below, this never clears
+          // session state). See conflictReplacedRetryCount's own doc
+          // comment for why this stays bounded rather than looping forever.
+          if (this.conflictReplacedRetryCount < MAX_CONFLICT_REPLACED_AUTO_RETRIES) {
+            this.conflictReplacedRetryCount += 1;
+            this.snapshot = {
+              ...this.snapshot,
+              status: 'RECONNECTING',
+              lastError:
+                'A conflicting WhatsApp connection was detected - retrying automatically once before requiring manual action.',
+            };
+            console.warn(
+              `[WhatsApp] Connection replaced for business ${this.businessId} (DisconnectReason.connectionReplaced) - ` +
+                `auto-retrying once (attempt ${this.conflictReplacedRetryCount}/${MAX_CONFLICT_REPLACED_AUTO_RETRIES}) in case this was a transient duplicate process, before giving up and requiring manual reconnect.`,
+            );
+            this.reconnectTimer = setTimeout(() => {
+              void this.connect(this.lastPairingPhoneNumber ?? undefined).catch((error) => {
+                this.snapshot = {
+                  ...this.snapshot,
+                  status: 'ERROR',
+                  connected: false,
+                  lastError: error instanceof Error ? error.message : String(error),
+                };
+              });
+            }, CONFLICT_REPLACED_RETRY_DELAY_MS);
+            return;
+          }
+
           this.snapshot = {
             ...this.snapshot,
             status: 'CONFLICT_REPLACED',
@@ -907,7 +987,7 @@ export class WhatsAppTenantConnection {
               'This WhatsApp session was taken over by another active connection (same account connected elsewhere). Automatic reconnect has been stopped to avoid a reconnect loop - check for a duplicate running instance before reconnecting manually.',
           };
           console.error(
-            `[WhatsApp] Connection replaced by another session for business ${this.businessId} (DisconnectReason.connectionReplaced) - stopping automatic reconnect. ` +
+            `[WhatsApp] Connection replaced by another session for business ${this.businessId} (DisconnectReason.connectionReplaced) - stopping automatic reconnect after ${this.conflictReplacedRetryCount} auto-retry. ` +
               'Check for a duplicate backend process/deployment using the same WhatsApp credentials before reconnecting manually.',
           );
           this.recordDisconnectEvent('conflict_replaced', 'CONFLICT_REPLACED');

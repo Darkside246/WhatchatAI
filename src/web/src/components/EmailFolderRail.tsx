@@ -39,10 +39,12 @@ export function EmailFolderRail({
   selection,
   onSelect,
   composeQueueCount,
+  width,
 }: {
   selection: EmailFolderSelection | null;
   onSelect: (selection: EmailFolderSelection) => void;
   composeQueueCount: number;
+  width?: number;
 }) {
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [foldersByAccount, setFoldersByAccount] = useState<Record<string, Folder[]>>({});
@@ -79,11 +81,14 @@ export function EmailFolderRail({
   const isComposeSelected = selection?.kind === 'compose';
 
   return (
-    <nav className="flex h-full w-64 shrink-0 flex-col overflow-y-auto border-r border-border-subtle bg-surface-1 p-2">
+    <nav
+      className="flex h-full shrink-0 flex-col overflow-y-auto border-r border-border-subtle bg-surface-1 p-1.5"
+      style={{ width: width ?? 256, minWidth: width ?? 256 }}
+    >
       <button
         type="button"
         onClick={() => onSelect({ kind: 'compose' })}
-        className={`flex items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-caption font-semibold transition-colors ${
+        className={`flex items-center justify-between gap-2 rounded-lg px-2.5 py-1 text-left text-caption font-semibold transition-colors ${
           isComposeSelected ? 'bg-accent-soft text-accent' : 'text-fg hover:bg-surface-2'
         }`}
       >
@@ -94,10 +99,10 @@ export function EmailFolderRail({
         {composeQueueCount > 0 && <span className="text-meta text-fg-muted">{composeQueueCount}</span>}
       </button>
 
-      {accounts === null && <p className="mt-2 px-2.5 text-meta text-fg-muted">Loading accounts…</p>}
+      {accounts === null && <p className="mt-1.5 px-2.5 text-meta text-fg-muted">Loading accounts…</p>}
 
       {accounts?.length === 0 && (
-        <p className="mt-2 px-2.5 text-meta text-fg-muted">
+        <p className="mt-1.5 px-2.5 text-meta text-fg-muted">
           No Gmail or Outlook account connected yet. Connect one in Settings → Connected Inbox to see real folders here.
         </p>
       )}
@@ -105,7 +110,7 @@ export function EmailFolderRail({
       {accounts?.map((account) => {
         const folders = foldersByAccount[account.id];
         return (
-          <div key={account.id} className="mt-2">
+          <div key={account.id} className="mt-1.5">
             <div className="flex items-center justify-between gap-1 px-2.5">
               <p className="truncate text-meta font-semibold uppercase tracking-wide text-fg-muted">
                 {account.displayName ?? account.emailAddress}
@@ -122,8 +127,8 @@ export function EmailFolderRail({
               </button>
             </div>
             <div className="mt-0.5 space-y-px">
-              {folders === undefined && <p className="px-2.5 py-1 text-meta text-fg-muted">Loading folders…</p>}
-              {folders?.length === 0 && <p className="px-2.5 py-1 text-meta text-fg-muted">No folders synced yet.</p>}
+              {folders === undefined && <p className="px-2.5 py-0.5 text-meta text-fg-muted">Loading folders…</p>}
+              {folders?.length === 0 && <p className="px-2.5 py-0.5 text-meta text-fg-muted">No folders synced yet.</p>}
               {folders?.map((folder) => {
                 const Icon = WELL_KNOWN_ICON[folder.wellKnownType];
                 const isSelected = selection?.kind === 'oauth' && selection.folderId === folder.id;
@@ -132,7 +137,7 @@ export function EmailFolderRail({
                     key={folder.id}
                     type="button"
                     onClick={() => onSelect({ kind: 'oauth', accountId: account.id, folderId: folder.id, displayName: folder.displayName })}
-                    className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1 text-left text-caption transition-colors ${
+                    className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-0.5 text-left text-caption transition-colors ${
                       isSelected ? 'bg-accent-soft text-accent' : 'text-fg-secondary hover:bg-surface-2'
                     }`}
                   >

@@ -395,8 +395,14 @@ export async function deleteOAuthMessage(businessId: string, messageId: string):
     return { status: 'provider_error', reason: error instanceof Error ? error.message : 'Network error reaching the provider.' };
   }
 
-  await repo.deleteMessage(messageId, businessId);
-  await repo.refreshFolderCounts(message.folderId);
+  // Removes every local row for this real message, not just the one
+  // clicked - see deleteMessagesByProviderMessage's own doc comment for why
+  // more than one can legitimately exist (one real email labeled into more
+  // than one synced folder).
+  const affectedFolderIds = await repo.deleteMessagesByProviderMessage(message.accountId, businessId, message.providerMessageId);
+  for (const folderId of affectedFolderIds) {
+    await repo.refreshFolderCounts(folderId);
+  }
   return { status: 'deleted' };
 }
 

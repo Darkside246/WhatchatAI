@@ -21,7 +21,8 @@ export function EmailMessageDetailPane({
   onDraftedReply,
   onReply,
   onForward,
-  onDeleted,
+  onDeleteMessage,
+  deletingMessageId,
 }: {
   message: OAuthMessageSummary;
   onDraftedReply: () => void;
@@ -29,15 +30,15 @@ export function EmailMessageDetailPane({
   onReply: (message: OAuthMessageSummary) => void;
   /** Same as onReply, pre-filled as a forward instead. */
   onForward: (message: OAuthMessageSummary) => void;
-  /** Called after a real, successful delete. */
-  onDeleted: (messageId: string) => void;
+  /** Confirms, deletes, and updates the shared message list/selection (including auto-advancing to the next message) - owned by EmailRoute, same handler the list pane's own per-row delete uses, so this pane and the list can never drift out of sync with each other. */
+  onDeleteMessage: (message: OAuthMessageSummary) => void;
+  deletingMessageId: string | null;
 }) {
   const [agents, setAgents] = useState<AiAgentSummary[]>([]);
   const [agentId, setAgentId] = useState('');
   const [instruction, setInstruction] = useState('Write a brief, polite reply addressing the sender\'s message.');
   const [showReplyForm, setShowReplyForm] = useState(false);
   const [drafting, setDrafting] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -65,19 +66,6 @@ export function EmailMessageDetailPane({
       setError(err instanceof ApiError ? err.message : 'Could not draft a reply.');
     } finally {
       setDrafting(false);
-    }
-  }
-
-  async function handleDelete() {
-    if (!window.confirm(`Delete this email from ${message.fromName || message.fromAddress || 'this sender'}? It moves to Trash/Deleted Items in the real mailbox - recoverable there, not permanently gone.`)) return;
-    setDeleting(true);
-    setError(null);
-    try {
-      await api.deleteOAuthMessage(message.id);
-      onDeleted(message.id);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not delete this email. Try again in a moment.');
-      setDeleting(false);
     }
   }
 
@@ -132,12 +120,12 @@ export function EmailMessageDetailPane({
           </button>
           <button
             type="button"
-            onClick={() => void handleDelete()}
-            disabled={deleting}
+            onClick={() => onDeleteMessage(message)}
+            disabled={deletingMessageId === message.id}
             className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:border-error/30 hover:bg-error/10 hover:text-error disabled:opacity-50"
           >
             <Trash2 size={13} aria-hidden />
-            {deleting ? 'Deleting…' : 'Delete'}
+            {deletingMessageId === message.id ? 'Deleting…' : 'Delete'}
           </button>
           {!showReplyForm ? (
             <button

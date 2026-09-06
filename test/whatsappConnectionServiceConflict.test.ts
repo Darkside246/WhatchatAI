@@ -46,29 +46,96 @@ describe('WhatsAppTenantConnection - DisconnectReason.connectionReplaced handlin
     vi.useRealTimers();
   });
 
-  it('stops automatic reconnect and marks status CONFLICT_REPLACED on a real connectionReplaced disconnect', async () => {
-    const socket = fakeSocket();
-    makeWASocketMock.mockReturnValue(socket);
+  it('auto-retries once (RECONNECTING, a real second socket) on the first connectionReplaced - a transient/self-resolved duplicate must not require manual action', async () => {
+    const firstSocket = fakeSocket();
+    const secondSocket = fakeSocket();
+    makeWASocketMock.mockReturnValueOnce(firstSocket).mockReturnValueOnce(secondSocket);
     const connection = new WhatsAppTenantConnection(TEST_BUSINESS_ID);
 
     await connection.connect();
     expect(makeWASocketMock).toHaveBeenCalledTimes(1);
 
-    socket.ev.emit('connection.update', {
+    firstSocket.ev.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: { output: { statusCode: DisconnectReason.connectionReplaced } } },
+    });
+    await vi.waitFor(() => {
+      expect(connection.getSnapshot().status).toBe('RECONNECTING');
+    });
+    expect(connection.getSnapshot().connected).toBe(false);
+    // Not yet the terminal, manual-action-required state - this is the one
+    // bounded auto-retry, and the workspace gate (useAppGate.ts) never
+    // blocks on RECONNECTING the way it does on CONFLICT_REPLACED.
+    expect(makeWASocketMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.waitFor(() => {
+      expect(makeWASocketMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('stops for real (CONFLICT_REPLACED, no further reconnect) once a SECOND connectionReplaced follows the bounded auto-retry - the genuine ongoing-conflict case', async () => {
+    const firstSocket = fakeSocket();
+    const secondSocket = fakeSocket();
+    makeWASocketMock.mockReturnValueOnce(firstSocket).mockReturnValueOnce(secondSocket);
+    const connection = new WhatsAppTenantConnection(TEST_BUSINESS_ID);
+
+    await connection.connect();
+    firstSocket.ev.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: { output: { statusCode: DisconnectReason.connectionReplaced } } },
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.waitFor(() => expect(makeWASocketMock).toHaveBeenCalledTimes(2));
+
+    // The retry itself gets replaced again too - a real, ongoing conflict
+    // (not a one-off), never having reached a genuinely sustained 'open'.
+    secondSocket.ev.emit('connection.update', {
       connection: 'close',
       lastDisconnect: { error: { output: { statusCode: DisconnectReason.connectionReplaced } } },
     });
     await vi.waitFor(() => {
       expect(connection.getSnapshot().status).toBe('CONFLICT_REPLACED');
     });
-
-    expect(connection.getSnapshot().connected).toBe(false);
     expect(connection.getSnapshot().lastError).toContain('another active connection');
 
-    // Advance well past any possible backoff delay - a second socket must
-    // never be created for this disconnect reason.
+    // Advance well past any possible backoff delay - no third socket for this exhausted retry.
     await vi.advanceTimersByTimeAsync(120_000);
-    expect(makeWASocketMock).toHaveBeenCalledTimes(1);
+    expect(makeWASocketMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a later, separate connectionReplaced incident gets its own fresh bounded retry once the recovered connection has stayed open long enough to count as genuinely sustained', async () => {
+    const firstSocket = fakeSocket();
+    const secondSocket = fakeSocket();
+    makeWASocketMock.mockReturnValueOnce(firstSocket).mockReturnValueOnce(secondSocket);
+    const connection = new WhatsAppTenantConnection(TEST_BUSINESS_ID);
+
+    await connection.connect();
+    firstSocket.ev.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: { output: { statusCode: DisconnectReason.connectionReplaced } } },
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.waitFor(() => expect(makeWASocketMock).toHaveBeenCalledTimes(2));
+
+    // The retry reaches a real 'open' and stays there past the sustained-
+    // connection window - a genuine recovery, not a flicker.
+    secondSocket.ev.emit('connection.update', { connection: 'open' });
+    await vi.waitFor(() => expect(connection.getSnapshot().status).toBe('CONNECTED'));
+    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    // A brand-new, later incident - since the bound already reset, this
+    // gets its own bounded auto-retry (RECONNECTING) rather than being
+    // treated as already exhausted from the earlier, unrelated incident
+    // (which would instead go straight to the terminal CONFLICT_REPLACED,
+    // exactly as asserted in the "stops for real" test above).
+    secondSocket.ev.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: { output: { statusCode: DisconnectReason.connectionReplaced } } },
+    });
+    await vi.waitFor(() => expect(connection.getSnapshot().status).toBe('RECONNECTING'));
+    expect(makeWASocketMock).toHaveBeenCalledTimes(2);
   });
 
   it('still reconnects normally for an ordinary (non-conflict) disconnect - regression check', async () => {

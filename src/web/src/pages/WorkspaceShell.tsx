@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { Search, ArrowLeft } from 'lucide-react';
 import { api, type SyncStatusResponse, type WhatsAppConnectionSnapshot, type WorkspaceBillingEntitlement } from '../lib/api.js';
@@ -34,33 +34,72 @@ const IntegrationHealthPage = lazy(() => import('./IntegrationHealthPage.js').th
 function RouteFallback() { return <div className="flex h-full flex-1 items-center justify-center text-caption text-fg-muted">Loading…</div>; }
 
 /**
+ * A real per-session Aura navigation stack, distinct from raw browser
+ * history - navigate(-1) alone can't safely handle a route reached via a
+ * refresh or a direct/deep link (no browser history to go back into)
+ * without risking leaving the app entirely, and it can't express "go back
+ * ONE LEVEL of the actual hierarchy visited" when that hierarchy is
+ * several routes deep. This records only the Aura routes actually visited
+ * this page load, in order (deduping immediate repeats) - "back" pops the
+ * real, actual sequence the user followed. When only one entry has ever
+ * been recorded (a fresh load/refresh/deep link - nothing to pop), it
+ * falls back to the parent implied by the path itself (strip the last
+ * "/segment"), e.g. /billing/plans/growth -> /billing - never a fixed
+ * dashboard redirect, and never anything touching authentication/session
+ * state (this only ever calls react-router's own navigate() with an
+ * in-app path).
+ */
+function useAppBackNavigation() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const stackRef = useRef<string[]>([location.pathname]);
+
+  useEffect(() => {
+    const stack = stackRef.current;
+    if (stack[stack.length - 1] !== location.pathname) stack.push(location.pathname);
+  }, [location.pathname]);
+
+  return useCallback(() => {
+    const stack = stackRef.current;
+    if (stack.length > 1) {
+      stack.pop();
+      navigate(stack[stack.length - 1] as string);
+      return;
+    }
+    const current = location.pathname;
+    const lastSlash = current.lastIndexOf('/');
+    const parent = lastSlash > 0 ? current.slice(0, lastSlash) : '';
+    navigate(parent || '/dashboard');
+  }, [location.pathname, navigate]);
+}
+
+/**
  * One shared back arrow for every SaaS page reached from SaasNavRail
  * (Dashboard, Trends, CRM, Billing, Settings, etc.) - rendered once here
  * rather than duplicated into each page component. Hidden on /chats: the
  * inbox has its own distinct navigation (its own chat-thread back arrow)
- * and isn't a "dashboard" page in this sense. Plain SPA history-back
- * (navigate(-1)), matching "get back to the previous page" literally.
- */
-/**
- * Lives inline in the persistent top header bar (right-side cluster) -
- * not a floating overlay on the routed content area. A fixed position
- * over routed content worked for most pages but collided with Email's
- * own 3-pane layout (its tools panel already uses that exact top-right
- * corner) - the header bar is the one place common to every page that
- * never has page-specific content in it, so this placement can never
- * collide again regardless of what a given page renders.
+ * and isn't a "dashboard" page in this sense.
+ *
+ * Lives inline in the persistent top header bar's left-side cluster,
+ * beside the global search button - not a floating overlay on the routed
+ * content area. A fixed position over routed content worked for most
+ * pages but collided with Email's own 3-pane layout (its tools panel
+ * already used that top-right corner) - the header bar is the one place
+ * common to every page that never has page-specific content in it, so
+ * this placement can never collide again regardless of what a given page
+ * renders.
  */
 function PageBackButton() {
-  const navigate = useNavigate();
   const location = useLocation();
+  const goBack = useAppBackNavigation();
   if (location.pathname === '/chats' || location.pathname.startsWith('/chats/')) return null;
   return (
     <button
       type="button"
-      onClick={() => navigate(-1)}
-      title="Back"
+      onClick={goBack}
+      title="Go back"
       aria-label="Go back to the previous page"
-      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-fg-muted transition hover:bg-surface-2 hover:text-fg"
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-fg-muted transition hover:bg-surface-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
       <ArrowLeft size={15} strokeWidth={1.75} aria-hidden />
     </button>
@@ -164,7 +203,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
     {sync?.syncStatus === 'failed' && <div className="shrink-0 bg-warning/10 px-4 py-1.5 text-center text-caption text-warning">History sync did not fully complete ({sync.lastSyncError ?? 'unknown error'}). Some data may be missing.</div>}
     <CommandPalette open={searchOpen} onOpenChange={setSearchOpen} />
     <div className="flex min-h-0 flex-1"><SaasNavRail /><div className="flex min-w-0 flex-1 flex-col">
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle bg-surface-1 px-4 py-2"><button type="button" onClick={() => setSearchOpen(true)} aria-label="Open global search" className="flex shrink-0 items-center gap-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-caption text-fg-muted hover:bg-surface-3"><Search size={13} aria-hidden /><span className="hidden sm:inline">Search…</span><kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-meta sm:inline">⌘K</kbd></button><div className="flex min-w-0 flex-1 justify-center"><AlertNotifier /></div><div className="flex shrink-0 items-center gap-3"><PageBackButton /><AiTokenAllowanceBar connectionLabel={connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'} /><NotificationCenter /><span className="rounded-full bg-success/15 px-2 py-0.5 text-meta text-success">Live</span><AccountMenu /></div></header>
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle bg-surface-1 px-4 py-2"><div className="flex shrink-0 items-center gap-1.5"><PageBackButton /><button type="button" onClick={() => setSearchOpen(true)} aria-label="Open global search" className="flex shrink-0 items-center gap-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-caption text-fg-muted hover:bg-surface-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"><Search size={13} aria-hidden /><span className="hidden sm:inline">Search…</span><kbd className="hidden rounded border border-border-subtle px-1 py-0.5 text-meta sm:inline">⌘K</kbd></button></div><div className="flex min-w-0 flex-1 justify-center"><AlertNotifier /></div><div className="flex shrink-0 items-center gap-3"><AiTokenAllowanceBar connectionLabel={connection?.pushName ?? connection?.phoneNumber ?? connection?.jid ?? '—'} /><NotificationCenter /><span className="rounded-full bg-success/15 px-2 py-0.5 text-meta text-success">Live</span><AccountMenu /></div></header>
       <div className="relative flex min-h-0 flex-1"><Suspense fallback={<RouteFallback />}><Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/property" element={<ProductDashboardPage product="property" />} />

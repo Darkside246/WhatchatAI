@@ -120,7 +120,11 @@ router.get('/messages/:accountId', async (req, res) => {
 router.delete('/messages/single/:id', async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
   const result = await deleteOAuthMessage(auth.businessId, req.params['id']!);
-  if (result.status === 'not_found') return res.status(404).json({ error: 'MESSAGE_NOT_FOUND' });
+  if (result.status === 'not_found') {
+    return res
+      .status(404)
+      .json({ error: 'MESSAGE_NOT_FOUND', message: 'This email could not be found — it may already have been deleted or moved.' });
+  }
   if (result.status === 'provider_error') return res.status(502).json({ error: 'PROVIDER_ERROR', message: result.reason });
   return res.status(200).json({ ok: true });
 });

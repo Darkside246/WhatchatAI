@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { Star, Trash2 } from 'lucide-react';
-import { api, ApiError } from '../lib/api.js';
 import type { EmailSearchFilter } from './EmailToolsPanel.js';
 
 export type OAuthMessageSummary = {
@@ -33,39 +32,32 @@ function formatDate(iso: string | null): string {
  * The middle-left message list for a real, selected Gmail/Outlook folder
  * (Email Redesign Phase B) - mirrors ChatListPane/ChatThread's existing
  * master-detail idiom (ChatsRoute.tsx) rather than inventing a new one.
+ *
+ * Purely presentational - the message list itself, and deleting from it,
+ * are both owned by EmailRoute (the one parent that also drives the
+ * reading pane), so the list and the reading pane can never drift out of
+ * sync with each other the way they could when each owned its own copy of
+ * "what got deleted."
  */
 export function EmailMessageListPane({
-  accountId,
-  folderId,
+  messages,
   selectedMessageId,
   onSelect,
-  onDeleted,
-  refreshKey,
+  onDeleteMessage,
+  deletingMessageId,
   filter,
   width,
 }: {
-  accountId: string;
-  folderId: string;
+  messages: OAuthMessageSummary[] | null;
   selectedMessageId: string | null;
   onSelect: (message: OAuthMessageSummary) => void;
-  /** Called after a real, successful delete - lets the parent clear its own selected-message state if that was the one just removed. */
-  onDeleted?: (messageId: string) => void;
-  refreshKey?: number;
+  /** Confirms, deletes, and updates the shared message list/selection - owned by EmailRoute. */
+  onDeleteMessage: (message: OAuthMessageSummary) => void;
+  deletingMessageId: string | null;
   filter?: EmailSearchFilter;
   /** Real pixel width, driven by the parent's useResizableWidth - falls back to a sensible default (matches the old fixed w-96) when omitted. */
   width?: number;
 }) {
-  const [messages, setMessages] = useState<OAuthMessageSummary[] | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-
-  useEffect(() => {
-    setMessages(null);
-    api
-      .getOAuthMessages(accountId, { folderId, limit: 50 })
-      .then((res) => setMessages(res.messages))
-      .catch(() => setMessages([]));
-  }, [accountId, folderId, refreshKey]);
-
   // A quick action/contact click applies client-side, against whatever
   // this folder already fetched - a real, working filter without a new
   // cross-folder search endpoint, which stays out of scope for this pass.
@@ -78,21 +70,6 @@ export function EmailMessageListPane({
       return true;
     });
   }, [messages, filter]);
-
-  async function handleDelete(event: React.MouseEvent, message: OAuthMessageSummary) {
-    event.stopPropagation(); // never also trigger the row's own onSelect
-    if (!window.confirm(`Delete this email from ${message.fromName || message.fromAddress || 'this sender'}? It moves to Trash/Deleted Items in the real mailbox - recoverable there, not permanently gone.`)) return;
-    setDeletingId(message.id);
-    try {
-      await api.deleteOAuthMessage(message.id);
-      setMessages((prev) => prev?.filter((m) => m.id !== message.id) ?? prev);
-      onDeleted?.(message.id);
-    } catch (err) {
-      window.alert(err instanceof ApiError ? err.message : 'Could not delete this email. Try again in a moment.');
-    } finally {
-      setDeletingId(null);
-    }
-  }
 
   return (
     <div
@@ -137,8 +114,11 @@ export function EmailMessageListPane({
             <p className="mt-0.5 truncate pr-6 text-meta text-fg-muted">{message.snippet}</p>
             <button
               type="button"
-              onClick={(event) => void handleDelete(event, message)}
-              disabled={deletingId === message.id}
+              onClick={(event) => {
+                event.stopPropagation(); // never also trigger the row's own onSelect
+                onDeleteMessage(message);
+              }}
+              disabled={deletingMessageId === message.id}
               title="Delete"
               aria-label="Delete this email"
               className="absolute right-2 top-3 rounded-md border border-transparent p-1 text-fg-muted opacity-0 transition-opacity hover:border-error/30 hover:bg-error/10 hover:text-error focus:opacity-100 disabled:opacity-50 group-hover:opacity-100"
