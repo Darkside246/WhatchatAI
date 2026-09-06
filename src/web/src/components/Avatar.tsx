@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 const SIZES = {
   sm: 'h-9 w-9 text-caption',
   md: 'h-11 w-11 text-body',
@@ -62,10 +64,19 @@ function StatusRing({ count, boxSize }: { count: number; boxSize: number }) {
  */
 export function Avatar({ label, size = 'md', className = '', statusCount = 0, photoUrl = null, ringVisible = true }: Props) {
   const initial = label.trim().slice(0, 1).toUpperCase() || '?';
-  const circle = photoUrl ? (
+  // A profile picture can be attached in the database (photoUrl set) while
+  // its backing file is genuinely missing on disk (a real, separate storage
+  // gap, not this component's concern to fix) - without this, that renders
+  // the browser's native broken-image icon forever. Falling back to the
+  // initials circle on load failure keeps the "never a broken image" promise
+  // this component already made for the no-photo case.
+  const [imgFailed, setImgFailed] = useState(false);
+  const showPhoto = photoUrl && !imgFailed;
+  const circle = showPhoto ? (
     <img
       src={photoUrl}
       alt=""
+      onError={() => setImgFailed(true)}
       className={`shrink-0 rounded-full object-cover ring-2 ring-surface-1 ${SIZES[size]}`}
       aria-hidden
     />

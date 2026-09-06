@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, ApiError, type AuthUserDto, type WorkspaceBusiness, type BusinessRole } from '../lib/api.js';
+import { getRecaptchaToken } from '../lib/recaptcha.js';
 
 export type AuthStatus = 'loading' | 'unauthenticated' | 'authenticated';
 
@@ -85,7 +86,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const registerTrial = useCallback(async (input: { name: string; email: string; phone: string; password: string; productKey: string }) => {
-    await api.registerTrial(input);
+    const recaptchaToken = await getRecaptchaToken('trial_register');
+    await api.registerTrial({ ...input, recaptchaToken });
     await refresh();
   }, [refresh]);
 

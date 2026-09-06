@@ -11,6 +11,15 @@ const TABLES = [
   // it needs its own explicit entry. Unlike plans/plan_entitlements below,
   // it carries no seed data, so truncating it between tests is safe.
   'platform_settings',
+  // AURA AI Oversight & Reliability Agent: findings/samples are mostly
+  // platform-wide (business_id NULL) by design - a TRUNCATE...CASCADE
+  // from businesses never reaches a NULL-business_id row, so these need
+  // their own explicit entries, same reasoning as platform_settings just
+  // above. oversight_finding_events itself needs no entry here - it
+  // cascades automatically once oversight_findings is truncated (a real
+  // FK ON DELETE CASCADE, not a business_id relationship).
+  'oversight_findings',
+  'oversight_metric_samples',
   // No FK to anything by design (see migration 936) - a real
   // TRUNCATE ... CASCADE from any other table in this list never reaches
   // it, so it needs its own explicit entry to be cleared between tests.

@@ -174,8 +174,10 @@ services:
     # itself instantiates. Verified by reading the actual imports, not
     # assumed from file naming.
     command: ["sh", "-c", "node dist/db/migrate.js && node dist/server/index.js"]
-    ports:
-      - "3000:3000"
+    # No host port mapping - same "only reachable over whatchatai-net"
+    # convention as postgres/redis above. The caddy service is now the
+    # sole public entrypoint (see below); exposing 3000 directly here too
+    # would let anyone bypass Caddy's TLS termination and rate limiting.
     volumes:
       - whatsapp-session:/app/data/whatsapp
       - media-storage:/app/data/media-storage
@@ -228,6 +230,47 @@ services:
       retries: 5
       start_period: 15s
 
+  # Real HTTPS for real public sign-up. Terminates TLS (a real Let's
+  # Encrypt cert for the DOMAIN env var, auto-renewed) and is the ONLY
+  # service with a host port mapping now - app-server's own 3000:3000
+  # mapping was removed above once this existed. Caddy needs no
+  # cap_drop/read_only hardening tuned here (kept to vendor defaults,
+  # unlike app-server/postgres/redis above) since its own ACME/cert-reload
+  # behavior on first boot was never verified against those restrictions
+  # in this environment - re-test before tightening further, same honesty
+  # convention as postgres/redis's own documented cap_drop exceptions.
+  caddy:
+    image: caddy:2-alpine
+    container_name: whatchatai-caddy
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env to your real domain name before starting caddy}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      app-server:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    # Small and genuinely tight on this Droplet's own documented RAM
+    # budget (see docs/DOCKER.md's Capacity section: the other 5 services
+    # already summed to 100% of physical RAM before this one existed) -
+    # Caddy itself is typically tens of MB idle, but this pushes the real
+    # total over the Droplet's physical 2 GB and further into the 2 GB
+    # swap headroom. Watch `docker stats` after adding this, same
+    # reactive-scaling posture the Capacity section already established,
+    # rather than guessing a bigger Droplet is needed before measuring.
+    mem_limit: 96m
+    cpus: 0.25
+    networks:
+      - whatchatai-net
+    restart: unless-stopped
+
 networks:
   whatchatai-net:
     driver: bridge
@@ -238,3 +281,5 @@ volumes:
   redis-data:
   whatsapp-session:
   media-storage:
+  caddy-data:
+  caddy-config:

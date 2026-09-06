@@ -514,6 +514,56 @@ export interface GovernanceThresholdsDto {
   outputLeaksPerAgentPerHour: number;
 }
 
+export interface OversightFindingDto {
+  id: string;
+  category: 'application_health' | 'security' | 'abuse_spam' | 'capacity' | 'policy' | 'monitoring_gap';
+  findingType: string;
+  title: string;
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'informational';
+  confidence: number | null;
+  impact: number | null;
+  likelihood: number | null;
+  exposure: number | null;
+  urgency: number | null;
+  scopeDescription: string | null;
+  compositeRiskScore: number | null;
+  businessId: string | null;
+  affectedComponent: string | null;
+  evidence: Record<string, unknown>;
+  potentialCauses: string[] | null;
+  rootCause: string | null;
+  recommendedInvestigation: string | null;
+  recommendedRemediation: string | null;
+  status: 'detected' | 'investigating' | 'awaiting_human_review' | 'approved' | 'rejected' | 'resolved' | 'monitoring';
+  windowStart: string | null;
+  windowEnd: string | null;
+  firstDetectedAt: string;
+  lastDetectedAt: string;
+  occurrenceCount: number;
+  createdAt: string;
+  businessName?: string | null;
+}
+
+export interface OversightFindingEventDto {
+  id: string;
+  eventType: string;
+  fromStatus: string | null;
+  toStatus: string | null;
+  userId: string | null;
+  notes: string | null;
+  createdAt: string;
+}
+
+export interface OversightThresholdsDto {
+  authAbusePerHour: number;
+  recaptchaFailuresPerHour: number;
+  aiUsageGrowthWarningPct: number;
+  entitlementWarningPct: number;
+  entitlementCriticalPct: number;
+  connectionCeilingWarningPct: number;
+  configDriftGraceHours: number;
+}
+
 export interface WorkspaceBusiness {
   id: string;
   name: string;
@@ -1733,7 +1783,7 @@ export const api = {
   getBootstrapStatus: () => request<BootstrapStatusResponse>('/auth/bootstrap-status'),
   registerAccount: (body: { email: string; password: string; displayName: string }) =>
     request<AuthMeResponse>('/auth/register', { method: 'POST', body: JSON.stringify(body) }),
-  registerTrial: (body: { name: string; email: string; phone: string; password: string; productKey: string }) =>
+  registerTrial: (body: { name: string; email: string; phone: string; password: string; productKey: string; recaptchaToken?: string }) =>
     request<RegisterTrialResponse>('/trials/register', { method: 'POST', body: JSON.stringify(body) }),
   login: (email: string, password: string, rememberMe = true) =>
     request<AuthMeResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password, rememberMe }) }),
@@ -2008,6 +2058,20 @@ export const api = {
   getGovernanceThresholds: () => request<{ thresholds: GovernanceThresholdsDto }>('/developer/governance/thresholds'),
   setGovernanceThresholds: (thresholds: GovernanceThresholdsDto) =>
     request<{ thresholds: GovernanceThresholdsDto }>('/developer/governance/thresholds', { method: 'PATCH', body: JSON.stringify(thresholds) }),
+  // ── AURA AI Oversight & Reliability Agent ──────────────────────────────
+  getOversightFindings: (filters?: { category?: OversightFindingDto['category']; severity?: OversightFindingDto['severity'] }) => {
+    const qs = new URLSearchParams();
+    if (filters?.category) qs.set('category', filters.category);
+    if (filters?.severity) qs.set('severity', filters.severity);
+    const q = qs.toString();
+    return request<{ findings: OversightFindingDto[] }>(`/developer/oversight/findings${q ? `?${q}` : ''}`);
+  },
+  getOversightFindingEvents: (id: string) => request<{ events: OversightFindingEventDto[] }>(`/developer/oversight/findings/${id}/events`),
+  changeOversightFindingStatus: (id: string, status: 'investigating' | 'resolved' | 'rejected' | 'monitoring', notes?: string) =>
+    request<{ finding: OversightFindingDto }>(`/developer/oversight/findings/${id}`, { method: 'PATCH', body: JSON.stringify({ status, notes }) }),
+  getOversightThresholds: () => request<{ thresholds: OversightThresholdsDto }>('/developer/oversight/thresholds'),
+  setOversightThresholds: (thresholds: OversightThresholdsDto) =>
+    request<{ thresholds: OversightThresholdsDto }>('/developer/oversight/thresholds', { method: 'PATCH', body: JSON.stringify(thresholds) }),
   // ── Accurate stat drill-down + tiered developer roles ─────────────────
   getPlatformTrials: () =>
     request<{ trials: { id: string; email: string; productKey: string; state: string; startsAt: string | null; endsAt: string | null; productAccountId: string | null }[] }>('/developer/trials'),
@@ -2165,6 +2229,8 @@ export const api = {
       }>;
     }>(`/email-oauth/messages/${accountId}${q ? `?${q}` : ''}`);
   },
+  deleteOAuthMessage: (messageId: string) =>
+    request<{ ok: true }>(`/email-oauth/messages/single/${messageId}`, { method: 'DELETE' }),
   getOAuthFolders: (accountId: string) =>
     request<{
       folders: Array<{

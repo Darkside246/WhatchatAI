@@ -60,6 +60,7 @@ import { runLearnAnalysisSweep } from '../../services/learn/writingStyleAnalyzer
 import { sweepEmailOAuthSync } from '../../services/emailSyncService.js';
 import { runBusinessIntelligenceSweep } from '../../services/businessIntelligence/businessIntelligenceSweepService.js';
 import { runGovernanceSweep, GOVERNANCE_SWEEP_INTERVAL_MS } from '../../services/governance/governanceSweepService.js';
+import { runOversightSweep, OVERSIGHT_SWEEP_INTERVAL_MS } from '../../services/oversight/oversightSweepService.js';
 import type { WhatsAppMessageRecord } from '../../repositories/whatsappMessageRepository.js';
 import type { WhatsAppMediaRecord } from '../../repositories/whatsappMediaRepository.js';
 import type { MediaDownloadErrorCategory } from '../../domain/whatsapp/types.js';
@@ -1560,6 +1561,8 @@ async function processRealtimeEventJob(
     await runBusinessIntelligenceSweep();
   } else if (job.name === 'governance-sweep') {
     await runGovernanceSweep();
+  } else if (job.name === 'oversight-sweep') {
+    await runOversightSweep();
   } else if (job.name === 'media-download-timeout-sweep') {
     await sweepStaleDownloadingMedia();
   } else if (job.name === 'ai-handoff-sweep') {
@@ -1875,4 +1878,9 @@ void realtimeEventsQueue
   .upsertJobScheduler('governance-sweep', { every: GOVERNANCE_SWEEP_INTERVAL_MS }, { name: 'governance-sweep' })
   .then(() => console.log(`[RealtimeEventsWorker] Scheduled governance-sweep every ${GOVERNANCE_SWEEP_INTERVAL_MS}ms`))
   .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule governance-sweep:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler('oversight-sweep', { every: OVERSIGHT_SWEEP_INTERVAL_MS }, { name: 'oversight-sweep' })
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled oversight-sweep every ${OVERSIGHT_SWEEP_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule oversight-sweep:', error.message));
 }

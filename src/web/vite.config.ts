@@ -4,6 +4,12 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // This repo keeps ONE .env at the repo root for everything (backend and
+  // now this) rather than a second, easy-to-forget src/web/.env - Vite's
+  // own default envDir is its own project root (src/web), so without this
+  // override a VITE_-prefixed var set in the real .env (e.g.
+  // VITE_RECAPTCHA_SITE_KEY) would silently never reach the frontend build.
+  envDir: '../..',
   server: {
     host: true,
     port: process.env['PORT'] ? Number(process.env['PORT']) : 5173,

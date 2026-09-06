@@ -10,6 +10,11 @@ function isMeetingProvider(value: string): value is MeetingProvider {
   return value === 'google_meet' || value === 'zoom';
 }
 
+/** Same dev/prod origin split as emailOAuthRouter.ts's own frontendOrigin() - see its comment for the full "why" (a real bug, found via a user report of OAuth sign-in landing on a stale build). */
+function frontendOrigin(): string {
+  return (process.env.NODE_ENV ?? 'development') === 'production' ? '' : 'http://localhost:5173';
+}
+
 // All routes require authentication except the OAuth callback (it carries state).
 router.use('/connection', requireAuth);
 
@@ -68,13 +73,13 @@ router.get('/callback/:provider', async (req, res) => {
   const error = typeof req.query['error'] === 'string' ? req.query['error'] : '';
 
   if (!isMeetingProvider(provider)) {
-    res.redirect(`/?meeting_oauth_error=${encodeURIComponent('Unknown provider.')}`);
+    res.redirect(`${frontendOrigin()}/?meeting_oauth_error=${encodeURIComponent('Unknown provider.')}`);
     return;
   }
 
   if (error || !code) {
     const msg = encodeURIComponent(error || 'Authorization was denied or cancelled.');
-    res.redirect(`/?meeting_oauth_error=${msg}`);
+    res.redirect(`${frontendOrigin()}/?meeting_oauth_error=${msg}`);
     return;
   }
 
@@ -85,9 +90,9 @@ router.get('/callback/:provider', async (req, res) => {
 
   if (result.status === 'connected') {
     const email = 'googleEmail' in result ? result.googleEmail : result.zoomEmail;
-    res.redirect(`/?meeting_oauth_success=${provider}&email=${encodeURIComponent(email)}`);
+    res.redirect(`${frontendOrigin()}/?meeting_oauth_success=${provider}&email=${encodeURIComponent(email)}`);
   } else {
-    res.redirect(`/?meeting_oauth_error=${encodeURIComponent(result.reason)}`);
+    res.redirect(`${frontendOrigin()}/?meeting_oauth_error=${encodeURIComponent(result.reason)}`);
   }
 });
 

@@ -11,6 +11,10 @@ const productAccountRoutesSource = readFileSync(
   path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/server/productAccountRoutes.ts'),
   'utf8',
 );
+const oversightRoutesSource = readFileSync(
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/server/oversightRoutes.ts'),
+  'utf8',
+);
 
 /**
  * Routes that intentionally carry no requirePermission guard because they
@@ -177,5 +181,33 @@ describe('developer-plane route authorization (productAccountRoutes.ts)', () => 
 
   it('found a meaningful number of admin-only routes to check - guards the test itself against a silently-empty list', () => {
     expect(ADMIN_ONLY_ROUTES.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * AURA AI Oversight & Reliability Agent: every route in oversightRoutes.ts
+ * must require requireDeveloper (a real human session) - a status-change
+ * route reachable by anything less would break the "no AI-agent-reachable
+ * write path into finding review" guarantee this whole system is built on.
+ * Same allowlist-and-fail-loudly shape as the productAccountRoutes.ts
+ * block above, applied to every mutating route in this file specifically.
+ */
+describe('oversight-agent route authorization (oversightRoutes.ts)', () => {
+  const MUTATING_OVERSIGHT_ROUTES: { method: string; routePath: string }[] = [
+    { method: 'patch', routePath: "'/developer/oversight/findings/:id'" },
+    { method: 'patch', routePath: "'/developer/oversight/thresholds'" },
+  ];
+
+  it('every mutating oversight route requires requireDeveloper', () => {
+    for (const { method, routePath } of MUTATING_OVERSIGHT_ROUTES) {
+      const declarationPattern = new RegExp(`router\\.${method}\\(\\s*${routePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^)]*?\\basync`, 's');
+      const match = declarationPattern.exec(oversightRoutesSource);
+      expect(match, `${method.toUpperCase()} ${routePath} declaration not found`).not.toBeNull();
+      expect(match?.[0], `${method.toUpperCase()} ${routePath} is missing requireDeveloper`).toContain('requireDeveloper');
+    }
+  });
+
+  it('found a meaningful number of mutating oversight routes to check - guards the test itself against a silently-empty list', () => {
+    expect(MUTATING_OVERSIGHT_ROUTES.length).toBeGreaterThan(0);
   });
 });

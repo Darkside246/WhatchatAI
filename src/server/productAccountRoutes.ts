@@ -36,6 +36,7 @@ import { OpenClawCellRepository } from '../repositories/openclawCellRepository.j
 import { OpenClawSecurityAdvisoryRepository } from '../repositories/openclawSecurityAdvisoryRepository.js';
 import { openclawCellService } from '../services/openclawCellService.js';
 import { testGeminiConnection } from '../services/aiEngineStatusService.js';
+import { verifyRecaptcha } from '../services/recaptchaService.js';
 
 const router = Router();
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
@@ -44,7 +45,7 @@ const businessRepository = new BusinessRepository(pool);
 const platformSettingsRepository = new PlatformSettingsRepository(pool);
 const productKey = ProductKeySchema;
 const trials = new TrialRepository(pool);
-const trialRegistrationSchema = z.object({ name: z.string().trim().min(1).max(200), email: z.string().trim().email(), phone: z.string().trim().min(3).max(50), password: z.string().min(1).max(200), productKey });
+const trialRegistrationSchema = z.object({ name: z.string().trim().min(1).max(200), email: z.string().trim().email(), phone: z.string().trim().min(3).max(50), password: z.string().min(1).max(200), productKey, recaptchaToken: z.string().optional() });
 const deviceContextFrom = (req: Request) => ({ ipAddress: req.ip ?? null, userAgent: req.headers['user-agent'] ?? null });
 
 router.get('/products', async (_req, res) => res.status(200).json({ products: await listAvailableProducts() }));
@@ -57,8 +58,18 @@ router.get('/trials/eligibility', async (req, res) => {
 router.post('/trials/register', async (req, res) => {
   const parsed = trialRegistrationSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_TRIAL_REGISTRATION', details: parsed.error.flatten() });
+
+  const recaptcha = await verifyRecaptcha(parsed.data.recaptchaToken, req.ip ?? null);
+  if (!recaptcha.ok) {
+    await securityAuditLogRepository
+      .record({ businessId: null, eventType: 'signup_recaptcha_failed', severity: 'warning', reason: recaptcha.reason, rawMetadata: { ipAddress: req.ip ?? null } })
+      .catch(() => undefined);
+    return res.status(400).json({ error: 'RECAPTCHA_FAILED', message: 'We could not verify this request. Please try again.' });
+  }
+
   try {
-    const result = await registerTrial({ ...parsed.data, device: deviceContextFrom(req) });
+    const { recaptchaToken: _recaptchaToken, ...registrationInput } = parsed.data;
+    const result = await registerTrial({ ...registrationInput, device: deviceContextFrom(req) });
     setSessionCookie(req, res, result.token, 48 * 60 * 60);
     return res.status(201).json({ user: result.user, productAccountId: result.productAccountId, productKey: result.productKey, trial: { id: result.trialId, startsAt: result.startsAt, endsAt: result.endsAt, state: 'ACTIVE' } });
   } catch (error) {

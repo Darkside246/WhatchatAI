@@ -267,7 +267,7 @@ function AiSuggestionsCard() {
  * user_preferences JSONB-array mechanism navigation_order already
  * proved out, just actually used this time.
  */
-export function EmailToolsPanel({ onFilterChange }: { onFilterChange?: (filter: EmailSearchFilter) => void }) {
+export function EmailToolsPanel({ onFilterChange, width }: { onFilterChange?: (filter: EmailSearchFilter) => void; width?: number }) {
   const [order, setOrder] = useState<CardType[]>(DEFAULT_ORDER);
   const dragIndex = useRef<number | null>(null);
 
@@ -300,7 +300,10 @@ export function EmailToolsPanel({ onFilterChange }: { onFilterChange?: (filter: 
   const applyFilter = onFilterChange ?? (() => undefined);
 
   return (
-    <div className="flex h-full w-80 shrink-0 flex-col gap-3 overflow-y-auto border-l border-border-subtle bg-surface-2 p-3">
+    <div
+      style={{ width: width ?? 320, minWidth: width ?? 320 }}
+      className="flex h-full shrink-0 flex-col gap-3 overflow-y-auto border-l border-border-subtle bg-surface-2 p-3"
+    >
       {order.map((type, index) => (
         <CardShell
           key={type}

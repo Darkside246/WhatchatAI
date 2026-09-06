@@ -95,6 +95,11 @@ export type SecurityEventType =
   | 'relationship_suggestion_overridden'
   | 'developer_promoted'
   | 'developer_demoted'
+  | 'auth_rate_limited'
+  | 'signup_recaptcha_failed'
+  | 'oversight_finding_raised'
+  | 'oversight_finding_status_changed'
+  | 'oversight_monitoring_degraded'
   | 'developer_tier_changed'
   | 'business_tier_unrestricted_granted'
   | 'business_tier_unrestricted_revoked';
@@ -280,5 +285,23 @@ export class SecurityAuditLogRepository {
       [eventTypes, sinceIso],
     );
     return rows.map((row) => ({ businessId: row.business_id, count: Number(row.count) }));
+  }
+
+  /**
+   * AURA AI Oversight & Reliability Agent: a plain platform-wide total
+   * across one or more event types since a point in time - unlike
+   * countGroupedByBusinessSince, this does NOT filter out
+   * business_id IS NULL rows, because the two signals this was built for
+   * (auth_rate_limited, signup_recaptcha_failed) are recorded with a null
+   * business_id by construction (they fire before any business/user is
+   * known - see src/server/index.ts's authLimiter and
+   * productAccountRoutes.ts's recaptcha check). Bare-pool, platform-wide.
+   */
+  async countSince(eventTypes: SecurityEventType[], sinceIso: string): Promise<number> {
+    const { rows } = await this.db.query<{ count: string }>(
+      `SELECT count(*)::int AS count FROM security_audit_logs WHERE event_type = ANY($1::text[]) AND created_at >= $2`,
+      [eventTypes, sinceIso],
+    );
+    return Number(rows[0]?.count ?? 0);
   }
 }

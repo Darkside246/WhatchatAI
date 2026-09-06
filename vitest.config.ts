@@ -21,5 +21,10 @@ export default defineConfig({
     fileParallelism: false,
     testTimeout: 15_000,
     env: { REDIS_URL: testRedisUrl },
+    // Vitest's default exclude list skips .git/ but not .claude/ - a stale,
+    // leftover isolated-agent sandbox copy under .claude/worktrees/**/test/
+    // was otherwise picked up as real, additional (and sometimes outdated)
+    // test files alongside this repo's own test/ directory.
+    exclude: ['**/node_modules/**', '**/dist/**', '**/.claude/**'],
   },
 });

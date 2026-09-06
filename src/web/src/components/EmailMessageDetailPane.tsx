@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Bot, Sparkles } from 'lucide-react';
+import { Bot, Sparkles, Reply, Forward, Trash2 } from 'lucide-react';
 import { api, ApiError, type AiAgentSummary } from '../lib/api.js';
 import type { OAuthMessageSummary } from './EmailMessageListPane.js';
 
@@ -19,15 +19,25 @@ function formatFullDate(iso: string | null): string {
 export function EmailMessageDetailPane({
   message,
   onDraftedReply,
+  onReply,
+  onForward,
+  onDeleted,
 }: {
   message: OAuthMessageSummary;
   onDraftedReply: () => void;
+  /** Opens the existing Compose-queue draft form pre-filled as a reply to this message - never a direct send, same human-approval-before-send gate every other draft goes through. */
+  onReply: (message: OAuthMessageSummary) => void;
+  /** Same as onReply, pre-filled as a forward instead. */
+  onForward: (message: OAuthMessageSummary) => void;
+  /** Called after a real, successful delete. */
+  onDeleted: (messageId: string) => void;
 }) {
   const [agents, setAgents] = useState<AiAgentSummary[]>([]);
   const [agentId, setAgentId] = useState('');
   const [instruction, setInstruction] = useState('Write a brief, polite reply addressing the sender\'s message.');
   const [showReplyForm, setShowReplyForm] = useState(false);
   const [drafting, setDrafting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -55,6 +65,19 @@ export function EmailMessageDetailPane({
       setError(err instanceof ApiError ? err.message : 'Could not draft a reply.');
     } finally {
       setDrafting(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!window.confirm(`Delete this email from ${message.fromName || message.fromAddress || 'this sender'}? It moves to Trash/Deleted Items in the real mailbox - recoverable there, not permanently gone.`)) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await api.deleteOAuthMessage(message.id);
+      onDeleted(message.id);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not delete this email. Try again in a moment.');
+      setDeleting(false);
     }
   }
 
@@ -90,7 +113,32 @@ export function EmailMessageDetailPane({
           )}
         </div>
 
-        <div className="mt-6 border-t border-border-subtle pt-4">
+        <div className="mt-6 flex flex-wrap items-center gap-2 border-t border-border-subtle pt-4">
+          <button
+            type="button"
+            onClick={() => onReply(message)}
+            className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-2"
+          >
+            <Reply size={13} aria-hidden />
+            Reply
+          </button>
+          <button
+            type="button"
+            onClick={() => onForward(message)}
+            className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-2"
+          >
+            <Forward size={13} aria-hidden />
+            Forward
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleDelete()}
+            disabled={deleting}
+            className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:border-error/30 hover:bg-error/10 hover:text-error disabled:opacity-50"
+          >
+            <Trash2 size={13} aria-hidden />
+            {deleting ? 'Deleting…' : 'Delete'}
+          </button>
           {!showReplyForm ? (
             <button
               type="button"
@@ -103,7 +151,7 @@ export function EmailMessageDetailPane({
               Draft a reply with AI
             </button>
           ) : (
-            <div className="space-y-2 rounded-lg border border-border-subtle bg-surface-1 p-3">
+            <div className="w-full space-y-2 rounded-lg border border-border-subtle bg-surface-1 p-3">
               <p className="flex items-center gap-1.5 text-caption font-semibold text-accent">
                 <Sparkles size={13} aria-hidden />
                 Draft a reply with AI

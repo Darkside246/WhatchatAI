@@ -1064,7 +1064,17 @@ export class WorkspaceService {
    * pointed at another tenant's agent, and an agent can never be made its own
    * parent.
    */
-  async updateAgent(businessId: string, agentId: string, input: CreateAgentInput): Promise<AiAgentRecord> {
+  /**
+   * userId is optional only for backward compatibility with any other
+   * internal caller that predates this parameter - every real HTTP route
+   * (the only reachable caller; no AI-agent tool touches this table at
+   * all) already has a real authenticated userId to pass. Records the
+   * real before/after status alongside who made the change - this table
+   * has no other write path, so attribution was always structurally
+   * guaranteed, but the audit record itself previously couldn't answer
+   * "who changed what" on its own (AURA Oversight Agent's own finding).
+   */
+  async updateAgent(businessId: string, agentId: string, input: CreateAgentInput, userId?: string): Promise<AiAgentRecord> {
     const agent = await this.agentRepository.findByIdForBusiness(agentId, businessId);
     if (!agent || agent.deletedAt) throw this.notFound();
 
@@ -1075,13 +1085,19 @@ export class WorkspaceService {
       if (!linked || linked.deletedAt) throw this.notFound();
     }
 
+    const previousStatus = agent.status;
     const updated = await this.agentRepository.update(agentId, input);
     if (!updated) throw this.notFound();
 
     await this.securityAuditLogRepository.record({
       businessId,
       eventType: 'agent_updated',
-      rawMetadata: { agentId, category: updated.category },
+      rawMetadata: {
+        agentId,
+        category: updated.category,
+        changedBy: userId ?? null,
+        ...(previousStatus !== updated.status ? { previousStatus, newStatus: updated.status } : {}),
+      },
     });
 
     return updated;

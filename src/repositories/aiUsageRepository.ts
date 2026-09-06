@@ -110,6 +110,27 @@ export class AiUsageRepository {
    * agent_id (e.g. a system-level call) groups under agentId: null,
    * labeled honestly rather than dropped or misattributed.
    */
+  /**
+   * AURA AI Oversight & Reliability Agent: real, day-bucketed platform-wide
+   * totals (UTC calendar days) - the one genuinely new query this system
+   * needed for capacity/growth-rate detection, since getPlatformTotal only
+   * ever returns a single rolling-window snapshot with no per-day
+   * breakdown. ai_usage_events already carries real per-call timestamps,
+   * so this needed no new sampling table, unlike queue depth / WhatsApp
+   * connection count which have no historical persistence at all.
+   */
+  async getDailyPlatformTotals(days: number): Promise<Array<{ day: string; totalTokens: number }>> {
+    const { rows } = await this.db.query<{ day: string; total_tokens: string }>(
+      `SELECT date_trunc('day', created_at AT TIME ZONE 'UTC')::date::text AS day, COALESCE(sum(total_tokens), 0) AS total_tokens
+       FROM ai_usage_events
+       WHERE created_at > now() - ($1 || ' days')::interval
+       GROUP BY day
+       ORDER BY day ASC`,
+      [days],
+    );
+    return rows.map((row) => ({ day: row.day, totalTokens: Number(row.total_tokens) }));
+  }
+
   async getMonthlyUsageByAgentForBusiness(businessId: string): Promise<AiUsageAgentSummary[]> {
     const { rows } = await this.db.query<{ agent_id: string | null; agent_name: string | null; total_tokens: string; call_count: string }>(
       `SELECT u.agent_id, a.name AS agent_name, COALESCE(sum(u.total_tokens), 0) AS total_tokens, count(*) AS call_count

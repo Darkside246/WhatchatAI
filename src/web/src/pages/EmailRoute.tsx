@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Mail, Send, Check, X, Bot, AlertTriangle, Sparkles, Pencil, Trash2, Filter } from 'lucide-react';
+import { Mail, Send, Check, X, Bot, AlertTriangle, Sparkles, Pencil, Trash2, Filter, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -15,6 +15,7 @@ import { EmailFolderRail, type EmailFolderSelection } from '../components/EmailF
 import { EmailMessageListPane, type OAuthMessageSummary } from '../components/EmailMessageListPane.js';
 import { EmailMessageDetailPane } from '../components/EmailMessageDetailPane.js';
 import { EmailToolsPanel, type EmailSearchFilter } from '../components/EmailToolsPanel.js';
+import { useResizableWidth, ResizeHandle } from '../hooks/useResizableWidth.js';
 
 const KIND_LABEL: Record<EmailKind, string> = {
   custom: 'Custom',
@@ -92,6 +93,31 @@ export function EmailRoute() {
   const [aiBusy, setAiBusy] = useState(false);
   const [filter, setFilter] = useState<EmailStatus | 'all'>('all');
 
+  // Resizable panes (the message list and the right-hand tools panel) plus
+  // a collapsible tools panel - real per-viewer layout preferences, not
+  // data, so plain localStorage (via useResizableWidth) is the right place
+  // for them rather than a server-side setting.
+  const messageListWidth = useResizableWidth('email.messageListWidth', 384, 260, 640, 'right');
+  const toolsPanelWidth = useResizableWidth('email.toolsPanelWidth', 320, 240, 520, 'left');
+  const [toolsCollapsed, setToolsCollapsed] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem('email.toolsCollapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  function toggleToolsCollapsed() {
+    setToolsCollapsed((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem('email.toolsCollapsed', String(next));
+      } catch {
+        // Best-effort only.
+      }
+      return next;
+    });
+  }
+
   async function load() {
     const [list, caps, settingsResult] = await Promise.all([
       api.listEmails(),
@@ -114,6 +140,41 @@ export function EmailRoute() {
   function handleSelectFolder(next: EmailFolderSelection) {
     setSelection(next);
     setSelectedMessage(null);
+  }
+
+  // Reply/Forward both open the SAME existing Compose-queue draft form
+  // (pre-filled) rather than sending anything directly through the
+  // connected provider's own send API - the exact same human-approval-
+  // before-send gate every other draft in this app already goes through,
+  // no new send path, no new safety surface.
+  function handleReply(message: OAuthMessageSummary) {
+    setEditingId(null);
+    setDraft({
+      kind: 'general_update',
+      toEmail: message.fromAddress ?? '',
+      toName: message.fromName ?? '',
+      subject: message.subject ? `Re: ${message.subject}` : 'Re:',
+      bodyText: '',
+    });
+    setComposing(true);
+    setSelection({ kind: 'compose' });
+  }
+
+  function handleForward(message: OAuthMessageSummary) {
+    setEditingId(null);
+    setDraft({
+      kind: 'general_update',
+      toEmail: '',
+      toName: '',
+      subject: message.subject ? `Fwd: ${message.subject}` : 'Fwd:',
+      bodyText: `\n\n---------- Forwarded message ----------\nFrom: ${message.fromName || message.fromAddress || 'Unknown sender'}\nSubject: ${message.subject || '(no subject)'}\n\n${message.bodyText || message.snippet || ''}`,
+    });
+    setComposing(true);
+    setSelection({ kind: 'compose' });
+  }
+
+  function handleMessageDeleted(messageId: string) {
+    setSelectedMessage((prev) => (prev?.id === messageId ? null : prev));
   }
 
   const canSend = capabilities?.providerConfigured === true && capabilities?.senderConfigured === true;
@@ -566,8 +627,11 @@ export function EmailRoute() {
             folderId={selection.folderId}
             selectedMessageId={selectedMessage?.id ?? null}
             onSelect={setSelectedMessage}
+            onDeleted={handleMessageDeleted}
             filter={searchFilter}
+            width={messageListWidth.width}
           />
+          <ResizeHandle onPointerDown={messageListWidth.onHandlePointerDown} />
           {selectedMessage ? (
             <EmailMessageDetailPane
               message={selectedMessage}
@@ -575,6 +639,9 @@ export function EmailRoute() {
                 setSelection({ kind: 'compose' });
                 void load();
               }}
+              onReply={handleReply}
+              onForward={handleForward}
+              onDeleted={handleMessageDeleted}
             />
           ) : (
             <div className="flex min-w-0 flex-1 items-center justify-center text-body text-fg-muted">
@@ -584,7 +651,33 @@ export function EmailRoute() {
         </>
       )}
 
-      <EmailToolsPanel onFilterChange={setSearchFilter} />
+      {toolsCollapsed ? (
+        <button
+          type="button"
+          onClick={toggleToolsCollapsed}
+          title="Show tools panel"
+          aria-label="Show tools panel"
+          className="flex w-6 shrink-0 items-center justify-center border-l border-border-subtle bg-surface-2 text-fg-muted hover:bg-surface-3 hover:text-fg"
+        >
+          <ChevronsLeft size={14} aria-hidden />
+        </button>
+      ) : (
+        <>
+          <ResizeHandle onPointerDown={toolsPanelWidth.onHandlePointerDown} />
+          <div className="relative flex h-full shrink-0">
+            <button
+              type="button"
+              onClick={toggleToolsCollapsed}
+              title="Hide tools panel"
+              aria-label="Hide tools panel"
+              className="absolute -left-3 top-3 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-border-subtle bg-surface-1 text-fg-muted shadow-sm hover:bg-surface-2 hover:text-fg"
+            >
+              <ChevronsRight size={12} aria-hidden />
+            </button>
+            <EmailToolsPanel onFilterChange={setSearchFilter} width={toolsPanelWidth.width} />
+          </div>
+        </>
+      )}
     </div>
   );
 }

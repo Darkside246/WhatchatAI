@@ -287,10 +287,22 @@ export class EmailOAuthRepository {
           is_read, is_starred, labels, received_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
        ON CONFLICT (account_id, folder_id, provider_message_id) DO UPDATE SET
-         is_read   = EXCLUDED.is_read,
+         is_read    = EXCLUDED.is_read,
          is_starred = EXCLUDED.is_starred,
-         labels    = EXCLUDED.labels,
-         synced_at = now()`,
+         labels     = EXCLUDED.labels,
+         -- Also refreshed on every re-sync (not just read/starred/labels) so
+         -- a real extraction bug fixed later (e.g. Gmail's raw-HTML-into-
+         -- body_text bug, emailSyncService.ts's extractGmailBody) self-heals
+         -- on this account's very next scheduled sync, rather than leaving
+         -- every already-synced message wrong forever.
+         subject      = EXCLUDED.subject,
+         from_address = EXCLUDED.from_address,
+         from_name    = EXCLUDED.from_name,
+         to_addresses = EXCLUDED.to_addresses,
+         snippet      = EXCLUDED.snippet,
+         body_html    = EXCLUDED.body_html,
+         body_text    = EXCLUDED.body_text,
+         synced_at  = now()`,
       [
         accountId,
         businessId,
@@ -321,6 +333,17 @@ export class EmailOAuthRepository {
       [messageId, businessId],
     );
     return result.rows[0] ? this.mapMessage(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  /** Removes AURA's own local copy only, after the real provider-side trash/delete has already succeeded (see emailSyncService.ts's deleteOAuthMessage) - never the other way around, so a failed provider call never leaves this app showing a message that's actually still real and unread in the person's real mailbox. Same tenant-safe join-through-account as getMessageByIdForBusiness. */
+  async deleteMessage(messageId: string, businessId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `DELETE FROM email_oauth_messages m
+       USING email_oauth_accounts a
+       WHERE m.id = $1 AND a.id = m.account_id AND a.business_id = $2`,
+      [messageId, businessId],
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   async listMessages(accountId: string, opts?: { limit?: number; unreadOnly?: boolean; folderId?: string }): Promise<EmailOAuthMessageRecord[]> {

@@ -39,6 +39,7 @@ import { openclawAdapterRouter } from './openclawAdapterRouter.js';
 import { openclawMcpRouter } from './openclawMcpRouter.js';
 import { productAccountRouter } from './productAccountRoutes.js';
 import { governanceRouter } from './governanceRoutes.js';
+import { oversightRouter } from './oversightRoutes.js';
 import { mountPlatformRoutes } from './platformRoutes.js';
 import { initializePlatformFoundation } from '../services/platform/platformBootstrap.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
@@ -324,6 +325,37 @@ const expensiveActionLimiter = rateLimit({
 app.use('/api/workspace/marketing/ai-suggest', expensiveActionLimiter);
 app.use('/api/workspace/campaigns', expensiveActionLimiter);
 
+/**
+ * A tight brake on auth-sensitive endpoints - registration/login abuse
+ * (bot signups, credential stuffing) is a different threat than "AI/
+ * WhatsApp costs money," and the limiters above are both far too generous
+ * to stop it (300/min and 30/min would still let hundreds of fake trial
+ * signups or login guesses through per hour). Matters once this app is
+ * reachable from the open internet, not just from a trusted dev machine.
+ */
+const authLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  // A real, queryable signal that something is hammering these endpoints -
+  // surfaced today via the existing platform-wide security-events view
+  // (GET /developer/security-events, already built for the Developer
+  // Control Plane). businessId is genuinely null: this fires before any
+  // business/user is known. Overriding `handler` (rather than `message`
+  // alone) replaces express-rate-limit's own default response, so the
+  // real JSON body below is reconstructed to match it exactly.
+  handler: (req, res) => {
+    void new SecurityAuditLogRepository(pool)
+      .record({ businessId: null, eventType: 'auth_rate_limited', severity: 'warning', reason: `Rate limit hit on ${req.path}`, rawMetadata: { ipAddress: req.ip ?? null, path: req.path } })
+      .catch(() => undefined);
+    res.status(429).json({ error: 'RATE_LIMITED', message: 'Too many attempts. Try again in a few minutes.' });
+  },
+});
+app.use('/api/auth/register', authLimiter);
+app.use('/api/auth/login', authLimiter);
+app.use('/api/trials/register', authLimiter);
+
 // 20mb (not the old 2mb) to fit base64-encoded outbound media uploads -
 // this is one global parser, so every route's real ceiling moved with it.
 app.use(express.json({ limit: '20mb' }));
@@ -368,6 +400,7 @@ mountPlatformRoutes(app);
 // the bootstrap-only /api/auth/register below. See productAccountRoutes.ts.
 app.use('/api', productAccountRouter);
 app.use('/api', governanceRouter);
+app.use('/api', oversightRouter);
 
 
 // OpenClaw's own tool-call adapter - authenticates via a per-cell
@@ -2987,12 +3020,13 @@ app.post('/api/workspace/agents/parse-description', expensiveActionLimiter, requ
  */
 app.patch('/api/workspace/agents/:agentId', requireWorkspaceContext, requirePermission('ai.edit'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const auth = res.locals.auth as AuthContext;
   const parsed = createAgentSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: 'INVALID_AGENT', details: parsed.error.flatten() });
   }
   try {
-    const agent = await workspaceService.updateAgent(businessId, String(req.params.agentId ?? ''), parsed.data);
+    const agent = await workspaceService.updateAgent(businessId, String(req.params.agentId ?? ''), parsed.data, auth.userId);
     return res.status(200).json({ agent });
   } catch (error) {
     if (isChatNotFoundError(error)) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });

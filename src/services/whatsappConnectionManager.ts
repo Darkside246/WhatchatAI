@@ -230,6 +230,11 @@ export class WhatsAppConnectionManager {
     return count;
   }
 
+  /** The real ceiling activeTenantCount() is measured against (canProvisionNewTenant's own check) - exposed for the Oversight Agent's capacity-percentage reporting rather than having it re-read/guess the env var itself. */
+  maxConcurrentConnections(): number {
+    return MAX_CONCURRENT_CONNECTIONS;
+  }
+
   /**
    * Boot-time reconnection: finds every business with a real, previously-
    * connected (never logged-out) WhatsApp account and reconnects it,

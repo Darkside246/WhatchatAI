@@ -141,3 +141,55 @@ export async function getGovernanceThresholds(): Promise<GovernanceThresholds> {
 export async function setGovernanceThresholds(thresholds: GovernanceThresholds, updatedByUserId: string | null): Promise<void> {
   await platformSettingsRepository.set('governance_thresholds', thresholds, updatedByUserId);
 }
+
+/**
+ * AURA AI Oversight & Reliability Agent: the tunable thresholds
+ * oversightSweepService.ts evaluates every 15 minutes. Defaults are a
+ * stated assumption to revisit once the sweep has run against real
+ * production traffic - same honesty convention as GovernanceThresholds
+ * above. authAbusePerHour/recaptchaFailuresPerHour are deliberately looser
+ * than they might eventually need to be (30/20) since these two signals
+ * were only wired into an audit trail this same session and have no real
+ * production baseline yet; entitlementWarningPct/CriticalPct mirror the
+ * two-tier "early signal vs firm concern" shape used elsewhere in this
+ * codebase (e.g. biTrendService.ts's confidence tiers).
+ */
+export interface OversightThresholds {
+  authAbusePerHour: number;
+  recaptchaFailuresPerHour: number;
+  aiUsageGrowthWarningPct: number;
+  entitlementWarningPct: number;
+  entitlementCriticalPct: number;
+  connectionCeilingWarningPct: number;
+  configDriftGraceHours: number;
+}
+
+const DEFAULT_OVERSIGHT_THRESHOLDS: OversightThresholds = {
+  authAbusePerHour: 30,
+  recaptchaFailuresPerHour: 20,
+  aiUsageGrowthWarningPct: 50,
+  entitlementWarningPct: 80,
+  entitlementCriticalPct: 95,
+  connectionCeilingWarningPct: 80,
+  configDriftGraceHours: 24,
+};
+
+export async function getOversightThresholds(): Promise<OversightThresholds> {
+  const setting = await platformSettingsRepository.get('oversight_thresholds');
+  if (!setting) return DEFAULT_OVERSIGHT_THRESHOLDS;
+  const value = setting.value as Partial<OversightThresholds>;
+  const pick = (key: keyof OversightThresholds): number => (typeof value[key] === 'number' && (value[key] as number) > 0 ? (value[key] as number) : DEFAULT_OVERSIGHT_THRESHOLDS[key]);
+  return {
+    authAbusePerHour: pick('authAbusePerHour'),
+    recaptchaFailuresPerHour: pick('recaptchaFailuresPerHour'),
+    aiUsageGrowthWarningPct: pick('aiUsageGrowthWarningPct'),
+    entitlementWarningPct: pick('entitlementWarningPct'),
+    entitlementCriticalPct: pick('entitlementCriticalPct'),
+    connectionCeilingWarningPct: pick('connectionCeilingWarningPct'),
+    configDriftGraceHours: pick('configDriftGraceHours'),
+  };
+}
+
+export async function setOversightThresholds(thresholds: OversightThresholds, updatedByUserId: string | null): Promise<void> {
+  await platformSettingsRepository.set('oversight_thresholds', thresholds, updatedByUserId);
+}

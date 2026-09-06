@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Star } from 'lucide-react';
-import { api } from '../lib/api.js';
+import { Star, Trash2 } from 'lucide-react';
+import { api, ApiError } from '../lib/api.js';
 import type { EmailSearchFilter } from './EmailToolsPanel.js';
 
 export type OAuthMessageSummary = {
@@ -39,17 +39,24 @@ export function EmailMessageListPane({
   folderId,
   selectedMessageId,
   onSelect,
+  onDeleted,
   refreshKey,
   filter,
+  width,
 }: {
   accountId: string;
   folderId: string;
   selectedMessageId: string | null;
   onSelect: (message: OAuthMessageSummary) => void;
+  /** Called after a real, successful delete - lets the parent clear its own selected-message state if that was the one just removed. */
+  onDeleted?: (messageId: string) => void;
   refreshKey?: number;
   filter?: EmailSearchFilter;
+  /** Real pixel width, driven by the parent's useResizableWidth - falls back to a sensible default (matches the old fixed w-96) when omitted. */
+  width?: number;
 }) {
   const [messages, setMessages] = useState<OAuthMessageSummary[] | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     setMessages(null);
@@ -72,8 +79,25 @@ export function EmailMessageListPane({
     });
   }, [messages, filter]);
 
+  async function handleDelete(event: React.MouseEvent, message: OAuthMessageSummary) {
+    event.stopPropagation(); // never also trigger the row's own onSelect
+    if (!window.confirm(`Delete this email from ${message.fromName || message.fromAddress || 'this sender'}? It moves to Trash/Deleted Items in the real mailbox - recoverable there, not permanently gone.`)) return;
+    setDeletingId(message.id);
+    try {
+      await api.deleteOAuthMessage(message.id);
+      setMessages((prev) => prev?.filter((m) => m.id !== message.id) ?? prev);
+      onDeleted?.(message.id);
+    } catch (err) {
+      window.alert(err instanceof ApiError ? err.message : 'Could not delete this email. Try again in a moment.');
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   return (
-    <div className="flex h-full w-96 shrink-0 flex-col overflow-y-auto border-r border-border-subtle">
+    <div
+      style={{ width: width ?? 384, minWidth: width ?? 384 }}
+      className="flex h-full shrink-0 flex-col overflow-y-auto border-r border-border-subtle">
       {messages === null && <p className="p-4 text-caption text-fg-muted">Loading messages…</p>}
       {filteredMessages?.length === 0 && messages !== null && (
         <p className="p-4 text-caption text-fg-muted">{filter ? 'No messages match this filter.' : 'No messages in this folder yet.'}</p>
@@ -81,15 +105,24 @@ export function EmailMessageListPane({
       {filteredMessages?.map((message) => {
         const isSelected = message.id === selectedMessageId;
         return (
-          <button
+          // A row full of clickable text plus one real nested action button
+          // (the delete icon) can't be a single <button> - buttons can't
+          // nest. A div with the same keyboard/role semantics keeps this
+          // list fully keyboard-navigable while allowing the delete icon
+          // to be its own independent, stoppable click target.
+          <div
             key={message.id}
-            type="button"
+            role="button"
+            tabIndex={0}
             onClick={() => onSelect(message)}
-            className={`w-full border-b border-border-subtle px-4 py-3 text-left transition-colors ${
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') onSelect(message);
+            }}
+            className={`group relative w-full cursor-pointer border-b border-border-subtle px-4 py-3 text-left transition-colors ${
               isSelected ? 'bg-accent-soft' : message.isRead ? 'bg-surface-1 hover:bg-surface-2' : 'bg-surface-2 hover:bg-surface-3'
             }`}
           >
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center justify-between gap-2 pr-6">
               <span className={`truncate text-caption ${message.isRead ? 'font-normal text-fg-secondary' : 'font-semibold text-fg'}`}>
                 {message.fromName || message.fromAddress || 'Unknown sender'}
               </span>
@@ -98,11 +131,21 @@ export function EmailMessageListPane({
                 {formatDate(message.receivedAt)}
               </span>
             </div>
-            <p className={`mt-0.5 truncate text-caption ${message.isRead ? 'text-fg-muted' : 'font-medium text-fg'}`}>
+            <p className={`mt-0.5 truncate pr-6 text-caption ${message.isRead ? 'text-fg-muted' : 'font-medium text-fg'}`}>
               {message.subject || '(no subject)'}
             </p>
-            <p className="mt-0.5 truncate text-meta text-fg-muted">{message.snippet}</p>
-          </button>
+            <p className="mt-0.5 truncate pr-6 text-meta text-fg-muted">{message.snippet}</p>
+            <button
+              type="button"
+              onClick={(event) => void handleDelete(event, message)}
+              disabled={deletingId === message.id}
+              title="Delete"
+              aria-label="Delete this email"
+              className="absolute right-2 top-3 rounded-md border border-transparent p-1 text-fg-muted opacity-0 transition-opacity hover:border-error/30 hover:bg-error/10 hover:text-error focus:opacity-100 disabled:opacity-50 group-hover:opacity-100"
+            >
+              <Trash2 size={13} aria-hidden />
+            </button>
+          </div>
         );
       })}
     </div>

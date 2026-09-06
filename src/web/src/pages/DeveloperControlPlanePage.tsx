@@ -4,9 +4,9 @@ import {
   Activity, Bot, CreditCard, Database, Gauge, KeyRound, Radio, ShieldCheck, Users,
   Building2, CookingPot, ShoppingBag, Scissors, Car, Stethoscope, Scale, Hotel,
   HardHat, Package, ChevronDown, ChevronRight, LayoutGrid, Check, HeartPulse, X, Coins,
-  Wallet, Save, PlugZap, Plus, ShieldAlert,
+  Wallet, Save, PlugZap, Plus, ShieldAlert, Radar,
 } from 'lucide-react';
-import { api, ApiError, type DeveloperPlan, type PlanEntitlement, type IntegrationHealth, type GovernanceFlagDto, type GovernanceThresholdsDto } from '../lib/api.js';
+import { api, ApiError, type DeveloperPlan, type PlanEntitlement, type IntegrationHealth, type GovernanceFlagDto, type GovernanceThresholdsDto, type OversightFindingDto, type OversightThresholdsDto } from '../lib/api.js';
 import { ToggleSwitch } from '../components/ToggleSwitch.js';
 import { IntegrationHealthList } from '../components/IntegrationHealthList.js';
 import { useAuth } from '../hooks/useAuth.js';
@@ -1075,6 +1075,192 @@ function GovernanceSection({
   );
 }
 
+const OVERSIGHT_CATEGORY_LABEL: Record<OversightFindingDto['category'], string> = {
+  application_health: 'Application Health',
+  security: 'Security',
+  abuse_spam: 'Abuse & Spam',
+  capacity: 'Capacity',
+  policy: 'Policy',
+  monitoring_gap: 'Monitoring Gap',
+};
+
+const OVERSIGHT_SEVERITY_COLOR: Record<OversightFindingDto['severity'], string> = {
+  critical: 'bg-error/20 text-error',
+  high: 'bg-error/10 text-error',
+  medium: 'bg-warning/15 text-warning',
+  low: 'bg-info/15 text-info',
+  informational: 'bg-fg-muted/15 text-fg-muted',
+};
+
+function OversightThresholdsForm({ thresholds, onSave }: { thresholds: OversightThresholdsDto | null; onSave: (t: OversightThresholdsDto) => Promise<void> }) {
+  const [fields, setFields] = useState<Record<keyof OversightThresholdsDto, string>>({
+    authAbusePerHour: '', recaptchaFailuresPerHour: '', aiUsageGrowthWarningPct: '',
+    entitlementWarningPct: '', entitlementCriticalPct: '', connectionCeilingWarningPct: '', configDriftGraceHours: '',
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!thresholds) return;
+    setFields({
+      authAbusePerHour: String(thresholds.authAbusePerHour),
+      recaptchaFailuresPerHour: String(thresholds.recaptchaFailuresPerHour),
+      aiUsageGrowthWarningPct: String(thresholds.aiUsageGrowthWarningPct),
+      entitlementWarningPct: String(thresholds.entitlementWarningPct),
+      entitlementCriticalPct: String(thresholds.entitlementCriticalPct),
+      connectionCeilingWarningPct: String(thresholds.connectionCeilingWarningPct),
+      configDriftGraceHours: String(thresholds.configDriftGraceHours),
+    });
+  }, [thresholds]);
+
+  async function handleSave() {
+    setSaving(true); setError(null);
+    try {
+      const clamp = (v: string, max: number) => Math.min(max, Math.max(1, Math.round(Number(v)) || 1));
+      await onSave({
+        authAbusePerHour: clamp(fields.authAbusePerHour, 100_000),
+        recaptchaFailuresPerHour: clamp(fields.recaptchaFailuresPerHour, 100_000),
+        aiUsageGrowthWarningPct: clamp(fields.aiUsageGrowthWarningPct, 10_000),
+        entitlementWarningPct: clamp(fields.entitlementWarningPct, 100),
+        entitlementCriticalPct: clamp(fields.entitlementCriticalPct, 100),
+        connectionCeilingWarningPct: clamp(fields.connectionCeilingWarningPct, 100),
+        configDriftGraceHours: clamp(fields.configDriftGraceHours, 24 * 90),
+      });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to save thresholds.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!thresholds) return null;
+
+  const labels: Record<keyof OversightThresholdsDto, string> = {
+    authAbusePerHour: 'Auth rate-limit trips / hr',
+    recaptchaFailuresPerHour: 'reCAPTCHA failures / hr',
+    aiUsageGrowthWarningPct: 'AI usage growth warning %',
+    entitlementWarningPct: 'Entitlement warning %',
+    entitlementCriticalPct: 'Entitlement critical %',
+    connectionCeilingWarningPct: 'Connection ceiling warning %',
+    configDriftGraceHours: 'Config-drift grace (hours)',
+  };
+
+  return (
+    <div className="space-y-2 rounded-xl border border-border-subtle bg-surface-1 p-4">
+      <p className="text-caption font-medium text-fg-secondary">Thresholds</p>
+      <div className="grid gap-3 sm:grid-cols-4">
+        {(Object.keys(labels) as Array<keyof OversightThresholdsDto>).map((key) => (
+          <label key={key} className="space-y-1">
+            <span className="block text-meta text-fg-muted">{labels[key]}</span>
+            <input
+              type="number"
+              min={1}
+              value={fields[key]}
+              onChange={(e) => setFields((prev) => ({ ...prev, [key]: e.target.value }))}
+              className="w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-1.5 text-caption text-fg"
+            />
+          </label>
+        ))}
+      </div>
+      <button type="button" onClick={() => void handleSave()} disabled={saving} className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+        <Save size={13} aria-hidden /> Save thresholds
+      </button>
+      {error && <p className="text-caption text-error">{error}</p>}
+    </div>
+  );
+}
+
+function OversightFindingRow({ finding, onChangeStatus }: { finding: OversightFindingDto; onChangeStatus: (id: string, status: 'investigating' | 'resolved' | 'rejected' | 'monitoring') => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  async function handle(status: 'investigating' | 'resolved' | 'rejected' | 'monitoring') {
+    setBusy(true);
+    try { await onChangeStatus(finding.id, status); } finally { setBusy(false); }
+  }
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border-subtle bg-surface-1 p-3">
+      <div className="min-w-0">
+        <p className="font-medium text-fg">{finding.title}</p>
+        <p className="mt-0.5 truncate text-caption text-fg-muted">
+          {finding.businessName ?? 'Platform-wide'}{finding.affectedComponent ? ` · ${finding.affectedComponent}` : ''} · seen {finding.occurrenceCount}× · {formatAge(finding.lastDetectedAt)}
+          {finding.confidence !== null ? ` · ${Math.round(finding.confidence * 100)}% confidence` : ''}
+        </p>
+        {(finding.impact !== null || finding.likelihood !== null || finding.exposure !== null || finding.urgency !== null) && (
+          <p className="mt-0.5 text-meta text-fg-muted">
+            {finding.impact !== null && `Impact ${finding.impact}/5 `}
+            {finding.likelihood !== null && `· Likelihood ${finding.likelihood}/5 `}
+            {finding.exposure !== null && `· Exposure ${finding.exposure}/5 `}
+            {finding.urgency !== null && `· Urgency ${finding.urgency}/5`}
+          </p>
+        )}
+        {finding.recommendedInvestigation && <p className="mt-1 text-caption text-fg-secondary">{finding.recommendedInvestigation}</p>}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <span className={`rounded-full px-2 py-0.5 text-meta font-medium ${OVERSIGHT_SEVERITY_COLOR[finding.severity]}`}>{finding.severity}</span>
+        <button type="button" onClick={() => void handle('investigating')} disabled={busy} className="rounded-md bg-accent-soft px-2 py-1 text-meta font-medium text-accent hover:bg-accent/20 disabled:opacity-50">Investigating</button>
+        <button type="button" onClick={() => void handle('resolved')} disabled={busy} className="rounded-md bg-success/15 px-2 py-1 text-meta font-medium text-success hover:bg-success/25 disabled:opacity-50">Resolved</button>
+        <button type="button" onClick={() => void handle('rejected')} disabled={busy} className="rounded-md px-2 py-1 text-meta font-medium text-fg-muted hover:bg-surface-2 disabled:opacity-50">Dismiss</button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * AURA AI Oversight & Reliability Agent: a broader, additional
+ * supervisory layer alongside (not a replacement for) AI Governance
+ * above - application health, security/abuse, capacity forecasting,
+ * config-policy drift, and a "Monitoring Gaps" subsection that stays
+ * visible unconditionally (real, honest blind spots, never hidden away).
+ * Same structural guarantee: no AI agent's own tool-calling path can
+ * reach any route this section calls.
+ */
+function OversightSection({
+  findings, thresholds, onChangeStatus, onSaveThresholds,
+}: {
+  findings: OversightFindingDto[] | null;
+  thresholds: OversightThresholdsDto | null;
+  onChangeStatus: (id: string, status: 'investigating' | 'resolved' | 'rejected' | 'monitoring') => Promise<void>;
+  onSaveThresholds: (t: OversightThresholdsDto) => Promise<void>;
+}) {
+  const monitoringGaps = (findings ?? []).filter((f) => f.category === 'monitoring_gap');
+  const otherFindings = (findings ?? []).filter((f) => f.category !== 'monitoring_gap');
+  const byCategory = new Map<OversightFindingDto['category'], OversightFindingDto[]>();
+  for (const finding of otherFindings) {
+    const list = byCategory.get(finding.category) ?? [];
+    list.push(finding);
+    byCategory.set(finding.category, list);
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-caption text-fg-secondary">
+        Application health, security/abuse, capacity, and config-policy findings computed from real telemetry every 15 minutes - 100% deterministic checks, no LLM in the detection path. Findings never disappear on their own; a human marks them Investigating, Resolved, or Dismiss.
+      </p>
+
+      {[...byCategory.entries()].map(([category, list]) => (
+        <div key={category} className="space-y-2">
+          <p className="text-caption font-semibold text-fg-secondary">{OVERSIGHT_CATEGORY_LABEL[category]}</p>
+          {list.map((finding) => (
+            <OversightFindingRow key={finding.id} finding={finding} onChangeStatus={onChangeStatus} />
+          ))}
+        </div>
+      ))}
+      {otherFindings.length === 0 && findings !== null && <p className="text-caption text-fg-muted">No open findings.</p>}
+      {findings === null && <p className="text-caption text-fg-muted">Loading…</p>}
+
+      {/* Always visible, never collapsed away - real, honest blind spots (directive's own "Monitoring Gaps" requirement). */}
+      <div className="space-y-2 rounded-xl border border-dashed border-border-subtle p-3">
+        <p className="text-caption font-semibold text-fg-secondary">Monitoring Gaps</p>
+        {monitoringGaps.map((finding) => (
+          <OversightFindingRow key={finding.id} finding={finding} onChangeStatus={onChangeStatus} />
+        ))}
+        {monitoringGaps.length === 0 && findings !== null && <p className="text-caption text-fg-muted">None reported yet - the sweep hasn't run, or gap reporting is still initializing.</p>}
+      </div>
+
+      <OversightThresholdsForm thresholds={thresholds} onSave={onSaveThresholds} />
+    </div>
+  );
+}
+
 /** Admin-only: promotes an existing CLIENT user (by email - the only identifier an Admin actually knows ahead of time) to a real DEVELOPER account at the chosen tier. */
 function PromoteDeveloperForm({ disabled, onPromote }: { disabled: boolean; onPromote: (email: string, tier: 'ADMIN' | 'STANDARD') => Promise<void> }) {
   const [open, setOpen] = useState(false);
@@ -1208,6 +1394,8 @@ export function DeveloperControlPlanePage() {
   const [openclawStatus, setOpenclawStatus] = useState<OpenClawStatus | null>(null);
   const [governanceFlags, setGovernanceFlags] = useState<GovernanceFlagDto[] | null>(null);
   const [governanceThresholds, setGovernanceThresholds] = useState<GovernanceThresholdsDto | null>(null);
+  const [oversightFindings, setOversightFindings] = useState<OversightFindingDto[] | null>(null);
+  const [oversightThresholds, setOversightThresholds] = useState<OversightThresholdsDto | null>(null);
   const [platformAccounts, setPlatformAccounts] = useState<DeveloperAccount[]>([]);
   const [changingPlanForBusinessId, setChangingPlanForBusinessId] = useState<string | null>(null);
   const [catalogOpen, setCatalogOpen] = useState(true);
@@ -1227,6 +1415,7 @@ export function DeveloperControlPlanePage() {
   const [aiProvidersOpen, setAiProvidersOpen] = useState(true);
   const [openclawOpen, setOpenclawOpen] = useState(true);
   const [governanceOpen, setGovernanceOpen] = useState(true);
+  const [oversightOpen, setOversightOpen] = useState(true);
 
   function loadPlatformConfig() {
     api.getPlatformConfig().then(setPlatformConfig).catch(() => undefined);
@@ -1248,6 +1437,8 @@ export function DeveloperControlPlanePage() {
     api.getDeveloperAccounts().then((r) => setPlatformAccounts(r.accounts)).catch(() => undefined);
     api.getGovernanceFlags().then((r) => setGovernanceFlags(r.flags)).catch(() => undefined);
     api.getGovernanceThresholds().then((r) => setGovernanceThresholds(r.thresholds)).catch(() => undefined);
+    api.getOversightFindings().then((r) => setOversightFindings(r.findings)).catch(() => undefined);
+    api.getOversightThresholds().then((r) => setOversightThresholds(r.thresholds)).catch(() => undefined);
     api.getPlatformTrials().then((r) => setPlatformTrials(r.trials)).catch(() => undefined);
     api.getPlatformSecurityEvents().then((r) => setSecurityEvents(r.events)).catch(() => undefined);
     api.getDevelopers().then((r) => setDevelopers(r.developers)).catch(() => undefined);
@@ -1279,6 +1470,23 @@ export function DeveloperControlPlanePage() {
   const handleSaveGovernanceThresholds = async (thresholds: GovernanceThresholdsDto) => {
     const { thresholds: saved } = await api.setGovernanceThresholds(thresholds);
     setGovernanceThresholds(saved);
+  };
+
+  const handleChangeOversightFindingStatus = async (id: string, status: 'investigating' | 'resolved' | 'rejected' | 'monitoring') => {
+    const { finding } = await api.changeOversightFindingStatus(id, status);
+    // 'resolved'/'rejected' are terminal - listOpenAcrossPlatform never
+    // returns them again, so remove locally. 'investigating'/'monitoring'
+    // stay open - update in place rather than incorrectly disappearing.
+    setOversightFindings((prev) => {
+      if (!prev) return prev;
+      if (finding.status === 'resolved' || finding.status === 'rejected') return prev.filter((f) => f.id !== finding.id);
+      return prev.map((f) => (f.id === finding.id ? finding : f));
+    });
+  };
+
+  const handleSaveOversightThresholds = async (thresholds: OversightThresholdsDto) => {
+    const { thresholds: saved } = await api.setOversightThresholds(thresholds);
+    setOversightThresholds(saved);
   };
 
   const handleTogglePaymentProvider = async (kind: string, enabled: boolean) => {
@@ -1693,6 +1901,32 @@ export function DeveloperControlPlanePage() {
                 onReview={handleReviewGovernanceFlag}
                 onDismiss={handleDismissGovernanceFlag}
                 onSaveThresholds={handleSaveGovernanceThresholds}
+              />
+            </div>
+          )}
+        </section>
+
+        {/* ── AURA AI Oversight & Reliability Agent — application health, security/abuse, capacity, policy, and honest monitoring gaps ── */}
+        <section className="rounded-2xl border border-border-subtle bg-surface-1 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setOversightOpen((o) => !o)}
+            className="flex w-full items-center gap-3 px-6 py-4 text-left hover:bg-surface-2 transition-colors"
+          >
+            <Radar size={18} className="shrink-0 text-accent" />
+            <span className="flex-1 text-title font-semibold">AI Oversight & Reliability</span>
+            <span className="text-caption text-fg-muted">{oversightFindings ? `${oversightFindings.length} open` : '…'}</span>
+            {oversightOpen
+              ? <ChevronDown size={16} className="shrink-0 text-fg-muted" />
+              : <ChevronRight size={16} className="shrink-0 text-fg-muted" />}
+          </button>
+          {oversightOpen && (
+            <div className="border-t border-border-subtle px-6 pb-6 pt-4">
+              <OversightSection
+                findings={oversightFindings}
+                thresholds={oversightThresholds}
+                onChangeStatus={handleChangeOversightFindingStatus}
+                onSaveThresholds={handleSaveOversightThresholds}
               />
             </div>
           )}

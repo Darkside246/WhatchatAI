@@ -33,15 +33,21 @@ type GmailLabel = { id: string; name: string; type: 'system' | 'user' };
 type GmailLabelListResponse = { labels?: GmailLabel[] };
 
 type GmailMessageHeader = { name: string; value: string };
-type GmailMessage = {
+interface GmailMessagePart {
+  mimeType: string;
+  body?: { data?: string };
+  parts?: GmailMessagePart[];
+}
+export type GmailMessage = {
   id: string;
   threadId?: string;
   labelIds?: string[];
   snippet?: string;
   payload?: {
+    mimeType?: string;
     headers?: GmailMessageHeader[];
     body?: { data?: string };
-    parts?: Array<{ mimeType: string; body?: { data?: string } }>;
+    parts?: GmailMessagePart[];
   };
   internalDate?: string;
 };
@@ -51,16 +57,48 @@ function decodeBase64(data: string): string {
   return Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
 }
 
-function extractGmailBody(msg: GmailMessage): { html: string | null; text: string | null } {
-  const parts = msg.payload?.parts ?? [];
-  const htmlPart = parts.find((p) => p.mimeType === 'text/html');
-  const textPart = parts.find((p) => p.mimeType === 'text/plain');
-  const directBody = msg.payload?.body?.data;
+/**
+ * Gmail's `parts` array is genuinely recursive - a message with an
+ * attachment (or any multipart/mixed wrapping a multipart/alternative)
+ * nests the real text/plain and text/html parts one or more levels deep,
+ * not at the top level. A flat, one-level find() silently finds nothing
+ * for those messages.
+ */
+function findPartByMimeType(parts: GmailMessagePart[], mimeType: string): GmailMessagePart | undefined {
+  for (const part of parts) {
+    if (part.mimeType === mimeType && part.body?.data) return part;
+    if (part.parts) {
+      const found = findPartByMimeType(part.parts, mimeType);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
 
-  return {
-    html: htmlPart?.body?.data ? decodeBase64(htmlPart.body.data) : null,
-    text: textPart?.body?.data ? decodeBase64(textPart.body.data) : directBody ? decodeBase64(directBody) : null,
-  };
+export function extractGmailBody(msg: GmailMessage): { html: string | null; text: string | null } {
+  const htmlPart = findPartByMimeType(msg.payload?.parts ?? [], 'text/html');
+  const textPart = findPartByMimeType(msg.payload?.parts ?? [], 'text/plain');
+  if (htmlPart || textPart) {
+    return {
+      html: htmlPart?.body?.data ? decodeBase64(htmlPart.body.data) : null,
+      text: textPart?.body?.data ? decodeBase64(textPart.body.data) : null,
+    };
+  }
+
+  // No multipart structure at all (no `parts` array) - the top-level
+  // payload itself IS the whole body, and only ITS OWN mimeType says
+  // whether that's real HTML or plain text. Real bug this fixes: the
+  // previous code assigned this direct body to `text` unconditionally,
+  // regardless of its real mimeType - every single-part HTML email (no
+  // multipart/alternative wrapper, e.g. many automated notification
+  // emails) put raw HTML source into the plain-text field, which every
+  // client then rendered as literal <html><body>...</body></html> text
+  // instead of formatted content.
+  const directBody = msg.payload?.body?.data;
+  if (!directBody) return { html: null, text: null };
+  return msg.payload?.mimeType === 'text/html'
+    ? { html: decodeBase64(directBody), text: null }
+    : { html: null, text: decodeBase64(directBody) };
 }
 
 function header(msg: GmailMessage, name: string): string | null {
@@ -313,6 +351,53 @@ export async function getDistinctSenders(accountId: string, businessId: string, 
   const account = await repo.getByIdForBusiness(accountId, businessId);
   if (!account) return [];
   return repo.listDistinctSenders(accountId, limit);
+}
+
+export type DeleteOAuthMessageResult = { status: 'deleted' } | { status: 'not_found' } | { status: 'provider_error'; reason: string };
+
+/**
+ * Trashes the real message in the person's actual Gmail/Outlook mailbox
+ * FIRST, and only removes AURA's own local copy once that succeeds - a
+ * failed provider call must never leave this app quietly hiding a message
+ * that's actually still sitting there, unread, in their real inbox. Uses
+ * each provider's own trash/move-to-Deleted-Items action rather than a
+ * permanent delete - reversible from within Gmail/Outlook itself,
+ * matching this app's own "no unnecessarily destructive action" posture
+ * elsewhere (WhatsApp number change, account deletion's own grace period).
+ */
+export async function deleteOAuthMessage(businessId: string, messageId: string): Promise<DeleteOAuthMessageResult> {
+  const repo = new EmailOAuthRepository(queryAsTenant(businessId));
+  const message = await repo.getMessageByIdForBusiness(messageId, businessId);
+  if (!message) return { status: 'not_found' };
+
+  const account = await repo.getByIdForBusiness(message.accountId, businessId);
+  if (!account) return { status: 'not_found' };
+
+  const token = await getValidAccessToken(message.accountId, businessId, account.provider);
+  if (!token) return { status: 'provider_error', reason: 'No valid access token for this account - try reconnecting it.' };
+
+  try {
+    if (account.provider === 'gmail') {
+      const resp = await fetch(`${GMAIL_BASE}/messages/${message.providerMessageId}/trash`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (!resp.ok) return { status: 'provider_error', reason: `Gmail API trash → ${resp.status}` };
+    } else {
+      const resp = await fetch(`${GRAPH_BASE}/messages/${message.providerMessageId}/move`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ destinationId: 'deleteditems' }),
+      });
+      if (!resp.ok) return { status: 'provider_error', reason: `Graph API move → ${resp.status}` };
+    }
+  } catch (error) {
+    return { status: 'provider_error', reason: error instanceof Error ? error.message : 'Network error reaching the provider.' };
+  }
+
+  await repo.deleteMessage(messageId, businessId);
+  await repo.refreshFolderCounts(message.folderId);
+  return { status: 'deleted' };
 }
 
 /**
