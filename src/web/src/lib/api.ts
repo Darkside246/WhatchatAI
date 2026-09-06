@@ -324,6 +324,18 @@ export interface NextBestAction {
   occurredAt: string;
 }
 
+/** A message an AI agent's take_a_message tool relayed for someone else - dismissing it only removes it from this board, never the underlying WhatsApp conversation. */
+export interface RelayedMessageDto {
+  id: string;
+  chatId: string;
+  fromDisplayName: string;
+  recipientDescription: string;
+  messageText: string;
+  whenText: string | null;
+  createdAt: string;
+  dismissedAt: string | null;
+}
+
 /** Section 56 (Appointment System) - a real meeting booked via Google Meet or Zoom, the first time this data has ever had a dedicated page. */
 export interface AppointmentDto {
   id: string;
@@ -1526,6 +1538,10 @@ export const api = {
     request<{ trend: { date: string; inbound: number; outbound: number }[] }>(`/workspace/dashboard/message-volume?days=${days}`),
   /** Section 68 follow-up: a live count of real conversations in each funnel_stage right now - a snapshot, not a history-over-time chart (conversation_states overwrites its own funnel_stage, it doesn't log transitions). */
   getFunnelSnapshot: () => request<{ stages: Record<string, number> }>('/workspace/dashboard/funnel-snapshot'),
+  /** The "take a message" board an AI agent posts to via its take_a_message tool - never touches the underlying WhatsApp conversation. */
+  getRelayedMessages: () => request<{ messages: RelayedMessageDto[] }>('/workspace/relayed-messages'),
+  dismissRelayedMessage: (id: string) =>
+    request(`/workspace/relayed-messages/${id}/dismiss`, { method: 'PATCH' }),
   getOpenCommitments: () => request<{ commitments: AiCommitmentRecord[] }>('/workspace/commitments/open'),
   getApprovalPatternSuggestions: () => request<{ suggestions: ApprovalPatternSuggestion[] }>('/workspace/agents/approval-suggestions'),
   getNextBestActions: () => request<{ actions: NextBestAction[] }>('/workspace/next-best-actions'),

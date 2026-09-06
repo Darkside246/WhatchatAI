@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   MessageCircle, Users, Phone, Bot, AlertTriangle, ArrowRight, Clock,
-  Bell, ShieldCheck, Zap, Activity, TrendingUp, CheckCircle,
+  Bell, ShieldCheck, Zap, Activity, TrendingUp, CheckCircle, X, MessageSquareText,
 } from 'lucide-react';
 import {
   api,
@@ -13,6 +13,7 @@ import {
   type AiCommitmentRecord,
   type NextBestAction,
   type MorningBriefing,
+  type RelayedMessageDto,
 } from '../lib/api.js';
 import { AiEngineStrip } from '../components/AiEngineStrip.js';
 import { TimeSyncStrip } from '../components/TimeSyncStrip.js';
@@ -245,6 +246,95 @@ function MessageVolumeTrend() {
           Sent
         </span>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The "take a message" board: when an AI agent's take_a_message tool
+ * relays something for someone else (the owner, a named person), it
+ * lands here rather than being buried in a chat transcript. Dismissing
+ * an entry (X or swipe) only removes it from this board - the real
+ * WhatsApp conversation it came from is completely unaffected.
+ */
+function MessageBoardCard() {
+  const navigate = useNavigate();
+  const [messages, setMessages] = useState<RelayedMessageDto[] | null>(null);
+  const [dragState, setDragState] = useState<{ id: string; startX: number; dx: number } | null>(null);
+
+  useEffect(() => {
+    api.getRelayedMessages().then((res) => setMessages(res.messages)).catch(() => setMessages([]));
+  }, []);
+
+  function dismiss(id: string) {
+    setMessages((prev) => (prev ? prev.filter((m) => m.id !== id) : prev));
+    api.dismissRelayedMessage(id).catch(() => {
+      // Real dismiss failure - re-fetch so the board reflects the real server state rather than a stale optimistic removal.
+      api.getRelayedMessages().then((res) => setMessages(res.messages)).catch(() => {});
+    });
+  }
+
+  function onPointerDown(id: string, clientX: number) {
+    setDragState({ id, startX: clientX, dx: 0 });
+  }
+  function onPointerMove(clientX: number) {
+    setDragState((prev) => (prev ? { ...prev, dx: clientX - prev.startX } : prev));
+  }
+  function onPointerUp() {
+    if (dragState && Math.abs(dragState.dx) > 96) dismiss(dragState.id);
+    setDragState(null);
+  }
+
+  if (messages === null) return <p className="text-caption text-fg-muted">Loading…</p>;
+  if (messages.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-6 text-fg-muted">
+        <MessageSquareText size={24} strokeWidth={1.25} className="mb-2 opacity-40" aria-hidden />
+        <p className="text-caption">No messages taken for you yet.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-h-64 space-y-2 overflow-y-auto pr-0.5">
+      {messages.map((m) => {
+        const dragging = dragState?.id === m.id;
+        const dx = dragging ? dragState!.dx : 0;
+        return (
+          <div
+            key={m.id}
+            className="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-1 px-3 py-2.5 cursor-pointer touch-pan-y select-none"
+            style={{
+              transform: `translateX(${dx}px)`,
+              opacity: 1 - Math.min(0.7, Math.abs(dx) / 240),
+              transition: dragging ? 'none' : 'transform 150ms ease, opacity 150ms ease',
+            }}
+            onClick={() => !dragging && navigate(`/chats/${m.chatId}`)}
+            onPointerDown={(e) => onPointerDown(m.id, e.clientX)}
+            onPointerMove={(e) => dragState?.id === m.id && onPointerMove(e.clientX)}
+            onPointerUp={onPointerUp}
+            onPointerLeave={() => dragging && onPointerUp()}
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-caption text-fg">
+                <span className="font-semibold">{m.fromDisplayName}</span> for <span className="font-semibold">{m.recipientDescription}</span>
+              </p>
+              <p className="mt-0.5 text-caption text-fg-secondary">{m.messageText}</p>
+              <p className="mt-1 text-meta text-fg-muted">
+                {m.whenText ? `${m.whenText} · ` : ''}{relativeTime(m.createdAt)}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); dismiss(m.id); }}
+              className="shrink-0 rounded-md p-1 text-fg-muted hover:bg-surface-2 hover:text-fg"
+              aria-label="Dismiss message"
+            >
+              <X size={14} aria-hidden />
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -647,14 +737,25 @@ export function DashboardRoute() {
           </div>
         </div>
 
-        {/* ── Message volume trend (Section 68) ───────────────────── */}
-        <div className="mt-3 rounded-xl border border-border-subtle bg-surface-2 p-4">
-          <p className="mb-1 flex items-center gap-1.5 text-caption font-semibold text-fg-muted uppercase tracking-wide">
-            <TrendingUp size={13} aria-hidden />
-            Message volume
-          </p>
-          <p className="mb-3 text-meta text-fg-muted">Real inbound vs outbound message counts, day by day</p>
-          <MessageVolumeTrend />
+        {/* ── Message volume trend (Section 68) + Message board (take-a-message) ── */}
+        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+            <p className="mb-1 flex items-center gap-1.5 text-caption font-semibold text-fg-muted uppercase tracking-wide">
+              <TrendingUp size={13} aria-hidden />
+              Message volume
+            </p>
+            <p className="mb-3 text-meta text-fg-muted">Real inbound vs outbound message counts, day by day</p>
+            <MessageVolumeTrend />
+          </div>
+
+          <div className="rounded-xl border border-border-subtle bg-surface-2 p-4">
+            <p className="mb-1 flex items-center gap-1.5 text-caption font-semibold text-fg-muted uppercase tracking-wide">
+              <MessageSquareText size={13} aria-hidden />
+              Messages for you
+            </p>
+            <p className="mb-3 text-meta text-fg-muted">Relayed by your AI agent — tap the chat to reply, X or swipe to dismiss</p>
+            <MessageBoardCard />
+          </div>
         </div>
 
         {/* ── Funnel stage snapshot (Section 68 follow-up) ─────────── */}

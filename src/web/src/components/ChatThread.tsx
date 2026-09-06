@@ -120,6 +120,16 @@ function AssigneeControl({
   onSelect: (input: { assigneeUserId: string | null; assigneeTeamId: string | null }) => void;
 }) {
   const value = assigneeUserId ? `user:${assigneeUserId}` : assigneeTeamId ? `team:${assigneeTeamId}` : '';
+  // The select itself is capped to a fixed max width (see className below) so
+  // a genuinely long real member/team name can never force the header wider
+  // than the space actually available next to the Status panel - the title
+  // attribute surfaces the full name on hover since the visible text may now
+  // be truncated.
+  const selectedLabel = assigneeUserId
+    ? (members.find((m) => m.userId === assigneeUserId)?.displayName ?? 'Unassigned')
+    : assigneeTeamId
+      ? (teams.find((t) => t.id === assigneeTeamId)?.name ?? 'Unassigned')
+      : 'Unassigned';
 
   function handleChange(event: ChangeEvent<HTMLSelectElement>) {
     const raw = event.target.value;
@@ -135,7 +145,8 @@ function AssigneeControl({
         value={value}
         disabled={saving}
         onChange={handleChange}
-        className="rounded-full border border-border-subtle bg-surface-2 px-2.5 py-1 text-meta font-medium text-fg-secondary outline-none focus:border-accent disabled:opacity-50"
+        title={selectedLabel}
+        className="max-w-[9rem] truncate rounded-full border border-border-subtle bg-surface-2 px-2.5 py-1 text-meta font-medium text-fg-secondary outline-none focus:border-accent disabled:opacity-50"
       >
         <option value="">Unassigned</option>
         {members.length > 0 && (
@@ -798,8 +809,8 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   const presenceLabel = formatPresence(detail?.presence ?? null);
 
   return (
-    <div className="flex h-full flex-1 flex-col">
-      <div className="flex shrink-0 items-center gap-3 border-b border-border-subtle bg-surface-1 px-4 py-3">
+    <div className="flex h-full min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 shrink-0 items-center gap-3 overflow-hidden border-b border-border-subtle bg-surface-1 px-4 py-3">
         <Link to="/chats" className="text-fg-muted hover:text-fg md:hidden" aria-label="Back to chats">
           <ArrowLeft size={18} aria-hidden />
         </Link>

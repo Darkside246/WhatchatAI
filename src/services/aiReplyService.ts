@@ -27,6 +27,8 @@ import { LIST_PROPERTIES_TOOL_NAME, listPropertiesFunctionDeclaration } from './
 import { CHECK_PROPERTY_STATUS_TOOL_NAME, checkPropertyStatusFunctionDeclaration, type CheckPropertyStatusToolArgs } from './property/checkPropertyStatusTool.js';
 import { LIST_RETAIL_PRODUCTS_TOOL_NAME, listRetailProductsFunctionDeclaration } from './retail/listRetailProductsTool.js';
 import { CHECK_RETAIL_ORDER_STATUS_TOOL_NAME, checkRetailOrderStatusFunctionDeclaration, type CheckRetailOrderStatusToolArgs } from './retail/checkRetailOrderStatusTool.js';
+import { TAKE_MESSAGE_TOOL_NAME, takeMessageFunctionDeclaration, type TakeMessageToolArgs } from './messages/takeMessageTool.js';
+import { RelayedMessageRepository } from '../repositories/relayedMessageRepository.js';
 import { RetailOperationsRepository } from '../repositories/retailOperationsRepository.js';
 import { recomputeLeadScoreForContact } from './leadScoringService.js';
 import { PropertyOperationsRepository } from '../repositories/propertyOperationsRepository.js';
@@ -47,6 +49,7 @@ import { EntitlementService } from './entitlementService.js';
 
 const conversationStateRepository = new ConversationStateRepository(pool);
 const customerMemoryRepository = new CustomerMemoryRepository(pool);
+const relayedMessageRepository = new RelayedMessageRepository(pool);
 const entitlementService = new EntitlementService(pool);
 const propertyOperationsRepository = new PropertyOperationsRepository(pool);
 const propertyConversationBindingRepository = new PropertyConversationBindingRepository(pool);
@@ -271,7 +274,7 @@ const MAX_REPLY_CHARS = 2000;
  * tools above, not a property-vertical-only allowlist.
  */
 function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: AiAgentRecord, aiActionsPaused: boolean, hasPropertyData: boolean, hasRetailData: boolean) {
-  let functionDeclarations = [getCurrentTimeFunctionDeclaration, updateConversationStateFunctionDeclaration];
+  let functionDeclarations = [getCurrentTimeFunctionDeclaration, updateConversationStateFunctionDeclaration, takeMessageFunctionDeclaration];
   if (connectedMeetingProviders.includes('google_meet')) functionDeclarations.push(scheduleMeetingFunctionDeclaration);
   if (connectedMeetingProviders.includes('zoom')) functionDeclarations.push(scheduleZoomMeetingFunctionDeclaration);
   if (hasPropertyData) functionDeclarations.push(listPropertiesFunctionDeclaration, checkPropertyStatusFunctionDeclaration);
@@ -841,7 +844,8 @@ async function executeOneToolCall(
     call.name !== LIST_PROPERTIES_TOOL_NAME &&
     call.name !== CHECK_PROPERTY_STATUS_TOOL_NAME &&
     call.name !== LIST_RETAIL_PRODUCTS_TOOL_NAME &&
-    call.name !== CHECK_RETAIL_ORDER_STATUS_TOOL_NAME
+    call.name !== CHECK_RETAIL_ORDER_STATUS_TOOL_NAME &&
+    call.name !== TAKE_MESSAGE_TOOL_NAME
   ) {
     // Fails closed on any tool name this codebase did not explicitly
     // register (defense in depth beyond the declared tools above) - never
@@ -927,6 +931,35 @@ async function executeOneToolCall(
         error instanceof Error ? error.message : error,
       );
       return { saved: false, error: 'Could not save this to memory right now.' };
+    }
+  }
+
+  if (call.name === TAKE_MESSAGE_TOOL_NAME) {
+    // Same honesty posture as UPDATE_CONVERSATION_STATE_TOOL_NAME above -
+    // a write failure is reported to the model as recorded: false rather
+    // than thrown, so a transient DB error never turns into a failed
+    // reply the customer never receives (the model can still tell them
+    // "got it" honestly if the write later succeeds on a retry turn, or
+    // apologize if it keeps failing - never silently pretend it worked).
+    try {
+      const args = (call.args ?? {}) as unknown as TakeMessageToolArgs;
+      if (!args.recipientDescription?.trim() || !args.messageText?.trim()) {
+        return { recorded: false, error: 'recipientDescription and messageText are both required.' };
+      }
+      await relayedMessageRepository.create({
+        businessId: context.businessId,
+        chatId: context.chatId,
+        recipientDescription: args.recipientDescription.trim(),
+        messageText: args.messageText.trim(),
+        whenText: args.whenText?.trim() || null,
+      });
+      return { recorded: true };
+    } catch (error) {
+      console.error(
+        `[aiReplyService] Failed to record a relayed message (chat ${context.chatId}):`,
+        error instanceof Error ? error.message : error,
+      );
+      return { recorded: false, error: 'Could not record that message right now.' };
     }
   }
 

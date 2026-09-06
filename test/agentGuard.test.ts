@@ -73,6 +73,7 @@ describe('agentGuard / AI Security Governor (real Postgres tenant, actor, and ra
       'list_retail_products',
       'schedule_google_meet',
       'schedule_zoom_meeting',
+      'take_a_message',
       'update_conversation_memory',
     ]);
   });

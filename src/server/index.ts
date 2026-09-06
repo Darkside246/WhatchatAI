@@ -3746,6 +3746,21 @@ app.patch('/api/workspace/notifications/:id/dismiss', async (req, res) => {
   }
 });
 
+/** The "take a message" board (Dashboard) - every currently-undismissed relayed message for this business. */
+app.get('/api/workspace/relayed-messages', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const messages = await workspaceService.listRelayedMessages(businessId);
+  return res.status(200).json({ messages });
+});
+
+/** Removes an entry from the board only - never touches the real WhatsApp conversation it came from, same self-scoped bookkeeping as the notification dismiss route above. */
+app.patch('/api/workspace/relayed-messages/:id/dismiss', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const dismissed = await workspaceService.dismissRelayedMessage(String(req.params.id ?? ''), businessId);
+  if (!dismissed) return res.status(404).json({ error: 'RELAYED_MESSAGE_NOT_FOUND' });
+  return res.status(200).json({ ok: true });
+});
+
 app.post('/api/workspace/notifications/read-all', async (_req, res) => {
   const { businessId, userId } = res.locals.auth as AuthContext;
   const updatedCount = await markAllNotificationsRead(businessId, userId);

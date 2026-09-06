@@ -9,6 +9,7 @@ import { SCHEDULE_MEETING_TOOL_NAME } from '../src/services/meeting/scheduleMeet
 import { SCHEDULE_ZOOM_MEETING_TOOL_NAME } from '../src/services/meeting/scheduleZoomMeetingTool.js';
 import { GET_CURRENT_TIME_TOOL_NAME } from '../src/services/time/getCurrentTimeTool.js';
 import { UPDATE_CONVERSATION_STATE_TOOL_NAME } from '../src/services/state/updateConversationStateTool.js';
+import { TAKE_MESSAGE_TOOL_NAME } from '../src/services/messages/takeMessageTool.js';
 import { emptyConversationState } from '../src/repositories/conversationStateRepository.js';
 import { emptyCustomerMemory } from '../src/repositories/customerMemoryRepository.js';
 
@@ -620,12 +621,13 @@ describe('Durable conversation state (Phase 3 - supplements raw history, never r
 });
 
 describe('generateAiReply tool boundary is unaffected by document content (Phase D4-B, items 9 and 10)', () => {
-  it('exactly eight AI tools are registered - get_current_time/list_properties/check_property_status/list_retail_products/check_retail_order_status (READ), update_conversation_memory (WRITE), schedule_google_meet/schedule_zoom_meeting (SEND) - and no others', () => {
+  it('exactly nine AI tools are registered - get_current_time/list_properties/check_property_status/list_retail_products/check_retail_order_status (READ), update_conversation_memory/take_a_message (WRITE), schedule_google_meet/schedule_zoom_meeting (SEND) - and no others', () => {
     const tools = listRegisteredTools();
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(9);
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
     expect(byName.get(GET_CURRENT_TIME_TOOL_NAME)?.risk).toBe('READ');
     expect(byName.get(UPDATE_CONVERSATION_STATE_TOOL_NAME)?.risk).toBe('WRITE');
+    expect(byName.get(TAKE_MESSAGE_TOOL_NAME)?.risk).toBe('WRITE');
     expect(byName.get(SCHEDULE_MEETING_TOOL_NAME)?.risk).toBe('SEND');
     expect(byName.get(SCHEDULE_ZOOM_MEETING_TOOL_NAME)?.risk).toBe('SEND');
     expect(byName.get('list_properties')?.risk).toBe('READ');

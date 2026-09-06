@@ -14,6 +14,7 @@ import type { ConversationFact, ConversationFunnelStage } from '../repositories/
 import { LeadRepository, type UpdateLeadInput, type LeadRecord, type LeadWithContactInfo } from '../repositories/leadRepository.js';
 import { AiAgentRepository, type AiAgentRecord, type AgentCategory } from '../repositories/aiAgentRepository.js';
 import { AgentTemplateRepository, type AgentTemplateRecord } from '../repositories/agentTemplateRepository.js';
+import { RelayedMessageRepository, type RelayedMessageRecord } from '../repositories/relayedMessageRepository.js';
 import { AiCommitmentRepository, type AiCommitmentRecord } from '../repositories/aiCommitmentRepository.js';
 import { EntitlementService, type EntitlementDenialReason } from './entitlementService.js';
 import { listKnowledgeBaseDocuments, createKnowledgeBaseDocument, updateKnowledgeBaseDocument, deleteKnowledgeBaseDocument } from './knowledgeBaseService.js';
@@ -468,6 +469,7 @@ export class WorkspaceService {
   private readonly leadRepository = new LeadRepository(pool);
   private readonly agentRepository = new AiAgentRepository(pool);
   private readonly agentTemplateRepository = new AgentTemplateRepository(pool);
+  private readonly relayedMessageRepository = new RelayedMessageRepository(pool);
   private readonly commitmentRepository = new AiCommitmentRepository(pool);
   private readonly entitlementService = new EntitlementService(pool);
   private readonly subscriptionRepository = new SubscriptionRepository(pool);
@@ -1016,6 +1018,15 @@ export class WorkspaceService {
 
   async listAgentTemplates(callerEmail?: string | null): Promise<AgentTemplateRecord[]> {
     return this.agentTemplateRepository.listAll(callerEmail);
+  }
+
+  /** The Dashboard's "take a message" board - see takeMessageTool.ts for how these are actually recorded. */
+  async listRelayedMessages(businessId: string): Promise<RelayedMessageRecord[]> {
+    return this.relayedMessageRepository.listOpenForBusiness(businessId);
+  }
+
+  async dismissRelayedMessage(id: string, businessId: string): Promise<boolean> {
+    return this.relayedMessageRepository.dismiss(id, businessId);
   }
 
   /**

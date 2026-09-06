@@ -69,6 +69,14 @@ const AI_TOOL_POLICY: Record<string, AiToolPolicyEntry> = {
       'Resolves a customer-described order reference, scoped to that customer\'s own orders, and reports its real ' +
       'status. Read-only - creates nothing.',
   },
+  take_a_message: {
+    name: 'take_a_message',
+    risk: 'WRITE',
+    description:
+      'Records a message a customer wants relayed to someone else (the business owner or a named person) into ' +
+      'relayed_messages for this exact (business, chat). Cannot touch any other record or execute any action, same ' +
+      'narrow shape as update_conversation_memory.',
+  },
 };
 
 export function getToolPolicy(toolName: string): AiToolPolicyEntry | null {

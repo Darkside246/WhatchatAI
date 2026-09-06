@@ -8,6 +8,7 @@ import type { WhatsAppMessageRecord } from '../src/repositories/whatsappMessageR
 import { buildTimeContext } from '../src/services/time/timeContext.js';
 import { GET_CURRENT_TIME_TOOL_NAME } from '../src/services/time/getCurrentTimeTool.js';
 import { UPDATE_CONVERSATION_STATE_TOOL_NAME } from '../src/services/state/updateConversationStateTool.js';
+import { TAKE_MESSAGE_TOOL_NAME } from '../src/services/messages/takeMessageTool.js';
 import { SCHEDULE_MEETING_TOOL_NAME } from '../src/services/meeting/scheduleMeetingTool.js';
 import { SCHEDULE_ZOOM_MEETING_TOOL_NAME } from '../src/services/meeting/scheduleZoomMeetingTool.js';
 import { LIST_PROPERTIES_TOOL_NAME } from '../src/services/property/listPropertiesTool.js';
@@ -287,10 +288,11 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
     // document content never influences what tools are declared to Gemini.
     const tools = generateContentMock.mock.calls[0]?.[0]?.config?.tools;
     expect(tools).toHaveLength(1);
-    expect(tools?.[0]?.functionDeclarations).toHaveLength(3);
+    expect(tools?.[0]?.functionDeclarations).toHaveLength(4);
     expect(tools?.[0]?.functionDeclarations?.map((declaration: { name: string }) => declaration.name)).toEqual([
       GET_CURRENT_TIME_TOOL_NAME,
       UPDATE_CONVERSATION_STATE_TOOL_NAME,
+      TAKE_MESSAGE_TOOL_NAME,
       SCHEDULE_MEETING_TOOL_NAME,
     ]);
 
@@ -312,15 +314,15 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
 
     await generateAiReply(fakeAgent(), fakeContext({ connectedMeetingProviders: [] }));
     let names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
-    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME]);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, TAKE_MESSAGE_TOOL_NAME]);
 
     await generateAiReply(fakeAgent(), fakeContext({ connectedMeetingProviders: ['zoom'] }));
     names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
-    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, SCHEDULE_ZOOM_MEETING_TOOL_NAME]);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, TAKE_MESSAGE_TOOL_NAME, SCHEDULE_ZOOM_MEETING_TOOL_NAME]);
 
     await generateAiReply(fakeAgent(), fakeContext({ connectedMeetingProviders: ['google_meet', 'zoom'] }));
     names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
-    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, SCHEDULE_MEETING_TOOL_NAME, SCHEDULE_ZOOM_MEETING_TOOL_NAME]);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, TAKE_MESSAGE_TOOL_NAME, SCHEDULE_MEETING_TOOL_NAME, SCHEDULE_ZOOM_MEETING_TOOL_NAME]);
   });
 
   it('an agent with allowedToolsEnabled: false (every pre-existing agent) still offers every connection-eligible tool unchanged', async () => {
@@ -330,7 +332,7 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
       fakeContext({ connectedMeetingProviders: ['google_meet', 'zoom'] }),
     );
     const names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
-    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, SCHEDULE_MEETING_TOOL_NAME, SCHEDULE_ZOOM_MEETING_TOOL_NAME]);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, TAKE_MESSAGE_TOOL_NAME, SCHEDULE_MEETING_TOOL_NAME, SCHEDULE_ZOOM_MEETING_TOOL_NAME]);
   });
 
   it('an agent with allowedToolsEnabled: true and a partial allowedTools list offers only those tools', async () => {
@@ -350,19 +352,19 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
       fakeContext({ connectedMeetingProviders: ['google_meet', 'zoom'] }),
     );
     const names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
-    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, SCHEDULE_MEETING_TOOL_NAME]);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, TAKE_MESSAGE_TOOL_NAME, SCHEDULE_MEETING_TOOL_NAME]);
   });
 
   it('offers list_properties/check_property_status only when the business actually has property data (hasPropertyData)', async () => {
     generateContentMock.mockResolvedValueOnce({ text: 'ok' });
     await generateAiReply(fakeAgent(), fakeContext({ connectedMeetingProviders: [], hasPropertyData: false }));
     let names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
-    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME]);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, TAKE_MESSAGE_TOOL_NAME]);
 
     generateContentMock.mockResolvedValueOnce({ text: 'ok' });
     await generateAiReply(fakeAgent(), fakeContext({ connectedMeetingProviders: [], hasPropertyData: true }));
     names = generateContentMock.mock.calls.at(-1)?.[0]?.config?.tools?.[0]?.functionDeclarations?.map((d: { name: string }) => d.name);
-    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, LIST_PROPERTIES_TOOL_NAME, CHECK_PROPERTY_STATUS_TOOL_NAME]);
+    expect(names).toEqual([GET_CURRENT_TIME_TOOL_NAME, UPDATE_CONVERSATION_STATE_TOOL_NAME, TAKE_MESSAGE_TOOL_NAME, LIST_PROPERTIES_TOOL_NAME, CHECK_PROPERTY_STATUS_TOOL_NAME]);
   });
 
   it('the emergency pause (aiActionsPaused) strips every above-READ tool, regardless of connections or capability list - only get_current_time survives', async () => {

@@ -59,6 +59,12 @@ const SELF_SCOPED_ROUTES = [
   '/api/workspace/email/notes',
   '/api/workspace/email/notes/:id',
   '/api/workspace/email/suggestions/regenerate',
+  // Take-a-message board: dismissing an entry only removes it from this
+  // business's own board (never touches the underlying WhatsApp
+  // conversation) - the same low-risk, self-scoped bookkeeping as the
+  // notification "dismiss" route above, gated by requireWorkspaceContext
+  // rather than a dedicated permission key.
+  '/api/workspace/relayed-messages/:id/dismiss',
 ];
 
 interface RouteDeclaration {
