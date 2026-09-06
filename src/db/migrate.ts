@@ -7,10 +7,29 @@ import { pool as defaultPool } from './pool.js';
 
 const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'migrations');
 
+/**
+ * Real, confirmed production bug fixed here: plain .sort() compares
+ * filenames as strings, so "1000_x.sql" sorts BEFORE "945_x.sql" through
+ * "999_x.sql" - '1' < '9' as the first character. Every migration this
+ * session was applied incrementally against dev/test (one at a time, right
+ * after being written), so this never had a chance to matter until a
+ * production database far behind (944) tried to catch up across the
+ * 999->1000 digit-count boundary in one run - 1000_chat_list_engagement.sql
+ * attempted before 997_lists_phase1.sql (the migration that creates the
+ * "lists" table it depends on), which had sorted after it as a string.
+ * Sorting by the real leading integer, not the string, is correct
+ * regardless of how many digits any given migration number has.
+ */
+function migrationNumber(filename: string): number {
+  const match = /^(\d+)_/.exec(filename);
+  if (!match) throw new Error(`Migration filename "${filename}" doesn't start with a numeric prefix.`);
+  return Number(match[1]);
+}
+
 function loadMigrationFiles(): { name: string; sql: string }[] {
   return readdirSync(MIGRATIONS_DIR)
     .filter((file) => file.endsWith('.sql'))
-    .sort()
+    .sort((a, b) => migrationNumber(a) - migrationNumber(b))
     .map((name) => ({
       name,
       sql: readFileSync(path.join(MIGRATIONS_DIR, name), 'utf8'),
