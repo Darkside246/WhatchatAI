@@ -1184,6 +1184,13 @@ app.post('/api/workspace/chats/:chatId/messages', requireWorkspaceContext, requi
       });
     }
 
+    // Every send through this route is a real human using the dashboard's
+    // own composer - fire-and-forget, so a chat left on AI Autonomous never
+    // lets the AI reply on top of what you just sent yourself. No-ops (via
+    // its own guarded UPDATE) for a chat already in Human Agent/paused for
+    // any other reason.
+    void workspaceService.pauseAiForDashboardReplyIfActive(businessId, whatsappAccountId, String(req.params.chatId ?? ''));
+
     return res.status(202).json({ outboundMessage });
   } catch (error) {
     if (isOutboundChatNotFoundError(error)) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });

@@ -64,9 +64,39 @@ describe('WhatsAppChatRepository - manual-reply-detected auto-pause guards', () 
     });
   });
 
+  describe('pauseAiForDashboardReply', () => {
+    it('transitions an AI_ACTIVE chat to HUMAN_TAKEOVER with source dashboard_reply_detected', async () => {
+      const paused = await repo.pauseAiForDashboardReply(chatId);
+      expect(paused?.aiMode).toBe('HUMAN_TAKEOVER');
+      expect(paused?.aiModeSource).toBe('dashboard_reply_detected');
+    });
+
+    it('is a no-op against a chat already in HUMAN_TAKEOVER for any reason - never overrides an existing takeover', async () => {
+      await repo.setAiMode(chatId, 'HUMAN_TAKEOVER', 'blocked_keyword');
+      const result = await repo.pauseAiForDashboardReply(chatId);
+      expect(result).toBeNull();
+
+      const chat = await repo.findById(chatId);
+      expect(chat?.aiModeSource).toBe('blocked_keyword'); // untouched
+    });
+
+    it('is a no-op against an AI_PAUSED chat - a deliberate dashboard pause is not the same as this auto-pause', async () => {
+      await repo.setAiMode(chatId, 'AI_PAUSED', 'manual_toggle');
+      const result = await repo.pauseAiForDashboardReply(chatId);
+      expect(result).toBeNull();
+    });
+  });
+
   describe('resumeAiIfManualReplyDetected', () => {
     it('resumes AI_ACTIVE only when the row is exactly (HUMAN_TAKEOVER, manual_reply_detected)', async () => {
       await repo.pauseAiForManualReply(chatId);
+      const resumed = await repo.resumeAiIfManualReplyDetected(chatId);
+      expect(resumed?.aiMode).toBe('AI_ACTIVE');
+      expect(resumed?.aiModeSource).toBe('auto_resume_after_manual_reply');
+    });
+
+    it('also resumes AI_ACTIVE when the row is exactly (HUMAN_TAKEOVER, dashboard_reply_detected) - the dashboard-composer sibling trigger', async () => {
+      await repo.pauseAiForDashboardReply(chatId);
       const resumed = await repo.resumeAiIfManualReplyDetected(chatId);
       expect(resumed?.aiMode).toBe('AI_ACTIVE');
       expect(resumed?.aiModeSource).toBe('auto_resume_after_manual_reply');
@@ -97,6 +127,16 @@ describe('WhatsAppChatRepository - manual-reply-detected auto-pause guards', () 
   describe('revertHumanTakeoverChats (logout revert)', () => {
     it('still reverts a manual-reply-detected auto-pause too, since logging out means the owner is no longer actively replying', async () => {
       await repo.pauseAiForManualReply(chatId);
+      const reverted = await repo.revertHumanTakeoverChats(businessId);
+      expect(reverted).toBe(1);
+
+      const chat = await repo.findById(chatId);
+      expect(chat?.aiMode).toBe('AI_ACTIVE');
+      expect(chat?.aiModeSource).toBe('logout_revert');
+    });
+
+    it('also reverts a dashboard-reply-detected auto-pause the same way', async () => {
+      await repo.pauseAiForDashboardReply(chatId);
       const reverted = await repo.revertHumanTakeoverChats(businessId);
       expect(reverted).toBe(1);
 

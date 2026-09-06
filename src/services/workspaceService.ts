@@ -3,6 +3,8 @@ import { resolveDisplayName, type ContactNameSources } from '../domain/whatsapp/
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
 import { BusinessRepository, isValidTimezone, type BusinessRecord } from '../repositories/businessRepository.js';
 import { WhatsAppChatRepository, type ChatAiMode } from '../repositories/whatsappChatRepository.js';
+import { scheduleHumanTakeoverResume } from '../queue/queues/realtimeEventsQueue.js';
+import { publishRealtimeEvent } from '../realtime/pubsub.js';
 import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
 import { WhatsAppMessageRepository } from '../repositories/whatsappMessageRepository.js';
 import { WhatsAppGroupRepository } from '../repositories/whatsappGroupRepository.js';
@@ -872,6 +874,45 @@ export class WorkspaceService {
     }
 
     return updated;
+  }
+
+  /**
+   * The dashboard-composer counterpart to the phone-typed manual-reply
+   * auto-pause (whatsappMessagePersistenceService.ts): a human sending
+   * through this app's own "Type a message" box while AI Autonomous was
+   * still selected for that chat was not previously covered - every
+   * dashboard send already leaves a matching whatsapp_outbound_messages
+   * row, so the phone-typed heuristic (which keys on a *missing* row) can
+   * never fire for it, and the AI could still reply to a genuine inbound
+   * message on top of what a human was already actively handling in the
+   * dashboard. Called right after a real human (requestedBy: 'human') send
+   * succeeds - fire-and-forget, since a slow/failed pause here must never
+   * delay or fail the send response itself; the guarded UPDATE means a
+   * chat already in HUMAN_TAKEOVER for any other reason is left untouched.
+   */
+  async pauseAiForDashboardReplyIfActive(businessId: string, whatsappAccountId: string, chatId: string): Promise<void> {
+    try {
+      const paused = await this.chatRepository.pauseAiForDashboardReply(chatId);
+      if (paused) {
+        await scheduleHumanTakeoverResume({ businessId, whatsappAccountId, chatId });
+        await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
+        return;
+      }
+      // The guarded UPDATE above only succeeds from AI_ACTIVE - a null
+      // result here could mean "already paused for this exact reason" (a
+      // second dashboard message while the first pause is still active) or
+      // "paused for a genuinely different reason" (never touch that timer).
+      // Same distinction whatsappMessagePersistenceService.ts's own
+      // isOngoingAutoPause makes for the phone-typed sibling - without it,
+      // only the first of several dashboard messages sent in a row would
+      // reset the resume countdown, letting it expire mid-conversation.
+      const chat = await this.chatRepository.findById(chatId);
+      if (chat?.aiMode === 'HUMAN_TAKEOVER' && chat.aiModeSource === 'dashboard_reply_detected') {
+        await scheduleHumanTakeoverResume({ businessId, whatsappAccountId, chatId });
+      }
+    } catch (error) {
+      console.error('[WorkspaceService] Failed to auto-pause AI for a dashboard reply:', error);
+    }
   }
 
   /**

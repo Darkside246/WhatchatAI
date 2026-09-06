@@ -452,6 +452,72 @@ describe('workspaceService real notification triggers (HUMAN_HANDOFF and NEW_LEA
     expect(after.notifications).toHaveLength(1);
   });
 
+  it('pauseAiForDashboardReplyIfActive flips an AI_ACTIVE chat to Human Agent, without a HUMAN_HANDOFF notification (a human is already right there typing)', async () => {
+    const chatRepository = new WhatsAppChatRepository(pool);
+    const chat = await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550007777@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+    expect(chat.aiMode).toBe('AI_ACTIVE');
+
+    await workspaceService.pauseAiForDashboardReplyIfActive(businessId, accountId, chat.id);
+
+    const updated = await chatRepository.findById(chat.id);
+    expect(updated?.aiMode).toBe('HUMAN_TAKEOVER');
+    expect(updated?.aiModeSource).toBe('dashboard_reply_detected');
+
+    // Unlike a real handoff (a customer needing attention), this is the
+    // opposite signal - a human is already right there replying - so no
+    // "needs a human" alert should fire.
+    const { notifications } = await listNotifications(businessId, ownerId);
+    expect(notifications).toHaveLength(0);
+  });
+
+  it('pauseAiForDashboardReplyIfActive on a second dashboard reply, mid-pause, resets the resume timer rather than skipping it - never throws', async () => {
+    const chatRepository = new WhatsAppChatRepository(pool);
+    const chat = await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550005555@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+
+    await workspaceService.pauseAiForDashboardReplyIfActive(businessId, accountId, chat.id);
+    const afterFirst = await chatRepository.findById(chat.id);
+    expect(afterFirst?.aiMode).toBe('HUMAN_TAKEOVER');
+    expect(afterFirst?.aiModeSource).toBe('dashboard_reply_detected');
+
+    // A second dashboard send while still paused - the guarded UPDATE
+    // returns null (already HUMAN_TAKEOVER), but this must still reach the
+    // ongoing-pause branch and reschedule the resume timer, not silently
+    // do nothing.
+    await workspaceService.pauseAiForDashboardReplyIfActive(businessId, accountId, chat.id);
+    const afterSecond = await chatRepository.findById(chat.id);
+    expect(afterSecond?.aiMode).toBe('HUMAN_TAKEOVER');
+    expect(afterSecond?.aiModeSource).toBe('dashboard_reply_detected'); // untouched, not re-written
+  });
+
+  it('pauseAiForDashboardReplyIfActive is a safe no-op against a chat already in Human Agent for a different reason', async () => {
+    const chatRepository = new WhatsAppChatRepository(pool);
+    const chat = await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550006666@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+    await chatRepository.setAiMode(chat.id, 'HUMAN_TAKEOVER', 'blocked_keyword');
+
+    await workspaceService.pauseAiForDashboardReplyIfActive(businessId, accountId, chat.id);
+
+    const updated = await chatRepository.findById(chat.id);
+    expect(updated?.aiModeSource).toBe('blocked_keyword'); // untouched
+  });
+
   it('createLead dispatches a real NEW_LEAD notification', async () => {
     const contactRepository = new WhatsAppContactRepository(pool);
     const contact = await contactRepository.upsertFromWhatsApp({

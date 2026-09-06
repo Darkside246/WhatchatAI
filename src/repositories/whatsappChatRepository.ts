@@ -359,13 +359,43 @@ export class WhatsAppChatRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
+  /**
+   * The dashboard-composer sibling of pauseAiForManualReply above - a human
+   * typing directly on the connected phone was already covered, but a human
+   * sending through this app's own "Type a message" box while AI Autonomous
+   * was still selected was not: every dashboard send already leaves a
+   * matching whatsapp_outbound_messages row (by design, before the WhatsApp
+   * echo even arrives), so the phone-typed heuristic above - which keys
+   * specifically on a *missing* row - can never fire for it. Same guarded
+   * AI_ACTIVE-only transition, own distinct ai_mode_source so the two real,
+   * different triggers stay tellable apart in the data.
+   */
+  async pauseAiForDashboardReply(id: string): Promise<WhatsAppChatRecord | null> {
+    const { rows } = await this.db.query<ChatRow>(
+      `UPDATE whatsapp_chats
+       SET ai_mode = 'HUMAN_TAKEOVER', ai_mode_source = 'dashboard_reply_detected', ai_mode_set_at = now(), updated_at = now()
+       WHERE id = $1 AND ai_mode = 'AI_ACTIVE'
+       RETURNING *`,
+      [id],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
+   * Shared resume for both auto-pause triggers above (phone-typed and
+   * dashboard-composer) - same trailing-edge timer, same guard: only
+   * resumes a row still *exactly* in one of these two auto-detected
+   * states, so a chat a human explicitly re-took-over (or a genuinely new
+   * AI-failure escalation) in the meantime is never clobbered back to
+   * AI_ACTIVE by a stale timer.
+   */
   async resumeAiIfManualReplyDetected(id: string): Promise<WhatsAppChatRecord | null> {
     const { rows } = await this.db.query<ChatRow>(
       `UPDATE whatsapp_chats
        SET ai_mode = 'AI_ACTIVE', ai_mode_source = 'auto_resume_after_manual_reply', ai_mode_set_at = now(), updated_at = now()
-       WHERE id = $1 AND ai_mode = 'HUMAN_TAKEOVER' AND ai_mode_source = 'manual_reply_detected'
+       WHERE id = $1 AND ai_mode = 'HUMAN_TAKEOVER' AND ai_mode_source = ANY($2::text[])
        RETURNING *`,
-      [id],
+      [id, ['manual_reply_detected', 'dashboard_reply_detected']],
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }
