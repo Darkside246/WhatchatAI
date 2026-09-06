@@ -23,9 +23,17 @@ export const TAKE_MESSAGE_TOOL_NAME = 'take_a_message';
 export const takeMessageFunctionDeclaration: FunctionDeclaration = {
   name: TAKE_MESSAGE_TOOL_NAME,
   description:
-    'Call this when the customer asks you to pass a message along to someone else - the business owner, or a ' +
-    'specific named person (e.g. "tell John to call me", "let my son know I\'m on my way") - rather than something ' +
-    'you can answer yourself. Do not call this for a message meant for you or for routine conversation. ' +
+    'Call this whenever the customer wants something passed along or wants to be called/followed up with, even ' +
+    'when they never name a specific recipient - every conversation is already with this business, so "call me ' +
+    'back", "can someone reach out to me at 8pm", "remind me" (meaning: have someone here follow up), or "can you ' +
+    'remind him/her/them" all mean the SAME business/owner this chat already belongs to. Do not ask the customer ' +
+    'who the message is for - default recipientDescription to "the owner" unless they explicitly named someone ' +
+    'else (e.g. "tell John to call me", "let my son know I\'m on my way", "I want Hasan to call me at 8pm"). ' +
+    '"Remind" is just as strong a trigger as "tell"/"let ... know"/"call me" - a bare "can you remind him?" later ' +
+    'in the same conversation, referring back to something already discussed, still calls for this tool: build ' +
+    'messageText as a concise summary of what was actually discussed earlier in this conversation (never invented, ' +
+    'never embellished beyond what was really said), not by asking the customer to repeat themselves. Do not call ' +
+    'this for a message meant for you or for routine conversation. ' +
     'If the customer mentions a time but does not say AM or PM, check get_current_time first: if the current time ' +
     'makes only one interpretation possible (e.g. it is 9pm and they said "call me at 8" - 8am tomorrow is the only ' +
     'sensible reading, since 8pm already passed), resolve it yourself and say so plainly in whenText. If it is ' +
@@ -37,11 +45,15 @@ export const takeMessageFunctionDeclaration: FunctionDeclaration = {
     properties: {
       recipientDescription: {
         type: Type.STRING,
-        description: 'Who the message is for, in the customer\'s own words or a short accurate paraphrase - e.g. "the owner", "John", "my son".',
+        description: 'Who the message is for. Default to "the owner" when the customer never named anyone specific - never ask them to clarify this. Only use a specific name/relation (e.g. "Hasan", "John", "my son") when the customer actually said one.',
       },
       messageText: {
         type: Type.STRING,
-        description: 'The message itself, in the customer\'s own words or a short accurate paraphrase. Never invent or embellish beyond what they actually said.',
+        description:
+          'The message itself, in the customer\'s own words or a short accurate paraphrase - or, when the ' +
+          'customer only said "remind him"/"remind them" without restating it, a concise summary of what they ' +
+          'actually asked for or discussed earlier in this same conversation. Never invent or embellish beyond ' +
+          'what was really said.',
       },
       whenText: {
         type: Type.STRING,

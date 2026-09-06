@@ -22,6 +22,7 @@ import { KnowledgeBaseCard } from '../components/KnowledgeBaseCard.js';
 const TOGGLEABLE_TOOLS: { name: string; label: string }[] = [
   { name: 'get_current_time', label: 'Time awareness' },
   { name: 'update_conversation_memory', label: 'Conversation memory' },
+  { name: 'take_a_message', label: 'Take a message for you' },
   { name: 'schedule_google_meet', label: 'Book Google Meet calls' },
   { name: 'schedule_zoom_meeting', label: 'Book Zoom calls' },
   { name: 'list_properties', label: 'List properties' },
