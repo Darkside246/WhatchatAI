@@ -1238,6 +1238,7 @@ async function resolveToolCalls(
   context: AiHandoffContext,
 ): Promise<GenerateContentResponse> {
   const calls = response.functionCalls ?? [];
+  console.log(`[aiReplyService] chat ${context.chatId}: Gemini returned tool calls: ${calls.length === 0 ? '(none)' : calls.map((c) => c.name).join(', ')}`);
   if (calls.length === 0) return response;
 
   const followUpContents: Content[] = [
