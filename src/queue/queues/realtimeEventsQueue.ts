@@ -334,3 +334,37 @@ export async function scheduleHumanTakeoverResume(data: HumanTakeoverResumeJobDa
     console.warn(`[RealtimeEventsQueue] Failed to schedule human-takeover resume for chat ${data.chatId}: ${error.message}`);
   });
 }
+
+export interface OperatorAiResumeJobData {
+  businessId: string;
+}
+
+/**
+ * Operator Mode's "ai off for N"/"ai off until X" timed suspension - a
+ * real, one-time scheduled resume, not a debounce (there is no "further
+ * activity" to reset against here, unlike the other two schedulers above).
+ * A single job per business (jobId keyed on businessId only): reissuing
+ * "ai off until X" while already paused replaces the pending resume with
+ * the new deadline rather than leaving two competing timers.
+ */
+export async function scheduleOperatorAiResume(data: OperatorAiResumeJobData, delayMs: number): Promise<void> {
+  const jobId = `operator-ai-resume-${data.businessId}`;
+  const existing = await realtimeEventsQueue.getJob(jobId);
+  if (existing) {
+    await existing.remove().catch(() => {
+      // A concurrent caller may have already removed/completed it - fine, fall through to add() below.
+    });
+  }
+  await realtimeEventsQueue.add('operator-ai-resume', data, { jobId, delay: delayMs }).catch((error: Error) => {
+    console.warn(`[RealtimeEventsQueue] Failed to schedule operator AI resume for business ${data.businessId}: ${error.message}`);
+  });
+}
+
+/** Cancels a pending timed "ai off until X" resume - called by "ai on" (the resume already happened, no need for the timer to fire redundantly later) and by a fresh "ai off" with no time bound (an indefinite pause supersedes any earlier deadline). */
+export async function cancelOperatorAiResume(businessId: string): Promise<void> {
+  const jobId = `operator-ai-resume-${businessId}`;
+  const existing = await realtimeEventsQueue.getJob(jobId);
+  if (existing) {
+    await existing.remove().catch(() => {});
+  }
+}

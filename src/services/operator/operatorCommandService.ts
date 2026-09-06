@@ -1,9 +1,15 @@
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { OperatorModeRepository } from '../../repositories/operatorModeRepository.js';
 import { PropertyOperationsRepository } from '../../repositories/propertyOperationsRepository.js';
+import { WhatsAppChatRepository } from '../../repositories/whatsappChatRepository.js';
+import { BusinessRepository } from '../../repositories/businessRepository.js';
+import { RelayedMessageRepository } from '../../repositories/relayedMessageRepository.js';
+import { ReminderRepository } from '../../repositories/reminderRepository.js';
 import { hasEntitlement } from '../platform/entitlementService.js';
 import { handleAssistantMessage } from './assistantModeService.js';
 import { getControlPlaneStats } from '../productAccountService.js';
+import { timeService } from '../time/timeService.js';
+import { scheduleOperatorAiResume, cancelOperatorAiResume } from '../../queue/queues/realtimeEventsQueue.js';
 import type { Queryable } from '../../repositories/types.js';
 
 const ASSISTANT_ENTITLEMENT_KEY = 'ai_personal_assistant';
@@ -58,7 +64,14 @@ export type OperatorCommandType =
   | 'INVOICE_STATUS'
   | 'INCIDENT_LOG'
   | 'SET_ASSISTANT_NAME'
-  | 'PLATFORM_STATUS';
+  | 'PLATFORM_STATUS'
+  | 'AI_OFF'
+  | 'AI_OFF_FOR'
+  | 'AI_OFF_UNTIL'
+  | 'AI_ON'
+  | 'AI_STATUS'
+  | 'MESSAGES'
+  | 'REMIND';
 
 type ParsedCommand =
   | { type: 'HELP' }
@@ -70,6 +83,13 @@ type ParsedCommand =
   | { type: 'INCIDENT_LOG'; title: string; description: string; severity: 'low' | 'medium' | 'high' }
   | { type: 'SET_ASSISTANT_NAME'; name: string }
   | { type: 'PLATFORM_STATUS' }
+  | { type: 'AI_OFF' }
+  | { type: 'AI_OFF_FOR'; minutes: number }
+  | { type: 'AI_OFF_UNTIL'; hour: number; minute: number; isPM: boolean }
+  | { type: 'AI_ON' }
+  | { type: 'AI_STATUS' }
+  | { type: 'MESSAGES' }
+  | { type: 'REMIND'; text: string; hour: number; minute: number; isPM: boolean }
   | { type: 'UNKNOWN'; original: string };
 
 // ── Simple rule-based parser ──────────────────────────────────────────────────
@@ -91,6 +111,40 @@ function parse(text: string): ParsedCommand {
   // it exists (see handlePlatformStatus's own authorization check - this
   // pattern match alone grants nothing).
   if (/^platform\s+status$/.test(t)) return { type: 'PLATFORM_STATUS' };
+
+  // Checked before the bare "ai off" pattern below - a timed pause must
+  // never be swallowed by the untimed one just because "ai off" is a
+  // substring/prefix of both.
+  const aiOffUntilMatch = t.match(/^ai\s+off\s+until\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
+  if (aiOffUntilMatch) {
+    return {
+      type: 'AI_OFF_UNTIL',
+      hour: Number(aiOffUntilMatch[1]),
+      minute: aiOffUntilMatch[2] ? Number(aiOffUntilMatch[2]) : 0,
+      isPM: aiOffUntilMatch[3] === 'pm',
+    };
+  }
+  const aiOffForMatch = t.match(/^ai\s+off\s+for\s+(\d+)\s*(minutes?|mins?|hours?|hrs?)\b/);
+  if (aiOffForMatch) {
+    const amount = Number(aiOffForMatch[1]);
+    const isHours = aiOffForMatch[2]!.startsWith('h');
+    return { type: 'AI_OFF_FOR', minutes: isHours ? amount * 60 : amount };
+  }
+  if (/^ai\s+off$/.test(t)) return { type: 'AI_OFF' };
+  if (/^ai\s+on$/.test(t)) return { type: 'AI_ON' };
+  if (/^ai\s+status$/.test(t)) return { type: 'AI_STATUS' };
+  if (/^messages$/.test(t)) return { type: 'MESSAGES' };
+
+  const remindMatch = text.match(/^remind\s+me\s+(.+?)\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
+  if (remindMatch) {
+    return {
+      type: 'REMIND',
+      text: remindMatch[1]!.trim(),
+      hour: Number(remindMatch[2]),
+      minute: remindMatch[3] ? Number(remindMatch[3]) : 0,
+      isPM: remindMatch[4]!.toLowerCase() === 'pm',
+    };
+  }
 
   if (/\b(daily\s+report|full\s+report|day\s+report|report\s+today)\b/.test(t)) return { type: 'DAILY_REPORT' };
 
@@ -151,6 +205,12 @@ const HELP_TEXT = `🔐 *Operator Commands*
 • *note for [property]: [text]* — add property note
 • *incident: [description]* — log incident
 • *set assistant name to [name]* — name your AI assistant (message */[name]* to talk to it)
+• *ai off* — pause AI Autonomous on every chat (not off forever - resume anytime)
+• *ai off for 2 hours* / *ai off until 6pm* — timed pause, auto-resumes
+• *ai on* — resume AI Autonomous everywhere
+• *ai status* — is AI on, or paused until when
+• *messages* — check the "Messages for you" board without opening the app
+• *remind me [text] at [time]* — set yourself a WhatsApp reminder
 • *logout* — end session
 
 All commands are scoped to your business only.`;
@@ -183,12 +243,20 @@ export type OperatorResult = { reply: string };
 export class OperatorCommandService {
   private readonly repo: OperatorModeRepository;
   private readonly propertyRepo: PropertyOperationsRepository;
+  private readonly chatRepo: WhatsAppChatRepository;
+  private readonly businessRepo: BusinessRepository;
+  private readonly relayedMessageRepo: RelayedMessageRepository;
+  private readonly reminderRepo: ReminderRepository;
   private readonly db: Queryable;
 
   constructor(db: Queryable) {
     this.db = db;
     this.repo = new OperatorModeRepository(db);
     this.propertyRepo = new PropertyOperationsRepository(db);
+    this.chatRepo = new WhatsAppChatRepository(db);
+    this.businessRepo = new BusinessRepository(db);
+    this.relayedMessageRepo = new RelayedMessageRepository(db);
+    this.reminderRepo = new ReminderRepository(db);
   }
 
   // Returns true if the message is part of a WA setup wizard (trigger or ongoing session).
@@ -366,10 +434,10 @@ export class OperatorCommandService {
     // ── Authenticated session: execute command ───────────────────────────────
     await this.repo.bumpSession(businessId);
     const command = parse(text);
-    return this.executeCommand(businessId, senderJid, command);
+    return this.executeCommand(businessId, whatsappAccountId, senderJid, command);
   }
 
-  private async executeCommand(businessId: string, senderJid: string, command: ParsedCommand): Promise<OperatorResult> {
+  private async executeCommand(businessId: string, whatsappAccountId: string, senderJid: string, command: ParsedCommand): Promise<OperatorResult> {
     switch (command.type) {
       case 'HELP':
         return { reply: HELP_TEXT };
@@ -398,6 +466,33 @@ export class OperatorCommandService {
 
       case 'PLATFORM_STATUS':
         return this.handlePlatformStatus(businessId);
+
+      case 'AI_OFF':
+        return this.handleAiOff(businessId);
+
+      case 'AI_OFF_FOR':
+        return this.handleAiOffTimed(businessId, command.minutes * 60_000);
+
+      case 'AI_OFF_UNTIL': {
+        const timezone = await this.resolveTimezone(businessId);
+        const target = timeService.resolveNextLocalOccurrence(timezone, to24Hour(command.hour, command.isPM), command.minute);
+        return this.handleAiOffTimed(businessId, Math.max(0, target.getTime() - Date.now()));
+      }
+
+      case 'AI_ON':
+        return this.handleAiOn(businessId);
+
+      case 'AI_STATUS':
+        return this.handleAiStatus(businessId);
+
+      case 'MESSAGES':
+        return this.handleMessages(businessId);
+
+      case 'REMIND': {
+        const timezone = await this.resolveTimezone(businessId);
+        const dueAt = timeService.resolveNextLocalOccurrence(timezone, to24Hour(command.hour, command.isPM), command.minute);
+        return this.handleRemind(businessId, whatsappAccountId, senderJid, command.text, dueAt);
+      }
 
       case 'UNKNOWN':
         return {
@@ -641,6 +736,95 @@ _Report for today's activity only. Send *stats week* or *stats month* for broade
       return { reply: '⚠️ Could not fetch platform status. Try again shortly.' };
     }
   }
+
+  private async resolveTimezone(businessId: string): Promise<string> {
+    const business = await this.businessRepo.findById(businessId);
+    return business?.timezone ?? 'UTC';
+  }
+
+  /** "ai off" - an indefinite, business-wide pause. Clears any earlier timed deadline (an indefinite pause supersedes it) and cancels the scheduled resume so it never fires redundantly later. */
+  private async handleAiOff(businessId: string): Promise<OperatorResult> {
+    const count = await this.chatRepo.pauseAllForOperator(businessId);
+    await this.businessRepo.setAiOperatorPausedUntil(businessId, null);
+    await cancelOperatorAiResume(businessId);
+    return { reply: `⏸️ *AI paused* — ${count} chat${count === 1 ? '' : 's'} moved off AI Autonomous. Send *ai on* whenever you want them back, or *ai off for/until ...* for a timed pause.` };
+  }
+
+  private async handleAiOffTimed(businessId: string, delayMs: number): Promise<OperatorResult> {
+    if (delayMs <= 0) return { reply: '⚠️ That time has already passed - try a later time.' };
+    const count = await this.chatRepo.pauseAllForOperator(businessId);
+    const until = new Date(Date.now() + delayMs);
+    await this.businessRepo.setAiOperatorPausedUntil(businessId, until);
+    await scheduleOperatorAiResume({ businessId }, delayMs);
+    const timezone = await this.resolveTimezone(businessId);
+    const untilLabel = until.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: timezone });
+    return { reply: `⏸️ *AI paused until ${untilLabel}* — ${count} chat${count === 1 ? '' : 's'} moved off AI Autonomous. It will resume automatically, or send *ai on* to bring it back sooner.` };
+  }
+
+  /** "ai on" - resumes only what THIS pause mechanism paused (never a chat a human separately, deliberately paused for their own reason), and cancels any pending timed resume so it doesn't fire again later. */
+  private async handleAiOn(businessId: string): Promise<OperatorResult> {
+    const count = await this.chatRepo.resumeAllPausedByOperator(businessId);
+    await this.businessRepo.setAiOperatorPausedUntil(businessId, null);
+    await cancelOperatorAiResume(businessId);
+    return { reply: `▶️ *AI resumed* — ${count} chat${count === 1 ? '' : 's'} back on AI Autonomous.` };
+  }
+
+  private async handleAiStatus(businessId: string): Promise<OperatorResult> {
+    const business = await this.businessRepo.findById(businessId);
+    if (business?.aiOperatorPausedUntil) {
+      const untilLabel = new Date(business.aiOperatorPausedUntil).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: business.timezone });
+      return { reply: `⏸️ AI is paused until ${untilLabel}.` };
+    }
+    const { rows } = await this.db.query<{ paused: string }>(
+      `SELECT COUNT(*) AS paused FROM whatsapp_chats WHERE business_id = $1 AND ai_mode = 'AI_PAUSED' AND ai_mode_source = 'operator_pause' AND deleted_at IS NULL`,
+      [businessId],
+    );
+    const pausedCount = Number(rows[0]?.paused ?? 0);
+    if (pausedCount > 0) return { reply: `⏸️ AI is paused indefinitely (${pausedCount} chat${pausedCount === 1 ? '' : 's'}). Send *ai on* to resume.` };
+    return { reply: '▶️ AI is on and handling replies normally.' };
+  }
+
+  /** Reads back what's currently on the Dashboard's "Messages for you" board - lets you check it without opening the app. Never marks anything read/dismissed; that stays a dashboard-only action. */
+  private async handleMessages(businessId: string): Promise<OperatorResult> {
+    const messages = await this.relayedMessageRepo.listOpenForBusiness(businessId);
+    if (messages.length === 0) return { reply: '📭 No messages waiting for you.' };
+    const lines = messages
+      .slice(0, 10)
+      .map((m) => `• *${m.fromDisplayName}* for ${m.recipientDescription}: ${m.messageText}${m.whenText ? ` (${m.whenText})` : ''}`);
+    const more = messages.length > 10 ? `\n\n_+${messages.length - 10} more on the Dashboard._` : '';
+    return { reply: `📋 *Messages for you* (${messages.length})\n\n${lines.join('\n')}${more}` };
+  }
+
+  /**
+   * Promotes the reminder feature to a plain top-level command - previously
+   * reachable only inside a named assistant-mode session
+   * (assistantModeService.ts's create_reminder tool). Same reminders table,
+   * same delivery sweep (sweepDueReminders in incomingMessagesWorker.ts) -
+   * no new mechanism, just a second real entry point into it.
+   */
+  private async handleRemind(businessId: string, whatsappAccountId: string, senderJid: string, text: string, dueAt: Date): Promise<OperatorResult> {
+    if (!text) return { reply: '⚠️ Tell me what to remind you about, e.g. *remind me call John at 5pm*.' };
+    try {
+      const reminder = await this.reminderRepo.create({
+        businessId,
+        whatsappAccountId,
+        notifyJid: senderJid,
+        message: text,
+        dueAt: dueAt.toISOString(),
+        createdByJid: senderJid,
+      });
+      const timezone = await this.resolveTimezone(businessId);
+      const label = new Date(reminder.dueAt).toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric', timeZone: timezone });
+      return { reply: `⏰ Reminder set for ${label}: "${text}"` };
+    } catch {
+      return { reply: '⚠️ Could not set that reminder. Try again shortly.' };
+    }
+  }
+}
+
+function to24Hour(hour: number, isPM: boolean): number {
+  const base = hour % 12;
+  return isPM ? base + 12 : base;
 }
 
 function normaliseJid(jid: string): string {

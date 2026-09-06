@@ -18,6 +18,7 @@ import {
   type PresenceUpdateJobData,
   type AiDebounceJobData,
   type HumanTakeoverResumeJobData,
+  type OperatorAiResumeJobData,
 } from '../queues/realtimeEventsQueue.js';
 import { whatsappMessagePersistenceService } from '../../services/whatsappMessagePersistenceService.js';
 import { persistStatusUpdate } from '../../services/whatsappStatusPersistenceService.js';
@@ -26,6 +27,7 @@ import { orchestrateAiReply } from '../../services/ai/aiOrchestrator.js';
 import { timeService } from '../../services/time/timeService.js';
 import { whatsappOutboundMessageService } from '../../services/whatsappOutboundMessageService.js';
 import { WhatsAppChatRepository } from '../../repositories/whatsappChatRepository.js';
+import { BusinessRepository } from '../../repositories/businessRepository.js';
 import { CrmContactRepository } from '../../repositories/crmContactRepository.js';
 import { notifyBusiness } from '../../services/notificationService.js';
 import { NotificationRepository } from '../../repositories/notificationRepository.js';
@@ -684,6 +686,7 @@ const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
 const emailMessageRepository = new EmailMessageRepository(pool);
 const businessDocumentRepository = new BusinessDocumentRepository(pool);
 const chatRepository = new WhatsAppChatRepository(pool);
+const businessRepositoryForOperatorResume = new BusinessRepository(pool);
 const crmContactRepository = new CrmContactRepository(pool);
 const operatorCommandService = new OperatorCommandService(pool);
 const reminderRepository = new ReminderRepository(pool);
@@ -1017,6 +1020,20 @@ async function processHumanTakeoverResume(data: HumanTakeoverResumeJobData): Pro
   if (resumed) {
     await publishRealtimeEvent({ type: 'chat.updated', businessId: data.businessId, chatId: data.chatId });
   }
+}
+
+/**
+ * Fires at the deadline set by Operator Mode's "ai off for N"/"ai off
+ * until X" - the timed counterpart to the manual, indefinite "ai off".
+ * Clears ai_operator_paused_until regardless of how many chats actually
+ * got resumed (a business with zero AI_PAUSED-by-operator chats left by
+ * the time this fires - e.g. every one was individually reassigned - still
+ * had a real deadline that just passed, so "ai status" should stop
+ * reporting a stale future time).
+ */
+async function processOperatorAiResume(data: OperatorAiResumeJobData): Promise<void> {
+  await chatRepository.resumeAllPausedByOperator(data.businessId);
+  await businessRepositoryForOperatorResume.setAiOperatorPausedUntil(data.businessId, null);
 }
 
 export async function processMessageStatus(data: MessageStatusJobData): Promise<void> {
@@ -1533,6 +1550,7 @@ async function processRealtimeEventJob(
     | PresenceUpdateJobData
     | AiDebounceJobData
     | HumanTakeoverResumeJobData
+    | OperatorAiResumeJobData
   >,
 ): Promise<void> {
   if (job.name === 'message-status') {
@@ -1571,6 +1589,8 @@ async function processRealtimeEventJob(
     await processAiDebounce(job.data as AiDebounceJobData);
   } else if (job.name === 'human-takeover-resume') {
     await processHumanTakeoverResume(job.data as HumanTakeoverResumeJobData);
+  } else if (job.name === 'operator-ai-resume') {
+    await processOperatorAiResume(job.data as OperatorAiResumeJobData);
   } else if (job.name === 'outbound-message-timeout-sweep') {
     await sweepStaleOutboundMessages();
   } else if (job.name === 'reminder-sweep') {

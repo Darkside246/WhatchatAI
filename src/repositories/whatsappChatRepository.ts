@@ -293,6 +293,38 @@ export class WhatsAppChatRepository {
   }
 
   /**
+   * The "ai off" Operator Mode command - a real, business-wide bulk pause,
+   * not a per-chat action. Only ever moves a chat OUT of AI_ACTIVE, so a
+   * chat already in HUMAN_TAKEOVER (blocked keyword, AI failure, a
+   * deliberate dashboard takeover) is left completely untouched - this must
+   * never override a real escalation, only pause an otherwise-normal
+   * AI Autonomous conversation.
+   */
+  async pauseAllForOperator(businessId: string): Promise<number> {
+    const { rowCount } = await this.db.query(
+      `UPDATE whatsapp_chats SET ai_mode = 'AI_PAUSED', ai_mode_source = 'operator_pause', ai_mode_set_at = now(), updated_at = now()
+       WHERE business_id = $1 AND ai_mode = 'AI_ACTIVE' AND deleted_at IS NULL`,
+      [businessId],
+    );
+    return rowCount ?? 0;
+  }
+
+  /**
+   * The "ai on" counterpart - only resumes a chat this exact command paused
+   * (ai_mode_source = 'operator_pause'), so a chat a human separately,
+   * deliberately paused from the dashboard for their own reason is never
+   * silently flipped back to AI_ACTIVE by this.
+   */
+  async resumeAllPausedByOperator(businessId: string): Promise<number> {
+    const { rowCount } = await this.db.query(
+      `UPDATE whatsapp_chats SET ai_mode = 'AI_ACTIVE', ai_mode_source = 'operator_resume', ai_mode_set_at = now(), updated_at = now()
+       WHERE business_id = $1 AND ai_mode = 'AI_PAUSED' AND ai_mode_source = 'operator_pause' AND deleted_at IS NULL`,
+      [businessId],
+    );
+    return rowCount ?? 0;
+  }
+
+  /**
    * Human takeover belongs to the specific conversation, not globally to the
    * account. `source` records who/what made this transition (see
    * WhatsAppChatRecord.aiModeSource) - always pass one for any new caller;
