@@ -93,8 +93,12 @@ EXPOSE 3000
 #      own default $HOME happens to be, so the non-root runtime user below
 #      can actually run it regardless of what user built this layer. ----
 FROM node:22-slim AS goose-build
+# bzip2 is required to extract the installer's own .tar.bz2 release archive -
+# node:22-slim does not include it by default, and its absence fails the
+# install step below with a raw "tar: Child returned status 2" rather than
+# anything naming the missing package, so it's listed here explicitly.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl ca-certificates bash \
+  && apt-get install -y --no-install-recommends curl ca-certificates bash bzip2 \
   && rm -rf /var/lib/apt/lists/*
 # $HOME/.local/bin/goose is not a guess - it's the exact path
 # gooseFallbackSupervisor.ts's own findExecutable() already checks first
