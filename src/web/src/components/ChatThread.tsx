@@ -443,6 +443,12 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   const composerRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    if (!sending && chatId && !emojiPickerOpen && recorder.state !== 'recording') {
+      composerRef.current?.focus();
+    }
+  }, [chatId, emojiPickerOpen, recorder.state, sending]);
+
+  useEffect(() => {
     Promise.all([api.listMembers(), api.listTeams()])
       .then(([membersResult, teamsResult]) => {
         setMembers(membersResult.members);
@@ -693,14 +699,7 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
     setDraft('');
     setEmojiPickerOpen(false);
     setReplySuggestions([]);
-    try {
-      await dispatchSend(chatId, { messageType: 'text', text });
-    } finally {
-      // Sending is asynchronous and state updates can otherwise move focus
-      // away from the composer after Enter, especially when an error banner
-      // appears. Restore it only to the still-mounted composer.
-      composerRef.current?.focus();
-    }
+    await dispatchSend(chatId, { messageType: 'text', text });
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLInputElement>) {
