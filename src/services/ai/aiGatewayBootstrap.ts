@@ -28,7 +28,7 @@ export function initializeAiGateway(): void {
 
   if (process.env.OPENAI_API_KEY) {
     aiGateway.unregister('openai');
-    aiGateway.register(new OpenAIResponsesProvider(20));
+    aiGateway.register(new OpenAIResponsesProvider(undefined, 20));
   }
 
   if (process.env.GROQ_API_KEY) {
