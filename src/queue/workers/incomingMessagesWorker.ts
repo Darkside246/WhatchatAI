@@ -132,7 +132,11 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     (stripDeviceSuffix(message.remoteJid) === accountJid ||
       (message.remoteJidAlt !== null && stripDeviceSuffix(message.remoteJidAlt) === accountJid));
 
-  if (!isSelfChat) {
+  // Sentinel screens customer-originated content only. Outbound echoes
+  // (fromMe=true) are our own already-authorized messages; screening them
+  // here can block persistence/linking after a successful send and make the
+  // message disappear from the conversation UI.
+  if (!message.fromMe) {
     const verdict = await runSentinel({
       businessId,
       whatsappAccountId,
