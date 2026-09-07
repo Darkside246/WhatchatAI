@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - build/property-operations-os
+      - build/property-operations-os-openai-2026-09-07
       - phase-2-ai-repair
       - openclaw-cell-runtime
   pull_request:
