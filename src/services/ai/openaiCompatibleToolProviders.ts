@@ -2,7 +2,6 @@ import type {
   AIProviderAdapter,
   AIProviderToolCall,
   AIProviderToolDefinition,
-  AIProviderToolResponse,
 } from '../../domain/platform/contracts.js';
 import { looksLikeRawReasoningTrace } from './reasoningLeakGuard.js';
 
@@ -12,6 +11,7 @@ interface ProviderOptions {
   apiKey: string | undefined;
   baseUrl: string;
   priority: number;
+  maxTokensField: 'max_tokens' | 'max_completion_tokens';
 }
 
 type ProviderCapabilities = Awaited<ReturnType<AIProviderAdapter['capabilities']>>;
@@ -37,12 +37,14 @@ export abstract class OpenAICompatibleToolProvider implements AIProviderAdapter 
   readonly priority: number;
   private readonly apiKey: string | undefined;
   private readonly baseUrl: string;
+  private readonly maxTokensField: ProviderOptions['maxTokensField'];
 
   protected constructor(options: ProviderOptions) {
     this.name = options.name;
     this.model = options.model;
     this.priority = options.priority;
     this.apiKey = options.apiKey;
+    this.maxTokensField = options.maxTokensField;
     const parsed = new URL(options.baseUrl);
     if (parsed.protocol !== 'https:') throw new Error(`${options.name} base URL must use HTTPS`);
     this.baseUrl = parsed.toString().replace(/\/$/, '');
@@ -108,7 +110,7 @@ export abstract class OpenAICompatibleToolProvider implements AIProviderAdapter 
     const body: Record<string, unknown> = {
       model: this.model,
       messages,
-      max_tokens: input.maxOutputTokens ?? 4096,
+      [this.maxTokensField]: input.maxOutputTokens ?? 4096,
       parallel_tool_calls: false,
     };
     if (input.temperature !== undefined) body.temperature = input.temperature;
@@ -202,6 +204,7 @@ export class GroqProvider extends OpenAICompatibleToolProvider {
       apiKey: process.env.GROQ_API_KEY,
       baseUrl: process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1',
       priority,
+      maxTokensField: 'max_completion_tokens',
     });
   }
 }
@@ -214,6 +217,7 @@ export class CerebrasProvider extends OpenAICompatibleToolProvider {
       apiKey: process.env.CEREBRAS_API_KEY,
       baseUrl: process.env.CEREBRAS_BASE_URL || 'https://api.cerebras.ai/v1',
       priority,
+      maxTokensField: 'max_completion_tokens',
     });
   }
 }
@@ -226,6 +230,7 @@ export class MistralProvider extends OpenAICompatibleToolProvider {
       apiKey: process.env.MISTRAL_API_KEY,
       baseUrl: process.env.MISTRAL_BASE_URL || 'https://api.mistral.ai/v1',
       priority,
+      maxTokensField: 'max_tokens',
     });
   }
 }
