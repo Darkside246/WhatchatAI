@@ -511,6 +511,7 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   // as stale attention signals after the conversation is opened.
   useEffect(() => {
     if (!chatId) return;
+    window.dispatchEvent(new CustomEvent('aura:chat-opened', { detail: { chatId } }));
     void api
       .clearChatNotifications(chatId)
       .then(() => window.dispatchEvent(new CustomEvent('aura:notifications-changed')))

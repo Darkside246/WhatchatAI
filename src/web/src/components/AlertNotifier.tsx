@@ -117,6 +117,24 @@ export function AlertNotifier() {
     return () => window.removeEventListener('storage', onStorage);
   }, []);
 
+  // Opening a chat is the acknowledgement boundary for its human-takeover
+  // alert. Keep this local dismissal separate from the server-side takeover
+  // state: the AI may remain paused briefly while the human finishes typing,
+  // but the top-bar alert should not obstruct the chat they are handling.
+  useEffect(() => {
+    function onChatOpened(event: Event) {
+      const chatId = (event as CustomEvent<{ chatId?: string }>).detail?.chatId;
+      if (!chatId) return;
+      setDismissed((prev) => {
+        const alert = alerts.find((candidate) => candidate.chatId === chatId);
+        if (!alert || prev[chatId] === alert.triggeredAt) return prev;
+        return { ...prev, [chatId]: alert.triggeredAt };
+      });
+    }
+    window.addEventListener('aura:chat-opened', onChatOpened);
+    return () => window.removeEventListener('aura:chat-opened', onChatOpened);
+  }, [alerts]);
+
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -178,7 +196,12 @@ export function AlertNotifier() {
   return (
     <button
       type="button"
-      onClick={() => navigate(`/chats/${mostRecent(current).chatId}`)}
+      onClick={() => {
+        const chatId = mostRecent(current).chatId;
+        dismissGroup(current);
+        window.dispatchEvent(new CustomEvent('aura:chat-opened', { detail: { chatId } }));
+        navigate(`/chats/${chatId}`);
+      }}
       title="Open this chat"
       className={`flex max-w-xs items-center gap-2 rounded-full border px-3 py-1 text-caption font-medium transition ${
         current.urgency === 'HIGH' ? 'border-error/60 bg-error/15 text-error' : 'border-warning/60 bg-warning/15 text-warning'
