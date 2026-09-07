@@ -327,24 +327,6 @@ async function tryHandleOperatorMessage(params: {
 const DEFAULT_BLOCKED_REPLY_MESSAGE = 'Let me get someone from the team to help with that.';
 
 /**
- * The blocked-reply message is operator-configured, but it is still sent to
- * the customer. Reject internal narration or private-person references so a
- * saved prompt/policy explanation can never become customer-facing text.
- */
-function customerSafeBlockedReply(message: string | null): string {
-  const candidate = message?.trim();
-  if (!candidate) return DEFAULT_BLOCKED_REPLY_MESSAGE;
-
-  const internalNarration =
-    /\b(?:i|we)\s+(?:do not|don't|cannot|can't)\s+(?:think|believe|share|tell|disclose)/i.test(candidate) ||
-    /\b(?:as a result|therefore|because)\s+(?:i|we)\s+(?:will|must|cannot|can't)\b/i.test(candidate) ||
-    /\b(?:notify|inform|tell)\s+(?:when|once|after)\b/i.test(candidate) ||
-    /\b(?:private|protected|confidential|internal)\s+(?:information|fact|detail)\b/i.test(candidate);
-
-  return internalNarration ? DEFAULT_BLOCKED_REPLY_MESSAGE : candidate;
-}
-
-/**
  * Centralized "which agent, given what context, says what" decision - see
  * src/services/ai/aiOrchestrator.ts - plus every real side effect that
  * follows it (notifications, ai_mode transitions, realtime events, the
@@ -618,7 +600,7 @@ async function runAiHandoff(params: {
         chatId,
         idempotencyKey: `ai-reply-blocked-fallback:${messageId}`,
         messageType: 'text',
-        text: customerSafeBlockedReply(outcome.agent.blockedReplyMessage),
+        text: outcome.agent.blockedReplyMessage?.trim() || DEFAULT_BLOCKED_REPLY_MESSAGE,
         requestedBy: 'system',
       });
       if (isGroup) await chatRepository.markAiGroupReplySent(chatId);
