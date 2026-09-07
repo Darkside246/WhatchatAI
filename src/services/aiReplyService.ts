@@ -240,7 +240,13 @@ export type AiReplyResult =
    * docs/PHASE_3A_AI_RELIABILITY_AUDIT_AND_PROPOSAL.md section 5 (escalation
    * hop) and the aiOrchestrator caller that reads this field.
    */
-  | { status: 'unavailable'; reason: string; skipEscalation: boolean };
+  | {
+      status: 'unavailable';
+      reason: string;
+      skipEscalation: boolean;
+      /** Capacity/quota outages are transient and should not create user-facing failure notifications. */
+      providerUnavailable?: boolean;
+    };
 
 // A runaway generation should never be relayed to a real customer verbatim,
 // regardless of what the model returns.
@@ -847,6 +853,7 @@ async function tryFallbackProviders(
   context: AiHandoffContext,
   contents: ReturnType<typeof toContents>,
   skipEscalation: boolean,
+  providerUnavailable = false,
 ): Promise<AiReplyResult> {
   const fallbackProviders = aiGateway.listProviders().filter((provider) => provider.name !== 'gemini');
   if (fallbackProviders.length === 0) {
@@ -854,6 +861,7 @@ async function tryFallbackProviders(
       status: 'unavailable',
       reason: `Gemini unavailable (${geminiReason}); no fallback provider is configured`,
       skipEscalation,
+      providerUnavailable,
     };
   }
 
@@ -882,6 +890,7 @@ async function tryFallbackProviders(
       status: 'unavailable',
       reason: `Gemini unavailable (${geminiReason}); fallback also unavailable (${error instanceof Error ? error.message : String(error)})`,
       skipEscalation,
+      providerUnavailable,
     };
   }
 }
@@ -1346,6 +1355,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
       context,
       contents,
       true,
+      true,
     );
   }
 
@@ -1450,7 +1460,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
       // against. Escalating to a second agent right now is pointless: the
       // same outage almost certainly still applies.
       geminiCircuitBreaker.recordFailure(reason);
-      return tryFallbackProviders(reason, agent, context, contents, true);
+      return tryFallbackProviders(reason, agent, context, contents, true, true);
     }
 
     if (classified.category === 'auth' || classified.category === 'provider_config') {

@@ -517,6 +517,14 @@ async function runAiHandoff(params: {
   // configured" or the literal API error) into the notification, so the
   // operator does not have to guess.
   if (outcome.kind === 'unavailable') {
+    if (outcome.code === 'AI_PROVIDER_UNAVAILABLE') {
+      // Quota/capacity failures are transient provider conditions. Do not
+      // expose raw provider errors in the notification center or force a
+      // human-takeover state; record the reason for operators and let the
+      // next inbound message retry normally.
+      console.error(`[IncomingMessagesWorker] AI provider unavailable; no reply sent for chat ${chatId}: ${outcome.reason}`);
+      return;
+    }
     console.log(`[IncomingMessagesWorker] AI reply unavailable for chat ${chatId}: ${outcome.reason}`);
     await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER', 'ai_unavailable');
     await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
