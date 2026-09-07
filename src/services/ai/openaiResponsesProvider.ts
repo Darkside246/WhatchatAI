@@ -233,8 +233,8 @@ export class OpenAIResponsesProvider implements RegisteredAiProvider {
 
     if (payload.usage) {
       result.usage = {
-        inputTokens: payload.usage.input_tokens,
-        outputTokens: payload.usage.output_tokens,
+        ...(payload.usage.input_tokens !== undefined && { inputTokens: payload.usage.input_tokens }),
+        ...(payload.usage.output_tokens !== undefined && { outputTokens: payload.usage.output_tokens }),
       };
     }
 
@@ -242,7 +242,10 @@ export class OpenAIResponsesProvider implements RegisteredAiProvider {
   }
 }
 
-type ProviderMessage = ProviderGenerateInput['messages'][number];
+interface ProviderMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
 
 type ProviderGenerateInput = {
   tenantId: string;
