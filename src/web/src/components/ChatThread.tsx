@@ -441,6 +441,12 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   const [assigneeError, setAssigneeError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLInputElement>(null);
+  const messageLoadRef = useRef<{ chatId: string; promise: Promise<void> } | null>(null);
+  const activeChatIdRef = useRef(chatId);
+
+  useEffect(() => {
+    activeChatIdRef.current = chatId;
+  }, [chatId]);
 
   useEffect(() => {
     if (!sending && chatId && !emojiPickerOpen && recorder.state !== 'recording') {
@@ -458,12 +464,25 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   }, []);
 
   async function load(currentChatId: string) {
+    const inFlight = messageLoadRef.current;
+    if (inFlight?.chatId === currentChatId) return inFlight.promise;
+
+    const promise = (async () => {
+      try {
+        const { messages: list } = await api.listMessages(currentChatId);
+        if (activeChatIdRef.current !== currentChatId) return;
+        setMessages([...list].reverse());
+        setError(null);
+      } catch (err) {
+        if (activeChatIdRef.current !== currentChatId) return;
+        setError(err instanceof Error ? err.message : 'Failed to load messages.');
+      }
+    })();
+    messageLoadRef.current = { chatId: currentChatId, promise };
     try {
-      const { messages: list } = await api.listMessages(currentChatId);
-      setMessages([...list].reverse());
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load messages.');
+      await promise;
+    } finally {
+      if (messageLoadRef.current?.promise === promise) messageLoadRef.current = null;
     }
   }
 
