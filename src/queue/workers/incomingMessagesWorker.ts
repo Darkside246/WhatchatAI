@@ -437,7 +437,12 @@ async function runAiHandoff(params: {
     console.error('[IncomingMessagesWorker] Retail order handoff failed, falling back to generic AI reply:', err instanceof Error ? err.message : err);
   }
 
-  const outcome = await orchestrateAiReply({ businessId, chatId, contactId, queryText, mediaId });
+  const outcome = await orchestrateAiReply({ businessId, chatId, contactId, queryText, mediaId, triggerMessageId: messageId });
+
+  if (outcome.kind === 'skipped') {
+    console.log(`[IncomingMessagesWorker] Chat ${chatId}: ${outcome.reason}`);
+    return;
+  }
 
   // 'no_agent' is an honest, legitimate outcome (a business can
   // deliberately want AI to only ever answer specific keyword-scoped
@@ -965,10 +970,17 @@ async function processAiDebounce(data: AiDebounceJobData): Promise<void> {
     if (unanswered.length === 0) return;
 
     // The watermark always advances past the whole reviewed burst,
-    // regardless of what the gate below decides - a message the gate
-    // chose not to answer must never be re-considered on the next
-    // debounce fire.
+    // regardless of what the gate below decides.
     lastConsideredMessageId = unanswered[unanswered.length - 1]!.id;
+
+    // A human or another outbound path may have answered after this debounce
+    // job was scheduled. The manual-reply auto-pause happens after message
+    // persistence, so it can race this worker; re-check the durable message
+    // timeline immediately before generating instead of trusting ai_mode alone.
+    const newestInbound = unanswered[unanswered.length - 1]!;
+    if (await messageRepository.hasNewerOutboundMessage(chatId, newestInbound.id)) {
+      return;
+    }
 
     let triggerMessages = unanswered;
     if (claimed.isGroup) {

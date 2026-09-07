@@ -199,4 +199,15 @@ export class NotificationRepository {
     );
     return rowCount ?? 0;
   }
+
+  /** Clear every notification for one chat, including already-dismissed rows. */
+  async clearForChat(businessId: string, userId: string, chatId: string): Promise<number> {
+    const { rowCount } = await this.db.query(
+      `UPDATE notifications
+       SET read_at = COALESCE(read_at, now()), dismissed_at = COALESCE(dismissed_at, now())
+       WHERE business_id = $1 AND user_id = $2 AND target_type = 'chat' AND target_id = $3`,
+      [businessId, userId, chatId],
+    );
+    return rowCount ?? 0;
+  }
 }

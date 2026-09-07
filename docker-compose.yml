@@ -29,8 +29,8 @@ x-app-common: &app-common
   environment:
     NODE_ENV: production
     PORT: "3000"
-    DATABASE_URL: postgres://${POSTGRES_USER:-whatchatai}:${POSTGRES_PASSWORD:-whatchatai_dev}@postgres:5432/${POSTGRES_DB:-whatchatai_dev}
-    REDIS_URL: redis://redis:6379/0
+    DATABASE_URL: postgres://${POSTGRES_USER:-whatchatai}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-whatchatai_dev}
+    REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379/0
     # These MUST be set explicitly here, not left to whatever the
     # developer's own .env has (that file's own WHATSAPP_SESSION_DIR is a
     # relative host path meant for `npm run dev`, e.g. "./data/whatsapp-
@@ -70,7 +70,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-whatchatai}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-whatchatai_dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-whatchatai_dev}
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -111,7 +111,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-whatchatai}
       POSTGRES_DB: ${POSTGRES_DB:-whatchatai_dev}
-      PGPASSWORD: ${POSTGRES_PASSWORD:-whatchatai_dev}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
     volumes:
@@ -142,7 +142,9 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes", "--save", ""]
+    command: ["redis-server", "--appendonly", "yes", "--save", "", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"]
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
     volumes:
       - redis-data:/data
     healthcheck:
@@ -168,9 +170,9 @@ services:
     # still only a documented-behaviour assumption, not yet re-tested with
     # cap_drop: [ALL] applied).
 
-  # The real Gemini-failover container - see Dockerfile's goose-runtime
-  # stage for why the CLI is installed at build time rather than relying
-  # on gooseFallbackSupervisor.ts's own runtime auto-install. No host port
+  # Optional Gemini-failover supervisor. Goose is deliberately not installed
+  # by the image or at runtime; provide an operator-verified preinstalled
+  # binary (GOOSE_BIN) or leave this fallback unavailable. No host port
   # mapping at all (same "only reachable over aura-net" convention as
   # postgres/redis above) - GOOSE_SERVICE_HOST=0.0.0.0 here only binds this
   # container's own network namespace, never the public internet.
@@ -178,7 +180,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: goose-runtime
+      target: runtime
     container_name: aura-goose
     env_file:
       - .env
@@ -187,6 +189,7 @@ services:
       GOOSE_SERVICE_HOST: "0.0.0.0"
       GOOSE_SERVICE_PORT: "3284"
       HOME: /tmp
+      GOOSE_AUTO_INSTALL: "false"
       # Deliberately a DIFFERENT provider than this app's own primary
       # (Gemini) - a Gemini-specific outage must not also take down its
       # own fallback. OPENROUTER_API_KEY itself comes from .env via
@@ -196,6 +199,7 @@ services:
       # this is live (docker compose logs goose after a real message), and
       # adjust here if Goose's own config schema has since changed.
       GOOSE_PROVIDER: openrouter
+    command: ["node", "dist/services/gooseFallbackSupervisor.js"]
     user: "10001:10001"
     read_only: true
     tmpfs:

@@ -46,7 +46,7 @@ describe('Outbound Leak Guard (real Stage 1 matching; real GEMINI_API_KEY state 
     it('never blocks clean text when protected facts are configured but none appear', async () => {
       const verdict = await runOutboundLeakGuard('Sure, we open at 9am tomorrow.', ['Alex', 'Rex']);
       if (!process.env.GEMINI_API_KEY) {
-        expect(verdict.allowed).toBe(true);
+        expect(verdict.allowed).toBe(false);
         expect(verdict.eventType).toBe('ai_output_leak_check_unavailable');
       } else {
         expect(['ai_output_leak_pass', 'ai_output_leak_check_unavailable']).toContain(verdict.eventType);
@@ -55,7 +55,7 @@ describe('Outbound Leak Guard (real Stage 1 matching; real GEMINI_API_KEY state 
   });
 
   describe('Stage 2: AI semantic check (honest unavailability, never a fabricated verdict)', () => {
-    it('never fabricates a pass or a block when the AI stage cannot run - Stage 1 clean text stays allowed, logged as an honest coverage gap', async () => {
+    it('fails closed rather than fabricating a pass when the AI stage cannot run', async () => {
       // Forces the key-absent condition regardless of this machine's own .env
       // (test/globalSetup.ts loads dotenv, and a real key may genuinely be
       // configured here) - otherwise this test silently stops asserting the
@@ -65,7 +65,7 @@ describe('Outbound Leak Guard (real Stage 1 matching; real GEMINI_API_KEY state 
       delete process.env.GEMINI_API_KEY;
       try {
         const verdict = await runOutboundLeakGuard('Totally unrelated reply text.', ['Alex']);
-        expect(verdict.allowed).toBe(true);
+        expect(verdict.allowed).toBe(false);
         expect(verdict.eventType).toBe('ai_output_leak_check_unavailable');
         expect(verdict.reason).toContain('GEMINI_API_KEY');
       } finally {

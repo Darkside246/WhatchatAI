@@ -10,6 +10,10 @@ export type GatewayToolCall = AIProviderToolCall;
 export type GatewayToolResponse = AIProviderToolResponse;
 export interface GatewayRequest {
   tenantId: string;
+  /** Optional attribution for usage/quota accounting. */
+  agentId?: string | null;
+  chatId?: string | null;
+  callKind?: 'primary' | 'bare_retry' | 'tool_follow_up' | 'fallback';
   operation: string;
   messages: GatewayMessage[];
   media?: GatewayMedia[];
@@ -28,12 +32,99 @@ export interface GatewayResponse {
   provider: string;
   model: string;
   text: string;
-  usage?: { inputTokens?: number; outputTokens?: number };
+  usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
   attemptedProviders: string[];
   /** Present instead of (or alongside a possibly-empty) text when the model wants to call a tool. The caller decides whether/how to execute it - the gateway never executes anything itself. */
   toolCalls?: GatewayToolCall[];
 }
 export interface RegisteredAiProvider extends AIProviderAdapter { model: string; priority: number; }
+
+export interface AiGatewayTelemetry {
+  recordUsage(input: {
+    businessId: string;
+    agentId?: string | null;
+    chatId?: string | null;
+    model: string;
+    callKind: 'primary' | 'bare_retry' | 'tool_follow_up' | 'fallback';
+    promptTokens: number;
+    candidatesTokens: number;
+    totalTokens: number;
+  }): Promise<void>;
+  recordProviderAttempt(input: {
+    businessId: string;
+    provider: string;
+    operation: string;
+    outcome: 'success' | 'failure';
+    attemptNumber: number;
+  }): Promise<void>;
+}
+
+let gatewayTelemetry: AiGatewayTelemetry | null = null;
+
+/** Install process-level telemetry without coupling unit-test gateways to Postgres. */
+export function configureAiGatewayTelemetry(telemetry: AiGatewayTelemetry | null): void {
+  gatewayTelemetry = telemetry;
+}
+
+function normalizeUsage(usage: { inputTokens?: number; outputTokens?: number } | undefined): {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+} {
+  const inputTokens = Number.isFinite(usage?.inputTokens) && (usage?.inputTokens ?? 0) >= 0 ? Math.trunc(usage!.inputTokens!) : 0;
+  const outputTokens = Number.isFinite(usage?.outputTokens) && (usage?.outputTokens ?? 0) >= 0 ? Math.trunc(usage!.outputTokens!) : 0;
+  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+}
+
+function configuredProviders(): string[] | undefined {
+  const raw = process.env.AI_PROVIDER_ALLOWLIST?.trim();
+  if (!raw) return process.env.NODE_ENV === 'production' ? ['gemini'] : undefined;
+  return raw.split(',').map((provider) => provider.trim().toLowerCase()).filter(Boolean);
+}
+
+function consentedProviders(): string[] | undefined {
+  const raw = process.env.AI_PROVIDER_CONSENT?.trim();
+  if (!raw) return process.env.NODE_ENV === 'production' ? [] : undefined;
+  return raw.split(',').map((provider) => provider.trim().toLowerCase()).filter(Boolean);
+}
+
+function callKindFor(request: GatewayRequest): NonNullable<GatewayRequest['callKind']> {
+  return request.callKind ?? (request.operation.includes('fallback') ? 'fallback' : request.pendingToolCalls?.length ? 'tool_follow_up' : 'primary');
+}
+
+async function recordUsage(request: GatewayRequest, model: string, usage: ReturnType<typeof normalizeUsage>): Promise<void> {
+  if (!gatewayTelemetry) return;
+  try {
+    const input: Parameters<AiGatewayTelemetry['recordUsage']>[0] = {
+      businessId: request.tenantId,
+      model,
+      callKind: callKindFor(request),
+      promptTokens: usage.inputTokens,
+      candidatesTokens: usage.outputTokens,
+      totalTokens: usage.totalTokens,
+    };
+    if (request.agentId !== undefined) input.agentId = request.agentId;
+    if (request.chatId !== undefined) input.chatId = request.chatId;
+    await gatewayTelemetry.recordUsage(input);
+  } catch (error) {
+    console.error('[AiGateway] Failed to persist normalized usage:', error instanceof Error ? error.message : error);
+  }
+}
+
+async function recordAttempt(request: GatewayRequest, provider: string, outcome: 'success' | 'failure', attemptNumber: number): Promise<void> {
+  if (!gatewayTelemetry) return;
+  try {
+    await gatewayTelemetry.recordProviderAttempt({
+      businessId: request.tenantId,
+      provider,
+      operation: request.operation,
+      outcome,
+      attemptNumber,
+    });
+  } catch (error) {
+    console.error('[AiGateway] Failed to audit provider attempt:', error instanceof Error ? error.message : error);
+  }
+}
 
 const MAX_MESSAGES = 64;
 const MAX_MESSAGE_CHARS = 20_000;
@@ -116,10 +207,16 @@ export class AiGateway {
   }
   async generate(request: GatewayRequest): Promise<GatewayResponse> {
     validateRequest(request);
-    const eligible = [...this.providers.values()].filter((provider) => !request.providerAllowlist || request.providerAllowlist.includes(provider.name)).sort((a,b) => { if (request.preferredProvider === a.name) return -1; if (request.preferredProvider === b.name) return 1; return a.priority-b.priority; });
+    const policyAllowlist = configuredProviders();
+    const consented = consentedProviders();
+    const eligible = [...this.providers.values()]
+      .filter((provider) => !policyAllowlist || policyAllowlist.includes(provider.name))
+      .filter((provider) => !consented || consented.includes(provider.name))
+      .filter((provider) => !request.providerAllowlist || request.providerAllowlist.includes(provider.name))
+      .sort((a,b) => { if (request.preferredProvider === a.name) return -1; if (request.preferredProvider === b.name) return 1; return a.priority-b.priority; });
     if (eligible.length === 0) throw new Error('No eligible AI providers are registered');
     const attemptedProviders: string[] = []; const failures: string[] = [];
-    for (const provider of eligible) {
+    for (const [index, provider] of eligible.entries()) {
       attemptedProviders.push(provider.name);
       try {
         const capabilities = await provider.capabilities();
@@ -139,6 +236,9 @@ export class AiGateway {
         if (request.pendingToolCalls !== undefined) providerInput.pendingToolCalls = request.pendingToolCalls;
         if (request.toolResponses !== undefined) providerInput.toolResponses = request.toolResponses;
         const response = await provider.generate(providerInput);
+        const usage = normalizeUsage(response.usage);
+        await recordUsage(request, provider.model, usage);
+        await recordAttempt(request, provider.name, 'success', index + 1);
         let text = response.text.trim();
         const toolCalls = response.toolCalls?.length ? response.toolCalls : undefined;
         // A tool-call response legitimately has no text yet - the model is
@@ -149,7 +249,7 @@ export class AiGateway {
           try { JSON.parse(text); } catch { throw new Error('provider returned invalid JSON for a JSON-formatted request'); }
         }
         const result: GatewayResponse = { provider: response.provider, model: provider.model, text, attemptedProviders };
-        if (response.usage !== undefined) result.usage = response.usage;
+        result.usage = usage;
         if (toolCalls) result.toolCalls = toolCalls;
         return result;
       } catch (error) {
@@ -166,6 +266,9 @@ export class AiGateway {
             const reducedInput: Parameters<NonNullable<AIProviderAdapter['generateReduced']>>[0] = { tenantId: request.tenantId, operation: request.operation, messages: request.messages };
             if (request.maxOutputTokens !== undefined) reducedInput.maxOutputTokens = request.maxOutputTokens;
             const reducedResponse = await provider.generateReduced(reducedInput);
+            const usage = normalizeUsage(reducedResponse.usage);
+            await recordUsage(request, provider.model, usage);
+            await recordAttempt(request, provider.name, 'success', index + 1);
             let text = reducedResponse.text.trim();
             if (!text) throw new Error('provider returned an empty response on the reduced retry');
             // generateReduced() sends no JSON-mode config at all by design
@@ -177,13 +280,15 @@ export class AiGateway {
               try { JSON.parse(text); } catch { throw new Error('provider returned invalid JSON for a JSON-formatted request on the reduced retry'); }
             }
             const result: GatewayResponse = { provider: reducedResponse.provider, model: provider.model, text, attemptedProviders };
-            if (reducedResponse.usage !== undefined) result.usage = reducedResponse.usage;
+            result.usage = usage;
             return result;
           } catch (reducedError) {
+            await recordAttempt(request, provider.name, 'failure', index + 1);
             failures.push(`${provider.name}: config rejected (${error.message}); reduced retry also failed: ${reducedError instanceof Error ? reducedError.message : String(reducedError)}`);
             continue;
           }
         }
+        await recordAttempt(request, provider.name, 'failure', index + 1);
         failures.push(`${provider.name}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }

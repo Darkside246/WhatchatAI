@@ -1,7 +1,8 @@
 # ARCHITECTURE_BASELINE.md
 
 Real, traced execution paths as they exist in the repository today (commit
-`e7a2327` / audit branch `audit/phase-0-safety-baseline`). This documents
+`e7f8c26c14773fa450e82701f6dde0f6ac2a0aea` / target branch
+`origin/build/property-operations-os-openai-2026-09-07`). This documents
 what the code actually does, verified by reading it during this session and
 prior work in it - not what filenames or comments imply. See
 `docs/ARCHITECTURE.md` and `docs/database/` for deeper prior documentation;
@@ -151,7 +152,8 @@ Exactly two providers exist:
    implement this contract and that Goose sharing Gemini as its own
    backing LLM defeats the point of failover.
 
-No OpenClaw, DSPy/GEPA, or other agent framework exists in the codebase.
+OpenClaw cell and relay runtime components exist on this branch. DSPy/GEPA is
+not integrated.
 Sections 6-10 and 18-58 of the production-safety directive describe a
 target-state zero-trust AI-agent model (permission tiers, structured
 intent pipeline, per-agent execution context, isolated containers) that
@@ -212,3 +214,13 @@ endpoint - never a public/unauthenticated file path.
 - No knowledge-base retrieval with tenant-scoped permissions beyond the
   existing `searchKnowledgeBase()` call already gated by
   `businessId` in `aiContextGathererService.ts`.
+
+## 2026-09-07 target-branch security update
+
+The current target branch now routes every AiGateway provider through normalized usage telemetry (input/output/total tokens), so monthly entitlement checks and developer usage views include OpenAI-compatible and fallback providers as well as Gemini. Provider selection is an explicit production allowlist/consent boundary (`AI_PROVIDER_ALLOWLIST` and `AI_PROVIDER_CONSENT`); provider attempts are audited structurally without prompts or customer identifiers. Goose is never installed at runtime: only a preinstalled, operator-verified binary may be used.
+
+The Redis DEK cache contains only AES-256-GCM-wrapped entries and bypasses caching when no wrapping key is available. Sentinel and outbound semantic leak checks fail closed by default; the inbound availability override is explicit, `SENTINEL_FAIL_CLOSED=false`, and is recorded in the sentinel audit event.
+
+## Contact-sync feasibility (2026-09-07)
+
+The browser cannot directly enumerate a phone/SIM address book: web permissions do not expose the device's native contacts database, and WhatsApp Web access is mediated by the connected WhatsApp session rather than a browser API. The current safe design therefore keeps contact ingestion in the backend Baileys connection (`contacts.upsert`/`contacts.update`) and preserves provenance in `whatsapp_contacts.source_type` (`whatsapp`, `manual`, `google`, `crm`, or `system`). No speculative native companion or phone-number scraping was added. If a native app is introduced later, it must submit an explicit, consented import through a backend API with source, account, import timestamp, and revocation semantics.

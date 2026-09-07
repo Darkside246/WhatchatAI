@@ -1828,6 +1828,8 @@ export const api = {
   dismissNotification: (id: string) =>
     request<{ notification: NotificationDto }>(`/workspace/notifications/${id}/dismiss`, { method: 'PATCH' }),
   markAllNotificationsRead: () => request<{ updatedCount: number }>('/workspace/notifications/read-all', { method: 'POST' }),
+  clearChatNotifications: (chatId: string) =>
+    request<{ updatedCount: number }>(`/workspace/notifications/chat/${encodeURIComponent(chatId)}/clear`, { method: 'POST' }),
 
   listTeams: () => request<{ teams: TeamDto[] }>('/workspace/teams'),
   createTeam: (name: string, description: string | null) =>

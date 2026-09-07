@@ -21,12 +21,10 @@ const RESPONSE_SCHEMA = {
 };
 
 /**
- * Stage 2 of the Tiered Security Sentinel. Fails OPEN (returns 'unavailable',
- * not a fabricated 'safe' verdict) when GEMINI_API_KEY is not configured or
- * the call itself fails - this system never invents an AI safety verdict.
- * Callers must log 'unavailable' as its own real audit event and let Stage 1
- * heuristics remain the enforced gate in that case; they must NOT treat
- * 'unavailable' as either an automatic pass or an automatic block.
+ * Stage 2 of the Tiered Security Sentinel. Returns 'unavailable' rather than
+ * fabricating a safe verdict when the model is absent or fails. The caller's
+ * default is fail-closed; SENTINEL_FAIL_CLOSED=false is an explicit,
+ * auditable availability trade-off for installations that accept the gap.
  */
 export async function evaluateAiSentinel(textContent: string): Promise<AiSentinelVerdict> {
   const genAi = getGeminiClient();
@@ -59,10 +57,10 @@ export async function evaluateAiSentinel(textContent: string): Promise<AiSentine
     return parsed.safe
       ? { status: 'safe', safe: true, reason: parsed.reason }
       : { status: 'unsafe', safe: false, reason: parsed.reason };
-  } catch (error) {
+  } catch {
     return {
       status: 'unavailable',
-      reason: `Sentinel model call failed: ${error instanceof Error ? error.message : String(error)}`,
+      reason: 'Sentinel model call failed; no safety verdict was available',
     };
   }
 }

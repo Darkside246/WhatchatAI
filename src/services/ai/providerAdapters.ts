@@ -39,6 +39,13 @@ export interface ProviderGenerateInput {
 
 type ProviderCapabilities = Awaited<ReturnType<RegisteredAiProvider['capabilities']>>;
 
+function geminiUsage(response: { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number } }) {
+  const usage: { inputTokens?: number; outputTokens?: number } = {};
+  if (response.usageMetadata?.promptTokenCount !== undefined) usage.inputTokens = response.usageMetadata.promptTokenCount;
+  if (response.usageMetadata?.candidatesTokenCount !== undefined) usage.outputTokens = response.usageMetadata.candidatesTokenCount;
+  return Object.keys(usage).length ? usage : undefined;
+}
+
 function buildPrompt(input: ProviderGenerateInput): string {
   return `Operation: ${input.operation}\n\n${input.messages.map((m) => `${m.role.toUpperCase()}:\n${m.content}`).join('\n\n')}`;
 }
@@ -96,7 +103,10 @@ export class GeminiProvider implements RegisteredAiProvider {
       .catch(asConfigRejection);
     const text = response.text?.trim() ?? '';
     if (!text) throw new Error('Gemini returned an empty response');
-    return { provider: this.name, text };
+    const usage = geminiUsage(response);
+    const result: { provider: string; text: string; usage?: { inputTokens?: number; outputTokens?: number }; toolCalls?: GatewayToolCall[] } = { provider: this.name, text };
+    if (usage) result.usage = usage;
+    return result;
   }
 
   /**
@@ -131,7 +141,10 @@ export class GeminiProvider implements RegisteredAiProvider {
     const response = await client.models.generateContent({ model, contents, config });
     const text = response.text?.trim() ?? '';
     if (!text) throw new Error('Gemini returned an empty response on the reduced retry');
-    return { provider: this.name, text };
+    const usage = geminiUsage(response);
+    const result: { provider: string; text: string; usage?: { inputTokens?: number; outputTokens?: number }; toolCalls?: GatewayToolCall[] } = { provider: this.name, text };
+    if (usage) result.usage = usage;
+    return result;
   }
 
   /**
@@ -203,8 +216,15 @@ export class GeminiProvider implements RegisteredAiProvider {
       : undefined;
     const text = response.text?.trim() ?? '';
     if (!text && !toolCalls?.length) throw new Error('Gemini returned an empty response');
-    const result: { provider: string; text: string; toolCalls?: GatewayToolCall[] } = { provider: this.name, text };
+    const result: {
+      provider: string;
+      text: string;
+      toolCalls?: GatewayToolCall[];
+      usage?: { inputTokens?: number; outputTokens?: number };
+    } = { provider: this.name, text };
     if (toolCalls?.length) result.toolCalls = toolCalls;
+    const usage = geminiUsage(response);
+    if (usage) result.usage = usage;
     return result;
   }
 }

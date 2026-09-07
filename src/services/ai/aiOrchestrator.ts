@@ -7,20 +7,25 @@ import { SecurityAuditLogRepository } from '../../repositories/securityAuditLogR
 import { EntitlementService } from '../entitlementService.js';
 import { pool } from '../../db/pool.js';
 import type { AiAgentRecord } from '../../repositories/aiAgentRepository.js';
+import { WhatsAppMessageRepository } from '../../repositories/whatsappMessageRepository.js';
 
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
 const entitlementService = new EntitlementService(pool);
+const messageRepository = new WhatsAppMessageRepository(pool);
 
 export interface OrchestrateAiReplyInput {
   businessId: string;
   chatId: string;
   contactId: string | null;
   queryText: string;
+  /** The inbound message this handoff was scheduled for, used for a final race check. */
+  triggerMessageId?: string;
   /** The triggering message's media row, when it has real, already-downloaded media the AI should actually see/hear. */
   mediaId?: string | null;
 }
 
 export type OrchestratedAiOutcome =
+  | { kind: 'skipped'; reason: string }
   | { kind: 'no_agent'; reason: string }
   | { kind: 'escalate_to_human'; reason: string; matchedKeyword: string }
   | { kind: 'reply'; agent: AiAgentRecord; text: string }
@@ -58,7 +63,7 @@ export async function guardGeneratedText(
 ): Promise<{ kind: 'reply'; agent: AiAgentRecord; text: string } | { kind: 'blocked_leak'; agent: AiAgentRecord; reason: string }> {
   const verdict = await runOutboundLeakGuard(text, agent.protectedFacts);
 
-  if (!verdict.allowed) {
+  if (!verdict.allowed && verdict.eventType === 'ai_output_leak_blocked') {
     await securityAuditLogRepository
       .record({
         businessId,
@@ -87,6 +92,7 @@ export async function guardGeneratedText(
       .catch((error) => {
         console.error('[Outbound Leak Guard] Failed to write ai_output_leak_check_unavailable audit event:', error);
       });
+    return { kind: 'blocked_leak', agent, reason: `Outbound leak check unavailable: ${verdict.reason}` };
   }
 
   return { kind: 'reply', agent, text };
@@ -116,6 +122,13 @@ export async function orchestrateAiReply(input: OrchestrateAiReplyInput): Promis
     }),
     resolveAgentRouting(input.businessId, input.chatId, input.queryText),
   ]);
+
+  // A human can reply while context gathering and routing are in flight. The
+  // debounce guard catches the common case, but this final check is the
+  // authoritative boundary immediately before any model call.
+  if (input.triggerMessageId && await messageRepository.hasNewerOutboundMessage(input.chatId, input.triggerMessageId)) {
+    return { kind: 'skipped', reason: 'An outbound message arrived after this AI handoff was scheduled' };
+  }
 
   if (decision.outcome === 'no_agent') {
     return { kind: 'no_agent', reason: decision.reason };

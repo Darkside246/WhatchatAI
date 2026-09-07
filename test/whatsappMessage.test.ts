@@ -89,6 +89,25 @@ describe('WhatsAppMessageRepository', () => {
     expect(message.textContent).toBe('Hello there');
   });
 
+  it('detects an outbound reply that arrived after an unanswered inbound message', async () => {
+    const inbound = await messages.insert({
+      businessId, whatsappAccountId: accountId, chatId,
+      whatsappMessageId: 'WA-INBOUND-BEFORE-OUTBOUND',
+      remoteJid: '15550002222@s.whatsapp.net', senderJid: '15550002222@s.whatsapp.net',
+      direction: 'inbound', messageType: 'text', textContent: 'I need help',
+      timestamp: '2026-09-07T18:00:00Z', fromMe: false, isHistorical: false,
+    });
+    await messages.insert({
+      businessId, whatsappAccountId: accountId, chatId,
+      whatsappMessageId: 'WA-OUTBOUND-AFTER-INBOUND',
+      remoteJid: '15550002222@s.whatsapp.net', senderJid: '15550000000@s.whatsapp.net',
+      direction: 'outbound', messageType: 'text', textContent: 'I am helping you now',
+      timestamp: '2026-09-07T18:00:01Z', fromMe: true, isHistorical: false,
+    });
+
+    await expect(messages.hasNewerOutboundMessage(chatId, inbound.id)).resolves.toBe(true);
+  });
+
   it('prevents duplicate messages at the database level', async () => {
     const input = {
       businessId,

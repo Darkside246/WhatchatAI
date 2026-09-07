@@ -122,3 +122,9 @@ stopped Redis, a real BullMQ queue) rather than assumed from reading code.
 Nothing in this document claims `COMPLETE` for anything that was only
 scaffolded - the phases marked `NOT IMPLEMENTED` above are the honest
 remaining surface, not a hidden one.
+
+## 2026-09-07 production hardening update
+
+The deployment baseline on this target branch requires explicit database and Redis credentials, authenticated Redis URLs, and no runtime Goose installer. The Goose service is intentionally unavailable unless an operator supplies a verified binary; this is safer than downloading and executing an unpinned remote script during startup. Before production rollout, validate the provider allowlist/consent values, `MASTER_ENCRYPTION_KEY` (or `DEK_CACHE_ENCRYPTION_KEY` for remote KMS), and run migrations through 1012. Existing migration filenames remain immutable; duplicate 903 history is ordered deterministically and the historical 071 gap has an explicit no-op marker.
+
+UI and conversation-state additions in this target branch: Enter in the WhatsApp composer restores focus after queued sends; viewing a chat clears all matching per-user notification state, including dismissed rows; and generated replies use deterministic state/inbound-question gating to suppress generic closing questions. Contact synchronization remains backend-only through the authenticated WhatsApp session; web cannot access device/SIM contacts and no native implementation is claimed.

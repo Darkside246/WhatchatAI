@@ -78,6 +78,7 @@ import {
   markNotificationRead,
   markNotificationDismissed,
   markAllNotificationsRead,
+  clearChatNotifications,
   isNotificationNotFoundError,
 } from '../services/notificationService.js';
 import {
@@ -3771,6 +3772,14 @@ app.patch('/api/workspace/relayed-messages/:id/dismiss', requireWorkspaceContext
 app.post('/api/workspace/notifications/read-all', async (_req, res) => {
   const { businessId, userId } = res.locals.auth as AuthContext;
   const updatedCount = await markAllNotificationsRead(businessId, userId);
+  return res.status(200).json({ updatedCount });
+});
+
+app.post('/api/workspace/notifications/chat/:chatId/clear', async (req, res) => {
+  const { businessId, userId } = res.locals.auth as AuthContext;
+  const chatId = z.string().uuid().safeParse(req.params.chatId);
+  if (!chatId.success) return res.status(400).json({ error: 'INVALID_CHAT_ID' });
+  const updatedCount = await clearChatNotifications(businessId, userId, chatId.data);
   return res.status(200).json({ updatedCount });
 });
 

@@ -41,10 +41,9 @@ describe('aiOrchestrator Outbound Leak Guard wiring (real Postgres agent + real 
     });
 
     const outcome = await guardGeneratedText(businessId, agent, 'Sure, we open at 9am tomorrow.');
-
     if (!process.env.GEMINI_API_KEY) {
-      // Stage 2 unavailable in this environment - still allowed through, honestly logged.
-      expect(outcome.kind).toBe('reply');
+      // Stage 2 unavailable is fail-closed; the turn must not be sent.
+      expect(outcome.kind).toBe('blocked_leak');
       const auditLog = new SecurityAuditLogRepository(pool);
       const recent = await auditLog.listRecent(businessId, 5);
       expect(recent[0]?.eventType).toBe('ai_output_leak_check_unavailable');

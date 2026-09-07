@@ -62,6 +62,11 @@ export class EnvMasterKeyProvider implements KmsKeyProvider {
     const key = createHmac('sha256', this.masterKey).update(`tenant-dek:${tenantId}`).digest();
     return { keyId: `${this.masterKeyId}:${tenantId}`, key };
   }
+
+  /** Used only to wrap the short-lived Redis cache entry, never exposed as a DEK. */
+  getCacheEncryptionKey(): Buffer {
+    return this.masterKey;
+  }
 }
 
 /** Generates a real 32-byte master key, base64-encoded, for local/dev setup (`MASTER_ENCRYPTION_KEY`). */

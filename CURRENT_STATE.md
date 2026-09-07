@@ -5,22 +5,14 @@ this repository/environment on the date noted, not inferred from README
 files, comments, or prior documentation. Where something could not be
 verified, it is marked `UNKNOWN` rather than assumed.
 
-Captured: 2026-08-21, audit-only pass, zero application code changes made
-while producing this document.
+Captured: 2026-09-07 target-branch security implementation checkpoint.
 
 ## 1. Git state
 
 - Repository: `Darkside246/WhatchatAI` (origin, `https://github.com/Darkside246/WhatchatAI`)
-- Default branch: `main` (`origin/main` exists; the actual active development
-  line for this session has been `claude/whatchatai-repo-setup-s921z7`, tracked
-  locally as `phase-1-foundation`)
-- Current HEAD at audit time: `e7a2327` ("Add live time and timezone
-  intelligence system") on branch `feature/live-time-intelligence`, itself
-  branched from `phase-1-foundation` at `cc66886`
-- This audit's own commit lives on a **new, separate branch**,
-  `audit/phase-0-safety-baseline`, so it never touches the unrelated,
-  already-verified time-intelligence branch
-- Working tree was clean before this audit began
+- Default branch remains `main`; this work is on `fix-human-message-attribution-target` and does not modify `main`.
+- Current base HEAD: `e7f8c26` on branch `fix-human-message-attribution-target`; this worktree contains preserved human-message attribution edits plus the security changes listed below.
+- This checkpoint is intentionally uncommitted; no reset or revert was performed.
 
 ## 2. Runtime versions
 
@@ -93,17 +85,14 @@ configuration surface without values:
 - `GOOSE_SERVICE_URL` (optional AI failover; the file explicitly warns this
   is NOT a plain Goose install and documents the required HTTP contract)
 
-No references to OpenClaw, DSPy, OpenPanel, Cloudberry, or any other
-external system named in the production-safety directive exist anywhere in
-`.env.example`, `package.json`, or (per a repo-wide grep) the source tree.
-**None of those systems are integrated today.**
+OpenClaw runtime/relay integration is present on this branch. DSPy, OpenPanel,
+Cloudberry, and vector-database integrations remain absent.
 
 ## 7. Existing services / containers
 
-- **No `Dockerfile`, no `docker-compose*.yml`** anywhere in the repository.
-  The application runs as plain Node processes today (`npm run dev` /
-  `npm start`), against a host-installed PostgreSQL and Redis.
-- **No `.github/` directory** - no CI/CD workflow exists.
+- A multi-stage non-root `Dockerfile` and `docker-compose.yml` provide the
+  API, worker, Postgres, Redis, and relay deployment topology.
+- `.github/` contains repository automation and configuration.
 - **No ESLint config** (`.eslintrc*`/`eslint.config*` absent) and no `lint`
   script in `package.json`. There is no automated linting today.
 - This sandbox environment has PostgreSQL 16 and Redis installed as host
@@ -113,7 +102,7 @@ external system named in the production-safety directive exist anywhere in
   production - production deployment configuration is `UNKNOWN` from this
   repository alone (no IaC/deployment manifests present).
 
-## 8. Test / typecheck / build results (this exact commit, `e7a2327`)
+## 8. Test / typecheck / build results (baseline commit `e7f8c26c`)
 
 Run with both PostgreSQL and Redis available (see prior session finding:
 earlier in this session, a test run attempted with Redis stopped produced
@@ -145,11 +134,24 @@ Postgres-backed multi-tenant schema (businesses/users/business_memberships),
 session-cookie authentication with Argon2id password hashing, field-level
 AES-256-GCM encryption for message bodies, local encrypted media storage,
 CRM (contacts/leads), funnels, campaigns, a notification system, a
-WebSocket realtime bridge, a React/Vite frontend, and AI reply generation
-via Gemini with an optional Goose HTTP failover.
+WebSocket realtime bridge, a React/Vite frontend, OpenClaw cell/relay
+runtime components, and multi-provider AI reply generation with Gemini,
+OpenAI, Groq, Cerebras, Mistral, OpenRouter, and optional operator-installed
+Goose fallback.
 
-Absent from the repository: Docker/container tooling, CI/CD, linting,
-OpenClaw, DSPy/GEPA, OpenPanel, Apache Cloudberry, any vector-database
-extension, any AI tool-permission/risk-classification framework, any
-scheduled security-scan job, any per-agent execution-context/versioning
-system, any analytics outbox.
+Absent from the repository: DSPy/GEPA, OpenPanel, Apache Cloudberry, any
+vector-database extension, and any dedicated analytics outbox. Linting remains
+unconfigured.
+
+## Current-branch security delta (2026-09-07)
+
+Implemented: normalized gateway usage persistence for quota accounting; Groq/Cerebras/Mistral developer secret status; deterministic duplicate migration ordering plus a documented 071 history marker; encrypted Redis DEK cache; removal of runtime Goose installation; provider allowlist/consent and PII-free attempt audit; fail-closed semantic Sentinel/leak checks; and required compose Postgres/Redis credentials. Human-message attribution changes already present in this worktree were not touched.
+
+Operational blockers: this environment has no running Redis/Postgres, and the local install cannot resolve the pinned Baileys git dependency, so integration tests and the full typecheck remain blocked. Production still needs an operator-verified Goose binary if that optional fallback is desired.
+
+## Follow-up product-surface decisions included in this pass
+
+- The web composer restores focus after Enter, including after an asynchronous send failure.
+- Opening `/chats/:chatId` clears that user's chat-targeted notification rows by `target_type/target_id`, including rows already dismissed from the visible notification list. Rows remain persisted history.
+- Contact sync remains backend-owned: Baileys `contacts.upsert`/`contacts.update` are the provenance-bearing source and `whatsapp_contacts.source_type` records the origin. A browser cannot read a phone/SIM address book directly; no speculative native implementation was added. A future native companion would need an explicit, consented import API and provenance records.
+- Closing-question behavior now has deterministic conversation-state gating and a final-output guard; generic closing questions are suppressed unless the inbound turn or state indicates a real information gap.

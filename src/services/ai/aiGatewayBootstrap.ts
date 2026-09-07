@@ -1,13 +1,38 @@
-import { aiGateway } from './aiGateway.js';
+import { aiGateway, configureAiGatewayTelemetry } from './aiGateway.js';
 import { GooseProvider, OpenRouterProvider, registerDefaultAiProviders } from './providerAdapters.js';
 import { OpenAIResponsesProvider } from './openaiResponsesProvider.js';
 import { CerebrasProvider, GroqProvider, MistralProvider } from './openaiCompatibleToolProviders.js';
+import { AiUsageRepository } from '../../repositories/aiUsageRepository.js';
+import { SecurityAuditLogRepository } from '../../repositories/securityAuditLogRepository.js';
+import { pool } from '../../db/pool.js';
 
 let initialized = false;
 
 /** Initialise the process-local provider registry exactly once. Missing credentials are not treated as failures. */
 export function initializeAiGateway(): void {
   if (initialized) return;
+  const usageRepository = new AiUsageRepository(pool);
+  const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
+  configureAiGatewayTelemetry({
+    recordUsage: (input) => usageRepository.record(input),
+    recordProviderAttempt: async (input) => {
+      // Deliberately structural: never include prompt, response, tenant
+      // identifiers, or provider error bodies in the audit metadata.
+      await securityAuditLogRepository.record({
+        businessId: input.businessId,
+        whatsappAccountId: null,
+        eventType: 'ai_provider_attempted',
+        severity: input.outcome === 'success' ? 'info' : 'warning',
+        reason: null,
+        rawMetadata: {
+          provider: input.provider,
+          operation: input.operation,
+          outcome: input.outcome,
+          attemptNumber: input.attemptNumber,
+        },
+      });
+    },
+  });
   registerDefaultAiProviders(aiGateway);
 
   // Provider ordering is intentional. Goose remains a text-only emergency

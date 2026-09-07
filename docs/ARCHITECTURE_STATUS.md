@@ -6,8 +6,8 @@ checkpoint) — not a replacement for the individual phase proposal/audit
 docs, which remain the authoritative record of *why* each decision was
 made. This document is the map; the phase docs are the terrain.
 
-**Current testing checkpoint: `60da62b`**
-**Active branch: `openclaw-cell-runtime`**
+**Current testing checkpoint: working tree validation (2026-09-07)**
+**Active branch: `fix-human-message-attribution-target`**
 
 Status legend: **Complete** (implemented, tested, merged to this branch) ·
 **Testing/Stabilization** (implemented, awaiting real-world validation
@@ -181,3 +181,14 @@ their own documents under `docs/` (e.g.
 `PHASE_2A_MEDIA_RETRY_AUDIT_AND_PROPOSAL.md`,
 `PHASE_0_MASTER_DIRECTIVE_AUDIT.md`) — this document indexes them, it
 does not replace them.
+
+## Target-branch checkpoint � 2026-09-07
+
+The previous checkpoint metadata is stale for this branch. The current security baseline includes provider privacy consent/allowlisting, normalized all-provider AI usage accounting, encrypted DEK caching, fail-closed semantic checks, and removal of runtime Goose downloads. Compose production secrets are required. Migration history is additive: duplicate 903 filenames are retained and sorted by numeric prefix then filename; 071 is represented by a documented no-op marker rather than renaming applied history.
+
+### Current-pass product follow-up decisions (2026-09-07)
+
+- Chat composer focus is restored after Enter-driven sends, including failed asynchronous dispatch.
+- Viewing a chat clears all per-user notifications targeted at that chat, including previously dismissed rows; database history is retained.
+- Contact sync remains backend-owned through the authenticated WhatsApp session. Browser-to-phone/SIM contact access is unavailable on the web, so provenance is exposed by the existing backend `source_type` model; native import is explicitly deferred until a native product exists.
+- AI closing questions are gated by deterministic conversation state and inbound-question signals, with a final-output guard suppressing generic closers when no information gap exists.

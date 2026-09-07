@@ -84,6 +84,10 @@ export async function markAllNotificationsRead(businessId: string, userId: strin
   return notificationRepository.dismissAllForUser(businessId, userId);
 }
 
+export async function clearChatNotifications(businessId: string, userId: string, chatId: string): Promise<number> {
+  return notificationRepository.clearForChat(businessId, userId, chatId);
+}
+
 export function isNotificationNotFoundError(error: unknown): error is NotificationNotFoundError {
   return error instanceof NotificationNotFoundError;
 }

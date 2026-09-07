@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generateAiReply, buildSystemInstruction, wrapUntrustedData, escapeUntrustedDataBoundary } from '../src/services/aiReplyService.js';
+import { generateAiReply, buildSystemInstruction, suppressUnnecessaryClosingQuestion, wrapUntrustedData, escapeUntrustedDataBoundary } from '../src/services/aiReplyService.js';
 import type { AiAgentRecord } from '../src/repositories/aiAgentRepository.js';
 import type { AiHandoffContext } from '../src/services/aiContextGathererService.js';
 import type { WhatsAppMessageRecord } from '../src/repositories/whatsappMessageRepository.js';
@@ -444,10 +444,42 @@ describe('Section 114 (ethical funnel): anti-manipulation guardrail is always pr
 
 describe('Durable conversation state (Phase 3 - supplements raw history, never replaces it)', () => {
   it('adds nothing to the prompt when conversation state is the empty default - the current, universal case today', () => {
-    const instruction = buildSystemInstruction(fakeAgent(), fakeContext());
+    const instruction = buildSystemInstruction(fakeAgent(), fakeContext({
+      conversationHistory: [fakeMessage({ fromMe: false, textContent: 'Thanks, that helps.' })],
+    }));
     expect(instruction).not.toContain('Current goal');
     expect(instruction).not.toContain('Confirmed facts');
     expect(instruction).not.toContain('Open questions');
+    expect(instruction).toContain('Do not end this reply with a question');
+  });
+
+  describe('Deterministic closing-question gate', () => {
+    it('removes a generic closing question when the customer did not ask one and state has no open gap', () => {
+      const context = fakeContext({
+        conversationHistory: [fakeMessage({ fromMe: false, textContent: 'Thanks, that helps.' })],
+      });
+      expect(suppressUnnecessaryClosingQuestion('We are open until 5pm. Anything else I can help with?', context))
+        .toBe('We are open until 5pm.');
+    });
+
+    it('preserves a question when the customer asked one or state records an open question', () => {
+      const asked = fakeContext({
+        conversationHistory: [fakeMessage({ fromMe: false, textContent: 'Can you confirm the price?' })],
+      });
+      expect(suppressUnnecessaryClosingQuestion('The price is $50. Does that work for you?', asked))
+        .toContain('?');
+      const state = { ...emptyConversationState('business-1', 'chat-1'), openQuestions: [{ id: 'q1', question: 'Preferred date?', openedAt: new Date().toISOString(), resolvedAt: null }] };
+      const open = fakeContext({ conversationState: state, conversationHistory: [fakeMessage({ fromMe: false, textContent: 'Great.' })] });
+      expect(suppressUnnecessaryClosingQuestion('We can help. What date works best?', open)).toContain('?');
+    });
+
+    it('does not remove a substantive business question merely because the turn is otherwise complete', () => {
+      const context = fakeContext({
+        conversationHistory: [fakeMessage({ fromMe: false, textContent: 'Thanks, that helps.' })],
+      });
+      expect(suppressUnnecessaryClosingQuestion('We are open until 5pm. What time would you like to arrive?', context))
+        .toContain('What time would you like to arrive?');
+    });
   });
 
   it('surfaces the current goal when one is set', () => {

@@ -77,8 +77,10 @@ export async function runSentinel(input: SentinelInput, db: Queryable = pool): P
   }
 
   if (ai.status === 'unavailable') {
-    // Fails OPEN at Stage 2 only: a missing/failed AI check is honestly logged,
-    // never turned into a fabricated safe verdict. Stage 1 remains the enforced gate.
+    // The safe default is fail closed: Stage 1 is necessary but cannot prove
+    // that an arbitrary message is free of prompt injection. Operators may
+    // explicitly opt into the documented availability trade-off.
+    const allowWhenUnavailable = process.env.SENTINEL_FAIL_CLOSED?.trim().toLowerCase() === 'false';
     await auditLog.record({
       businessId,
       whatsappAccountId,
@@ -87,7 +89,11 @@ export async function runSentinel(input: SentinelInput, db: Queryable = pool): P
       reason: ai.reason,
       rawMetadata: { stage: 'ai' },
     });
-    return { allowed: true, eventType: 'sentinel_ai_unavailable', reason: ai.reason };
+    return {
+      allowed: allowWhenUnavailable,
+      eventType: 'sentinel_ai_unavailable',
+      reason: `${ai.reason}; ${allowWhenUnavailable ? 'availability override enabled' : 'blocked because semantic sentinel is unavailable'}`,
+    };
   }
 
   await auditLog.record({

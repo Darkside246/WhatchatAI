@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { pool } from '../src/db/pool.js';
 import { register } from '../src/services/authService.js';
 import { createMember } from '../src/services/workspaceMemberService.js';
@@ -9,6 +10,7 @@ import {
   markNotificationRead,
   markNotificationDismissed,
   markAllNotificationsRead,
+  clearChatNotifications,
   isNotificationNotFoundError,
 } from '../src/services/notificationService.js';
 import { NotificationRepository } from '../src/repositories/notificationRepository.js';
@@ -108,6 +110,32 @@ describe('notificationService (real, per-user, never a shared broadcast row)', (
     expect(rows).toHaveLength(1);
     expect(rows[0].read_at).not.toBeNull();
     expect(rows[0].dismissed_at).not.toBeNull();
+  });
+
+  it('clears chat-targeted notifications for the viewer, including already-dismissed history', async () => {
+    const chatId = randomUUID();
+    const active = await notifyUser(ownerId, {
+      businessId,
+      type: 'HUMAN_HANDOFF',
+      severity: 'critical',
+      title: 'Chat needs attention',
+      targetType: 'chat',
+      targetId: chatId,
+    });
+    const dismissed = await notifyUser(ownerId, {
+      businessId,
+      type: 'HUMAN_HANDOFF',
+      severity: 'critical',
+      title: 'Earlier chat alert',
+      targetType: 'chat',
+      targetId: chatId,
+    });
+    await markNotificationDismissed(ownerId, dismissed.id);
+
+    expect(await clearChatNotifications(businessId, ownerId, chatId)).toBe(2);
+    const { rows } = await pool.query('SELECT read_at, dismissed_at FROM notifications WHERE id = ANY($1)', [[active.id, dismissed.id]]);
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.read_at && row.dismissed_at)).toBe(true);
   });
 
   describe('NotificationRepository.existsForBusinessSince (Section 34-40\'s once-per-month dedup)', () => {

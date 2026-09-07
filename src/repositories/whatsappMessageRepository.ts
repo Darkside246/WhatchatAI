@@ -361,6 +361,29 @@ export class WhatsAppMessageRepository {
   }
 
   /**
+   * A debounce job may outlive the inbound message that scheduled it. If any
+   * outbound message was inserted after the newest candidate inbound message,
+   * that inbound turn has already been answered or taken over by a human and
+   * must not trigger another AI reply.
+   */
+  async hasNewerOutboundMessage(chatId: string, messageId: string): Promise<boolean> {
+    const { rows } = await this.db.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM whatsapp_messages outbound
+         JOIN whatsapp_messages inbound ON inbound.id = $2::uuid
+         WHERE outbound.chat_id = $1
+           AND outbound.from_me = true
+           AND outbound.is_historical = false
+           AND outbound.deleted_at IS NULL
+           AND outbound.created_at > inbound.created_at
+       ) AS exists`,
+      [chatId, messageId],
+    );
+    return rows[0]?.exists === true;
+  }
+
+  /**
    * Activity measure for the group-participation gate (groupParticipationGate.ts):
    * how busy this chat has genuinely been in a trailing window. Uses
    * whatsapp_messages_chat_timestamp_idx (chat_id, timestamp DESC) directly -

@@ -3,7 +3,7 @@ import { getGeminiClient } from '../../services/geminiClient.js';
 
 export type OutboundLeakVerdict =
   | { allowed: false; eventType: 'ai_output_leak_blocked'; reason: string }
-  | { allowed: true; eventType: 'ai_output_leak_check_unavailable'; reason: string }
+  | { allowed: false; eventType: 'ai_output_leak_check_unavailable'; reason: string }
   | { allowed: true; eventType: 'ai_output_leak_pass'; reason: string | null };
 
 // Below this length a "fact" is too short to be a meaningful signal - it
@@ -93,10 +93,10 @@ async function runSemanticCheck(text: string, protectedFacts: string[]): Promise
     }
 
     return parsed.safe ? { status: 'safe', reason: parsed.reason } : { status: 'unsafe', reason: parsed.reason };
-  } catch (error) {
+  } catch {
     return {
       status: 'unavailable',
-      reason: `Outbound leak check model call failed: ${error instanceof Error ? error.message : String(error)}`,
+      reason: 'Outbound leak check model call failed; no safety verdict was available',
     };
   }
 }
@@ -105,14 +105,11 @@ async function runSemanticCheck(text: string, protectedFacts: string[]): Promise
  * The Outbound Leak Guard: runs on every AI-generated reply before it is
  * sent, checking it against this agent's own declared protected facts.
  * The outbound counterpart to the inbound Sentinel (sentinel.ts) - same
- * two-stage shape, but deliberately different open/closed semantics:
- * inbound Sentinel fails OPEN when its Stage 2 is unavailable, because its
- * Stage 1 (executable payloads, rate limits) is a real gate on its own.
- * Here, Stage 1 passing only proves there's no verbatim string match - it
- * is not proof nothing was leaked by paraphrase - so a Stage 1 hit always
- * blocks regardless of Stage 2, but Stage 2 being unavailable still allows
- * the reply through (an honestly-logged coverage gap, never a fabricated
- * block or pass).
+ * two-stage shape with the same fail-closed default. Stage 1 passing only
+ * proves there's no verbatim string match - it
+ * is not proof nothing was leaked by paraphrase - so an unavailable semantic
+ * check fails closed. This intentionally hands the turn to a human rather
+ * than shipping a reply through an unverified privacy boundary.
  */
 export async function runOutboundLeakGuard(text: string, protectedFacts: string[]): Promise<OutboundLeakVerdict> {
   const stage1Match = matchProtectedFacts(text, protectedFacts);
@@ -136,7 +133,7 @@ export async function runOutboundLeakGuard(text: string, protectedFacts: string[
   }
 
   if (semantic.status === 'unavailable') {
-    return { allowed: true, eventType: 'ai_output_leak_check_unavailable', reason: semantic.reason };
+    return { allowed: false, eventType: 'ai_output_leak_check_unavailable', reason: semantic.reason };
   }
 
   return { allowed: true, eventType: 'ai_output_leak_pass', reason: semantic.reason };

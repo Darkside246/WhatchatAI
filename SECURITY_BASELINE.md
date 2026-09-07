@@ -43,9 +43,10 @@ directive. Findings are classified per the directive's own scheme
   guidance in the system prompt (Sections 11-14) - **Informational** given
   the AI currently has no write/send tools it could be tricked into
   invoking; this changes if write-capable tools are ever added.
-- No OpenClaw/DSPy/OpenPanel/Cloudberry integration exists, so their
-  respective isolation requirements (Sections 10, 26-28, 32) are moot at
-  this time - **Informational**.
+- OpenClaw runtime/relay integration exists on this branch and its cell
+  isolation requirements (Section 10) are in scope. DSPy/OpenPanel/Cloudberry
+  remain absent, so their requirements (Sections 26-28, 32) are moot -
+  **Informational**.
 
 ## Gaps - Potential findings requiring further verification
 
@@ -107,3 +108,13 @@ permission/risk-classification gate (Sections 6-9) - adding write-capable
 tools onto the current one-off hand-wiring pattern would be the point
 where "no policy gate exists yet" stops being informational and starts
 being a real risk.
+
+## 2026-09-07 security controls (target branch)
+
+- AI provider privacy is opt-in in production: configure both `AI_PROVIDER_ALLOWLIST` and `AI_PROVIDER_CONSENT`; attempts are audited with provider, operation, outcome, and ordinal only.
+- Raw DEKs are never serialized to Redis. Cache entries are authenticated AES-256-GCM envelopes and invalid/plaintext entries are discarded; providers without a wrapping key bypass Redis.
+- Goose runtime downloads and shell execution were removed. Deployments must provide a preinstalled verified binary (or leave Goose unavailable and use the gateway providers).
+- Semantic inbound and outbound checks fail closed when unavailable. Availability can be deliberately enabled with `SENTINEL_FAIL_CLOSED=false`, which is visible in audit records.
+- Compose no longer supplies default Postgres or Redis passwords; `POSTGRES_PASSWORD` and `REDIS_PASSWORD` are required.
+
+Contact sync remains intentionally backend/API-only on this target branch. A web browser cannot read a phone/SIM contact book, so the product does not claim to do so. WhatsApp contacts continue to arrive from the authenticated backend connection, with source provenance retained in `whatsapp_contacts.source_type`; native-device import is a separate future product decision.

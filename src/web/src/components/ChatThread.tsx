@@ -440,6 +440,7 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   const [savingAssignee, setSavingAssignee] = useState(false);
   const [assigneeError, setAssigneeError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     Promise.all([api.listMembers(), api.listTeams()])
@@ -478,6 +479,15 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
       // Best-effort - a failed read receipt shouldn't surface as a page error.
     });
   }
+
+  // Viewing a chat is also the authoritative acknowledgement boundary for
+  // notifications targeting that chat. This includes rows already dismissed
+  // from the notification drawer, which remain history but must not reappear
+  // as stale attention signals after the conversation is opened.
+  useEffect(() => {
+    if (!chatId) return;
+    void api.clearChatNotifications(chatId).catch(() => undefined);
+  }, [chatId]);
 
   async function handleModeSelect(mode: AiMode) {
     if (!chatId || !detail || savingMode) return;
@@ -683,7 +693,14 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
     setDraft('');
     setEmojiPickerOpen(false);
     setReplySuggestions([]);
-    await dispatchSend(chatId, { messageType: 'text', text });
+    try {
+      await dispatchSend(chatId, { messageType: 'text', text });
+    } finally {
+      // Sending is asynchronous and state updates can otherwise move focus
+      // away from the composer after Enter, especially when an error banner
+      // appears. Restore it only to the still-mounted composer.
+      composerRef.current?.focus();
+    }
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -1110,6 +1127,7 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
           ) : (
             <input
               value={draft}
+              ref={composerRef}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={handleComposerKeyDown}
               disabled={sending}

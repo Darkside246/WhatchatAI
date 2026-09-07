@@ -187,7 +187,7 @@ describe('Tiered Security Sentinel (real heuristics, real Redis rate limit, real
       expect(JSON.stringify(recent[0]?.rawMetadata)).not.toContain('Wire transfer');
     });
 
-    it('passes clean text through Stage 1 and honestly logs Stage 2 unavailability when unconfigured', async () => {
+    it('fails closed on clean text when Stage 2 is unavailable, with an honest audit event', async () => {
       const verdict = await runSentinel({
         businessId,
         whatsappAccountId: accountId,
@@ -201,7 +201,7 @@ describe('Tiered Security Sentinel (real heuristics, real Redis rate limit, real
       const recent = await auditLog.listRecent(businessId, 5);
 
       if (!process.env.GEMINI_API_KEY) {
-        expect(verdict.allowed).toBe(true);
+        expect(verdict.allowed).toBe(false);
         expect(verdict.eventType).toBe('sentinel_ai_unavailable');
         expect(recent[0]?.eventType).toBe('sentinel_ai_unavailable');
       } else {

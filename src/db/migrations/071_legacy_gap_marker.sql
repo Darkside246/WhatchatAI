@@ -1,0 +1,4 @@
+-- Migration 071 was never shipped in the canonical history (070 is followed
+-- by 072). This deliberately empty marker documents the historical gap for
+-- fresh databases without renaming or rewriting any already-applied
+-- migration ids. The runner keys history by full filename.

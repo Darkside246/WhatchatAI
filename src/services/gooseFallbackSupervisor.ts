@@ -2,8 +2,8 @@ import 'dotenv/config';
 import { spawn, execFileSync, execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createWriteStream, existsSync, chmodSync, unlinkSync } from 'node:fs';
-import { tmpdir, homedir, platform } from 'node:os';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { looksLikeRawReasoningTrace } from './ai/reasoningLeakGuard.js';
@@ -17,7 +17,6 @@ const UPSTREAM_PORT = Number(process.env.GOOSE_UPSTREAM_PORT ?? 3285);
 const HEALTH_INTERVAL_MS = Number(process.env.GOOSE_HEALTH_INTERVAL_MS ?? 10_000);
 const RESTART_BACKOFF_MS = Number(process.env.GOOSE_RESTART_BACKOFF_MS ?? 2_000);
 const MAX_RESTARTS = Number(process.env.GOOSE_MAX_RESTARTS ?? 10);
-const AUTO_INSTALL = process.env.GOOSE_AUTO_INSTALL !== 'false';
 const AUTO_START = process.env.GOOSE_AUTO_START !== 'false';
 const MAX_BODY_BYTES = 256 * 1024;
 
@@ -77,48 +76,12 @@ function canRun(command: string): boolean {
   }
 }
 
-async function installGoose(): Promise<string | null> {
-  if (!AUTO_INSTALL) return null;
-  if (platform() === 'win32') {
-    console.warn('[GooseSupervisor] Goose is missing. Automatic CLI installation is not attempted on native Windows. Use WSL/Linux or install Goose manually.');
-    return null;
-  }
-
-  const scriptUrl = 'https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh';
-  const scriptPath = path.join(tmpdir(), `whatchatai-goose-install-${process.pid}-${Date.now()}.sh`);
-
-  try {
-    console.log('[GooseSupervisor] Goose CLI not found. Downloading the official installer...');
-    const response = await fetch(scriptUrl);
-    if (!response.ok) throw new Error(`installer returned HTTP ${response.status}`);
-    const script = await response.text();
-    if (!script.includes('goose')) throw new Error('downloaded installer did not look like the Goose installer');
-    await new Promise<void>((resolve, reject) => {
-      const stream = createWriteStream(scriptPath, { mode: 0o700 });
-      stream.on('finish', resolve);
-      stream.on('error', reject);
-      stream.end(script);
-    });
-    chmodSync(scriptPath, 0o700);
-    execFileSync('bash', [scriptPath], { stdio: 'inherit', timeout: 180_000 });
-  } catch (error) {
-    console.error('[GooseSupervisor] Automatic Goose installation failed:', error instanceof Error ? error.message : String(error));
-    return null;
-  } finally {
-    try { unlinkSync(scriptPath); } catch { /* best effort */ }
-  }
-
+async function resolveGooseBinary(): Promise<string | null> {
   const installed = findExecutable('goose');
   if (!installed) {
-    console.error('[GooseSupervisor] Installer completed but Goose was not found on PATH or ~/.local/bin.');
-    return null;
+    console.warn('[GooseSupervisor] Goose CLI is not preinstalled; fallback is disabled. Install a verified/pinned binary before enabling Goose.');
   }
-  console.log(`[GooseSupervisor] Goose installed/detected at ${installed}`);
   return installed;
-}
-
-async function resolveGooseBinary(): Promise<string | null> {
-  return findExecutable('goose') ?? installGoose();
 }
 
 function serviceApiKey(): string | null {

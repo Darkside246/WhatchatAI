@@ -463,6 +463,21 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
    * without treating them as equally urgent right now.
    */
   const openQuestions = state?.openQuestions.filter((question) => !question.resolvedAt) ?? [];
+  const latestInboundText = [...context.conversationHistory]
+    .find((message) => !message.fromMe && (message.textContent ?? message.caption)?.trim());
+  const latestInboundAskedQuestion = Boolean((latestInboundText?.textContent ?? latestInboundText?.caption)?.includes('?'));
+  const mayAskClosingQuestion =
+    openQuestions.length > 0 ||
+    latestInboundAskedQuestion ||
+    state?.customerReadiness === 'NEEDS_INFORMATION' ||
+    state?.customerReadiness === 'COMPARING' ||
+    state?.customerReadiness === 'READY_TO_ACT' ||
+    state?.customerReadiness === 'URGENT';
+  lines.push(
+    mayAskClosingQuestion
+      ? 'A closing question is allowed only when it directly advances the customer’s real request or one of the open questions above. Do not add a generic “Anything else?” or sales question.'
+      : 'Do not end this reply with a question. The customer did not ask for clarification and no state-backed information gap is open; answer conclusively without a generic closing question.',
+  );
   if (openQuestions.length > 0) {
     const rank: Record<OpenQuestionPriority, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
     const sorted = [...openQuestions].sort((a, b) => {
@@ -477,6 +492,7 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
           `through these one at a time as the conversation naturally allows, never all at once): ${rest.map((question) => question.question).join('; ')}.`,
       );
     }
+
   }
   // Section 06/10: your own last read of where this conversation sits and
   // how ready the customer seemed - internal tracking only, never mention
@@ -684,6 +700,32 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
 }
 
 /**
+ * Deterministic companion to the state-backed instruction above. A model can
+ * still append a habitual closing question, so remove only that final
+ * question when the conversation state and latest inbound turn provide no
+ * reason to ask one. This never rewrites substantive answers.
+ */
+export function suppressUnnecessaryClosingQuestion(text: string, context: AiHandoffContext): string {
+  const openQuestions = context.conversationState?.openQuestions.filter((question) => !question.resolvedAt) ?? [];
+  const latestInbound = [...context.conversationHistory]
+    .find((message) => !message.fromMe && (message.textContent ?? message.caption)?.trim());
+  const latestInboundText = latestInbound?.textContent ?? latestInbound?.caption ?? '';
+  const readiness = context.conversationState?.customerReadiness;
+  const allowed = openQuestions.length > 0 ||
+    latestInboundText.includes('?') ||
+    readiness === 'NEEDS_INFORMATION' ||
+    readiness === 'COMPARING' ||
+    readiness === 'READY_TO_ACT' ||
+    readiness === 'URGENT';
+  if (allowed || !text.trim().endsWith('?')) return text;
+  const normalized = text.trim();
+  const genericClosingQuestion = /(?:^|\s)(?:is there anything else i can help you with|anything else i can help with|is there anything else you need|can i help with anything else|let me know if you need anything else|would you like help with anything else)\s*[?!.]?$/iu;
+  if (!genericClosingQuestion.test(normalized)) return text;
+  const withoutQuestion = normalized.replace(genericClosingQuestion, '').trim();
+  return withoutQuestion || 'I hope that helps.';
+}
+
+/**
  * `conversationHistory` comes back newest-first (see WhatsAppMessageRepository.listByChat)
  * and, because gatherAiHandoffContext runs after the triggering inbound
  * message is already persisted, its first element USUALLY is that message -
@@ -818,6 +860,9 @@ async function tryFallbackProviders(
   try {
     const response = await aiGateway.generate({
       tenantId: agent.businessId,
+      agentId: agent.id,
+      chatId: context.chatId,
+      callKind: 'fallback',
       operation: 'reply.fallback',
       providerAllowlist: fallbackProviders.map((provider) => provider.name),
       messages: [
@@ -828,7 +873,7 @@ async function tryFallbackProviders(
         })),
       ],
     });
-    const fallbackText = response.text.slice(0, MAX_REPLY_CHARS);
+    const fallbackText = suppressUnnecessaryClosingQuestion(response.text.slice(0, MAX_REPLY_CHARS), context);
     await recordCommitmentIfDetected(fallbackText, context);
     await recordNameUsageIfDetected(fallbackText, context);
     return { status: 'generated', text: fallbackText };
@@ -1374,7 +1419,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
       return tryFallbackProviders('Reply model returned an empty response', agent, context, contents, false);
     }
 
-    const finalText = text.slice(0, MAX_REPLY_CHARS);
+    const finalText = suppressUnnecessaryClosingQuestion(text.slice(0, MAX_REPLY_CHARS), context);
     await recordCommitmentIfDetected(finalText, context);
     await recordNameUsageIfDetected(finalText, context);
     return { status: 'generated', text: finalText };

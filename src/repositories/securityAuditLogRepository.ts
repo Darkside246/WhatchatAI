@@ -40,6 +40,7 @@ export type SecurityEventType =
   | 'goose_tested'
   | 'ai_tool_invoked'
   | 'ai_tool_denied'
+  | 'ai_provider_attempted'
   | 'ai_prompt_optimization_imported'
   | 'ai_prompt_optimization_approved'
   | 'ai_prompt_optimization_rejected'

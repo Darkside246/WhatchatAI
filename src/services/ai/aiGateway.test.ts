@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import { AiGateway, ProviderConfigRejectedError, type RegisteredAiProvider, type GatewayToolCall } from './aiGateway.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AiGateway, configureAiGatewayTelemetry, ProviderConfigRejectedError, type RegisteredAiProvider, type GatewayToolCall } from './aiGateway.js';
 
 type Caps = Awaited<ReturnType<RegisteredAiProvider['capabilities']>>;
 
@@ -12,6 +12,7 @@ function fakeProvider(options: {
   error?: string;
   configRejected?: string;
   toolCalls?: GatewayToolCall[];
+  usage?: { inputTokens?: number; outputTokens?: number };
   onGenerate?: (input: Parameters<RegisteredAiProvider['generate']>[0]) => void;
   reduced?: { result?: string; error?: string; onGenerateReduced?: (input: Parameters<NonNullable<RegisteredAiProvider['generateReduced']>>[0]) => void };
 }): RegisteredAiProvider {
@@ -26,11 +27,12 @@ function fakeProvider(options: {
       options.onGenerate?.(input);
       if (options.configRejected) throw new ProviderConfigRejectedError(options.configRejected);
       if (options.error) throw new Error(options.error);
-      const response: { provider: string; text: string; toolCalls?: GatewayToolCall[] } = {
+      const response: { provider: string; text: string; toolCalls?: GatewayToolCall[]; usage?: { inputTokens?: number; outputTokens?: number } } = {
         provider: options.name,
         text: options.result ?? 'ok',
       };
       if (options.toolCalls) response.toolCalls = options.toolCalls;
+      if (options.usage) response.usage = options.usage;
       return response;
     },
   };
@@ -51,6 +53,8 @@ const baseRequest = {
 };
 
 describe('AiGateway', () => {
+  afterEach(() => configureAiGatewayTelemetry(null));
+
   it('registers providers in priority order', () => {
     const gateway = new AiGateway();
     gateway.register(fakeProvider({ name: 'slow', priority: 20 }));
@@ -209,5 +213,28 @@ describe('AiGateway', () => {
     const result = await gateway.generate(baseRequest);
     expect(result.provider).toBe('fallback');
     expect(onGenerateReduced).not.toHaveBeenCalled();
+  });
+
+  it('normalizes provider usage and sends quota telemetry without affecting the response', async () => {
+    const recordUsage = vi.fn().mockResolvedValue(undefined);
+    const recordProviderAttempt = vi.fn().mockResolvedValue(undefined);
+    configureAiGatewayTelemetry({ recordUsage, recordProviderAttempt });
+    const gateway = new AiGateway();
+    gateway.register(fakeProvider({ name: 'groq', priority: 10, usage: { inputTokens: 12, outputTokens: 7 } }));
+
+    const result = await gateway.generate({ ...baseRequest, agentId: 'agent-1', chatId: 'chat-1', callKind: 'fallback' });
+
+    expect(result.usage).toEqual({ inputTokens: 12, outputTokens: 7, totalTokens: 19 });
+    expect(recordUsage).toHaveBeenCalledWith({
+      businessId: 'tenant-1',
+      agentId: 'agent-1',
+      chatId: 'chat-1',
+      model: 'groq-test-model',
+      callKind: 'fallback',
+      promptTokens: 12,
+      candidatesTokens: 7,
+      totalTokens: 19,
+    });
+    expect(recordProviderAttempt).toHaveBeenCalledWith(expect.objectContaining({ provider: 'groq', outcome: 'success', attemptNumber: 1 }));
   });
 });

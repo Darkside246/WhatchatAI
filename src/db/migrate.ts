@@ -27,13 +27,17 @@ function migrationNumber(filename: string): number {
 }
 
 function loadMigrationFiles(): { name: string; sql: string }[] {
-  return readdirSync(MIGRATIONS_DIR)
+  const files = readdirSync(MIGRATIONS_DIR)
     .filter((file) => file.endsWith('.sql'))
-    .sort((a, b) => migrationNumber(a) - migrationNumber(b))
+    // Two 903 files are already applied in some environments. Never rename
+    // either history id; use a deterministic filename tie-breaker so a fresh
+    // database gets the same order on every filesystem.
+    .sort((a, b) => migrationNumber(a) - migrationNumber(b) || a.localeCompare(b))
     .map((name) => ({
       name,
       sql: readFileSync(path.join(MIGRATIONS_DIR, name), 'utf8'),
     }));
+  return files
 }
 
 export async function runMigrations(pool: Pool = defaultPool): Promise<{ applied: string[] }> {
