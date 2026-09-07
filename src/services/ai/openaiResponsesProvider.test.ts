@@ -6,7 +6,7 @@ const originalModel = process.env.OPENAI_GATEWAY_MODEL;
 
 beforeEach(() => {
   process.env.OPENAI_API_KEY = 'test-key';
-  process.env.OPENAI_GATEWAY_MODEL = 'gpt-5.6-luna';
+  process.env.OPENAI_GATEWAY_MODEL = 'gpt-5.4-mini';
 });
 
 afterEach(() => {
