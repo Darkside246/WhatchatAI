@@ -511,7 +511,10 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   // as stale attention signals after the conversation is opened.
   useEffect(() => {
     if (!chatId) return;
-    void api.clearChatNotifications(chatId).catch(() => undefined);
+    void api
+      .clearChatNotifications(chatId)
+      .then(() => window.dispatchEvent(new CustomEvent('aura:notifications-changed')))
+      .catch(() => undefined);
   }, [chatId]);
 
   async function handleModeSelect(mode: AiMode) {
@@ -816,6 +819,16 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
       if (event.type === 'message.new') markRead(chatId);
     }
     if (event.type === 'chat.updated' && event.chatId === chatId) void loadDetail(chatId);
+    if (
+      event.type === 'notification.created' &&
+      event.targetType === 'chat' &&
+      event.targetId === chatId
+    ) {
+      void api
+        .clearChatNotifications(chatId)
+        .then(() => window.dispatchEvent(new CustomEvent('aura:notifications-changed')))
+        .catch(() => undefined);
+    }
     // Presence is keyed by JID, not chatId - only refresh when it's really this contact.
     if (event.type === 'presence.updated' && detail?.chat.chatJid === event.contactJid) void loadDetail(chatId);
   });

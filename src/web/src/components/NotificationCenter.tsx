@@ -48,6 +48,14 @@ export function NotificationCenter() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    function onNotificationsChanged() {
+      void load();
+    }
+    window.addEventListener('aura:notifications-changed', onNotificationsChanged);
+    return () => window.removeEventListener('aura:notifications-changed', onNotificationsChanged);
+  }, [load]);
+
   useWhatsAppSync(
     useCallback(
       (event) => {

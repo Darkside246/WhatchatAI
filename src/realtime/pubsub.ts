@@ -12,7 +12,14 @@ export type RealtimeEvent =
   | { type: 'status.media.updated'; businessId: string; mediaId: string; statusId: string }
   | { type: 'message.reaction'; businessId: string; chatId: string; messageId: string }
   | { type: 'presence.updated'; businessId: string; contactJid: string }
-  | { type: 'notification.created'; businessId: string; userId: string; notificationId: string };
+  | {
+      type: 'notification.created';
+      businessId: string;
+      userId: string;
+      notificationId: string;
+      targetType: string | null;
+      targetId: string | null;
+    };
 
 /**
  * Cross-process event bridge: the BullMQ worker process (which actually

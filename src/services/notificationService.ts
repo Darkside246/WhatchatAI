@@ -31,6 +31,8 @@ export async function notifyUser(userId: string, input: NotifyInput): Promise<No
     businessId: input.businessId,
     userId,
     notificationId: notification.id,
+    targetType: notification.targetType,
+    targetId: notification.targetId,
   });
   return notification;
 }
