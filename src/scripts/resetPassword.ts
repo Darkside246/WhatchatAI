@@ -1,9 +1,21 @@
 /**
- * Local admin utility to reset one user's password in the PostgreSQL auth store.
+ * Admin utility to reset one user's password in the PostgreSQL auth store.
  *
- * Usage:
- *   npx tsx scripts/reset-password.ts <email> <new-password>
- *   npx tsx scripts/reset-password.ts --phone <+E.164 phone> <new-password>
+ * On the server (the only place it can actually run against production):
+ *   docker compose exec app-server node dist/scripts/resetPassword.js <email> <new-password>
+ *   docker compose exec app-server node dist/scripts/resetPassword.js --phone <+E.164> <new-password>
+ *
+ * In a dev checkout:
+ *   npx tsx src/scripts/resetPassword.ts <email> <new-password>
+ *
+ * WHY IT LIVES UNDER src/ rather than scripts/. tsconfig compiles src/**
+ * only, and the runtime image carries dist/, production node_modules and
+ * nothing else - no scripts/ directory and no tsx. Postgres publishes no
+ * host port either (see docker-compose.yml), so the database is reachable
+ * only from a container on aura-net. A recovery tool that can only run from
+ * a developer's checkout cannot recover anything on the machine that has
+ * the accounts on it. Same shape as dist/db/migrate.js, which app-server
+ * already runs on boot.
  *
  * The password is supplied at runtime and is never stored in source control.
  * This utility deliberately does not call validatePasswordStrength so it can
@@ -24,12 +36,12 @@
  * no self-serve path for a user who has forgotten their password.
  */
 import 'dotenv/config';
-import { pool } from '../src/db/pool.js';
-import { hashPassword } from '../src/services/passwordHashService.js';
-import { getEncryptionService } from '../src/security/encryption/index.js';
-import { BusinessMembershipRepository } from '../src/repositories/businessMembershipRepository.js';
-import { BusinessRepository } from '../src/repositories/businessRepository.js';
-import { SessionRepository } from '../src/repositories/sessionRepository.js';
+import { pool } from '../db/pool.js';
+import { hashPassword } from '../services/passwordHashService.js';
+import { getEncryptionService } from '../security/encryption/index.js';
+import { BusinessMembershipRepository } from '../repositories/businessMembershipRepository.js';
+import { BusinessRepository } from '../repositories/businessRepository.js';
+import { SessionRepository } from '../repositories/sessionRepository.js';
 
 interface FoundUser {
   id: string;
@@ -94,8 +106,8 @@ async function main(): Promise<void> {
   const [identifier, password] = byPhone ? args.slice(1) : args;
 
   if (!identifier || password === undefined) {
-    console.error('Usage: npx tsx scripts/reset-password.ts <email> <new-password>');
-    console.error('       npx tsx scripts/reset-password.ts --phone <+E.164 phone> <new-password>');
+    console.error('Usage: node dist/scripts/resetPassword.js <email> <new-password>');
+    console.error('       node dist/scripts/resetPassword.js --phone <+E.164 phone> <new-password>');
     process.exitCode = 1;
     return;
   }
@@ -155,4 +167,11 @@ main()
   })
   .finally(async () => {
     await pool.end();
+    // Exit explicitly. Closing the pool is not enough to end the process -
+    // hash-wasm's instantiated module keeps the event loop alive - and a
+    // one-shot admin command that prints its result and then hangs forever
+    // is worse than it sounds: the operator Ctrl-Cs it and cannot tell
+    // whether the reset they asked for actually happened. It did; the
+    // UPDATE is committed well before this runs.
+    process.exit(process.exitCode ?? 0);
   });
