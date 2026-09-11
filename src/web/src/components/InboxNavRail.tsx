@@ -1,6 +1,6 @@
-import { MessageCircle, Phone, ListChecks } from 'lucide-react';
+import { MessageCircle, Phone, ListChecks, Radio } from 'lucide-react';
 
-export type InboxView = 'chats' | 'calls' | 'lists';
+export type InboxView = 'chats' | 'calls' | 'lists' | 'channels';
 
 interface Props {
   view: InboxView;
@@ -54,6 +54,23 @@ export function InboxNavRail({ view, onChange }: Props) {
         }`}
       >
         <ListChecks size={19} strokeWidth={1.75} aria-hidden />
+      </button>
+      {/*
+        WhatsApp Channels - broadcast feeds this account follows. A
+        WhatsApp-native concept like Lists, so it belongs on this rail beside
+        Chats rather than in the app-wide product nav. Read-only by nature:
+        only a channel's owner can post to it, so there is no composer to
+        offer.
+      */}
+      <button
+        type="button"
+        onClick={() => onChange('channels')}
+        title="Channels"
+        className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+          view === 'channels' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-surface-2 hover:text-fg-secondary'
+        }`}
+      >
+        <Radio size={19} strokeWidth={1.75} aria-hidden />
       </button>
       <button
         type="button"

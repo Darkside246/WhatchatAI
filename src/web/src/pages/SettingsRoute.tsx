@@ -390,6 +390,9 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
   const [vision, setVision] = useState('');
   const [mission, setMission] = useState('');
   const [missionAiVisible, setMissionAiVisible] = useState(true);
+  /** Off by default, matching the server - see migration 1018. Loaded from the real business record below, never assumed. */
+  const [channelNotifs, setChannelNotifs] = useState(false);
+  const [channelNotifsError, setChannelNotifsError] = useState<string | null>(null);
   const [showMission, setShowMission] = useState(false);
   const [savingMission, setSavingMission] = useState(false);
   const [missionSaved, setMissionSaved] = useState<string | null>(null);
@@ -482,6 +485,7 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
       setMissionAiVisible(res.business.missionStatementAiVisible);
       setInvoiceAddress(res.business.address ?? '');
       setInvoicePhone(res.business.phone ?? '');
+      setChannelNotifs(res.business.channelNotificationsEnabled);
     }).catch(() => undefined);
     api.listKnowledgeBaseDocuments().then((res) => {
       const doc = res.documents.find((d) => d.title === PROFILE_KB_TITLE);
@@ -824,6 +828,39 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
                 <ToggleSwitch checked={missionAiVisible} onChange={() => setMissionAiVisible((v) => !v)} label="Include Motto, Vision & Mission in AI knowledge" />
                 Include in AI knowledge
               </label>
+            </div>
+
+            {/*
+              Channels are broadcast feeds, not conversations - nobody is
+              waiting on a reply - so by default they never notify, and this
+              is the switch for a business that genuinely wants them to.
+              Saved immediately on toggle rather than on the surrounding
+              form's submit, since it is unrelated to the mission fields.
+            */}
+            <div className="flex items-start justify-between gap-3 border-t border-border-subtle pt-3">
+              <div className="min-w-0">
+                <p className="text-meta font-medium text-fg">Channel notifications</p>
+                <p className="text-meta text-fg-muted">
+                  Off by default. Channels are broadcast feeds, so turning this on means posts from them will notify you
+                  alongside real customer activity.
+                </p>
+                {channelNotifsError && <p className="mt-1 text-meta text-error">{channelNotifsError}</p>}
+              </div>
+              <ToggleSwitch
+                checked={channelNotifs}
+                onChange={() => {
+                  const next = !channelNotifs;
+                  setChannelNotifs(next);
+                  setChannelNotifsError(null);
+                  api.setChannelNotificationsEnabled(next).catch((err: unknown) => {
+                    // Revert on a real failure rather than showing a setting
+                    // that was never actually saved.
+                    setChannelNotifs(!next);
+                    setChannelNotifsError(err instanceof Error ? err.message : 'Could not save that setting.');
+                  });
+                }}
+                label="Channel notifications"
+              />
             </div>
             {missionError && <p className="text-meta text-error">{missionError}</p>}
             {missionSaved && <p className="text-meta text-success">{missionSaved}</p>}

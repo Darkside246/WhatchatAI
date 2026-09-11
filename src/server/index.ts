@@ -81,7 +81,7 @@ import {
   dismissNotificationsForChat,
   isNotificationNotFoundError,
 } from '../services/notificationService.js';
-import { listHandoffLog, deleteHandoffLogEntry, clearHandoffLog } from '../services/humanHandoffLogService.js';
+import { listHandoffLog, deleteHandoffLogEntry, clearHandoffLog, listWritingSamples, deleteWritingSample } from '../services/humanHandoffLogService.js';
 import {
   createTeam,
   listTeams,
@@ -3775,6 +3775,24 @@ app.get('/api/workspace/calls', requireWorkspaceContext, async (_req, res) => {
   return res.status(200).json({ calls });
 });
 
+/** WhatsApp Channels this account follows - broadcast feeds, read-only by nature (only a channel's owner can post to it). */
+app.get('/api/workspace/channels', requireWorkspaceContext, async (_req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const channels = await workspaceService.listChannels(businessId, whatsappAccountId);
+  return res.status(200).json({ channels });
+});
+
+/** Whether Channel activity may raise notifications. Off by default - see migration 1018. */
+app.patch('/api/workspace/settings/channel-notifications', requireWorkspaceContext, requirePermission('settings.manage'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = z.object({ enabled: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_INPUT' });
+
+  const business = await new BusinessRepository(pool).setChannelNotificationsEnabled(businessId, parsed.data.enabled);
+  if (!business) return res.status(404).json({ error: 'BUSINESS_NOT_FOUND' });
+  return res.status(200).json({ channelNotificationsEnabled: business.channelNotificationsEnabled });
+});
+
 app.get('/api/workspace/statuses', requireWorkspaceContext, async (_req, res) => {
   const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
     businessId: string;
@@ -4119,6 +4137,27 @@ app.delete('/api/workspace/handoff-log/:id', requireAuth, requirePermission('set
   const { businessId } = res.locals.auth as AuthContext;
   const deleted = await deleteHandoffLogEntry(businessId, String(req.params.id ?? ''));
   if (!deleted) return res.status(404).json({ error: 'HANDOFF_LOG_ENTRY_NOT_FOUND' });
+  return res.status(200).json({ deleted: true });
+});
+
+/**
+ * What the Writing Twin has learned from this user's own writing - verbatim
+ * excerpts of their real messages, so behind the same app-lock gate as the
+ * handoff log. Scoped to the requesting user: one teammate never sees
+ * another's writing samples.
+ */
+app.get('/api/workspace/writing-samples', requireAuth, requireAppLock, async (req, res) => {
+  const { businessId, userId } = res.locals.auth as AuthContext;
+  const limitParam = Number(req.query.limit);
+  const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 200) : 100;
+  const scopes = await listWritingSamples(businessId, userId, limit);
+  return res.status(200).json({ scopes });
+});
+
+/** Forget one learned sample. A real delete - the user is entitled to remove something the system learned from them. */
+app.delete('/api/workspace/writing-samples/:id', requireAuth, requireAppLock, async (req, res) => {
+  const { businessId, userId } = res.locals.auth as AuthContext;
+  await deleteWritingSample(businessId, userId, String(req.params.id ?? ''));
   return res.status(200).json({ deleted: true });
 });
 

@@ -637,6 +637,59 @@ export class WorkspaceService {
     return summaries;
   }
 
+  /**
+   * WhatsApp Channels this account follows.
+   *
+   * Channels are newsletter-JID chats. They were already being ingested -
+   * listChats deliberately filters them out, because WhatsApp's own client
+   * keeps broadcast feeds out of the conversation list too - but there was
+   * nowhere to read them at all, so the posts were being stored and never
+   * shown. This is that view.
+   *
+   * Read-only by design: a channel is a broadcast feed, and only its owner
+   * can post to it. Offering a composer would be offering something that
+   * cannot work.
+   */
+  async listChannels(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
+    const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
+    const summaries: WorkspaceChatSummary[] = [];
+
+    for (const chat of chats) {
+      if (chat.chatType !== 'newsletter') continue;
+
+      let lastMessagePreview: string | null = null;
+      let lastMessageType: string | null = null;
+      if (chat.lastMessageId) {
+        const lastMessage = await this.messageRepository.findByIdForBusiness(chat.lastMessageId, businessId);
+        lastMessagePreview = lastMessage?.textContent ?? (lastMessage ? describeMessageType(lastMessage.messageType) : null);
+        lastMessageType = lastMessage?.messageType ?? null;
+      }
+
+      summaries.push({
+        id: chat.id,
+        chatJid: chat.chatJid,
+        chatType: chat.chatType,
+        // A channel's own name is the only identity it has - there is no
+        // contact behind it, so no name resolution to do.
+        displayName: chat.name ?? chat.chatJid,
+        phoneNumber: null,
+        unreadCount: chat.unreadCount,
+        lastMessageAt: chat.lastMessageAt,
+        lastMessagePreview,
+        lastMessageType,
+        isPinned: chat.isPinned ?? false,
+        isArchived: chat.isArchived ?? false,
+        aiMode: chat.aiMode,
+        hasActiveStatus: false,
+        activeStatusCount: 0,
+        avatarMediaId: null,
+        listIds: [],
+      });
+    }
+
+    return summaries.sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));
+  }
+
   async listStatuses(businessId: string, whatsappAccountId: string): Promise<WorkspaceStatusSummary[]> {
     const statuses = await this.statusRepository.listByAccount(businessId, whatsappAccountId);
     const mediaIds = statuses.map((status) => status.mediaId).filter((id): id is string => id !== null);

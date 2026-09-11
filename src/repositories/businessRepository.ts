@@ -30,6 +30,13 @@ export interface BusinessRecord {
   relationshipConfidenceEnabled: boolean;
   /** Operator Mode's "ai off until X"/"ai off for N" command - when set, "ai status" reports it and the scheduled resume job (operator-ai-resume) knows when to bulk-resume. Null for "never paused this way" or an indefinite "ai off" with no timed resume. */
   aiOperatorPausedUntil: string | null;
+  /**
+   * Whether WhatsApp Channel activity may raise notifications. Off by
+   * default: channels are broadcast feeds, not conversations - nobody is
+   * waiting on a reply, so letting them notify would bury the things that
+   * genuinely need a person. See migration 1018.
+   */
+  channelNotificationsEnabled: boolean;
   /** Last time this business's own member (not a developer) ran the generic AI test-connection check - backs the 15-minute rate limit on that route. Null until ever tested. */
   aiConnectionTestedAt: Date | null;
   /** A real, first-class home for these three (previously only Motto existed, buried as free text inside the "Business Profile" KB document). The raw text always stays here regardless of missionStatementAiVisible - see workspaceService.ts's setMissionStatement. */
@@ -65,6 +72,7 @@ interface BusinessRow {
   customer_memory_enabled: boolean;
   relationship_confidence_enabled: boolean;
   ai_operator_paused_until: string | null;
+  channel_notifications_enabled: boolean | null;
   ai_connection_tested_at: Date | null;
   motto: string | null;
   vision: string | null;
@@ -77,7 +85,7 @@ interface BusinessRow {
 }
 
 const BUSINESS_COLUMNS =
-  'id, name, timezone, time_source, manual_override_target_utc, manual_override_set_at, deletion_requested_at, scheduled_purge_at, brand_color, logo_data_url, ai_actions_paused, ai_actions_paused_at, name_usage_level, name_usage_enabled, customer_memory_enabled, relationship_confidence_enabled, ai_operator_paused_until, ai_connection_tested_at, motto, vision, mission, mission_statement_ai_visible, invoice_customization, address, phone, tier_unrestricted';
+  'id, name, timezone, time_source, manual_override_target_utc, manual_override_set_at, deletion_requested_at, scheduled_purge_at, brand_color, logo_data_url, ai_actions_paused, ai_actions_paused_at, name_usage_level, name_usage_enabled, customer_memory_enabled, relationship_confidence_enabled, ai_operator_paused_until, channel_notifications_enabled, ai_connection_tested_at, motto, vision, mission, mission_statement_ai_visible, invoice_customization, address, phone, tier_unrestricted';
 
 function toRecord(row: BusinessRow): BusinessRecord {
   return {
@@ -98,6 +106,7 @@ function toRecord(row: BusinessRow): BusinessRecord {
     customerMemoryEnabled: row.customer_memory_enabled,
     relationshipConfidenceEnabled: row.relationship_confidence_enabled,
     aiOperatorPausedUntil: row.ai_operator_paused_until,
+    channelNotificationsEnabled: row.channel_notifications_enabled ?? false,
     aiConnectionTestedAt: row.ai_connection_tested_at,
     motto: row.motto,
     vision: row.vision,
@@ -206,6 +215,15 @@ export class BusinessRepository {
     const { rows } = await this.db.query<BusinessRow>(
       `UPDATE businesses SET ai_operator_paused_until = $2, updated_at = now() WHERE id = $1 RETURNING ${BUSINESS_COLUMNS}`,
       [id, until],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /** Turns WhatsApp Channel notifications on or off for this business. Off by default - see migration 1018. */
+  async setChannelNotificationsEnabled(id: string, enabled: boolean): Promise<BusinessRecord | null> {
+    const { rows } = await this.db.query<BusinessRow>(
+      `UPDATE businesses SET channel_notifications_enabled = $2, updated_at = now() WHERE id = $1 RETURNING ${BUSINESS_COLUMNS}`,
+      [id, enabled],
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }

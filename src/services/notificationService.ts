@@ -6,10 +6,12 @@ import {
   type NotificationSeverity,
 } from '../repositories/notificationRepository.js';
 import { BusinessMembershipRepository } from '../repositories/businessMembershipRepository.js';
+import { BusinessRepository } from '../repositories/businessRepository.js';
 import { publishRealtimeEvent } from '../realtime/pubsub.js';
 
 const notificationRepository = new NotificationRepository(pool);
 const membershipRepository = new BusinessMembershipRepository(pool);
+const businessRepository = new BusinessRepository(pool);
 
 export class NotificationNotFoundError extends Error {}
 
@@ -41,6 +43,21 @@ export async function notifyUser(userId: string, input: NotifyInput): Promise<No
  * state is genuinely their own, not accidentally shared.
  */
 export async function notifyBusiness(input: NotifyInput): Promise<NotificationRecord[]> {
+  /**
+   * Channels are broadcast feeds, not conversations: nobody is waiting on a
+   * reply and there is nothing to action, so by default they never raise a
+   * notification - letting them would bury the things that genuinely need a
+   * person under a feed nobody asked to be interrupted by. A business that
+   * does want them turns it on in Settings (migration 1018).
+   *
+   * Enforced here, at the one place notifications are actually created,
+   * rather than at each call site - so a future caller cannot forget it.
+   */
+  if (input.targetType === 'channel') {
+    const business = await businessRepository.findById(input.businessId);
+    if (!business?.channelNotificationsEnabled) return [];
+  }
+
   const memberships = await membershipRepository.listForBusiness(input.businessId);
   const activeMembers = memberships.filter((membership) => membership.status === 'active');
 

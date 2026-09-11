@@ -612,6 +612,8 @@ export interface WorkspaceBusiness {
   nameUsageLevel: number;
   /** Master on/off for name usage (default true). When false, the AI never uses the customer's name on its own initiative - only if the customer explicitly asks to be addressed by name. */
   nameUsageEnabled: boolean;
+  /** Whether WhatsApp Channel activity may raise notifications. Off by default - channels are broadcast feeds, not conversations, so they would otherwise bury the things that genuinely need a person. */
+  channelNotificationsEnabled: boolean;
   /** Relationship-Confidence Engine (Phase 3): off by default. When on, a genuinely ambiguous chat (in 2+ Lists with different enabled agent assignments) gets a real, deterministic keyword-count suggestion for routing - never auto-writes active_list_id. */
   relationshipConfidenceEnabled: boolean;
   /** Section 75-91: a real, pending account-deletion request (accountDeletionService.ts) - null unless the OWNER has explicitly requested it. */
@@ -1238,6 +1240,15 @@ export interface HandoffLogEntryDto {
   createdAt: string;
 }
 
+/** One excerpt of the user's own writing that the Writing Twin learned from. Decrypted server-side from this tenant's own key. */
+export interface WritingSampleDto {
+  id: string;
+  channelScope: string;
+  sourceProvenance: string;
+  exampleText: string;
+  addedAt: string;
+}
+
 export interface WorkspaceChatDetail {
   chat: WorkspaceChatDetailRecord;
   contact: WorkspaceContact | null;
@@ -1800,6 +1811,13 @@ export const api = {
       body: JSON.stringify({ status }),
     }),
   listCalls: () => request<{ calls: WorkspaceCallSummary[] }>('/workspace/calls'),
+  /** WhatsApp Channels this account follows - broadcast feeds, read-only by nature. */
+  listChannels: () => request<{ channels: WorkspaceChatSummary[] }>('/workspace/channels'),
+  setChannelNotificationsEnabled: (enabled: boolean) =>
+    request<{ channelNotificationsEnabled: boolean }>('/workspace/settings/channel-notifications', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    }),
   listStatuses: () => request<{ statuses: WorkspaceStatus[] }>('/workspace/statuses'),
   markStatusViewed: (id: string) => request<{ ok: true }>(`/workspace/statuses/${id}/view`, { method: 'PATCH' }),
   /** Replies to a customer's status - a real DM to whoever posted it, quoting the status so it threads under the right post. */
@@ -1881,6 +1899,16 @@ export const api = {
     ),
   deleteHandoffLogEntry: (pinHash: string, id: string) =>
     request<{ deleted: boolean }>(`/workspace/handoff-log/${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', 'x-app-lock-pin': pinHash },
+    }),
+  /** What the Writing Twin has learned from this user's own writing. Same app-lock gate as the handoff log - these are verbatim excerpts of real messages. */
+  listWritingSamples: (pinHash: string) =>
+    request<{ scopes: Array<{ scope: string; examples: WritingSampleDto[] }> }>('/workspace/writing-samples', {
+      headers: { 'Content-Type': 'application/json', 'x-app-lock-pin': pinHash },
+    }),
+  deleteWritingSample: (pinHash: string, id: string) =>
+    request<{ deleted: boolean }>(`/workspace/writing-samples/${id}`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json', 'x-app-lock-pin': pinHash },
     }),

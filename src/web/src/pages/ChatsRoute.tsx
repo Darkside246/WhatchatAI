@@ -7,6 +7,7 @@ import { ContactDetailPanel } from '../components/ContactDetailPanel.js';
 import { InboxNavRail, type InboxView } from '../components/InboxNavRail.js';
 import { CallHistoryPanel } from '../components/CallHistoryPanel.js';
 import { StatusesPanel } from '../components/StatusesPanel.js';
+import { ChannelsPanel } from '../components/ChannelsPanel.js';
 import { ListsRoute } from './ListsRoute.js';
 
 const DETAIL_PANEL_OPEN_KEY = 'contact_detail_panel_open';
@@ -80,6 +81,8 @@ export function ChatsRoute() {
             <p className="text-body">Select a call to view details</p>
           </div>
         </>
+      ) : view === 'channels' ? (
+        <ChannelsPanel />
       ) : (
         <ListsRoute />
       )}

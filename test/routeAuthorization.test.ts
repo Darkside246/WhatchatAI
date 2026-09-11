@@ -48,6 +48,14 @@ const SELF_SCOPED_ROUTES = [
   // name below, in the dedicated Learn test) rather than requirePermission -
   // there is no permission key for "manage your own writing style profile,"
   // it is inherently self-scoped to whichever real OWNER is authenticated.
+  // Same inherently-self-scoped reasoning as the Learn rows below, and the
+  // reason there is no permission key for it: a writing sample is an excerpt
+  // of the CALLING user's own message, read and deleted only for whoever is
+  // authenticated (userId comes from the session, never the request). It is
+  // additionally gated by requireAppLock - the app-lock PIN - which is a
+  // stronger gate than any permission, since it takes a second credential on
+  // top of the session.
+  '/api/workspace/writing-samples/:id',
   '/api/workspace/learn/enabled',
   '/api/workspace/learn/share-enabled',
   '/api/workspace/learn/reset',

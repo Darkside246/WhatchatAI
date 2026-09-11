@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, ArrowLeft, Lock, MessageSquare, Trash2, RefreshCw, ShieldCheck } from 'lucide-react';
-import { api, ApiError, type HandoffLogEntryDto } from '../lib/api.js';
+import { AlertTriangle, ArrowLeft, Lock, MessageSquare, Trash2, RefreshCw, ShieldCheck, PenLine } from 'lucide-react';
+import { api, ApiError, type HandoffLogEntryDto, type WritingSampleDto } from '../lib/api.js';
 import { hashPin } from '../lib/pinCrypto.js';
 
 /**
@@ -57,6 +57,9 @@ export function HandoffLogPage() {
   const [unlocking, setUnlocking] = useState(false);
   const [lockError, setLockError] = useState<string | null>(null);
 
+  /** The log section has two distinct categories - they answer different questions and are deliberately not mixed together. */
+  const [category, setCategory] = useState<'handoff' | 'writing'>('handoff');
+  const [samples, setSamples] = useState<Array<{ scope: string; examples: WritingSampleDto[] }>>([]);
   const [entries, setEntries] = useState<HandoffLogEntryDto[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -77,9 +80,24 @@ export function HandoffLogPage() {
     }
   }, []);
 
+  const loadSamples = useCallback(async (hash: string) => {
+    setLoading(true);
+    try {
+      const result = await api.listWritingSamples(hash);
+      setSamples(result.scopes);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load the writing samples.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    if (pinHash) void load(pinHash);
-  }, [pinHash, load]);
+    if (!pinHash) return;
+    if (category === 'handoff') void load(pinHash);
+    else void loadSamples(pinHash);
+  }, [pinHash, category, load, loadSamples]);
 
   async function handleUnlock() {
     if (pin.trim().length === 0 || unlocking) return;
@@ -196,7 +214,9 @@ export function HandoffLogPage() {
         <div className="min-w-0 flex-1">
           <h1 className="text-title font-semibold text-fg">Handoff log</h1>
           <p className="text-meta text-fg-muted">
-            {total} recorded handover{total !== 1 ? 's' : ''} — every time a conversation left the AI
+            {category === 'handoff'
+              ? `${total} recorded handover${total !== 1 ? 's' : ''} — every time a conversation left the AI`
+              : 'What the Writing Twin has learned from how you write'}
           </p>
         </div>
         <span className="hidden items-center gap-1 rounded-full bg-success/15 px-2 py-1 text-meta font-medium text-success sm:inline-flex">
@@ -205,14 +225,18 @@ export function HandoffLogPage() {
         </span>
         <button
           type="button"
-          onClick={() => pinHash && void load(pinHash)}
+          onClick={() => {
+            if (!pinHash) return;
+            if (category === 'handoff') void load(pinHash);
+            else void loadSamples(pinHash);
+          }}
           disabled={loading}
           className="text-fg-secondary hover:text-fg disabled:opacity-50"
           aria-label="Refresh"
         >
           <RefreshCw size={16} strokeWidth={1.75} className={loading ? 'animate-spin' : ''} aria-hidden />
         </button>
-        {entries.length > 0 && (
+        {category === 'handoff' && entries.length > 0 && (
           <button
             type="button"
             onClick={() => setConfirmingClear(true)}
@@ -239,6 +263,86 @@ export function HandoffLogPage() {
         </div>
       )}
 
+      <div className="flex shrink-0 items-center gap-1 border-b border-border-subtle bg-surface-1 px-4 pb-2">
+        {([
+          { id: 'handoff' as const, label: 'Handoff log', icon: MessageSquare },
+          { id: 'writing' as const, label: 'Writing samples', icon: PenLine },
+        ]).map((tab) => {
+          const Icon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setCategory(tab.id)}
+              className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-caption font-medium transition ${
+                category === tab.id ? 'bg-accent text-white' : 'text-fg-secondary hover:bg-surface-3'
+              }`}
+            >
+              <Icon size={12} aria-hidden />
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {category === 'writing' && (
+        <div className="flex-1 overflow-y-auto px-4 py-4">
+          {error && <p className="mb-3 text-caption text-error">{error}</p>}
+          <p className="mb-3 text-caption text-fg-secondary">
+            Excerpts of your own real messages that the Writing Twin has learned your style from. These are yours alone - a
+            teammate never sees them - and deleting one genuinely removes it.
+          </p>
+          {samples.every((scope) => scope.examples.length === 0) && !loading && (
+            <p className="text-caption text-fg-muted">
+              Nothing learned yet. Samples appear here once writing learning is enabled and you have sent messages it could
+              learn from.
+            </p>
+          )}
+          {samples.map((scope) =>
+            scope.examples.length === 0 ? null : (
+              <div key={scope.scope} className="mb-4">
+                <p className="mb-1.5 text-meta font-semibold uppercase tracking-wide text-fg-muted">
+                  {scope.scope} · {scope.examples.length}
+                </p>
+                <ul className="space-y-2">
+                  {scope.examples.map((example) => (
+                    <li key={example.id} className="rounded-xl border border-border-subtle bg-surface-1 p-3">
+                      <p className="whitespace-pre-wrap break-words text-caption leading-5 text-fg">{example.exampleText}</p>
+                      <div className="mt-2 flex items-center gap-3">
+                        <span className="text-meta text-fg-muted">{formatTimestamp(example.addedAt)}</span>
+                        <span className="text-meta text-fg-muted">{example.sourceProvenance}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!pinHash) return;
+                            const previous = samples;
+                            setSamples((current) =>
+                              current.map((group) => ({
+                                ...group,
+                                examples: group.examples.filter((item) => item.id !== example.id),
+                              })),
+                            );
+                            api.deleteWritingSample(pinHash, example.id).catch((err: unknown) => {
+                              setSamples(previous);
+                              setError(err instanceof Error ? err.message : 'Could not forget that sample.');
+                            });
+                          }}
+                          className="ml-auto inline-flex items-center gap-1 text-meta text-fg-muted hover:text-error"
+                        >
+                          <Trash2 size={11} aria-hidden />
+                          Forget
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ),
+          )}
+        </div>
+      )}
+
+      {category === 'handoff' && (
       <div className="flex-1 overflow-y-auto px-4 py-4">
         {error && <p className="mb-3 text-caption text-error">{error}</p>}
         {loading && entries.length === 0 && <p className="text-caption text-fg-muted">Loading the real handoff record…</p>}
@@ -300,6 +404,7 @@ export function HandoffLogPage() {
           ))}
         </ul>
       </div>
+      )}
     </div>
   );
 }
