@@ -204,7 +204,16 @@ describe('WhatsAppTenantConnection.requestPhonePairingCode() (real filesystem, r
     const staleFile = path.join(dir, 'creds.json');
     await writeFile(staleFile, '{"corrupt": true');
 
-    await connection.connect(); // an ordinary reconnect - must still purge, since real pairing never completed
+    // Past the reuse window, so the outstanding code is no longer something
+    // to protect - see the pairing-code reuse describe block below, which
+    // covers the other half: inside the window the purge must NOT run.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 4 * 60_000);
+    try {
+      await connection.connect(); // an ordinary reconnect - must still purge, since real pairing never completed
+    } finally {
+      vi.useRealTimers();
+    }
 
     await expect(access(staleFile)).rejects.toThrow(); // gone - hasPairedThisSession correctly stayed false
   });
@@ -231,4 +240,144 @@ describe('WhatsAppTenantConnection.requestPhonePairingCode() (real filesystem, r
 
     await expect(access(realCredsFile)).resolves.toBeUndefined(); // untouched
   });
+});
+
+
+/**
+ * Real regression coverage for "the code generates but the phone says it
+ * couldn't link."
+ *
+ * requestPairingCode() mints a NEW random code on every call, and the code
+ * IS the secret the phone derives its key from. Our reconnect path calls
+ * connect(lastPairingPhoneNumber), so every socket close during the waiting
+ * window silently replaced the code the user was reading off the screen -
+ * and the one they then typed had been dead since the moment it was
+ * replaced. Baileys accepts an existing code as customPairingCode, so a
+ * reconnect inside the window reissues the same one: the server hands back
+ * a fresh link_code_pairing_ref, which is the part that actually needed
+ * renewing, and the secret on screen keeps working.
+ *
+ * The other half is the ceiling. The reconnect loop is unbounded, so an
+ * abandoned pairing screen used to ask WhatsApp for a brand new code every
+ * few seconds indefinitely - which is how a number reaches `rate-overlimit`
+ * (429) and stops being pairable at all, long after the browser tab is
+ * closed.
+ */
+describe('WhatsAppTenantConnection - pairing code reuse across reconnects', () => {
+  beforeEach(() => {
+    makeWASocketMock.mockReset();
+    makeWASocketMock.mockReturnValue(fakeSocket());
+  });
+
+  const cleanupDirs: string[] = [];
+  afterEach(async () => {
+    vi.useRealTimers();
+    for (const dir of cleanupDirs.splice(0)) {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reissues the code already on screen when a reconnect lands inside the window', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    cleanupDirs.push(await resolveContainedSessionDir(businessId));
+
+    const connection = new WhatsAppTenantConnection(businessId);
+    await connection.requestPhonePairingCode('+14155552671');
+    await connection.connect('+14155552671'); // what a reconnect during the window does
+
+    const socket = makeWASocketMock.mock.results[0]!.value as { requestPairingCode: ReturnType<typeof vi.fn> };
+    expect(socket.requestPairingCode.mock.calls).toEqual([
+      ['14155552671'], // first request - no code exists yet
+      ['14155552671', 'ABCD1234'], // the reconnect - the SAME code, handed back to Baileys
+    ]);
+    expect(connection.getSnapshot().pairingCode).toBe('ABCD1234');
+  });
+
+  it('does not restart the displayed code\u2019s clock when it is reissued', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    cleanupDirs.push(await resolveContainedSessionDir(businessId));
+
+    const connection = new WhatsAppTenantConnection(businessId);
+    await connection.requestPhonePairingCode('+14155552671');
+    const issuedAt = connection.getSnapshot().pairingCodeGeneratedAt;
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 60_000);
+    await connection.connect('+14155552671');
+    vi.useRealTimers();
+
+    // Same code, same age. Restarting the countdown here would promise the
+    // user a full fresh window for a secret the server may retire first.
+    expect(connection.getSnapshot().pairingCodeGeneratedAt).toBe(issuedAt);
+  });
+
+  it('does not purge the session directory while a code is still live', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    const dir = await resolveContainedSessionDir(businessId);
+    cleanupDirs.push(dir);
+
+    const connection = new WhatsAppTenantConnection(businessId);
+    await connection.requestPhonePairingCode('+14155552671');
+
+    // The key material the displayed code is a secret for. Purging this
+    // mid-window is self-inflicted: it destroys the thing the code the user
+    // is typing was derived against.
+    await mkdir(dir, { recursive: true });
+    const pairingKeys = path.join(dir, 'creds.json');
+    await writeFile(pairingKeys, '{"pairingEphemeralKeyPair": "live"}');
+
+    await connection.connect('+14155552671');
+
+    await expect(access(pairingKeys)).resolves.toBeUndefined(); // untouched
+  });
+
+  it('mints a genuinely new code once the window has passed', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    cleanupDirs.push(await resolveContainedSessionDir(businessId));
+
+    const connection = new WhatsAppTenantConnection(businessId);
+    await connection.requestPhonePairingCode('+14155552671');
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 4 * 60_000);
+    await connection.connect('+14155552671');
+    vi.useRealTimers();
+
+    const socket = makeWASocketMock.mock.results[0]!.value as { requestPairingCode: ReturnType<typeof vi.fn> };
+    // No second argument: an expired code must not be handed back, or the
+    // user would be shown a dead secret forever.
+    expect(socket.requestPairingCode.mock.calls[1]).toEqual(['14155552671']);
+  });
+
+  it('stops asking WhatsApp for codes once the one it issued has expired', async () => {
+    await resetDatabase();
+    const businessId = await createTestBusiness();
+    cleanupDirs.push(await resolveContainedSessionDir(businessId));
+
+    const connection = new WhatsAppTenantConnection(businessId);
+    await connection.requestPhonePairingCode('+14155552671');
+
+    // Date is faked, timers are not - the real reconnect backoff still runs.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 4 * 60_000);
+
+    const socket = makeWASocketMock.mock.results[0]!.value as {
+      ev: EventEmitter;
+      requestPairingCode: ReturnType<typeof vi.fn>;
+    };
+    socket.ev.emit('connection.update', { connection: 'close' });
+    // First backoff step is ~1s plus jitter; this waits past it so the
+    // reconnect genuinely fires rather than being asserted before it runs.
+    await new Promise((resolve) => setTimeout(resolve, 1_800));
+    vi.useRealTimers();
+
+    expect(socket.requestPairingCode).toHaveBeenCalledTimes(1);
+    const snapshot = connection.getSnapshot();
+    expect(snapshot.pairingCode).toBeNull();
+    expect(snapshot.lastError).toContain('expired');
+  }, 10_000);
 });

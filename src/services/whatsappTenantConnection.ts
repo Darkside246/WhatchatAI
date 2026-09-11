@@ -93,6 +93,25 @@ const MAX_CONFLICT_REPLACED_AUTO_RETRIES = 1;
 const CONFLICT_REPLACED_RETRY_DELAY_MS = 5_000;
 /** How long a reconnect must stay genuinely 'open' before conflictReplacedRetryCount resets - deliberately not the instant 'open' fires, so a real rapid replace/reconnect storm can't keep resetting it (mirrors the exact failure mode reconnectAttempt's own backoff already had to be protected against). */
 const SUSTAINED_CONNECTION_BEFORE_RESET_MS = 30_000;
+/**
+ * How long a phone-pairing code is treated as still worth reusing across an
+ * automatic reconnect.
+ *
+ * This is OUR bound, not a value WhatsApp publishes - neither the protocol
+ * nor Baileys states the server-side lifetime of a link-with-phone-number
+ * code, and pretending to know it exactly would be inventing a fact. Three
+ * minutes is deliberately on the short side of the window observed on
+ * web.whatsapp.com: erring short means we stop reusing a code slightly
+ * before the server would, and tell the user it expired, which is honest.
+ * Erring long would mean silently reusing a code the server has already
+ * retired, which looks exactly like the bug this bounds.
+ *
+ * Its real job is the ceiling, not the precision: without it, an
+ * uncompleted pairing attempt mints a brand new code on every reconnect,
+ * for as long as the reconnect loop runs, which is how a number reaches
+ * WhatsApp's `rate-overlimit` (429) and stops being pairable at all.
+ */
+const PAIRING_CODE_REUSE_WINDOW_MS = 3 * 60_000;
 
 export class SessionDirError extends Error {}
 
@@ -277,6 +296,39 @@ export class WhatsAppTenantConnection {
    * apply in full.
    */
   private hasPairedThisSession = false;
+  /**
+   * The pairing code currently displayed to the user, and when it was first
+   * issued.
+   *
+   * THE BUG THESE FIX, which is the whole of "the code generates but seems
+   * broken": requestPairingCode() mints a NEW random 8-character code on
+   * every call, and the code is the shared secret the phone derives its key
+   * from (Baileys' generatePairingKey -> derivePairingCodeKey(pairingCode,
+   * salt)). Our own reconnect path calls connect(lastPairingPhoneNumber),
+   * which called requestPairingCode() again - so every socket close during
+   * the waiting window silently replaced the code the user was in the
+   * middle of typing. The one on screen (or already half-entered on the
+   * phone) was dead the moment it was replaced, and the phone answered with
+   * "couldn't link device" for a code that had been perfectly valid when it
+   * was read out.
+   *
+   * Baileys supports passing an existing code back in as customPairingCode,
+   * so the fix is to reissue THE SAME code on a reconnect inside the window
+   * rather than mint a new one. The server gets a fresh
+   * link_code_pairing_ref, which is what actually needed renewing; the
+   * secret the user is typing stays the one on screen.
+   */
+  private issuedPairingCode: string | null = null;
+  private pairingCodeIssuedAt: number | null = null;
+  /**
+   * Why the pairing screen gave up, kept until something genuinely
+   * supersedes it (a new code requested, a real connection, an explicit
+   * disconnect). Deliberately not written straight into snapshot.lastError
+   * and left there: every connect() resets lastError to null, and the
+   * reconnect that discovers the expiry is the same call that would erase
+   * the explanation a second later.
+   */
+  private pairingExpiryNotice: string | null = null;
   private readonly accountRepository = new WhatsAppAccountRepository(pool);
   private readonly connectionEventRepository = new WhatsAppConnectionEventRepository(pool);
   private readonly businessRepository = new BusinessRepository(pool);
@@ -484,7 +536,7 @@ export class WhatsAppTenantConnection {
         connected: false,
         qrAvailable: false,
         qrDataUrl: null,
-        lastError: null,
+        lastError: this.pairingExpiryNotice,
         reconnectAttempt: this.reconnectAttempt,
         pairingCode: null,
         pairingCodeGeneratedAt: null,
@@ -531,7 +583,19 @@ export class WhatsAppTenantConnection {
       // that has already paired before (countByBusiness > 0) - that path
       // must keep resuming its real, working session, not get wiped on
       // every ordinary reconnect after a restart.
-      if (!this.hasPairedThisSession && (await this.accountRepository.countByBusiness(this.businessId)) === 0) {
+      // pairingCodeStillValid() is the second half of the same guarantee
+      // hasPairedThisSession gives: that guard covers the mandated restart
+      // AFTER pairing succeeds, this one covers every close BEFORE it. A
+      // code is derived against key material in the session directory
+      // (creds.pairingEphemeralKeyPair), so purging mid-window destroys the
+      // thing the displayed code is a secret for - the same "structurally
+      // fine but rejected" outcome this purge exists to prevent, caused by
+      // the purge itself.
+      if (
+        !this.hasPairedThisSession &&
+        !this.pairingCodeStillValid() &&
+        (await this.accountRepository.countByBusiness(this.businessId)) === 0
+      ) {
         await purgeSessionDir(this.businessId).catch((error) => {
           console.error(`[WhatsApp] Failed to purge stale pre-pairing session state for business ${this.businessId}:`, error);
         });
@@ -581,13 +645,26 @@ export class WhatsAppTenantConnection {
         // "Connection Closed" - a real race Baileys' own docs don't
         // mention, only its exported waitForSocketOpen() helper guards it.
         await this.socket.waitForSocketOpen();
-        const pairingCode = await this.socket.requestPairingCode(digitsOnly);
+        // Reissue the code already on screen when one is still within its
+        // window - see issuedPairingCode. A fresh code is minted only when
+        // there genuinely isn't a live one: a first request, or a window
+        // that has run out.
+        const reissued = this.pairingCodeStillValid() ? this.issuedPairingCode : null;
+        const pairingCode = reissued
+          ? await this.socket.requestPairingCode(digitsOnly, reissued)
+          : await this.socket.requestPairingCode(digitsOnly);
+        // The clock keeps running from the ORIGINAL issue on a reissue. It
+        // is the same code with the same remaining life, and restarting the
+        // countdown here would tell the user they have three fresh minutes
+        // for a secret the server may retire well before that.
+        if (!reissued) this.pairingCodeIssuedAt = Date.now();
+        this.issuedPairingCode = pairingCode;
         this.snapshot = {
           ...this.snapshot,
           status: 'PAIRING_CODE_READY',
           connected: false,
           pairingCode,
-          pairingCodeGeneratedAt: new Date().toISOString(),
+          pairingCodeGeneratedAt: new Date(this.pairingCodeIssuedAt ?? Date.now()).toISOString(),
           pairingPhoneNumber: pairingPhoneNumberE164,
           lastError: null,
         };
@@ -616,6 +693,8 @@ export class WhatsAppTenantConnection {
   async disconnect(): Promise<void> {
     this.clearReconnectTimer();
     this.lastPairingPhoneNumber = null;
+    this.forgetIssuedPairingCode();
+    this.pairingExpiryNotice = null;
     const socket = this.socket;
     this.socket = null;
     this.listenersAttached = false;
@@ -646,6 +725,8 @@ export class WhatsAppTenantConnection {
   async logout(): Promise<void> {
     this.clearReconnectTimer();
     this.lastPairingPhoneNumber = null;
+    this.forgetIssuedPairingCode();
+    this.pairingExpiryNotice = null;
     const socket = this.socket;
     this.socket = null;
     this.listenersAttached = false;
@@ -687,12 +768,63 @@ export class WhatsAppTenantConnection {
    * requesting a new code.
    */
   async requestPhonePairingCode(phoneNumberE164: string): Promise<string> {
+    // The user is doing the exact thing the expiry notice asked them to.
+    this.pairingExpiryNotice = null;
     if (this.isReady()) throw new Error('WhatsApp is already connected for this business.');
     if (this.connectInFlight) throw new Error('A connection attempt is already in progress.');
     if (this.socket) await this.disconnect();
     const snapshot = await this.connect(phoneNumberE164);
     if (!snapshot.pairingCode) throw new Error(snapshot.lastError ?? 'WhatsApp did not return a pairing code.');
     return snapshot.pairingCode;
+  }
+
+  /** Whether a code has been issued and is still inside its reuse window. */
+  private pairingCodeStillValid(): boolean {
+    if (!this.issuedPairingCode || this.pairingCodeIssuedAt === null) return false;
+    return Date.now() - this.pairingCodeIssuedAt < PAIRING_CODE_REUSE_WINDOW_MS;
+  }
+
+  private forgetIssuedPairingCode(): void {
+    this.issuedPairingCode = null;
+    this.pairingCodeIssuedAt = null;
+  }
+
+  /**
+   * The number an automatic reconnect should carry, or undefined to fall
+   * back to the QR flow.
+   *
+   * Returns the number while a pairing attempt is genuinely still live -
+   * either a code is inside its window, or no code has been issued yet (the
+   * case the lastPairingPhoneNumber field was originally added for: a
+   * disconnect between connect() and requestPairingCode() must not silently
+   * drop back to QR).
+   *
+   * Once an issued code HAS run out, this stops. That is the point: the
+   * reconnect loop is unbounded by design, and continuing to hand it a
+   * phone number means minting a fresh pairing code every few seconds for
+   * as long as the user leaves the screen open. That is what drives a
+   * number into WhatsApp's `rate-overlimit` (429), after which no code
+   * works at all - the account-level damage is real and outlives the
+   * session. An expired code is a dead end the user has to act on, so the
+   * honest thing is to say so and stop asking WhatsApp for more.
+   */
+  private pairingNumberForReconnect(): string | undefined {
+    if (!this.lastPairingPhoneNumber) return undefined;
+    if (this.issuedPairingCode && !this.pairingCodeStillValid()) {
+      this.lastPairingPhoneNumber = null;
+      this.forgetIssuedPairingCode();
+      this.pairingExpiryNotice =
+        'The pairing code expired before it was entered on the phone. Request a new code to try again.';
+      this.snapshot = {
+        ...this.snapshot,
+        pairingCode: null,
+        pairingCodeGeneratedAt: null,
+        pairingPhoneNumber: null,
+        lastError: this.pairingExpiryNotice,
+      };
+      return undefined;
+    }
+    return this.lastPairingPhoneNumber;
   }
 
   /**
@@ -894,6 +1026,8 @@ export class WhatsAppTenantConnection {
         // A real pairing just succeeded, by whichever method - nothing left
         // to remember for a future reconnect to retry.
         this.lastPairingPhoneNumber = null;
+        this.forgetIssuedPairingCode();
+        this.pairingExpiryNotice = null;
         this.snapshot = {
           status: 'CONNECTED',
           connected: true,
@@ -988,7 +1122,7 @@ export class WhatsAppTenantConnection {
                 `auto-retrying once (attempt ${this.conflictReplacedRetryCount}/${MAX_CONFLICT_REPLACED_AUTO_RETRIES}) in case this was a transient duplicate process, before giving up and requiring manual reconnect.`,
             );
             this.reconnectTimer = setTimeout(() => {
-              void this.connect(this.lastPairingPhoneNumber ?? undefined).catch((error) => {
+              void this.connect(this.pairingNumberForReconnect()).catch((error) => {
                 this.snapshot = {
                   ...this.snapshot,
                   status: 'ERROR',
@@ -1227,7 +1361,7 @@ export class WhatsAppTenantConnection {
     };
 
     this.reconnectTimer = setTimeout(() => {
-      void this.connect(this.lastPairingPhoneNumber ?? undefined).catch((error) => {
+      void this.connect(this.pairingNumberForReconnect()).catch((error) => {
         this.snapshot = {
           ...this.snapshot,
           status: 'ERROR',
