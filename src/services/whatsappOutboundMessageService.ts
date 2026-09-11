@@ -10,7 +10,7 @@ import { enqueueOutboundMessage } from '../queue/queues/outboundMessagesQueue.js
 import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 import { storeMedia } from '../media/mediaStorage.js';
 import { transcodeToVoiceNote } from '../media/audioTranscodeService.js';
-import type { OutboundMessageType } from '../domain/whatsapp/types.js';
+import type { OutboundMessageType, OutboundStructuredPayload } from '../domain/whatsapp/types.js';
 
 export interface ChatNotFoundError extends Error {
   code: 'CHAT_NOT_FOUND';
@@ -28,6 +28,8 @@ export interface SendOutboundMessageInput {
   messageType: OutboundMessageType;
   text?: string;
   caption?: string;
+  /** The whole content of a 'contact' or 'poll' send - these types carry neither text nor media. */
+  structuredPayload?: OutboundStructuredPayload | undefined;
   /** Base64-encoded raw file bytes. Required for every messageType except 'text', unless mediaStorageReference is supplied directly instead. */
   mediaBase64?: string;
   /**
@@ -74,7 +76,30 @@ export class WhatsAppOutboundMessageService {
     let mediaMimeType = input.mediaMimeType;
     let mediaDurationSeconds: number | null = null;
 
-    if (input.messageType !== 'text') {
+    // contact and poll carry neither text nor media - their whole content is
+    // the structured payload, validated here so a malformed one can never
+    // reach the dispatch worker and fail at the network call instead.
+    const STRUCTURED_TYPES = new Set(['contact', 'poll']);
+
+    if (STRUCTURED_TYPES.has(input.messageType)) {
+      const payload = input.structuredPayload;
+      if (!payload) throw new Error(`messageType "${input.messageType}" requires a structuredPayload`);
+
+      if (payload.kind === 'contact') {
+        const usable = payload.contacts.filter((c) => c.displayName.trim() && c.phoneNumber.trim());
+        if (usable.length === 0) throw new Error('A contact message needs at least one contact with a name and a number');
+      } else if (payload.kind === 'poll') {
+        if (!payload.question.trim()) throw new Error('A poll needs a question');
+        const options = payload.options.map((option) => option.trim()).filter((option) => option.length > 0);
+        // WhatsApp's own limits - rejected here rather than sent and silently
+        // dropped by the provider.
+        if (options.length < 2) throw new Error('A poll needs at least two options');
+        if (options.length > 12) throw new Error('A poll can have at most 12 options');
+        if (payload.selectableCount < 1 || payload.selectableCount > options.length) {
+          throw new Error('A poll\'s selectable count must be between 1 and the number of options');
+        }
+      }
+    } else if (input.messageType !== 'text') {
       if (input.mediaStorageReference) {
         mediaStorageReference = input.mediaStorageReference;
       } else {
@@ -123,6 +148,7 @@ export class WhatsAppOutboundMessageService {
       mediaMimeType: mediaMimeType ?? null,
       mediaDurationSeconds,
       mediaFileName: input.mediaFileName ?? null,
+      structuredPayload: input.structuredPayload ?? null,
       requestedBy: input.requestedBy ?? 'human',
     });
 

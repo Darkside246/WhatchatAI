@@ -30,10 +30,65 @@ const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
  * storage inbound media uses (localEncryptedMediaStorage.ts) - never held
  * anywhere else on disk in plaintext.
  */
+/**
+ * A minimal but genuinely valid vCard 3.0 - the format WhatsApp expects for
+ * a shared contact. Only the two fields we actually have are emitted; no
+ * placeholder organisation, email or address is invented to pad it out.
+ *
+ * The name is escaped per RFC 6350: a comma, semicolon or backslash in a
+ * real person's name would otherwise terminate a field early and corrupt
+ * the card on the recipient's phone.
+ */
+function buildVCard(displayName: string, phoneNumber: string): string {
+  const escape = (value: string): string => value.replace(/([\\;,])/g, '\\$1').replace(/\n/g, '\\n');
+  const name = escape(displayName.trim());
+  const phone = phoneNumber.trim();
+  return [
+    'BEGIN:VCARD',
+    'VERSION:3.0',
+    `FN:${name}`,
+    `N:${name};;;;`,
+    `TEL;type=CELL;type=VOICE;waid=${phone.replace(/[^0-9]/g, '')}:${phone}`,
+    'END:VCARD',
+  ].join('\n');
+}
+
 async function buildOutboundContent(record: WhatsAppOutboundMessageRecord): Promise<AnyMessageContent> {
   if (record.messageType === 'text') {
     if (!record.textContent) throw new Error('Outbound text message has no text_content');
     return { text: record.textContent };
+  }
+
+  // contact and poll carry neither text nor media - their whole content is
+  // the structured payload, decrypted here on demand (see
+  // findStructuredPayload for why it is not a field on the record).
+  if (record.messageType === 'contact' || record.messageType === 'poll') {
+    const payload = await outboundMessageRepository.findStructuredPayload(record.id, record.businessId);
+    if (!payload) {
+      // Honest failure rather than sending an empty card or a poll with no
+      // question: the send is marked failed and the operator is told.
+      throw new Error(`Outbound ${record.messageType} message has no readable structured payload`);
+    }
+
+    if (payload.kind === 'contact') {
+      return {
+        contacts: {
+          displayName:
+            payload.contacts.length === 1
+              ? payload.contacts[0]!.displayName
+              : `${payload.contacts.length} contacts`,
+          contacts: payload.contacts.map((contact) => ({ vcard: buildVCard(contact.displayName, contact.phoneNumber) })),
+        },
+      };
+    }
+
+    return {
+      poll: {
+        name: payload.question,
+        values: payload.options,
+        selectableCount: payload.selectableCount,
+      },
+    };
   }
 
   if (!record.mediaStorageReference) {

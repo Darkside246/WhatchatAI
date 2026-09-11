@@ -6,7 +6,6 @@ import {
   CheckCheck,
   Clock,
   AlertCircle,
-  Paperclip,
   Send,
   Loader2,
   Download,
@@ -43,6 +42,7 @@ import { THEMES } from '../theme.js';
 import { Avatar } from './Avatar.js';
 import { MediaLightbox } from './MediaLightbox.js';
 import { StructuredMessageCard } from './StructuredMessageCard.js';
+import { AttachmentMenu, ContactComposer, PollComposer } from './AttachmentMenu.js';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder.js';
 
 type AiMode = WorkspaceChatDetail['chat']['aiMode'];
@@ -450,6 +450,8 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
     });
   };
   const [sending, setSending] = useState(false);
+  /** Which structured composer is open, if any - the contact card builder or the poll builder. */
+  const [composerMode, setComposerMode] = useState<'contact' | 'poll' | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const recorder = useVoiceRecorder();
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
@@ -1154,6 +1156,31 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
         ))}
       </div>
 
+      {composerMode === 'contact' && (
+        <ContactComposer
+          sending={sending}
+          onCancel={() => setComposerMode(null)}
+          onSend={(contact) => {
+            if (!chatId) return;
+            setComposerMode(null);
+            jumpToNewest();
+            void dispatchSend(chatId, { messageType: 'contact', contacts: [contact] });
+          }}
+        />
+      )}
+      {composerMode === 'poll' && (
+        <PollComposer
+          sending={sending}
+          onCancel={() => setComposerMode(null)}
+          onSend={(poll) => {
+            if (!chatId) return;
+            setComposerMode(null);
+            jumpToNewest();
+            void dispatchSend(chatId, { messageType: 'poll', ...poll });
+          }}
+        />
+      )}
+
       {replySuggestions.length > 0 && (
         <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-t border-border-subtle bg-surface-1 px-3 py-2">
           <div className="flex shrink-0 items-center gap-1.5 rounded-full bg-accent/10 px-2.5 py-1 text-meta font-semibold text-accent">
@@ -1223,15 +1250,35 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
           >
             <SmilePlus size={18} strokeWidth={1.75} aria-hidden />
           </button>
-          <button
-            type="button"
+          <AttachmentMenu
             disabled={sending || recorder.state === 'recording'}
-            onClick={() => fileInputRef.current?.click()}
-            title="Attach a file"
-            className="text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Paperclip size={18} strokeWidth={1.75} aria-hidden />
-          </button>
+            onSelect={(action) => {
+              if (action.kind === 'file') {
+                // One shared file input, re-pointed per entry, so "Document"
+                // and "Photos & videos" really do filter to different things
+                // rather than all opening the same unfiltered picker.
+                if (fileInputRef.current) {
+                  fileInputRef.current.accept = action.accept;
+                  fileInputRef.current.removeAttribute('capture');
+                  fileInputRef.current.click();
+                }
+                return;
+              }
+              if (action.kind === 'camera') {
+                // capture="environment" asks the device for its camera
+                // directly. On a desktop browser with no camera this falls
+                // back to an ordinary image picker, which is the honest
+                // degradation rather than a dead button.
+                if (fileInputRef.current) {
+                  fileInputRef.current.accept = 'image/*,video/*';
+                  fileInputRef.current.setAttribute('capture', 'environment');
+                  fileInputRef.current.click();
+                }
+                return;
+              }
+              setComposerMode(action.kind);
+            }}
+          />
           {recorder.state === 'recording' ? (
             /* Real elapsed time from the recorder, and a discard that really
                drops the audio rather than sending a silent note. */

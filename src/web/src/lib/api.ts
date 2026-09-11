@@ -148,7 +148,11 @@ export type SendMessageBody =
       mediaFileName?: string;
       caption?: string;
       idempotencyKey?: string;
-    };
+    }
+  /** A shared contact card. Carries no media - the server builds a real vCard from these fields. */
+  | { messageType: 'contact'; contacts: Array<{ displayName: string; phoneNumber: string }>; idempotencyKey?: string }
+  /** A WhatsApp poll. 2-12 options is WhatsApp's own range, enforced server-side too. */
+  | { messageType: 'poll'; question: string; options: string[]; selectableCount?: number; idempotencyKey?: string };
 
 /** Real, authenticated media URL - GET /api/media/:id (see server/index.ts) streams the decrypted bytes with Range support. */
 export function mediaUrl(mediaId: string): string {

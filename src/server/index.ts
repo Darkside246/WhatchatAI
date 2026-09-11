@@ -1136,6 +1136,30 @@ const sendMessageSchema = z.discriminatedUnion('messageType', [
     caption: z.string().max(4000).optional(),
     idempotencyKey: z.string().min(1).max(200).optional(),
   }),
+  // A shared contact card. WhatsApp's own limits are enforced again in
+  // whatsappOutboundMessageService so a non-HTTP caller cannot bypass them.
+  z.object({
+    messageType: z.literal('contact'),
+    contacts: z
+      .array(
+        z.object({
+          displayName: z.string().trim().min(1).max(200),
+          phoneNumber: z.string().trim().min(3).max(40),
+        }),
+      )
+      .min(1)
+      .max(10),
+    idempotencyKey: z.string().min(1).max(200).optional(),
+  }),
+  z.object({
+    messageType: z.literal('poll'),
+    question: z.string().trim().min(1).max(255),
+    // 2-12 options is WhatsApp's own range; rejected here rather than sent
+    // and silently dropped by the provider.
+    options: z.array(z.string().trim().min(1).max(100)).min(2).max(12),
+    selectableCount: z.number().int().min(1).max(12).optional(),
+    idempotencyKey: z.string().min(1).max(200).optional(),
+  }),
 ]);
 
 /**
@@ -1164,12 +1188,24 @@ app.post('/api/workspace/chats/:chatId/messages', requireWorkspaceContext, requi
       messageType: input.messageType,
       ...(input.messageType === 'text'
         ? { text: input.text }
-        : {
-            mediaBase64: input.mediaBase64,
-            mediaMimeType: input.mediaMimeType,
-            ...(input.mediaFileName !== undefined && { mediaFileName: input.mediaFileName }),
-            ...(input.caption !== undefined && { caption: input.caption }),
-          }),
+        : input.messageType === 'contact'
+          ? { structuredPayload: { kind: 'contact' as const, contacts: input.contacts } }
+          : input.messageType === 'poll'
+            ? {
+                structuredPayload: {
+                  kind: 'poll' as const,
+                  question: input.question,
+                  options: input.options,
+                  // Single-choice unless the caller genuinely asked for more.
+                  selectableCount: input.selectableCount ?? 1,
+                },
+              }
+            : {
+                mediaBase64: input.mediaBase64,
+                mediaMimeType: input.mediaMimeType,
+                ...(input.mediaFileName !== undefined && { mediaFileName: input.mediaFileName }),
+                ...(input.caption !== undefined && { caption: input.caption }),
+              }),
     });
 
     // AURA Learn Agent capture (v1, owner-only): fire-and-forget, never

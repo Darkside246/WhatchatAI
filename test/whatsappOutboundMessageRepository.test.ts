@@ -420,6 +420,82 @@ describe('WhatsAppOutboundMessageRepository (real Postgres)', () => {
     expect(ownRead?.id).toBe(record.id);
     expect(ownRead?.textContent).toBe('Business A private send');
   });
+  it('stores an outbound contact card and poll payload ENCRYPTED, and reads them back intact', async () => {
+    const repository = new WhatsAppOutboundMessageRepository(pool);
+
+    const contact = await repository.createIdempotent({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      toJid,
+      idempotencyKey: 'idem-contact-card',
+      messageType: 'contact',
+      structuredPayload: { kind: 'contact', contacts: [{ displayName: 'Kathy-Ann Caddle', phoneNumber: '+12465551234' }] },
+    });
+
+    const poll = await repository.createIdempotent({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      toJid,
+      idempotencyKey: 'idem-poll',
+      messageType: 'poll',
+      structuredPayload: { kind: 'poll', question: 'Pickup or delivery?', options: ['Pickup', 'Delivery'], selectableCount: 1 },
+    });
+
+    // Raw SQL: what a database dump without MASTER_ENCRYPTION_KEY reveals.
+    const { rows } = await pool.query<{ structured_payload: string | null }>(
+      'SELECT structured_payload FROM whatsapp_outbound_messages WHERE id = ANY($1)',
+      [[contact.id, poll.id]],
+    );
+    for (const row of rows) {
+      expect(row.structured_payload).not.toContain('Kathy-Ann');
+      expect(row.structured_payload).not.toContain('12465551234');
+      expect(row.structured_payload).not.toContain('Pickup');
+    }
+
+    expect(await repository.findStructuredPayload(contact.id, businessId)).toEqual({
+      kind: 'contact',
+      contacts: [{ displayName: 'Kathy-Ann Caddle', phoneNumber: '+12465551234' }],
+    });
+    expect(await repository.findStructuredPayload(poll.id, businessId)).toEqual({
+      kind: 'poll',
+      question: 'Pickup or delivery?',
+      options: ['Pickup', 'Delivery'],
+      selectableCount: 1,
+    });
+  });
+
+  it('never returns another tenant\'s structured payload', async () => {
+    const repository = new WhatsAppOutboundMessageRepository(pool);
+    const otherBusinessId = await createTestBusiness();
+
+    const record = await repository.createIdempotent({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      toJid,
+      idempotencyKey: 'idem-tenant-scoped-payload',
+      messageType: 'poll',
+      structuredPayload: { kind: 'poll', question: 'Ours', options: ['a', 'b'], selectableCount: 1 },
+    });
+
+    expect(await repository.findStructuredPayload(record.id, otherBusinessId)).toBeNull();
+  });
+
+  it('an ordinary text send has no structured payload', async () => {
+    const repository = new WhatsAppOutboundMessageRepository(pool);
+    const record = await repository.createIdempotent({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      toJid,
+      idempotencyKey: 'idem-no-payload',
+      messageType: 'text',
+      textContent: 'hello',
+    });
+    expect(await repository.findStructuredPayload(record.id, businessId)).toBeNull();
+  });
 });
 
 describe('WhatsAppOutboundMessageService.send (real cross-tenant denial)', () => {
@@ -465,4 +541,5 @@ describe('WhatsAppOutboundMessageService.send (real cross-tenant denial)', () =>
     const { rows } = await pool.query<{ id: string }>('SELECT id FROM whatsapp_outbound_messages WHERE chat_id = $1', [chat.id]);
     expect(rows).toHaveLength(0);
   });
+
 });

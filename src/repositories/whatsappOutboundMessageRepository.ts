@@ -1,5 +1,6 @@
 import type { Queryable } from './types.js';
-import type { OutboundMessageStatus, OutboundMessageType } from '../domain/whatsapp/types.js';
+import type { OutboundMessageStatus, OutboundMessageType, OutboundStructuredPayload } from '../domain/whatsapp/types.js';
+import { getEncryptionService } from '../security/encryption/index.js';
 
 export interface WhatsAppOutboundMessageRecord {
   id: string;
@@ -43,6 +44,8 @@ export interface CreateOutboundMessageInput {
   mediaMimeType?: string | null;
   mediaFileName?: string | null;
   mediaDurationSeconds?: number | null;
+  /** The whole content of a 'contact' or 'poll' send. Encrypted before it touches the database. */
+  structuredPayload?: OutboundStructuredPayload | null;
   /** Defaults to 'human' (the column's own DB default) when omitted. */
   requestedBy?: string;
 }
@@ -115,8 +118,8 @@ export class WhatsAppOutboundMessageRepository {
       `INSERT INTO whatsapp_outbound_messages
          (business_id, whatsapp_account_id, chat_id, to_jid, idempotency_key, message_type,
           text_content, caption, media_storage_reference, media_mime_type, media_file_name,
-          media_duration_seconds, requested_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          media_duration_seconds, structured_payload, requested_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        ON CONFLICT (business_id, whatsapp_account_id, idempotency_key) DO NOTHING
        RETURNING *`,
       [
@@ -132,6 +135,11 @@ export class WhatsAppOutboundMessageRepository {
         input.mediaMimeType ?? null,
         input.mediaFileName ?? null,
         input.mediaDurationSeconds ?? null,
+        input.structuredPayload
+          ? getEncryptionService().serialize(
+              await getEncryptionService().encryptField(input.businessId, JSON.stringify(input.structuredPayload)),
+            )
+          : null,
         input.requestedBy ?? 'human',
       ],
     );
@@ -143,6 +151,39 @@ export class WhatsAppOutboundMessageRepository {
     const existing = await this.findByIdempotencyKey(input.businessId, input.whatsappAccountId, input.idempotencyKey);
     if (!existing) throw new Error('whatsapp_outbound_messages idempotent insert conflicted but no existing row found');
     return existing;
+  }
+
+  /**
+   * The decrypted structured content of a 'contact' or 'poll' send.
+   *
+   * Deliberately its own call rather than a field on the record: only the
+   * dispatch worker ever needs it, and every other read of this table (the
+   * status lifecycle, attribution, sweeps) would otherwise pay a decrypt it
+   * has no use for - and would have to become async to do it.
+   *
+   * Degrades to null rather than throwing, same as every other decrypt in
+   * this codebase; the dispatcher treats a missing payload as a real send
+   * failure with an honest reason instead of sending something empty.
+   */
+  async findStructuredPayload(id: string, businessId: string): Promise<OutboundStructuredPayload | null> {
+    const { rows } = await this.db.query<{ structured_payload: string | null }>(
+      'SELECT structured_payload FROM whatsapp_outbound_messages WHERE id = $1 AND business_id = $2',
+      [id, businessId],
+    );
+    const value = rows[0]?.structured_payload ?? null;
+    if (value === null) return null;
+
+    const envelope = getEncryptionService().tryParse(value);
+    if (!envelope) return null;
+    try {
+      return JSON.parse(await getEncryptionService().decryptField(businessId, envelope)) as OutboundStructuredPayload;
+    } catch (error) {
+      console.error(
+        `[whatsappOutboundMessageRepository] Failed to decrypt an outbound structured payload for business ${businessId}:`,
+        error instanceof Error ? error.message : error,
+      );
+      return null;
+    }
   }
 
   async findByIdempotencyKey(

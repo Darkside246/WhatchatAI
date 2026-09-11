@@ -117,4 +117,19 @@ export type MappingConfidence = 'high' | 'medium' | 'low';
 export type OutboundMessageStatus = 'queued' | 'sending' | 'sent' | 'failed' | 'indeterminate' | 'cancelled';
 
 /** 'voice_note' is a real WhatsApp PTT message, not an audio attachment - the two render differently for the recipient. */
-export type OutboundMessageType = 'text' | 'image' | 'video' | 'audio' | 'voice_note' | 'document';
+export type OutboundMessageType =
+  | 'text'
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'voice_note'
+  | 'document'
+  /** A shared contact card. Carries no media - its content is the structured payload. */
+  | 'contact'
+  /** A WhatsApp poll. Carries no media - its content is the structured payload. */
+  | 'poll';
+
+/** The structured content of an outbound message type that carries neither text nor media. */
+export type OutboundStructuredPayload =
+  | { kind: 'contact'; contacts: Array<{ displayName: string; phoneNumber: string }> }
+  | { kind: 'poll'; question: string; options: string[]; selectableCount: number };
