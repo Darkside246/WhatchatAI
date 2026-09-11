@@ -63,6 +63,6 @@
     "aws-sdk-client-mock": "^4.1.0",
     "tsx": "latest",
     "typescript": "latest",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.0"
   }
 }

@@ -399,6 +399,13 @@ router.get('/developer/secrets-status', requireAuth, requireDeveloper, async (_r
       { name: 'GEMINI_API_KEY', configured: configured(process.env.GEMINI_API_KEY) },
       { name: 'GOOSE_SERVICE_API_KEY', configured: configured(process.env.GOOSE_SERVICE_API_KEY) },
       { name: 'OPENAI_API_KEY', configured: configured(process.env.OPENAI_API_KEY) },
+      // The tool-capable gateway providers. Without these rows the Control
+      // Plane's provider cards would report every one of them as "not
+      // configured" no matter what the environment actually holds - a
+      // status display that cannot tell the truth is worse than none.
+      { name: 'GROQ_API_KEY', configured: configured(process.env.GROQ_API_KEY) },
+      { name: 'CEREBRAS_API_KEY', configured: configured(process.env.CEREBRAS_API_KEY) },
+      { name: 'MISTRAL_API_KEY', configured: configured(process.env.MISTRAL_API_KEY) },
       { name: 'OPENROUTER_API_KEY', configured: configured(process.env.OPENROUTER_API_KEY) },
       { name: 'GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET', configured: configured(process.env.GMAIL_CLIENT_ID) && configured(process.env.GMAIL_CLIENT_SECRET) },
       { name: 'ZOOM_CLIENT_ID / ZOOM_CLIENT_SECRET', configured: configured(process.env.ZOOM_CLIENT_ID) && configured(process.env.ZOOM_CLIENT_SECRET) },

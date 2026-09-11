@@ -753,6 +753,72 @@ function MemoryTopupCatalogEditor({ catalog, onSaved }: { catalog: PlatformConfi
 }
 
 /** Booleans only - no secret value, masked or otherwise, ever leaves the server. Editing a real secret still means updating the environment and restarting. */
+/**
+ * One AI provider's real, configured state in the gateway's own fallback
+ * order.
+ *
+ * "Configured" is derived from whether that provider's API key is actually
+ * present in the environment (the same secrets status the checklist below
+ * reads) - never a hardcoded value. A provider with no key is never
+ * registered at all, so "Not configured" genuinely means it can never
+ * receive customer context.
+ *
+ * Deliberately has NO enable/disable control. Upstream this card carried a
+ * ToggleSwitch that was permanently disabled with a no-op handler - a
+ * switch that can never move is a dead control, and worse, it implies a
+ * per-provider override that does not exist. Provider eligibility really is
+ * decided by the gateway from capability and key presence, so this states
+ * that plainly instead of pretending otherwise.
+ */
+function AiProviderCard({
+  name,
+  role,
+  priority,
+  secretName,
+  secrets,
+  capabilities,
+}: {
+  name: string;
+  role: string;
+  priority: number;
+  secretName: string;
+  secrets: { name: string; configured: boolean }[];
+  capabilities: string[];
+}) {
+  const configured = secrets.some((secret) => secret.name === secretName && secret.configured);
+
+  return (
+    <div className="space-y-2.5 rounded-xl border border-border-subtle bg-surface-2 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-caption font-semibold text-fg">
+            {name}
+            {/* The real position in the gateway's fallback order, so the
+                order is visible rather than something to infer. */}
+            <span className="ml-1.5 font-normal text-meta text-fg-muted">#{priority}</span>
+          </p>
+          <p className="text-meta text-fg-muted">{role}</p>
+        </div>
+        <HealthBadge ok={configured} label={configured ? 'Configured' : 'Not configured'} />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        {capabilities.map((capability) => (
+          <span key={capability} className="inline-flex items-center rounded-full bg-accent-soft px-2 py-0.5 text-meta font-medium text-accent">
+            {capability}
+          </span>
+        ))}
+      </div>
+
+      <p className="text-meta leading-4 text-fg-secondary">
+        {configured
+          ? 'Eligible for automatic routing. The gateway picks it by capability and fallback order — there is no per-provider override.'
+          : `Never registered while ${secretName} is unset, so it cannot receive customer context.`}
+      </p>
+    </div>
+  );
+}
+
 function SecretsChecklist({ secrets }: { secrets: { name: string; configured: boolean }[] }) {
   if (secrets.length === 0) return null;
   return (
@@ -1849,6 +1915,30 @@ export function DeveloperControlPlanePage() {
                   fallbackEnabled={platformConfig?.gooseFallbackEnabled ?? null}
                   onToggleFallback={() => handleSetPlatformConfig('goose_fallback_enabled', { enabled: !(platformConfig?.gooseFallbackEnabled ?? true) })}
                 />
+              </div>
+              <div>
+                <p className="mb-2 text-caption font-medium text-fg-secondary">AI providers, in the gateway's real fallback order</p>
+                <div className="mb-2.5 rounded-xl border border-border-subtle bg-surface-2 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-caption font-semibold text-fg">Automatic capability routing</span>
+                    <HealthBadge ok={true} label="Active" />
+                  </div>
+                  <p className="mt-1.5 text-meta leading-5 text-fg-secondary">
+                    Aura picks the first eligible provider by capability and fallback order. A turn that needs tools only ever
+                    reaches a provider that advertises tool calling; the two text-only providers at the bottom genuinely cannot
+                    run a tool, so a reply that needed one escalates to a human instead of pretending the action happened.
+                    A provider with no API key is never registered at all.
+                  </p>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <AiProviderCard name="Gemini" role="primary" priority={10} secretName="GEMINI_API_KEY" secrets={secretsStatus} capabilities={['Chat', 'Tool calling', 'Vision', 'Audio']} />
+                  <AiProviderCard name="OpenAI" role="tool-capable fallback" priority={20} secretName="OPENAI_API_KEY" secrets={secretsStatus} capabilities={['Chat', 'Tool calling', 'JSON']} />
+                  <AiProviderCard name="Groq" role="tool-capable fallback" priority={25} secretName="GROQ_API_KEY" secrets={secretsStatus} capabilities={['Chat', 'Tool calling']} />
+                  <AiProviderCard name="Cerebras" role="tool-capable fallback" priority={30} secretName="CEREBRAS_API_KEY" secrets={secretsStatus} capabilities={['Chat', 'Tool calling']} />
+                  <AiProviderCard name="Mistral" role="tool-capable fallback" priority={35} secretName="MISTRAL_API_KEY" secrets={secretsStatus} capabilities={['Chat', 'Tool calling', 'JSON']} />
+                  <AiProviderCard name="OpenRouter" role="text-only compatibility fallback" priority={40} secretName="OPENROUTER_API_KEY" secrets={secretsStatus} capabilities={['Chat']} />
+                  <AiProviderCard name="Goose" role="text-only emergency fallback" priority={50} secretName="GOOSE_SERVICE_API_KEY" secrets={secretsStatus} capabilities={['Chat']} />
+                </div>
               </div>
               <div>
                 <p className="mb-2 text-caption font-medium text-fg-secondary">Secrets configured (status only - never editable here; changing a real secret still means updating the environment and restarting)</p>

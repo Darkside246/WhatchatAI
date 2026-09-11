@@ -1,5 +1,85 @@
 # CHANGELOG_SECURITY.md
 
+
+## 2026-09-11 - Operator Mode / chat handling, an encrypted handoff log, and dependency patching
+
+**CHANGED**
+- `notificationService.notifyBusiness` now refuses to create a notification
+  whose `targetType` is `channel` unless the business has explicitly enabled
+  it. Enforced at the single creation point rather than per call site, so a
+  future caller cannot forget it. Suppressed notifications are never
+  written, not merely hidden.
+- `listNeedingHumanTakeover`, the dashboard "Needs attention" tile and the
+  chat-list `needsHuman` filter now all require `unread_count > 0`. A
+  conversation the operator has opened or answered leaves the work list; a
+  new customer message brings it back.
+- `markChatRead` now sends a real WhatsApp read receipt for the chat's
+  inbound messages. Previously the local unread reset was silently
+  overwritten by WhatsApp's own count on the next chat sync.
+- `listAiGeneratedMessageIds` matches on the provider's `whatsapp_message_id`
+  as well as the linked `message_id`, closing an attribution race in which
+  an AI reply could be labelled a human operator message.
+
+**ADDED**
+- `human_handoff_log` (migration 1013). Customer name, number, message
+  excerpt and reason detail are AES-256-GCM envelopes under the tenant's own
+  HKDF-derived key; `reason` and `created_at` stay plaintext as they carry
+  no personal data. Reading or clearing it requires BOTH the
+  `settings.manage` permission and the app-lock PIN, verified server-side on
+  every request. The PIN travels in a header, never a query string. Failed
+  attempts count towards the existing lockout and are written to
+  `security_audit_logs`.
+- `whatsapp_messages.structured_payload` (migration 1015) and
+  `whatsapp_outbound_messages.structured_payload` (migration 1016), both
+  encrypted at rest. These hold a customer's precise coordinates, a third
+  party's name and number from a shared contact card, and poll content.
+- `whatsapp_messages.is_forwarded` / `forwarding_score` (migration 1012),
+  read from WhatsApp's own contextInfo envelope, never inferred from text.
+- `businesses.channel_notifications_enabled` (migration 1018), default
+  false.
+- Real SQL-applied severity / event-type / business filters and ordering on
+  the developer security-events view, plus a facets endpoint. Filters apply
+  across the whole window rather than within the most recent N rows, which
+  would have silently hidden older matches.
+
+**REMOVED**
+- `POST /api/diagnostics/validate-message`. An unauthenticated endpoint with
+  no caller anywhere, whose entire behaviour was reporting whether a string
+  was 1-10000 characters. It accepted bodies up to the global 20mb JSON
+  limit, so it was free attack surface and a cheap CPU sink for no benefit.
+
+**DEPENDENCIES**
+- `npm audit`: 5 vulnerabilities (3 high, 2 moderate) -> **0**.
+  nodemailer 9.0.5 -> 9.1.1 (4 advisories: resolveContent file/URL access
+  bypass, IDN/punycode allow-list bypass, quadratic addressparser DoS,
+  RFC 5322 comment recipient-domain bypass), sharp 0.35.3 -> 0.35.4 (libheif),
+  qs 6.15.3 -> 6.16.0 (array-limit bypass, isBuffer DoS), vitest 4.1.10 ->
+  5.0.0 (dev-only path traversal in @vitest/mocker).
+
+**REJECTED**
+- The upstream `1011_fix_ai_message_attribution_race.sql` trigger. It fired
+  FOR EACH ROW on every message insert including inbound ones that can never
+  match; it added a third concurrent writer to `whatsapp_outbound_messages`
+  from inside the message-insert transaction, where a deadlock rolls back
+  the whole persist and becomes an ingestion backlog; and its historical
+  repair was one unbounded UPDATE at container start. All of that lands on
+  the Baileys ingestion path. Replaced with an index only (migration 1011)
+  and a read-side fix that needs no write at all.
+
+**TESTS**
+- 266 files / 2252 tests against real Postgres and Redis, up from 260/2192,
+  no regressions. New coverage includes raw-SQL assertions that the handoff
+  log, structured payloads and outbound contact/poll payloads are genuinely
+  unreadable without `MASTER_ENCRYPTION_KEY`, plus tenant-isolation tests on
+  every new read and write path.
+
+**STATUS** `IMPLEMENTED AND VERIFIED`
+
+**ROLLBACK** Each concern is its own commit on
+`build/property-operations-os` (`674e23d`..`4e7e1f5`) and can be reverted
+independently. Migrations 1011-1018 are additive (new tables/columns and one
+widened CHECK); reverting code without reverting them is safe.
+
 ## 2026-08-22 - Phase 2B: formalize the Business Execution Context security model (design + verification only)
 
 **No migration. No Google Drive. No Dropbox. No document storage.** Per

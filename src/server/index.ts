@@ -4042,18 +4042,15 @@ app.post(
   },
 );
 
-const messageSchema = z.object({
-  text: z.string().min(1).max(10000),
-});
-
-app.post('/api/diagnostics/validate-message', (req, res) => {
-  const parsed = messageSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ valid: false, error: 'Invalid message payload.' });
-  }
-
-  return res.status(200).json({ valid: true });
-});
+// Removed: POST /api/diagnostics/validate-message.
+//
+// An UNAUTHENTICATED endpoint with no caller anywhere - not the frontend,
+// not a test, not a doc - whose entire behaviour was reporting whether a
+// string was between 1 and 10000 characters. It read nothing and wrote
+// nothing, but it accepted bodies up to the global 20mb JSON limit and ran
+// a parse on every one, so it was free attack surface (and a cheap CPU
+// sink) for zero benefit. Deleted rather than given an auth guard, because
+// authenticating something nobody calls just hides dead code behind a lock.
 
 const argon2ParamsSchema = z.object({
   memoryCostKib: z.number().int().positive(),
