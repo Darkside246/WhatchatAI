@@ -4,7 +4,7 @@ import { borrowSiblingContactName } from './chatIdentityService.js';
 import { whatsappOutboundMessageService } from './whatsappOutboundMessageService.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
 import { BusinessRepository, isValidTimezone, type BusinessRecord } from '../repositories/businessRepository.js';
-import { WhatsAppChatRepository, type ChatAiMode } from '../repositories/whatsappChatRepository.js';
+import { WhatsAppChatRepository, type ChatAiMode, type WhatsAppChatRecord } from '../repositories/whatsappChatRepository.js';
 import { scheduleHumanTakeoverResume } from '../queue/queues/realtimeEventsQueue.js';
 import { publishRealtimeEvent } from '../realtime/pubsub.js';
 import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
@@ -456,6 +456,12 @@ export interface IntegrationHealth {
 }
 
 const DEFAULT_APPROVAL_PATTERN_THRESHOLD = 10;
+/**
+ * How many channel names may be asked of WhatsApp on one listChannels call.
+ * Each is a real round trip on a request a person is waiting on, so the
+ * remainder waits for the next visit - see backfillChannelNames.
+ */
+const CHANNEL_NAME_LOOKUPS_PER_LIST = 5;
 function getApprovalPatternThreshold(): number {
   const raw = Number(process.env.APPROVAL_PATTERN_THRESHOLD);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_APPROVAL_PATTERN_THRESHOLD;
@@ -550,7 +556,7 @@ export class WorkspaceService {
         if (phoneNumber) nameSources = { ...nameSources, phoneNumber };
       }
 
-      nameSources = await this.borrowSiblingContactName(businessId, whatsappAccountId, chat.jidKind, phoneNumber, nameSources);
+      nameSources = await this.borrowSiblingContactName(businessId, whatsappAccountId, phoneNumber, nameSources);
 
       const displayName = resolveDisplayName(nameSources);
 
@@ -653,6 +659,10 @@ export class WorkspaceService {
   async listChannels(businessId: string, whatsappAccountId: string): Promise<WorkspaceChatSummary[]> {
     const chats = await this.chatRepository.listByAccount(businessId, whatsappAccountId);
     const summaries: WorkspaceChatSummary[] = [];
+    // Names asked of WhatsApp on this call, for channels that had none.
+    // Bounded (see CHANNEL_NAME_LOOKUPS_PER_LIST) and persisted, so a name
+    // is fetched once and then simply read from the row.
+    const backfilled = await this.backfillChannelNames(businessId, chats);
 
     for (const chat of chats) {
       if (chat.chatType !== 'newsletter') continue;
@@ -670,15 +680,17 @@ export class WorkspaceService {
         chatJid: chat.chatJid,
         chatType: chat.chatType,
         // A channel's own name is the only identity it has - there is no
-        // contact behind it, so no name resolution to do.
+        // contact behind it, so no contact resolution to do.
         //
-        // But falling back to the raw JID printed
-        // "120363151346599421@newsletter" as a channel's NAME in the UI,
-        // which is an internal identifier, not something to show a person -
-        // the same mistake as showing a raw LID instead of a contact name.
-        // WhatsApp has simply not sent us the metadata for that channel yet;
-        // saying so is more honest than showing the address.
-        displayName: chat.name ?? 'WhatsApp Channel',
+        // Three tiers, in order of how real the name is. The row's own name
+        // when the ingestion path supplied one; then a name asked of
+        // WhatsApp directly on this call (see backfillChannelNames) for a
+        // channel whose metadata never arrived; and only then the generic
+        // label. The raw JID is never shown - printing
+        // "120363151346599421@newsletter" as a channel's NAME is an
+        // internal identifier where a person's eyes go, the same mistake as
+        // showing a raw LID instead of a contact name.
+        displayName: chat.name ?? backfilled.get(chat.id) ?? 'WhatsApp Channel',
         phoneNumber: null,
         unreadCount: chat.unreadCount,
         lastMessageAt: chat.lastMessageAt,
@@ -834,17 +846,61 @@ export class WorkspaceService {
    * a chat that already displays correctly is never touched, and a name is
    * never invented for someone WhatsApp has not told us about.
    */
+  /**
+   * Asks WhatsApp for the names of channels that do not have one, and
+   * records what comes back.
+   *
+   * WHY IT IS HERE RATHER THAN ON THE INGESTION PATH. A channel's name
+   * arrives with its metadata, and for some channels that metadata simply
+   * never came - the posts ingest fine, the name does not. There is nothing
+   * to fix upstream: the data was not sent. So it is asked for, once,
+   * lazily, the first time someone actually looks at the channel list, and
+   * written to the row so no later view asks again.
+   *
+   * BOUNDED ON PURPOSE. Each lookup is a real round trip to WhatsApp on a
+   * request a person is waiting on, so at most a handful run per call.
+   * Anything left over is picked up the next time the list is opened - the
+   * gap closes over a few visits instead of making one visit slow. A
+   * failure (offline, channel gone, WhatsApp declines) is silent and simply
+   * retried later; the list still renders, just without that name.
+   */
+  private async backfillChannelNames(businessId: string, chats: WhatsAppChatRecord[]): Promise<Map<string, string>> {
+    const resolved = new Map<string, string>();
+    const unnamed = chats
+      .filter((chat) => chat.chatType === 'newsletter' && !chat.name)
+      .slice(0, CHANNEL_NAME_LOOKUPS_PER_LIST);
+    if (unnamed.length === 0) return resolved;
+
+    await Promise.all(
+      unnamed.map(async (chat) => {
+        try {
+          const name = await whatsappConnectionManager.fetchChannelName(businessId, chat.chatJid);
+          if (!name) return;
+          resolved.set(chat.id, name);
+          // Guarded on name IS NULL, so this can only fill the gap it found.
+          await this.chatRepository.setNameIfMissing(chat.id, businessId, name);
+        } catch (error) {
+          console.warn(
+            `[workspaceService] Could not resolve a name for channel ${chat.chatJid}:`,
+            error instanceof Error ? error.message : error,
+          );
+        }
+      }),
+    );
+
+    return resolved;
+  }
+
   private async borrowSiblingContactName(
     businessId: string,
     whatsappAccountId: string,
-    jidKind: string,
     phoneNumber: string | null,
     nameSources: ContactNameSources,
   ): Promise<ContactNameSources> {
     // Delegated to chatIdentityService so the chat list, the chat header and
     // every notification resolve a conversation's customer identity through
     // exactly one implementation - see that module's own doc comment.
-    return borrowSiblingContactName(businessId, whatsappAccountId, jidKind, phoneNumber, nameSources);
+    return borrowSiblingContactName(businessId, whatsappAccountId, phoneNumber, nameSources);
   }
 
   private async resolveAndPersistLidPhoneNumber(
@@ -905,13 +961,7 @@ export class WorkspaceService {
         }
       : { displayName: chat.name, phoneNumber: resolvedPhoneNumber, whatsappJid: chat.chatJid };
 
-    nameSources = await this.borrowSiblingContactName(
-      businessId,
-      whatsappAccountId,
-      chat.jidKind,
-      resolvedPhoneNumber,
-      nameSources,
-    );
+    nameSources = await this.borrowSiblingContactName(businessId, whatsappAccountId, resolvedPhoneNumber, nameSources);
 
     return {
       chat,

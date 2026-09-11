@@ -107,6 +107,44 @@ describe('securityAlertService (Zero-Leak Rule: no *customer* message text, cont
     expect(alert?.customerPhoneNumber).toBe('+15550004444');
   });
 
+  /**
+   * The other half of "the notification still shows a number." A chat
+   * created from a message whose contact had not been resolved yet carries
+   * contact_id NULL, and COALESCE only fills it in on a LATER upsert that
+   * supplies one. Until that happens the conversation resolved to a bare
+   * phone number while the named contact row for that exact number sat
+   * right there - and the sibling lookup that would have found it was
+   * gated to @lid chats only.
+   */
+  it('finds the name from the contact row even when the chat has no contact_id', async () => {
+    const contactRepository = new WhatsAppContactRepository(pool);
+    await contactRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      whatsappJid: '15550007001@s.whatsapp.net',
+      jidKind: 'individual',
+      phoneNumber: '+15550007001',
+      pushName: 'Marcia Clarke',
+    });
+
+    const chatRepository = new WhatsAppChatRepository(pool);
+    const chat = await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550007001@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+      // Deliberately no contactId - the whole point of this case.
+      phoneNumber: '+15550007001',
+      unreadCount: 5,
+    });
+    await chatRepository.setAiMode(chat.id, 'HUMAN_TAKEOVER');
+
+    const [alert] = await listHumanTakeoverAlerts(businessId, true);
+    expect(alert?.customerName).toBe('Marcia Clarke');
+    expect(alert?.customerPhoneNumber).toBe('+15550007001');
+  });
+
   it('leaves the name null rather than repeating the number, when no real name is known', async () => {
     const chatRepository = new WhatsAppChatRepository(pool);
     const chat = await chatRepository.upsertFromWhatsApp({

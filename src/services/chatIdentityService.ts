@@ -54,11 +54,20 @@ const jidMappingRepository = new WhatsAppJidMappingRepository(pool);
 export async function borrowSiblingContactName(
   businessId: string,
   whatsappAccountId: string,
-  jidKind: string,
   phoneNumber: string | null,
   nameSources: ContactNameSources,
 ): Promise<ContactNameSources> {
-  if (jidKind !== 'lid' || !phoneNumber || hasRealName(nameSources)) return nameSources;
+  // Runs for ANY chat with no real name and a known number, not just @lid.
+  // The LID case is the one that made this necessary, but it was never the
+  // only one: whatsapp_chats.contact_id is null on a chat created from a
+  // message whose contact had not been resolved yet, and COALESCE only ever
+  // fills it in on a LATER upsert that supplies one. Until then an ordinary
+  // @s.whatsapp.net conversation resolved to a bare phone number while the
+  // named contact row for that exact number sat right there - which is what
+  // "the notification still shows a number" looks like from the outside.
+  // The guard that matters is hasRealName: a conversation that already has
+  // a name never reaches the query.
+  if (!phoneNumber || hasRealName(nameSources)) return nameSources;
 
   const sibling = await contactRepository.findNamedByPhoneNumber(businessId, whatsappAccountId, phoneNumber);
   if (!sibling) return nameSources;
@@ -119,7 +128,7 @@ export async function resolveChatIdentity(
       }
     }
 
-    nameSources = await borrowSiblingContactName(businessId, whatsappAccountId, chat.jidKind, phoneNumber, nameSources);
+    nameSources = await borrowSiblingContactName(businessId, whatsappAccountId, phoneNumber, nameSources);
   } catch (error) {
     console.error(
       '[chatIdentityService] Falling back to the chat row\'s own identity:',

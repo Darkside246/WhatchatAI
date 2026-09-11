@@ -58,6 +58,7 @@ function makeFakeTenant(businessId: string, overrides: Partial<WhatsAppTenantCon
       snapshot = { ...snapshot, status: 'PAIRING_CODE_READY', pairingCode: 'ABCD1234' };
       return 'ABCD1234';
     }),
+    fetchChannelName: vi.fn(async () => null),
     ...overrides,
   };
 }

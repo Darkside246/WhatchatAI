@@ -494,6 +494,36 @@ export class WhatsAppTenantConnection {
     await this.socket.readMessages(keys);
   }
 
+  /**
+   * The real, human-readable name of a WhatsApp Channel this account
+   * follows, asked of WhatsApp directly.
+   *
+   * A channel has no contact row behind it, so its name is the only
+   * identity it has - and a channel whose name never arrived on the
+   * ingestion path had nothing to show but a generic placeholder, which
+   * reads like a name and is not one. Baileys exposes the newsletter
+   * metadata WhatsApp already holds; this asks for it.
+   *
+   * Returns null rather than throwing on ANY failure - not connected, the
+   * channel no longer exists, WhatsApp declines. A missing name is a
+   * cosmetic gap; failing the caller (the channel list) over it would turn
+   * that into a broken page.
+   */
+  async fetchChannelName(chatJid: string): Promise<string | null> {
+    if (!this.isReady() || !this.socket) return null;
+    try {
+      const metadata = await this.socket.newsletterMetadata('jid', chatJid);
+      const name = metadata?.name?.trim();
+      return name && name.length > 0 ? name : null;
+    } catch (error) {
+      console.warn(
+        `[WhatsApp] Could not read channel metadata for ${chatJid} (business ${this.businessId}):`,
+        error instanceof Error ? error.message : error,
+      );
+      return null;
+    }
+  }
+
   private async resolveSessionDir(): Promise<string> {
     if (!this.sessionDirPromise) {
       this.sessionDirPromise = resolveContainedSessionDir(this.businessId);

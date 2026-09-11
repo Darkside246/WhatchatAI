@@ -529,6 +529,22 @@ export class WhatsAppChatRepository {
    * setAssignment above, scoped to businessId since this is called from
    * request handlers, never trusted on chat id alone.
    */
+  /**
+   * Records a name WhatsApp has since told us about, for a chat that had
+   * none. Guarded on `name IS NULL` so this can only ever fill a gap - a
+   * name already on the row (including one a person set) is never
+   * overwritten by a later lookup.
+   */
+  async setNameIfMissing(id: string, businessId: string, name: string): Promise<WhatsAppChatRecord | null> {
+    const { rows } = await this.db.query<ChatRow>(
+      `UPDATE whatsapp_chats SET name = $3, updated_at = now()
+       WHERE id = $1 AND business_id = $2 AND name IS NULL AND deleted_at IS NULL
+       RETURNING *`,
+      [id, businessId, name],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
   async setActiveList(id: string, businessId: string, activeListId: string | null): Promise<WhatsAppChatRecord | null> {
     const { rows } = await this.db.query<ChatRow>(
       'UPDATE whatsapp_chats SET active_list_id = $3, updated_at = now() WHERE id = $1 AND business_id = $2 RETURNING *',

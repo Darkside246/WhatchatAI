@@ -29,6 +29,7 @@ export interface WhatsAppTenantConnectionHandle {
   disconnect(): Promise<void>;
   logout(): Promise<void>;
   requestPhonePairingCode(phoneNumber: string): Promise<string>;
+  fetchChannelName(chatJid: string): Promise<string | null>;
 }
 
 const DEFAULT_SNAPSHOT: WhatsAppConnectionSnapshot = {
@@ -167,6 +168,17 @@ export class WhatsAppConnectionManager {
   async requestPhonePairingCode(businessId: string, phoneNumber: string): Promise<string> {
     const tenant = this.getOrCreate(businessId);
     return tenant.requestPhonePairingCode(phoneNumber);
+  }
+
+  /**
+   * Null when this business has no live connection - the channel list must
+   * still render for an account that is currently offline, just without
+   * the names it could not ask for. They fill in on the next view once the
+   * connection is back.
+   */
+  async fetchChannelName(businessId: string, chatJid: string): Promise<string | null> {
+    const tenant = this.get(businessId);
+    return tenant ? tenant.fetchChannelName(chatJid) : null;
   }
 
   async disconnect(businessId: string): Promise<void> {
