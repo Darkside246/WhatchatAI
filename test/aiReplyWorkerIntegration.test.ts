@@ -10,6 +10,7 @@ import { realtimeEventsQueue } from '../src/queue/queues/realtimeEventsQueue.js'
 import { incomingMessagesWorker, realtimeEventsWorker } from '../src/queue/workers/incomingMessagesWorker.js';
 import type { IngestedWhatsAppMessage } from '../src/services/whatsappMessageIngestionService.js';
 import { AiUsageRepository } from '../src/repositories/aiUsageRepository.js';
+import { TOPUP_CATALOG } from '../src/services/billing/aiTokenTopupService.js';
 import { createTestAccount, createTestSubscription, resetDatabase } from './helpers.js';
 import { waitForWorkerEvent } from './waitForWorkerEvent.js';
 
@@ -265,8 +266,16 @@ describe('AI reply hand-off (real BullMQ worker + real Postgres, real GEMINI_API
     const afterFirst = await notifications.listForUser(businessId, ownerId, 20);
     const budgetNotifications = afterFirst.filter((n) => n.type === 'AI_BUDGET_EXCEEDED');
     expect(budgetNotifications).toHaveLength(1);
-    expect(budgetNotifications[0]?.body).toContain('250,000');
-    expect(budgetNotifications[0]?.body).toContain('$1.99');
+    // Derived from the catalogue rather than hardcoded, because the
+    // invariant here is "the notification names the REAL offer" - not any
+    // particular price. The prices themselves, and the 60% margin they have
+    // to clear, are pinned in aiTokenTopupService.test.ts, which is where a
+    // reprice belongs. Hardcoding them here too meant a legitimate price
+    // change broke an unrelated worker test for no reason.
+    const starterPack = TOPUP_CATALOG.starter;
+    expect(starterPack).toBeDefined();
+    expect(budgetNotifications[0]?.body).toContain(starterPack!.tokens.toLocaleString());
+    expect(budgetNotifications[0]?.body).toContain(`$${(starterPack!.priceCents / 100).toFixed(2)}`);
     // The existing generic hand-off notification is unaffected - both fire.
     expect(afterFirst.some((n) => n.type === 'AI_FAILURE')).toBe(true);
 
