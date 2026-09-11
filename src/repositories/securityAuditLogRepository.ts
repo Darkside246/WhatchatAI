@@ -67,6 +67,8 @@ export type SecurityEventType =
   | 'phone_number_changed'
   | 'ai_output_leak_blocked'
   | 'ai_output_leak_check_unavailable'
+  /** A generated reply addressed a team member instead of the customer; the direct address was removed before sending (teamAddressGuard.ts). */
+  | 'ai_output_team_address_removed'
   | 'message_risk_flagged'
   | 'plan_updated'
   | 'plan_entitlement_updated'

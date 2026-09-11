@@ -3,13 +3,17 @@ import { resolveAgentRouting } from '../listRoutingService.js';
 import { gatherAiHandoffContext } from '../aiContextGathererService.js';
 import { generateAiReply } from '../aiReplyService.js';
 import { runOutboundLeakGuard } from '../../security/sentinel/outboundLeakGuard.js';
+import { stripTeamAddress } from './teamAddressGuard.js';
 import { SecurityAuditLogRepository } from '../../repositories/securityAuditLogRepository.js';
+import { BusinessMembershipRepository } from '../../repositories/businessMembershipRepository.js';
 import { EntitlementService } from '../entitlementService.js';
 import { pool } from '../../db/pool.js';
 import type { AiAgentRecord } from '../../repositories/aiAgentRepository.js';
+import type { AiHandoffContext } from '../aiContextGathererService.js';
 
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
 const entitlementService = new EntitlementService(pool);
+const businessMembershipRepository = new BusinessMembershipRepository(pool);
 
 export interface OrchestrateAiReplyInput {
   businessId: string;
@@ -71,8 +75,10 @@ export async function guardGeneratedText(
   businessId: string,
   agent: AiAgentRecord,
   text: string,
+  customerNameSources?: AiHandoffContext['contactNameSources'],
 ): Promise<{ kind: 'reply'; agent: AiAgentRecord; text: string } | { kind: 'blocked_leak'; agent: AiAgentRecord; reason: string }> {
-  const verdict = await runOutboundLeakGuard(text, agent.protectedFacts);
+  const guarded = await removeTeamAddress(businessId, text, customerNameSources ?? null);
+  const verdict = await runOutboundLeakGuard(guarded, agent.protectedFacts);
 
   if (!verdict.allowed) {
     await securityAuditLogRepository
@@ -105,7 +111,68 @@ export async function guardGeneratedText(
       });
   }
 
-  return { kind: 'reply', agent, text };
+  return { kind: 'reply', agent, text: guarded };
+}
+
+/**
+ * Deletes a team member's name where the reply ADDRESSES them, before the
+ * text goes anywhere near the customer. See teamAddressGuard.ts for the
+ * production failure this exists for and for why only direct address is
+ * touched - a mention of what a colleague said has to survive.
+ *
+ * Fails OPEN, deliberately. If the team cannot be listed (a DB blip), the
+ * reply is sent unchanged rather than withheld: the prompt-level rule in
+ * aiReplyService.ts is still in force, and the cost of a rare misdirected
+ * greeting is much lower than the cost of silently dropping real replies
+ * to real customers whenever this one query fails.
+ */
+async function removeTeamAddress(
+  businessId: string,
+  text: string,
+  customerNameSources: AiHandoffContext['contactNameSources'],
+): Promise<string> {
+  try {
+    const members = await businessMembershipRepository.listForBusiness(businessId);
+    const teamNames = members.map((member) => member.displayName).filter((name) => name.trim().length > 0);
+    if (teamNames.length === 0) return text;
+
+    // Every name this customer is known by. A shared first name means the
+    // guard does nothing for that name - see teamAddressGuard.ts.
+    const customerNames = customerNameSources
+      ? [
+          customerNameSources.staffConfirmedName,
+          customerNameSources.verifiedName,
+          customerNameSources.businessName,
+          customerNameSources.pushName,
+          customerNameSources.username,
+          customerNameSources.shortName,
+        ].filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+      : [];
+
+    const result = stripTeamAddress(text, { teamNames, customerNames });
+    if (result.removed.length === 0) return text;
+
+    // The names that were removed, never the reply itself - the same
+    // reasoning as blocked_leak's own "the text is deliberately not
+    // carried on this outcome".
+    await securityAuditLogRepository
+      .record({
+        businessId,
+        whatsappAccountId: null,
+        eventType: 'ai_output_team_address_removed',
+        severity: 'warning',
+        reason: `The reply addressed a team member (${result.removed.join(', ')}) rather than the customer; the direct address was removed before sending.`,
+        rawMetadata: { removedNames: result.removed },
+      })
+      .catch((error) => {
+        console.error('[teamAddressGuard] Failed to write ai_output_team_address_removed audit event:', error);
+      });
+
+    return result.text;
+  } catch (error) {
+    console.error('[teamAddressGuard] Could not check the reply for a team member address:', error instanceof Error ? error.message : error);
+    return text;
+  }
 }
 
 /**
@@ -190,7 +257,7 @@ export async function orchestrateAiReply(input: OrchestrateAiReplyInput): Promis
   const reply = await generateAiReply(agent, context);
 
   if (reply.status === 'generated') {
-    return guardGeneratedText(input.businessId, agent, reply.text);
+    return guardGeneratedText(input.businessId, agent, reply.text, context.contactNameSources);
   }
 
   // A real escalation hop: if the selected agent could not produce a
@@ -208,7 +275,7 @@ export async function orchestrateAiReply(input: OrchestrateAiReplyInput): Promis
     if (escalationAgent) {
       const escalatedReply = await generateAiReply(escalationAgent, context);
       if (escalatedReply.status === 'generated') {
-        return guardGeneratedText(input.businessId, escalationAgent, escalatedReply.text);
+        return guardGeneratedText(input.businessId, escalationAgent, escalatedReply.text, context.contactNameSources);
       }
       return {
         kind: 'unavailable',
