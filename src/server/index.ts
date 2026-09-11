@@ -2661,6 +2661,16 @@ app.patch(
 const updateContactDetailsSchema = z.object({
   address: z.string().trim().max(500).nullable(),
   phone: z.string().trim().max(50).nullable(),
+  // Every field optional on the wire but written on every save (see
+  // setContactDetails): an omitted key means "leave empty", which is what
+  // makes clearing a field expressible at all.
+  taxRegistrationNumber: z.string().trim().max(60).nullable().optional(),
+  // Free text, not an enum: the right label is "VAT No." in Barbados, "ABN"
+  // in Australia, "GSTIN" in India. An enum would be wrong somewhere.
+  taxRegistrationLabel: z.string().trim().max(30).nullable().optional(),
+  invoiceEmail: z.string().trim().max(200).nullable().optional(),
+  invoiceWebsite: z.string().trim().max(200).nullable().optional(),
+  paymentInstructions: z.string().trim().max(1000).nullable().optional(),
 });
 
 app.patch(
@@ -2671,7 +2681,15 @@ app.patch(
     const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
     const parsed = updateContactDetailsSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'INVALID_CONTACT_DETAILS', details: parsed.error.flatten() });
-    const business = await workspaceService.setBusinessContactDetails(businessId, parsed.data);
+    const business = await workspaceService.setBusinessContactDetails(businessId, {
+      address: parsed.data.address,
+      phone: parsed.data.phone,
+      taxRegistrationNumber: parsed.data.taxRegistrationNumber ?? null,
+      taxRegistrationLabel: parsed.data.taxRegistrationLabel ?? null,
+      invoiceEmail: parsed.data.invoiceEmail ?? null,
+      invoiceWebsite: parsed.data.invoiceWebsite ?? null,
+      paymentInstructions: parsed.data.paymentInstructions ?? null,
+    });
     return res.status(200).json({ business });
   },
 );

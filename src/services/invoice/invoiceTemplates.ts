@@ -102,6 +102,26 @@ export const invoiceCustomizationSchema = z.object({
 export type RenderableInvoice = Pick<InvoiceRecord, 'documentType' | 'invoiceNumber' | 'issueDate' | 'createdAt' | 'dueDate' | 'status' | 'currencyCode' | 'subtotalCents' | 'taxBasisPoints' | 'discountCents' | 'totalCents' | 'notes' | 'terms' | 'footerText'>;
 export type RenderableLineItem = Pick<InvoiceLineItemRecord, 'description' | 'quantity' | 'unitPriceCents' | 'discountBasisPoints' | 'totalCents'>;
 
+/**
+ * Who the document is addressed to.
+ *
+ * Its absence was the real defect this type fixes: RenderInput carried no
+ * customer at all, so no invoice this system produced named the party being
+ * billed - which is what separates a valid tax invoice from a styled
+ * statement of amounts.
+ *
+ * Every field is optional, and an absent one is simply not printed. A
+ * document for a walk-in customer with only a name is still a better
+ * document than one with an invented address.
+ */
+export interface RenderableCustomer {
+  /** The legal entity billed. Falls back to the contact's own display name when no separate billing name is set. */
+  name: string | null;
+  address?: string | null | undefined;
+  email?: string | null | undefined;
+  phone?: string | null | undefined;
+}
+
 export interface RenderableBusiness {
   name: string;
   brandColor: string | null;
@@ -110,12 +130,21 @@ export interface RenderableBusiness {
   motto?: string | null | undefined;
   address?: string | null | undefined;
   phone?: string | null | undefined;
+  /** The number a tax authority requires on a tax invoice, with the label that is correct for this business's own country (VAT No., TIN, ABN...). */
+  taxRegistrationNumber?: string | null | undefined;
+  taxRegistrationLabel?: string | null | undefined;
+  invoiceEmail?: string | null | undefined;
+  invoiceWebsite?: string | null | undefined;
+  /** Bank details, a payment link, "cash on delivery" - printed in its own block so a customer knows how to pay. */
+  paymentInstructions?: string | null | undefined;
 }
 
 interface RenderInput {
   invoice: RenderableInvoice;
   lineItems: RenderableLineItem[];
   business: RenderableBusiness;
+  /** Null for a preview with no contact chosen yet, or a document genuinely raised against no contact. */
+  customer?: RenderableCustomer | null | undefined;
   customization: InvoiceCustomization;
 }
 
@@ -123,8 +152,22 @@ function escapeHtml(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function docTitle(documentType: InvoiceRecord['documentType']): string {
-  return documentType === 'INVOICE' ? 'Invoice' : documentType === 'QUOTE' ? 'Quotation' : 'Receipt';
+/**
+ * An INVOICE that actually charges tax is titled "Tax Invoice".
+ *
+ * Not cosmetic: in Barbados (and across most VAT/GST regimes) that exact
+ * wording is part of what makes the document one a registered customer can
+ * claim input tax against. A document charging VAT but headed only
+ * "Invoice" can be rejected for that reason alone.
+ *
+ * Conditioned on tax genuinely being charged, never on the business merely
+ * having a registration number - titling a zero-tax document a tax invoice
+ * would be a different and equally real misstatement.
+ */
+function docTitle(documentType: InvoiceRecord['documentType'], taxBasisPoints = 0): string {
+  if (documentType === 'QUOTE') return 'Quotation';
+  if (documentType === 'RECEIPT') return 'Receipt';
+  return taxBasisPoints > 0 ? 'Tax Invoice' : 'Invoice';
 }
 
 /** Shared data prep every template renders identically - rows, totals, the logo tag, the status badge. Only the surrounding CSS/layout differs per template. */
@@ -151,7 +194,7 @@ function prepare(input: RenderInput) {
     ? `<img src="${business.logoDataUrl}" alt="" style="max-height:48px;max-width:180px;margin-bottom:8px;display:block;" />`
     : '';
 
-  return { currency, fmt, taxPct, taxCents, rows, logoHtml, title: docTitle(invoice.documentType) };
+  return { currency, fmt, taxPct, taxCents, rows, logoHtml, title: docTitle(invoice.documentType, invoice.taxBasisPoints) };
 }
 
 function metaTable(invoice: RenderInput['invoice']): string {
@@ -171,8 +214,48 @@ function businessBlock(business: RenderableBusiness, logoHtml: string, extra: st
     ${business.motto ? `<div class="slogan">${escapeHtml(business.motto)}</div>` : ''}
     ${business.address ? `<div class="contact-line">${escapeHtml(business.address)}</div>` : ''}
     ${business.phone ? `<div class="contact-line">${escapeHtml(business.phone)}</div>` : ''}
+    ${business.invoiceEmail ? `<div class="contact-line">${escapeHtml(business.invoiceEmail)}</div>` : ''}
+    ${business.invoiceWebsite ? `<div class="contact-line">${escapeHtml(business.invoiceWebsite)}</div>` : ''}
+    ${
+      business.taxRegistrationNumber
+        ? `<div class="contact-line">${escapeHtml(business.taxRegistrationLabel || 'Tax Reg. No.')}: ${escapeHtml(business.taxRegistrationNumber)}</div>`
+        : ''
+    }
     ${extra}
   </div>`;
+}
+
+/**
+ * Who the document is addressed to.
+ *
+ * Shared by all three templates rather than written per-template, so a
+ * document can never be compliant in Classic and missing its Bill To in
+ * Minimal - which is exactly the kind of drift three hand-written copies
+ * produce.
+ *
+ * Returns an empty string when there is genuinely no customer (an unsaved
+ * preview, or a document raised against no contact). An empty "Bill To"
+ * heading over blank space looks like a rendering fault; no block at all is
+ * the honest representation of "nobody has been chosen yet".
+ */
+function customerBlock(customer: RenderableCustomer | null | undefined): string {
+  if (!customer) return '';
+  const lines = [customer.address, customer.email, customer.phone].filter(
+    (line): line is string => typeof line === 'string' && line.trim().length > 0,
+  );
+  if (!customer.name && lines.length === 0) return '';
+
+  return `<div class="bill-to">
+    <div class="bill-to-label">Bill To</div>
+    ${customer.name ? `<div class="bill-to-name">${escapeHtml(customer.name)}</div>` : ''}
+    ${lines.map((line) => `<div class="contact-line">${escapeHtml(line)}</div>`).join('')}
+  </div>`;
+}
+
+/** How to pay. Its own block, in a predictable place, rather than buried in free-text terms. */
+function paymentBlock(business: RenderableBusiness): string {
+  if (!business.paymentInstructions) return '';
+  return `<div class="notes" style="margin-top:12px"><strong>How to pay</strong>${escapeHtml(business.paymentInstructions)}</div>`;
 }
 
 function totalsTable(invoice: RenderInput['invoice'], fmt: (c: number) => string, taxPct: string, taxCents: number): string {
@@ -184,8 +267,9 @@ function totalsTable(invoice: RenderInput['invoice'], fmt: (c: number) => string
   </table>`;
 }
 
-function footerBlocks(invoice: RenderInput['invoice']): string {
-  return `${invoice.notes ? `<div class="notes"><strong>Notes</strong>${escapeHtml(invoice.notes)}</div>` : ''}
+function footerBlocks(invoice: RenderInput['invoice'], business?: RenderableBusiness): string {
+  return `${business ? paymentBlock(business) : ''}
+${invoice.notes ? `<div class="notes"><strong>Notes</strong>${escapeHtml(invoice.notes)}</div>` : ''}
 ${invoice.terms ? `<div class="notes" style="margin-top:12px"><strong>Terms &amp; Conditions</strong>${escapeHtml(invoice.terms)}</div>` : ''}
 ${invoice.footerText ? `<div class="notes" style="margin-top:12px;text-align:center;">${escapeHtml(invoice.footerText)}</div>` : ''}`;
 }
@@ -197,6 +281,9 @@ function sharedBaseCss(fontId: InvoiceFontId | null | undefined): string {
   body { font-family: ${fontStack}; font-size:13px; color:#1a1a2e; padding:40px; }
   .slogan { margin-top:2px; font-style:italic; color:#666; font-size:12px; }
   .contact-line { margin-top:2px; color:#777; font-size:11px; }
+  .bill-to { margin-top:24px; }
+  .bill-to-label { font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:#999; margin-bottom:4px; }
+  .bill-to-name { font-weight:600; font-size:13px; }
   table.items { width:100%; border-collapse:collapse; margin:24px 0; }
   table.items td { padding:8px 10px; border-bottom:1px solid #eee; }
   .num { text-align:right; }
@@ -237,9 +324,10 @@ ${sharedBaseCss(input.customization.fontId)}
   ${metaTable(invoice)}
 </div>
 <h2>${title}</h2>
+${customerBlock(input.customer)}
 <table class="items"><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit Price</th><th class="num">Discount</th><th class="num">Total</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="clearfix"><div class="totals">${totalsTable(invoice, fmt, taxPct, taxCents)}</div></div>
-${footerBlocks(invoice)}
+${footerBlocks(invoice, input.business)}
 </body></html>`;
 }
 
@@ -276,9 +364,10 @@ ${sharedBaseCss(input.customization.fontId)}
 </div>
 <div class="content">
 <h2>${title}</h2>
+${customerBlock(input.customer)}
 <table class="items"><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit Price</th><th class="num">Discount</th><th class="num">Total</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="clearfix"><div class="totals">${totalsTable(invoice, fmt, taxPct, taxCents)}</div></div>
-${footerBlocks(invoice)}
+${footerBlocks(invoice, input.business)}
 </div>
 </body></html>`;
 }
@@ -312,9 +401,10 @@ ${sharedBaseCss(input.customization.fontId)}
   ${metaTable(invoice)}
 </div>
 <h2>${title}</h2>
+${customerBlock(input.customer)}
 <table class="items"><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit Price</th><th class="num">Discount</th><th class="num">Total</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="clearfix"><div class="totals">${totalsTable(invoice, fmt, taxPct, taxCents)}</div></div>
-${footerBlocks(invoice)}
+${footerBlocks(invoice, input.business)}
 </body></html>`;
 }
 

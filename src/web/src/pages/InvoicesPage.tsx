@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { InvoiceContactDetails } from '../components/InvoiceContactDetails.js';
 import { Plus, Receipt, FileText, CheckSquare, Send, DollarSign, X, Eye, Trash2, Ban, Palette } from 'lucide-react';
 import { api, ApiError, previewInvoiceHtml, type InvoiceDto, type InvoiceLineItemDto, type CreateInvoiceInput } from '../lib/api.js';
 import { InvoiceCustomizePanel } from '../components/InvoiceCustomizePanel.js';
@@ -568,7 +567,6 @@ export function InvoicesPage() {
                 document looks like, so they belong where documents are
                 made. */}
             <div className="mt-4">
-              <InvoiceContactDetails />
             </div>
           </div>
 

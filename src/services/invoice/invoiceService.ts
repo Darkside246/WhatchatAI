@@ -1,6 +1,6 @@
 import { InvoiceRepository, type CreateInvoiceInput, type InvoiceRecord, type InvoiceLineItemRecord } from '../../repositories/invoiceRepository.js';
 import type { Queryable } from '../../repositories/types.js';
-import { renderInvoiceHtml, DEFAULT_INVOICE_CUSTOMIZATION, type InvoiceCustomization, type RenderableInvoice, type RenderableLineItem, type RenderableBusiness } from './invoiceTemplates.js';
+import { renderInvoiceHtml, DEFAULT_INVOICE_CUSTOMIZATION, type InvoiceCustomization, type RenderableInvoice, type RenderableLineItem, type RenderableBusiness, type RenderableCustomer } from './invoiceTemplates.js';
 
 export type InvoiceWithLines = { invoice: InvoiceRecord; lineItems: InvoiceLineItemRecord[] };
 
@@ -120,7 +120,8 @@ export class InvoiceService {
     lineItems: RenderableLineItem[],
     business: RenderableBusiness,
     customization: InvoiceCustomization = DEFAULT_INVOICE_CUSTOMIZATION,
+    customer: RenderableCustomer | null = null,
   ): string {
-    return renderInvoiceHtml({ invoice, lineItems, business, customization });
+    return renderInvoiceHtml({ invoice, lineItems, business, customer, customization });
   }
 }

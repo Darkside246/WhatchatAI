@@ -4,6 +4,10 @@ import { pool } from '../db/pool.js';
 import { InvoiceService } from '../services/invoice/invoiceService.js';
 import { computeInvoiceTotals, computeLineTotalCents } from '../repositories/invoiceRepository.js';
 import { BusinessRepository } from '../repositories/businessRepository.js';
+import { CrmContactRepository } from '../repositories/crmContactRepository.js';
+import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
+import { resolveDisplayName } from '../domain/whatsapp/displayName.js';
+import type { RenderableCustomer, RenderableBusiness } from '../services/invoice/invoiceTemplates.js';
 import { requireAuth, requireActiveSubscription, type AuthContext } from './authMiddleware.js';
 import { invoiceCustomizationSchema, DEFAULT_INVOICE_CUSTOMIZATION, type InvoiceCustomization } from '../services/invoice/invoiceTemplates.js';
 
@@ -92,6 +96,62 @@ router.post('/', async (req, res) => {
   return res.status(201).json(result);
 });
 
+/**
+ * Everything the document header prints about the business, in one place so
+ * the saved-document and live-preview routes cannot drift apart - which is
+ * exactly how a field ends up visible in the preview and missing from the
+ * PDF a customer actually receives.
+ */
+function renderableBusiness(business: Awaited<ReturnType<BusinessRepository['findById']>>, fallbackName: string): RenderableBusiness {
+  return {
+    name: business?.name ?? fallbackName,
+    brandColor: business?.brandColor ?? null,
+    logoDataUrl: business?.logoDataUrl ?? null,
+    motto: business?.motto ?? null,
+    address: business?.address ?? null,
+    phone: business?.phone ?? null,
+    taxRegistrationNumber: business?.taxRegistrationNumber ?? null,
+    taxRegistrationLabel: business?.taxRegistrationLabel ?? null,
+    invoiceEmail: business?.invoiceEmail ?? null,
+    invoiceWebsite: business?.invoiceWebsite ?? null,
+    paymentInstructions: business?.paymentInstructions ?? null,
+  };
+}
+
+/**
+ * The Bill To party for a document.
+ *
+ * Name resolution is deliberately ordered: an explicit billingName wins,
+ * because it is the one field an operator set FOR THIS PURPOSE - the legal
+ * entity being billed, which is often a company when the chat is with a
+ * person. Only when that is absent does it fall back to the contact's own
+ * resolved display name.
+ *
+ * Returns null rather than a placeholder when there is no contact. A
+ * document genuinely raised against nobody should show no Bill To block at
+ * all, not "Customer" or an empty heading.
+ */
+async function renderableCustomer(businessId: string, contactId: string | null): Promise<RenderableCustomer | null> {
+  if (!contactId) return null;
+  const contact = await new CrmContactRepository(pool).findByIdForBusiness(businessId, contactId).catch(() => null);
+  if (!contact) return null;
+
+  let name = contact.billingName ?? contact.manualDisplayName ?? null;
+  if (!name && contact.whatsappContactId) {
+    // The same resolver the inbox uses, so the invoice and the conversation
+    // never name the same person differently.
+    const whatsappContact = await new WhatsAppContactRepository(pool).findById(contact.whatsappContactId).catch(() => null);
+    if (whatsappContact) name = resolveDisplayName(whatsappContact) ?? null;
+  }
+
+  return {
+    name,
+    address: contact.billingAddress ?? null,
+    email: contact.email ?? null,
+    phone: null,
+  };
+}
+
 // GET /api/invoices/:id
 router.get('/:id', async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
@@ -110,15 +170,9 @@ router.get('/:id/html', async (req, res) => {
   const html = svc.renderHtml(
     result.invoice,
     result.lineItems,
-    {
-      name: business?.name ?? 'Invoice',
-      brandColor: business?.brandColor ?? null,
-      logoDataUrl: business?.logoDataUrl ?? null,
-      motto: business?.motto ?? null,
-      address: business?.address ?? null,
-      phone: business?.phone ?? null,
-    },
+    renderableBusiness(business, 'Invoice'),
     storedCustomization.success ? storedCustomization.data : DEFAULT_INVOICE_CUSTOMIZATION,
+    await renderableCustomer(auth.businessId, result.invoice.contactId),
   );
   return res.type('html').send(html);
 });
@@ -141,6 +195,10 @@ const PreviewSchema = z.object({
   footerText: z.string().max(500).optional(),
   lineItems: z.array(PreviewLineItemSchema).max(100).optional(),
   customization: invoiceCustomizationSchema.optional(),
+  // So the preview shows the real Bill To rather than a document that
+  // differs from the one the customer will actually receive. Optional: the
+  // Customize panel previews a specimen document with no contact chosen.
+  contactId: z.string().uuid().optional(),
 });
 
 /**
@@ -199,15 +257,12 @@ router.post('/preview', async (req, res) => {
   const html = svc.renderHtml(
     previewInvoice as Parameters<typeof svc.renderHtml>[0],
     previewLineItems as Parameters<typeof svc.renderHtml>[1],
-    {
-      name: business?.name ?? 'Your Business',
-      brandColor: business?.brandColor ?? null,
-      logoDataUrl: business?.logoDataUrl ?? null,
-      motto: business?.motto ?? null,
-      address: business?.address ?? null,
-      phone: business?.phone ?? null,
-    },
+    renderableBusiness(business, 'Your Business'),
     customization,
+    // The real contact when the draft has one, so the preview shows the
+    // actual Bill To rather than a version of the document that differs
+    // from what the customer receives.
+    await renderableCustomer(auth.businessId, d.contactId ?? null),
   );
   return res.type('html').send(html);
 });

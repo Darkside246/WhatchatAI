@@ -50,6 +50,12 @@ export interface BusinessRecord {
   /** Real contact details (migration 989) - shown in the invoice/quote/receipt header alongside motto (the existing "slogan"). Null until a business fills them in; never fabricated. */
   address: string | null;
   phone: string | null;
+  /** Invoice-document identity (migration 1020). All nullable, all omitted from a rendered document when empty - never invented. */
+  taxRegistrationNumber: string | null;
+  taxRegistrationLabel: string | null;
+  invoiceEmail: string | null;
+  invoiceWebsite: string | null;
+  paymentInstructions: string | null;
   /** Admin-developer-granted exemption from subscription/trial/entitlement gating (migration 1002) - default false, zero behavior change for every existing business. Distinct from being on a generous plan: a business with this true bypasses EntitlementService entirely, regardless of what subscriptions/product_trials say. */
   tierUnrestricted: boolean;
 }
@@ -81,11 +87,17 @@ interface BusinessRow {
   invoice_customization: unknown;
   address: string | null;
   phone: string | null;
+  /** Invoice-document identity (migration 1020). All nullable, all omitted from a rendered document when empty - never invented. */
+  tax_registration_number: string | null;
+  tax_registration_label: string | null;
+  invoice_email: string | null;
+  invoice_website: string | null;
+  payment_instructions: string | null;
   tier_unrestricted: boolean;
 }
 
 const BUSINESS_COLUMNS =
-  'id, name, timezone, time_source, manual_override_target_utc, manual_override_set_at, deletion_requested_at, scheduled_purge_at, brand_color, logo_data_url, ai_actions_paused, ai_actions_paused_at, name_usage_level, name_usage_enabled, customer_memory_enabled, relationship_confidence_enabled, ai_operator_paused_until, channel_notifications_enabled, ai_connection_tested_at, motto, vision, mission, mission_statement_ai_visible, invoice_customization, address, phone, tier_unrestricted';
+  'id, name, timezone, time_source, manual_override_target_utc, manual_override_set_at, deletion_requested_at, scheduled_purge_at, brand_color, logo_data_url, ai_actions_paused, ai_actions_paused_at, name_usage_level, name_usage_enabled, customer_memory_enabled, relationship_confidence_enabled, ai_operator_paused_until, channel_notifications_enabled, ai_connection_tested_at, motto, vision, mission, mission_statement_ai_visible, invoice_customization, address, phone, tax_registration_number, tax_registration_label, invoice_email, invoice_website, payment_instructions, tier_unrestricted';
 
 function toRecord(row: BusinessRow): BusinessRecord {
   return {
@@ -115,6 +127,11 @@ function toRecord(row: BusinessRow): BusinessRecord {
     invoiceCustomization: row.invoice_customization,
     address: row.address,
     phone: row.phone,
+    taxRegistrationNumber: row.tax_registration_number ?? null,
+    taxRegistrationLabel: row.tax_registration_label ?? null,
+    invoiceEmail: row.invoice_email ?? null,
+    invoiceWebsite: row.invoice_website ?? null,
+    paymentInstructions: row.payment_instructions ?? null,
     tierUnrestricted: row.tier_unrestricted,
   };
 }
@@ -283,10 +300,38 @@ export class BusinessRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
-  async setContactDetails(id: string, input: { address: string | null; phone: string | null }): Promise<BusinessRecord | null> {
+  /**
+   * Everything printed in a document header. Every field is written on every
+   * call, so clearing one really clears it - a partial update would make
+   * "remove my website from my invoices" impossible to express.
+   */
+  async setContactDetails(
+    id: string,
+    input: {
+      address: string | null;
+      phone: string | null;
+      taxRegistrationNumber: string | null;
+      taxRegistrationLabel: string | null;
+      invoiceEmail: string | null;
+      invoiceWebsite: string | null;
+      paymentInstructions: string | null;
+    },
+  ): Promise<BusinessRecord | null> {
     const { rows } = await this.db.query<BusinessRow>(
-      `UPDATE businesses SET address = $2, phone = $3, updated_at = now() WHERE id = $1 RETURNING ${BUSINESS_COLUMNS}`,
-      [id, input.address, input.phone],
+      `UPDATE businesses
+          SET address = $2, phone = $3, tax_registration_number = $4, tax_registration_label = $5,
+              invoice_email = $6, invoice_website = $7, payment_instructions = $8, updated_at = now()
+        WHERE id = $1 RETURNING ${BUSINESS_COLUMNS}`,
+      [
+        id,
+        input.address,
+        input.phone,
+        input.taxRegistrationNumber,
+        input.taxRegistrationLabel,
+        input.invoiceEmail,
+        input.invoiceWebsite,
+        input.paymentInstructions,
+      ],
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }

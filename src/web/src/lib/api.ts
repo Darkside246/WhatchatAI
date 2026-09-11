@@ -627,6 +627,12 @@ export interface WorkspaceBusiness {
   /** Real contact details (migration 989) - shown in the invoice/quote/receipt header alongside motto (the existing "slogan"). */
   address: string | null;
   phone: string | null;
+  /** Invoice-document identity. All nullable; an empty one is simply not printed on the document. */
+  taxRegistrationNumber: string | null;
+  taxRegistrationLabel: string | null;
+  invoiceEmail: string | null;
+  invoiceWebsite: string | null;
+  paymentInstructions: string | null;
 }
 
 export type TimeSyncStatus = 'SYNCED' | 'DEGRADED' | 'STALE' | 'MANUAL_OVERRIDE';
@@ -1744,7 +1750,15 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(input),
     }),
-  setBusinessContactDetails: (input: { address: string | null; phone: string | null }) =>
+  setBusinessContactDetails: (input: {
+    address: string | null;
+    phone: string | null;
+    taxRegistrationNumber?: string | null;
+    taxRegistrationLabel?: string | null;
+    invoiceEmail?: string | null;
+    invoiceWebsite?: string | null;
+    paymentInstructions?: string | null;
+  }) =>
     request<{ business: WorkspaceBusiness }>('/workspace/business/contact-details', {
       method: 'PATCH',
       body: JSON.stringify(input),

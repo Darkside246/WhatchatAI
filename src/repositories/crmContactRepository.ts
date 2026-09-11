@@ -8,6 +8,15 @@ export interface CrmContactRecord {
   email: string | null;
   /** Section 23: a staff member's manual correction/confirmation of this contact's real name - outranks every automatic source in identityEngine.ts's hierarchy, including the customer's own self-reported preferred name. */
   manualDisplayName: string | null;
+  /**
+   * The legal entity billed, when it differs from the person in the chat
+   * (migration 1020). Real and common: the conversation is with "Julian",
+   * the invoice is addressed to "Lashley Construction Ltd." Without this an
+   * operator would have to edit the contact's own name - corrupting the CRM
+   * record to fix a document.
+   */
+  billingName: string | null;
+  billingAddress: string | null;
   source: string | null;
   stage: string | null;
   leadStatus: string | null;
@@ -33,6 +42,8 @@ interface CrmContactRow {
   whatsapp_contact_id: string | null;
   email: string | null;
   manual_display_name: string | null;
+  billing_name: string | null;
+  billing_address: string | null;
   source: string | null;
   stage: string | null;
   lead_status: string | null;
@@ -59,6 +70,8 @@ function toRecord(row: CrmContactRow): CrmContactRecord {
     whatsappContactId: row.whatsapp_contact_id,
     email: row.email,
     manualDisplayName: row.manual_display_name,
+    billingName: row.billing_name ?? null,
+    billingAddress: row.billing_address ?? null,
     source: row.source,
     stage: row.stage,
     leadStatus: row.lead_status,

@@ -16,6 +16,42 @@ const FONTS: { id: InvoiceFontId; name: string; sample: string }[] = [
   { id: 'courier', name: 'Courier', sample: 'font-mono' },
 ];
 
+/**
+ * What a document states about the business.
+ *
+ * The tax registration pair is split into a LABEL and a NUMBER deliberately:
+ * the correct word is "VAT No." in Barbados, "TIN" in much of the Caribbean,
+ * "ABN" in Australia, "GSTIN" in India. A fixed label would be wrong for most
+ * of the world, and a dropdown would still be wrong for whoever is missing
+ * from it.
+ */
+const IDENTITY_FIELDS: {
+  key: 'address' | 'phone' | 'invoiceEmail' | 'invoiceWebsite' | 'taxRegistrationLabel' | 'taxRegistrationNumber' | 'paymentInstructions';
+  label: string;
+  placeholder: string;
+  hint?: string;
+  multiline?: boolean;
+}[] = [
+  { key: 'address', label: 'Address', placeholder: 'Street, city, country' },
+  { key: 'phone', label: 'Phone', placeholder: '+1 246 …' },
+  { key: 'invoiceEmail', label: 'Email', placeholder: 'accounts@yourbusiness.com', hint: 'Where customers reply about a document.' },
+  { key: 'invoiceWebsite', label: 'Website', placeholder: 'yourbusiness.com' },
+  { key: 'taxRegistrationLabel', label: 'Tax number label', placeholder: 'VAT No.', hint: 'Whatever your country calls it — VAT No., TIN, ABN.' },
+  {
+    key: 'taxRegistrationNumber',
+    label: 'Tax registration number',
+    placeholder: '40012345',
+    hint: 'Required on a tax invoice if you are registered. A document that charges tax is titled "Tax Invoice" automatically.',
+  },
+  {
+    key: 'paymentInstructions',
+    label: 'How to pay',
+    placeholder: 'Bank transfer to … / cash on delivery',
+    hint: 'Printed in its own block near the bottom.',
+    multiline: true,
+  },
+];
+
 const COLOR_FIELDS: { key: keyof InvoiceBlockColors; label: string; hint: string }[] = [
   { key: 'headerBg', label: 'Header band', hint: 'Modern only - the filled band behind your logo.' },
   { key: 'accent', label: 'Accent', hint: 'The document title and highlight touches.' },
@@ -39,6 +75,22 @@ export function InvoiceCustomizePanel({ onClose }: { onClose: () => void }) {
   const [templateId, setTemplateId] = useState<InvoiceTemplateId>('classic');
   const [fontId, setFontId] = useState<InvoiceFontId>('helvetica');
   const [colors, setColors] = useState<InvoiceBlockColors>({});
+  /**
+   * What the document says about the business, edited HERE rather than in a
+   * separate card elsewhere in Invoices - because it is part of what a
+   * document looks like, and because the live preview to the right is the
+   * only place its effect is actually visible. An address field with no
+   * preview beside it is a form; the same field here is design.
+   */
+  const [identity, setIdentity] = useState({
+    address: '',
+    phone: '',
+    invoiceEmail: '',
+    invoiceWebsite: '',
+    taxRegistrationLabel: '',
+    taxRegistrationNumber: '',
+    paymentInstructions: '',
+  });
   const [loaded, setLoaded] = useState(false);
   const [previewHtml, setPreviewHtml] = useState<string>('');
   const [saving, setSaving] = useState(false);
@@ -47,13 +99,29 @@ export function InvoiceCustomizePanel({ onClose }: { onClose: () => void }) {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
-    api
-      .getInvoiceCustomization()
-      .then((res) => {
+    Promise.all([
+      api.getInvoiceCustomization().then((res) => {
         setTemplateId(res.customization.templateId);
         setFontId(res.customization.fontId ?? 'helvetica');
         setColors(res.customization.colors);
-      })
+      }),
+      // Separate failure handling on purpose: a business that has never set
+      // its details should still be able to pick a template, and vice versa.
+      api
+        .getBusiness()
+        .then(({ business }) =>
+          setIdentity({
+            address: business.address ?? '',
+            phone: business.phone ?? '',
+            invoiceEmail: business.invoiceEmail ?? '',
+            invoiceWebsite: business.invoiceWebsite ?? '',
+            taxRegistrationLabel: business.taxRegistrationLabel ?? '',
+            taxRegistrationNumber: business.taxRegistrationNumber ?? '',
+            paymentInstructions: business.paymentInstructions ?? '',
+          }),
+        )
+        .catch(() => undefined),
+    ])
       .catch(() => undefined)
       .finally(() => setLoaded(true));
   }, []);
@@ -69,6 +137,11 @@ export function InvoiceCustomizePanel({ onClose }: { onClose: () => void }) {
     return () => clearTimeout(debounceRef.current);
   }, [templateId, fontId, colors, loaded]);
 
+  function setIdentityField(key: (typeof IDENTITY_FIELDS)[number]['key'], value: string) {
+    setIdentity((prev) => ({ ...prev, [key]: value }));
+    setSaved(false);
+  }
+
   function setColor(key: keyof InvoiceBlockColors, value: string | null) {
     setColors((prev) => ({ ...prev, [key]: value }));
     setSaved(false);
@@ -78,7 +151,22 @@ export function InvoiceCustomizePanel({ onClose }: { onClose: () => void }) {
     setSaving(true);
     setError(null);
     try {
-      await api.setInvoiceCustomization({ templateId, fontId, colors } as InvoiceCustomizationDto);
+      // One Save for both: from the operator's point of view this panel is
+      // "how my documents look", and splitting it into two buttons would
+      // invite saving half of it.
+      const trimmed = (value: string) => (value.trim().length > 0 ? value.trim() : null);
+      await Promise.all([
+        api.setInvoiceCustomization({ templateId, fontId, colors } as InvoiceCustomizationDto),
+        api.setBusinessContactDetails({
+          address: trimmed(identity.address),
+          phone: trimmed(identity.phone),
+          invoiceEmail: trimmed(identity.invoiceEmail),
+          invoiceWebsite: trimmed(identity.invoiceWebsite),
+          taxRegistrationLabel: trimmed(identity.taxRegistrationLabel),
+          taxRegistrationNumber: trimmed(identity.taxRegistrationNumber),
+          paymentInstructions: trimmed(identity.paymentInstructions),
+        }),
+      ]);
       setSaved(true);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to save.');
@@ -98,6 +186,47 @@ export function InvoiceCustomizePanel({ onClose }: { onClose: () => void }) {
           </div>
 
           <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+            {/*
+              First, before template and colour: these are the words on the
+              document, and a beautifully styled invoice that omits a tax
+              registration number is still not a valid one. Ordering follows
+              what the document itself needs, not what is most fun to change.
+            */}
+            <div>
+              <p className="mb-1 text-caption font-medium text-fg">Your details</p>
+              <p className="mb-2 text-meta text-fg-muted">
+                Printed at the top of every invoice, quote and receipt. Anything left blank is simply not shown.
+              </p>
+              <div className="space-y-2">
+                {IDENTITY_FIELDS.map((field) => (
+                  <div key={field.key}>
+                    <label className="text-meta font-medium text-fg-muted" htmlFor={`identity-${field.key}`}>
+                      {field.label}
+                    </label>
+                    {field.multiline ? (
+                      <textarea
+                        id={`identity-${field.key}`}
+                        value={identity[field.key]}
+                        onChange={(e) => setIdentityField(field.key, e.target.value)}
+                        placeholder={field.placeholder}
+                        rows={2}
+                        className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent"
+                      />
+                    ) : (
+                      <input
+                        id={`identity-${field.key}`}
+                        value={identity[field.key]}
+                        onChange={(e) => setIdentityField(field.key, e.target.value)}
+                        placeholder={field.placeholder}
+                        className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent"
+                      />
+                    )}
+                    {field.hint && <p className="mt-0.5 text-meta text-fg-muted">{field.hint}</p>}
+                  </div>
+                ))}
+              </div>
+            </div>
+
             <div>
               <p className="mb-2 text-caption font-medium text-fg">Template</p>
               <div className="space-y-2">

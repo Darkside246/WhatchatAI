@@ -1968,8 +1968,24 @@ export class WorkspaceService {
     return { business: updated, kbSyncWarning };
   }
 
-  /** Real contact details for the invoice header block - alongside the existing motto ("slogan"). */
-  async setBusinessContactDetails(businessId: string, input: { address: string | null; phone: string | null }): Promise<BusinessRecord> {
+  /**
+   * Everything printed in a document header, alongside the existing motto
+   * ("slogan"): postal address, phone, the tax registration number a tax
+   * invoice must state, the contact routes a customer uses to query it, and
+   * how to pay.
+   */
+  async setBusinessContactDetails(
+    businessId: string,
+    input: {
+      address: string | null;
+      phone: string | null;
+      taxRegistrationNumber: string | null;
+      taxRegistrationLabel: string | null;
+      invoiceEmail: string | null;
+      invoiceWebsite: string | null;
+      paymentInstructions: string | null;
+    },
+  ): Promise<BusinessRecord> {
     const updated = await this.businessRepository.setContactDetails(businessId, input);
     if (!updated) throw new Error(`Business ${businessId} not found`);
     return updated;
