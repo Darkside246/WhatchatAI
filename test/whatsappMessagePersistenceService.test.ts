@@ -543,3 +543,48 @@ describe('WhatsAppMessagePersistenceService', () => {
     });
   });
 });
+
+describe('read receipts - the fix for the unread badge returning after a refresh', () => {
+  let businessId: string;
+  let accountId: string;
+  const accountJid = '15550001111@s.whatsapp.net';
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId, accountJid);
+  });
+
+  it('collects only INBOUND message keys - a read receipt for our own send is meaningless', async () => {
+    const inbound = await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({ messageId: 'WA-IN-1', fromMe: false, textPreview: 'hello' }),
+    });
+    await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({ messageId: 'WA-OUT-1', fromMe: true, textPreview: 'our reply' }),
+    });
+
+    const keys = await new WhatsAppMessageRepository(pool).listInboundKeysForReceipt(inbound.chat.id, businessId);
+
+    expect(keys.map((key) => key.whatsappMessageId)).toEqual(['WA-IN-1']);
+  });
+
+  it('is tenant-scoped - never returns another business\'s message keys', async () => {
+    const inbound = await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({ messageId: 'WA-IN-TENANT', fromMe: false, textPreview: 'hello' }),
+    });
+
+    const otherBusinessId = await createTestBusiness();
+    const keys = await new WhatsAppMessageRepository(pool).listInboundKeysForReceipt(inbound.chat.id, otherBusinessId);
+
+    expect(keys).toEqual([]);
+  });
+});

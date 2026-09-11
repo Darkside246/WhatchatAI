@@ -557,10 +557,27 @@ export class WhatsAppChatRepository {
    * data on (e.g. the Next-Best-Action list), where the PII-free ordinal
    * labeling that method exists for is unnecessary and less useful.
    */
+  /**
+   * Conversations genuinely still waiting on a person - the "What to do
+   * next" list.
+   *
+   * `unread_count > 0` is what makes an entry disappear once it has been
+   * dealt with. Opening a chat resets that counter (markChatRead ->
+   * resetUnreadCount), and replying necessarily means opening it, so both
+   * "I viewed it" and "I answered it" clear it with no new state to track
+   * and nothing for the operator to tick off by hand. A conversation left in
+   * HUMAN_TAKEOVER that the customer then writes to again increments the
+   * counter and correctly comes back, because it really does need attention
+   * again.
+   *
+   * Without this the list was every HUMAN_TAKEOVER chat forever, so a
+   * conversation stayed on the to-do list long after it had been handled.
+   */
   async listNeedingHumanTakeover(businessId: string, limit = 20): Promise<{ id: string; displayName: string; updatedAt: string }[]> {
     const { rows } = await this.db.query<{ id: string; name: string | null; phone_number: string | null; updated_at: string }>(
       `SELECT id, name, phone_number, updated_at FROM whatsapp_chats
        WHERE business_id = $1 AND ai_mode = 'HUMAN_TAKEOVER' AND deleted_at IS NULL
+         AND unread_count > 0
        ORDER BY updated_at ASC LIMIT $2`,
       [businessId, limit],
     );

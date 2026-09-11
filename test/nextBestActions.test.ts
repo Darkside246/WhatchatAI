@@ -34,6 +34,7 @@ describe('workspaceService.getNextBestActions (real Postgres, real aggregation a
   it('surfaces a real chat waiting on a human', async () => {
     const chat = await chatRepo.upsertFromWhatsApp({ businessId, whatsappAccountId: accountId, chatJid: '15550001111@s.whatsapp.net', jidKind: 'individual', chatType: 'individual', name: 'Jane Customer' });
     await chatRepo.setAiMode(chat.id, 'HUMAN_TAKEOVER', 'manual_reply_detected');
+    await pool.query('UPDATE whatsapp_chats SET unread_count = 1 WHERE id = $1', [chat.id]);
 
     const actions = await workspaceService.getNextBestActions(businessId);
     expect(actions).toHaveLength(1);
@@ -92,6 +93,7 @@ describe('workspaceService.getNextBestActions (real Postgres, real aggregation a
   it('does not double-surface a high-readiness conversation the AI already escalated to a human', async () => {
     const chat = await chatRepo.upsertFromWhatsApp({ businessId, whatsappAccountId: accountId, chatJid: '15550007777@s.whatsapp.net', jidKind: 'individual', chatType: 'individual', name: 'Escalated Customer' });
     await chatRepo.setAiMode(chat.id, 'HUMAN_TAKEOVER', 'manual_reply_detected');
+    await pool.query('UPDATE whatsapp_chats SET unread_count = 1 WHERE id = $1', [chat.id]);
     const state = await conversationStateRepo.getOrCreate(businessId, chat.id);
     await conversationStateRepo.update(businessId, chat.id, state.version, { customerReadiness: 'READY_TO_ACT' });
 
@@ -130,11 +132,13 @@ describe('workspaceService.getNextBestActions (real Postgres, real aggregation a
     // A real, older chat-needs-human (action_needed).
     const oldChat = await chatRepo.upsertFromWhatsApp({ businessId, whatsappAccountId: accountId, chatJid: '15550003333@s.whatsapp.net', jidKind: 'individual', chatType: 'individual', name: 'Older Chat' });
     await chatRepo.setAiMode(oldChat.id, 'HUMAN_TAKEOVER', 'manual_reply_detected');
+    await pool.query('UPDATE whatsapp_chats SET unread_count = 1 WHERE id = $1', [oldChat.id]);
     await pool.query(`UPDATE whatsapp_chats SET updated_at = now() - interval '2 days' WHERE id = $1`, [oldChat.id]);
 
     // A real, newer chat-needs-human (action_needed).
     const newChat = await chatRepo.upsertFromWhatsApp({ businessId, whatsappAccountId: accountId, chatJid: '15550004444@s.whatsapp.net', jidKind: 'individual', chatType: 'individual', name: 'Newer Chat' });
     await chatRepo.setAiMode(newChat.id, 'HUMAN_TAKEOVER', 'manual_reply_detected');
+    await pool.query('UPDATE whatsapp_chats SET unread_count = 1 WHERE id = $1', [newChat.id]);
 
     const actions = await workspaceService.getNextBestActions(businessId);
     expect(actions.map((a) => a.priority)).toEqual(['action_needed', 'action_needed', 'suggestion']);
@@ -150,6 +154,7 @@ describe('workspaceService.getNextBestActions (real Postgres, real aggregation a
     const otherAccountId = await createTestAccount(otherBusinessId, '15550005555@s.whatsapp.net');
     const otherChat = await chatRepo.upsertFromWhatsApp({ businessId: otherBusinessId, whatsappAccountId: otherAccountId, chatJid: '15550005555@s.whatsapp.net', jidKind: 'individual', chatType: 'individual' });
     await chatRepo.setAiMode(otherChat.id, 'HUMAN_TAKEOVER', 'manual_reply_detected');
+    await pool.query('UPDATE whatsapp_chats SET unread_count = 1 WHERE id = $1', [otherChat.id]);
 
     expect(await workspaceService.getNextBestActions(businessId)).toEqual([]);
   });

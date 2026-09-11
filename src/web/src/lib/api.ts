@@ -1207,6 +1207,19 @@ export interface WorkspacePresence {
   lastSeenAt: string | null;
 }
 
+/** One real human-handoff event. Identity and content were decrypted server-side from this tenant's own key. */
+export interface HandoffLogEntryDto {
+  id: string;
+  chatId: string;
+  messageId: string | null;
+  reason: string;
+  reasonDetail: string | null;
+  customerLabel: string | null;
+  customerPhone: string | null;
+  messageExcerpt: string | null;
+  createdAt: string;
+}
+
 export interface WorkspaceChatDetail {
   chat: WorkspaceChatDetailRecord;
   contact: WorkspaceContact | null;
@@ -1830,6 +1843,28 @@ export const api = {
   dismissNotification: (id: string) =>
     request<{ notification: NotificationDto }>(`/workspace/notifications/${id}/dismiss`, { method: 'PATCH' }),
   markAllNotificationsRead: () => request<{ updatedCount: number }>('/workspace/notifications/read-all', { method: 'POST' }),
+
+  /**
+   * The human-handoff log. Every call carries the app-lock PIN hash in a
+   * header - never the query string, so it cannot end up in an access log or
+   * browser history. The server verifies it on every single request rather
+   * than trusting any client-held "unlocked" flag.
+   */
+  listHandoffLog: (pinHash: string, limit = 200, offset = 0) =>
+    request<{ entries: HandoffLogEntryDto[]; total: number }>(
+      `/workspace/handoff-log?limit=${limit}&offset=${offset}`,
+      { headers: { 'Content-Type': 'application/json', 'x-app-lock-pin': pinHash } },
+    ),
+  deleteHandoffLogEntry: (pinHash: string, id: string) =>
+    request<{ deleted: boolean }>(`/workspace/handoff-log/${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', 'x-app-lock-pin': pinHash },
+    }),
+  clearHandoffLog: (pinHash: string) =>
+    request<{ cleared: number }>('/workspace/handoff-log', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', 'x-app-lock-pin': pinHash },
+    }),
 
   listTeams: () => request<{ teams: TeamDto[] }>('/workspace/teams'),
   createTeam: (name: string, description: string | null) =>

@@ -444,14 +444,31 @@ export function DashboardRoute() {
   const totalCalls   = Object.values(overview.calls).reduce((s, n) => s + n, 0);
 
   const aiActive        = chats.filter((c) => c.aiMode === 'AI_ACTIVE').length;
-  const humanTakeover   = chats.filter((c) => c.aiMode === 'HUMAN_TAKEOVER').length;
+  /**
+   * "Needs attention" means genuinely still waiting on a person, which is
+   * NOT the same as "the AI is switched off for this chat".
+   *
+   * The unread counter is the honest signal: opening a conversation resets
+   * it, and replying necessarily means opening it, so both viewing and
+   * answering clear the entry with no new state and nothing to tick off by
+   * hand. It also handles the case this was really failing on - a customer
+   * sending a good-morning photo that needs no reply at all. That chat can
+   * sit in HUMAN_TAKEOVER indefinitely and is not work; once it has been
+   * looked at, it stops being counted. A new message from the customer
+   * increments the counter again and it correctly returns.
+   *
+   * Deliberately the same rule the server applies in
+   * listNeedingHumanTakeover, so this tile and the "What to do next" list
+   * can never disagree about what is outstanding.
+   */
+  const humanTakeover   = chats.filter((c) => c.aiMode === 'HUMAN_TAKEOVER' && c.unreadCount > 0).length;
   const aiPaused        = chats.filter((c) => c.aiMode === 'AI_PAUSED').length;
 
   const chatCoverage   = chats.length > 0 ? Math.round((aiActive / chats.length) * 100) : 0;
   const aiReplyPct     = totalReplies > 0 ? Math.round((overview.outboundReplies.ai / totalReplies) * 100) : 0;
 
   const needsHuman = chats
-    .filter((c) => c.aiMode === 'HUMAN_TAKEOVER')
+    .filter((c) => c.aiMode === 'HUMAN_TAKEOVER' && c.unreadCount > 0)
     .sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));
 
   const recentContacts = [...chats]
@@ -696,8 +713,12 @@ export function DashboardRoute() {
                   ) : (
                     <p className="text-caption text-fg-secondary">
                       {overview.outboundReplies.human} message{overview.outboundReplies.human !== 1 ? 's' : ''} needed a human —{' '}
-                      <button type="button" onClick={() => navigate('/chats?filter=needsHuman')} className="font-medium text-accent underline-offset-2 hover:underline">
-                        review those chats
+                      {/* Opens the real handoff LOG (who, what they said, what
+                          triggered the takeover), not a filtered chat list -
+                          the question here is "what happened" across many
+                          conversations, not "take me to one of them". */}
+                      <button type="button" onClick={() => navigate('/handoff-log')} className="font-medium text-accent underline-offset-2 hover:underline">
+                        review the handoff log
                       </button>.
                     </p>
                   )}

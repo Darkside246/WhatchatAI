@@ -23,6 +23,7 @@ export interface WhatsAppTenantConnectionHandle {
   resolvePhoneNumberForLid(lidJid: string): Promise<string | null>;
   updateOwnProfilePicture(imageBuffer: Buffer): Promise<void>;
   sendReaction(key: WAMessageKey, emoji: string): Promise<void>;
+  markMessagesRead(keys: WAMessageKey[]): Promise<void>;
   getIngestionService(): WhatsAppMessageIngestionService;
   connect(): Promise<WhatsAppConnectionSnapshot>;
   disconnect(): Promise<void>;
@@ -140,6 +141,13 @@ export class WhatsAppConnectionManager {
     const tenant = this.get(businessId);
     if (!tenant) throw new Error('WhatsApp is not connected');
     await tenant.sendReaction(key, emoji);
+  }
+
+  /** Sends a real read receipt to WhatsApp - see WhatsAppTenantConnection.markMessagesRead for why this has to reach the provider, not just our own row. */
+  async markMessagesRead(businessId: string, keys: WAMessageKey[]): Promise<void> {
+    const tenant = this.get(businessId);
+    if (!tenant) throw new Error('WhatsApp is not connected');
+    await tenant.markMessagesRead(keys);
   }
 
   /** The tenant-scoped equivalent of the old shared ingestion buffer's read endpoints - empty/zeroed for an untracked business, never another tenant's data. */

@@ -422,6 +422,26 @@ export class WhatsAppTenantConnection {
     await this.socket.sendMessage(key.remoteJid ?? '', { react: { text: emoji, key } });
   }
 
+  /**
+   * Tells WhatsApp itself that these messages have been read.
+   *
+   * Not cosmetic: whatsappSyncService.ingestChats writes WhatsApp's own
+   * unreadCount straight over ours on every chat sync, so resetting the
+   * counter locally when an operator opened a conversation was silently
+   * undone the next time the socket reconnected - which is exactly why the
+   * unread badge came back on a browser refresh. Telling WhatsApp the truth
+   * makes both sides agree instead of fighting, and marks the conversation
+   * read on the operator's own phone too, which is what they expect from
+   * having read it here.
+   */
+  async markMessagesRead(keys: WAMessageKey[]): Promise<void> {
+    if (keys.length === 0) return;
+    if (!this.isReady() || !this.socket) {
+      throw new Error('WhatsApp is not connected');
+    }
+    await this.socket.readMessages(keys);
+  }
+
   private async resolveSessionDir(): Promise<string> {
     if (!this.sessionDirPromise) {
       this.sessionDirPromise = resolveContainedSessionDir(this.businessId);

@@ -81,6 +81,7 @@ import {
   dismissNotificationsForChat,
   isNotificationNotFoundError,
 } from '../services/notificationService.js';
+import { listHandoffLog, deleteHandoffLogEntry, clearHandoffLog } from '../services/humanHandoffLogService.js';
 import {
   createTeam,
   listTeams,
@@ -3978,6 +3979,80 @@ const setupLockSchema = z.object({
 
 const unlockSchema = z.object({
   pinHash: z.string().regex(/^[0-9a-f]+$/i).min(32),
+});
+
+/**
+ * Gate for the human-handoff log.
+ *
+ * The log holds real customer identities and real message excerpts, so
+ * seeing it takes the app-lock PIN on top of an ordinary session - the same
+ * Argon2id credential the app lock already uses. Verified server-side on
+ * every single request rather than trusting a client-held "unlocked" flag:
+ * a gate the browser can decide to skip is not a gate.
+ *
+ * The PIN hash travels in a header rather than the query string so it never
+ * lands in an access log or browser history, and only ever over the HTTPS
+ * front door. Failed attempts go through attemptUnlock, so they count
+ * towards the existing lockout and are written to the security audit log
+ * exactly like a failed unlock on the lock screen itself.
+ */
+async function requireAppLock(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const { businessId } = res.locals.auth as AuthContext;
+  const pinHash = String(req.header('x-app-lock-pin') ?? '');
+
+  if (!/^[0-9a-f]{32,}$/i.test(pinHash)) {
+    res.status(401).json({ error: 'APP_LOCK_REQUIRED' });
+    return;
+  }
+
+  try {
+    const result = await attemptUnlock(businessId, pinHash);
+    if (result.revoked) {
+      res.status(423).json({ error: 'APP_LOCK_REVOKED', ...result });
+      return;
+    }
+    if (!result.unlocked) {
+      res.status(401).json({ error: 'APP_LOCK_REJECTED', remainingAttempts: result.remainingAttempts });
+      return;
+    }
+  } catch (error) {
+    if (error instanceof LockNotConfiguredError) {
+      // Honest: the log is unreachable until a PIN exists, rather than
+      // silently falling open for a business that never set one.
+      res.status(409).json({ error: 'LOCK_NOT_CONFIGURED', message: error.message });
+      return;
+    }
+    throw error;
+  }
+
+  next();
+}
+
+/** The real record behind "N messages needed a human" - newest first. */
+app.get('/api/workspace/handoff-log', requireAuth, requirePermission('settings.manage'), requireAppLock, async (req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  const limitParam = Number(req.query.limit);
+  const offsetParam = Number(req.query.offset);
+  const result = await listHandoffLog(
+    businessId,
+    Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 200,
+    Number.isFinite(offsetParam) && offsetParam > 0 ? offsetParam : 0,
+  );
+  return res.status(200).json(result);
+});
+
+app.delete('/api/workspace/handoff-log/:id', requireAuth, requirePermission('settings.manage'), requireAppLock, async (req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  const deleted = await deleteHandoffLogEntry(businessId, String(req.params.id ?? ''));
+  if (!deleted) return res.status(404).json({ error: 'HANDOFF_LOG_ENTRY_NOT_FOUND' });
+  return res.status(200).json({ deleted: true });
+});
+
+/** Clears the whole log. Genuinely deletes the rows - this is the operator's own audit trail to keep or discard. */
+app.delete('/api/workspace/handoff-log', requireAuth, requirePermission('settings.manage'), requireAppLock, async (_req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  const cleared = await clearHandoffLog(businessId);
+  return res.status(200).json({ cleared });
 });
 
 app.get('/api/security/lock/status', requireAuth, async (_req, res) => {

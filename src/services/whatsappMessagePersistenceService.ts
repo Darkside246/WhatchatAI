@@ -15,6 +15,7 @@ import type { MediaType, MessageType } from '../domain/whatsapp/types.js';
 import { chatTypeFromJidKind } from '../domain/whatsapp/chatType.js';
 import { classifyJid, derivePhoneNumber } from '../domain/whatsapp/jid.js';
 import { enqueueMediaDownload, scheduleHumanTakeoverResume } from '../queue/queues/realtimeEventsQueue.js';
+import { recordHumanHandoff } from './humanHandoffLogService.js';
 import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 import type {
   IngestedWhatsAppMessage,
@@ -149,6 +150,17 @@ export class WhatsAppMessagePersistenceService {
               businessId: input.businessId,
               whatsappAccountId: input.whatsappAccountId,
               chatId: result.chat.id,
+            });
+          }
+          // Only the transition itself is worth an audit row - an ongoing
+          // auto-pause is the same takeover still running, and logging every
+          // further manual reply would bury the real events in noise.
+          if (paused) {
+            await recordHumanHandoff({
+              businessId: input.businessId,
+              whatsappAccountId: input.whatsappAccountId,
+              chatId: result.chat.id,
+              reason: 'manual_reply_detected',
             });
           }
         }

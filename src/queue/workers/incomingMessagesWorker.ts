@@ -31,6 +31,7 @@ import { BusinessRepository } from '../../repositories/businessRepository.js';
 import { CrmContactRepository } from '../../repositories/crmContactRepository.js';
 import { notifyBusiness } from '../../services/notificationService.js';
 import { resolveNotificationSubject } from '../../services/chatIdentityService.js';
+import { recordHumanHandoff } from '../../services/humanHandoffLogService.js';
 import { NotificationRepository } from '../../repositories/notificationRepository.js';
 import { getTopupOffer } from '../../services/billing/aiTokenTopupService.js';
 import { publishRealtimeEvent } from '../../realtime/pubsub.js';
@@ -502,6 +503,7 @@ async function runAiHandoff(params: {
     // else.
     if (isGroup) return;
     await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER', 'no_agent');
+    await recordHumanHandoff({ businessId, whatsappAccountId, chatId, reason: 'no_agent', messageId });
     await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
     await notifyConversationNeedsHuman(
       businessId,
@@ -519,6 +521,7 @@ async function runAiHandoff(params: {
   if (outcome.kind === 'escalate_to_human') {
     console.warn(`[IncomingMessagesWorker] Chat ${chatId}: ${outcome.reason}`);
     await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER', 'blocked_keyword');
+    await recordHumanHandoff({ businessId, whatsappAccountId, chatId, reason: 'blocked_keyword', reasonDetail: outcome.matchedKeyword, messageId });
     await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
     await notifyConversationNeedsHuman(
       businessId,
@@ -542,6 +545,7 @@ async function runAiHandoff(params: {
   if (outcome.kind === 'unavailable') {
     console.log(`[IncomingMessagesWorker] AI reply unavailable for chat ${chatId}: ${outcome.reason}`);
     await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER', 'ai_unavailable');
+    await recordHumanHandoff({ businessId, whatsappAccountId, chatId, reason: 'ai_unavailable', reasonDetail: outcome.reason ?? null, messageId });
     await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
     await notifyBusiness({
       businessId,
@@ -596,6 +600,7 @@ async function runAiHandoff(params: {
   if (outcome.kind === 'blocked_leak') {
     console.warn(`[IncomingMessagesWorker] AI reply blocked for chat ${chatId} (Outbound Leak Guard): ${outcome.reason}`);
     await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER', 'output_leak_blocked');
+    await recordHumanHandoff({ businessId, whatsappAccountId, chatId, reason: 'output_leak_blocked', messageId });
     await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
     await notifyBusiness({
       businessId,

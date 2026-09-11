@@ -44,6 +44,7 @@ describe('autonomousOpsService.runSweepForBusiness (real Postgres)', () => {
       chatType: 'individual',
     });
     await chats.setAiMode(chat.id, 'HUMAN_TAKEOVER', 'test_fixture');
+    await pool.query('UPDATE whatsapp_chats SET unread_count = 1 WHERE id = $1', [chat.id]);
     return chat.id;
   }
 
@@ -140,6 +141,7 @@ describe('autonomousOpsService.runSweepForBusiness (real Postgres)', () => {
     const otherAccountId = await createTestAccount(otherBusinessId, '15559998888@s.whatsapp.net');
     const otherChat = await chats.upsertFromWhatsApp({ businessId: otherBusinessId, whatsappAccountId: otherAccountId, chatJid: '15559998888@s.whatsapp.net', jidKind: 'individual', chatType: 'individual' });
     await chats.setAiMode(otherChat.id, 'HUMAN_TAKEOVER', 'test_fixture');
+    await pool.query('UPDATE whatsapp_chats SET unread_count = 1 WHERE id = $1', [otherChat.id]);
 
     // This business has no opted-in agent at all.
     await agents.create({ businessId, name: 'Off Agent' });

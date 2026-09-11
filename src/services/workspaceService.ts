@@ -1092,7 +1092,47 @@ export class WorkspaceService {
     if (!chat || chat.whatsappAccountId !== whatsappAccountId) {
       throw this.notFound();
     }
-    return this.chatRepository.resetUnreadCount(chatId);
+
+    const updated = await this.chatRepository.resetUnreadCount(chatId);
+
+    /**
+     * Tell WhatsApp itself, not just our own row.
+     *
+     * whatsappSyncService.ingestChats writes WhatsApp's own unreadCount
+     * straight over ours on every chat sync, so resetting the counter here
+     * alone was silently undone the next time the socket reconnected - which
+     * is precisely why the unread badge came back on a browser refresh even
+     * though the conversation had been opened. Sending the real receipt
+     * makes both sides agree instead of fighting, and marks it read on the
+     * operator's own phone too.
+     *
+     * Best-effort: the operator really has read the conversation, so a
+     * disconnected socket must not make opening a chat fail. The local reset
+     * above still stands, and the next successful open re-sends the receipt.
+     */
+    try {
+      const keys = await this.messageRepository.listInboundKeysForReceipt(chatId, businessId);
+      if (keys.length > 0) {
+        await whatsappConnectionManager.markMessagesRead(
+          businessId,
+          keys.map((key) => ({
+            remoteJid: chat.chatJid,
+            id: key.whatsappMessageId,
+            fromMe: false,
+            // Groups need the real sender so the receipt is attributed to the
+            // right participant; a DM's sender is the chat itself.
+            ...(chat.isGroup ? { participant: key.senderJid } : {}),
+          })),
+        );
+      }
+    } catch (error) {
+      console.error(
+        '[workspaceService] Could not send a WhatsApp read receipt for this chat - the local unread reset still applies:',
+        error instanceof Error ? error.message : error,
+      );
+    }
+
+    return updated;
   }
 
   async listAgents(businessId: string) {

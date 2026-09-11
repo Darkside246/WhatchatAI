@@ -209,7 +209,13 @@ export function ChatListPane({ className = '' }: Props) {
       if (isBuiltinFilterPill(filter)) {
         if (filter === 'unread') return chat.unreadCount > 0;
         if (filter === 'groups') return chat.chatType === 'group';
-        if (filter === 'needsHuman') return chat.aiMode === 'HUMAN_TAKEOVER';
+        // Same rule as the dashboard tile and the server's own
+        // listNeedingHumanTakeover: still waiting on a person, not merely
+        // "the AI is off here". Opening or replying resets unreadCount, so a
+        // chat that has been dealt with (or a good-morning photo that needed
+        // no reply at all) stops showing up, and a new customer message
+        // brings it back.
+        if (filter === 'needsHuman') return chat.aiMode === 'HUMAN_TAKEOVER' && chat.unreadCount > 0;
         return true;
       }
       // filter is a real List's id - membership only, real WhatsApp's own

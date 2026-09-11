@@ -334,6 +334,35 @@ export class WhatsAppMessageRepository {
     return Promise.all(rows.map((row) => toRecord(row, false)));
   }
 
+  /**
+   * The provider message keys needed to send WhatsApp a real read receipt
+   * for a conversation - inbound messages only (a read receipt for our own
+   * outbound send is meaningless) and capped, because WhatsApp only needs
+   * the recent unread tail to consider a chat read, not its entire history.
+   *
+   * Deliberately returns raw identity fields rather than decrypting the
+   * messages: a receipt needs ids, never content, so this avoids the
+   * decrypt cost entirely.
+   */
+  async listInboundKeysForReceipt(
+    chatId: string,
+    businessId: string,
+    limit = 50,
+  ): Promise<{ whatsappMessageId: string; remoteJid: string; senderJid: string }[]> {
+    const { rows } = await this.db.query<{ whatsapp_message_id: string; remote_jid: string; sender_jid: string }>(
+      `SELECT whatsapp_message_id, remote_jid, sender_jid FROM whatsapp_messages
+        WHERE chat_id = $1 AND business_id = $2 AND from_me = false
+        ORDER BY "timestamp" DESC
+        LIMIT $3`,
+      [chatId, businessId, limit],
+    );
+    return rows.map((row) => ({
+      whatsappMessageId: row.whatsapp_message_id,
+      remoteJid: row.remote_jid,
+      senderJid: row.sender_jid,
+    }));
+  }
+
   async listByChat(chatId: string, limit = 50): Promise<WhatsAppMessageRecord[]> {
     const { rows } = await this.db.query<MessageRow>(
       `SELECT * FROM whatsapp_messages WHERE chat_id = $1 AND deleted_at IS NULL
