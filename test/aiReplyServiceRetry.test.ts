@@ -756,6 +756,96 @@ describe('generateAiReply grounds the model in the real, TimeService-built curre
     expect(total.callCount).toBe(0);
   });
 
+  /**
+   * The revenue-leak regression: entitlementService.canUseAiThisMonth sums
+   * ai_usage_events, and until this was fixed NOTHING on the fallback path
+   * ever wrote a row. Every reply served by OpenAI/Groq/Cerebras/Mistral
+   * cost real money and counted against nobody's budget, so a business whose
+   * replies happened to be served by a fallback could never exhaust its
+   * allowance and was never offered a top-up.
+   */
+  it('records real usage telemetry for a reply served by a FALLBACK provider, under its own call_kind and real model id', async () => {
+    const accountId = await createTestAccount(realBusinessId);
+    const chat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({
+      businessId: realBusinessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550007777@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+    });
+
+    generateContentMock.mockRejectedValue(new ApiError({ message: 'The service is currently unavailable.', status: 503 }));
+    aiGateway.register({
+      name: 'metered-fallback',
+      model: 'metered-fallback-v1',
+      priority: 99,
+      async capabilities() {
+        return { text: true, vision: false, audio: false, video: false, documents: false };
+      },
+      async generate() {
+        return {
+          provider: 'metered-fallback',
+          model: 'metered-fallback-v1',
+          text: 'A fallback provider answered.',
+          usage: { inputTokens: 400, outputTokens: 100 },
+        };
+      },
+    });
+
+    try {
+      const result = await generateAiReply(
+        fakeAgent({ id: realAgentId, businessId: realBusinessId }),
+        fakeContext({ businessId: realBusinessId, chatId: chat.id }),
+      );
+      expect(result.status).toBe('generated');
+
+      const { rows } = await pool.query(
+        'SELECT call_kind, model, prompt_tokens, candidates_tokens, total_tokens FROM ai_usage_events WHERE business_id = $1',
+        [realBusinessId],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].call_kind).toBe('fallback');
+      // The provider's REAL model id, so per-provider cost is recoverable
+      // from this table later rather than assumed.
+      expect(rows[0].model).toBe('metered-fallback-v1');
+      expect(Number(rows[0].prompt_tokens)).toBe(400);
+      expect(Number(rows[0].candidates_tokens)).toBe(100);
+      expect(Number(rows[0].total_tokens)).toBe(500);
+    } finally {
+      aiGateway.unregister('metered-fallback');
+    }
+  });
+
+  it('never fabricates zeros for a fallback provider that reports no usage at all - the reply still goes out, and the gap stays visible', async () => {
+    generateContentMock.mockRejectedValue(new ApiError({ message: 'The service is currently unavailable.', status: 503 }));
+    aiGateway.register({
+      name: 'unmetered-fallback',
+      model: 'unmetered-fallback-v1',
+      priority: 99,
+      async capabilities() {
+        return { text: true, vision: false, audio: false, video: false, documents: false };
+      },
+      async generate() {
+        return { provider: 'unmetered-fallback', model: 'unmetered-fallback-v1', text: 'Answered, but unmetered.' };
+      },
+    });
+
+    try {
+      const result = await generateAiReply(
+        fakeAgent({ id: realAgentId, businessId: realBusinessId }),
+        fakeContext({ businessId: realBusinessId }),
+      );
+      // The customer still gets their reply - telemetry is never the reason
+      // a reply fails.
+      expect(result.status).toBe('generated');
+
+      const total = await new AiUsageRepository(pool).getPlatformTotal(24);
+      expect(total.callCount).toBe(0);
+    } finally {
+      aiGateway.unregister('unmetered-fallback');
+    }
+  });
+
   it('records a real detected commitment when the AI reply promises to follow up', async () => {
     const accountId = await createTestAccount(realBusinessId);
     const chat = await new WhatsAppChatRepository(pool).upsertFromWhatsApp({

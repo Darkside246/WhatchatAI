@@ -227,6 +227,57 @@ async function recordAiUsage(
     });
 }
 
+/**
+ * The same metering as recordAiUsage above, for a reply served by a FALLBACK
+ * provider through AiGateway rather than by Gemini directly.
+ *
+ * Without this, every reply served by OpenAI/Groq/Cerebras/Mistral/
+ * OpenRouter/Goose cost real money and counted against nobody's monthly
+ * budget: entitlementService.canUseAiThisMonth sums ai_usage_events, and
+ * nothing on this path ever wrote a row. A business whose replies happened
+ * to be served by a fallback could never exhaust its allowance and was never
+ * offered a top-up. 'fallback' was already a valid AiUsageCallKind - the
+ * type anticipated this; only the write was missing.
+ *
+ * `model` is the provider's REAL model id as the gateway reports it, not a
+ * generic label, so per-provider cost can actually be worked out later from
+ * ai_usage_events rather than assumed.
+ *
+ * A provider that reports no usage at all is NOT recorded as zero: inventing
+ * a number would quietly understate real consumption and corrupt exactly the
+ * data this exists to produce. It is logged instead, so an unmetered
+ * provider is visible rather than silent.
+ */
+async function recordGatewayUsage(
+  response: { provider: string; model: string; usage?: { inputTokens?: number; outputTokens?: number } },
+  agent: AiAgentRecord,
+  context: AiHandoffContext,
+): Promise<void> {
+  const usage = response.usage;
+  if (!usage || (usage.inputTokens === undefined && usage.outputTokens === undefined)) {
+    console.warn(
+      `[aiReplyService] Fallback provider ${response.provider} (${response.model}) returned no token usage; this reply is unmetered.`,
+    );
+    return;
+  }
+  const promptTokens = usage.inputTokens ?? 0;
+  const candidatesTokens = usage.outputTokens ?? 0;
+  await aiUsageRepository
+    .record({
+      businessId: context.businessId,
+      agentId: agent.id,
+      chatId: context.chatId,
+      model: response.model,
+      callKind: 'fallback',
+      promptTokens,
+      candidatesTokens,
+      totalTokens: promptTokens + candidatesTokens,
+    })
+    .catch((error) => {
+      console.error('[aiReplyService] Failed to record fallback AI usage telemetry:', error instanceof Error ? error.message : error);
+    });
+}
+
 export type AiReplyResult =
   | { status: 'generated'; text: string }
   /**
@@ -869,7 +920,7 @@ async function tryFallbackProviders(
 
   const tools = toProviderToolDefinitions(replyTools);
 
-  async function attempt(withTools: boolean): Promise<string> {
+  async function attempt(withTools: boolean) {
     const response = await aiGateway.generate({
       tenantId: agent.businessId,
       operation: withTools ? 'reply.fallback' : 'reply.fallback.textonly',
@@ -880,7 +931,7 @@ async function tryFallbackProviders(
       ],
       ...(withTools ? { tools } : {}),
     });
-    return response.text.slice(0, MAX_REPLY_CHARS);
+    return { ...response, text: response.text.slice(0, MAX_REPLY_CHARS) };
   }
 
   // Stage 1 - coherence. Offer the same persona AND the same tools the
@@ -901,7 +952,13 @@ async function tryFallbackProviders(
   let lastError: unknown;
   for (const withTools of tools.length > 0 ? [true, false] : [false]) {
     try {
-      const fallbackText = await attempt(withTools);
+      const fallbackResponse = await attempt(withTools);
+      const fallbackText = fallbackResponse.text;
+      // Metered before the reply is returned, for the same reason the Gemini
+      // path meters before returning: a reply that reached a customer must
+      // never be billable-but-unrecorded. Like recordAiUsage, it never
+      // throws - a telemetry failure must not cost the customer their reply.
+      await recordGatewayUsage(fallbackResponse, agent, context);
       await recordCommitmentIfDetected(fallbackText, context);
       await recordNameUsageIfDetected(fallbackText, context);
       return { status: 'generated', text: fallbackText };
