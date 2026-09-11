@@ -78,6 +78,7 @@ import {
   markNotificationRead,
   markNotificationDismissed,
   markAllNotificationsRead,
+  dismissNotificationsForChat,
   isNotificationNotFoundError,
 } from '../services/notificationService.js';
 import {
@@ -2169,6 +2170,26 @@ app.post('/api/workspace/chats/:chatId/read', requireWorkspaceContext, async (re
   try {
     const chat = await workspaceService.markChatRead(businessId, whatsappAccountId, String(req.params.chatId ?? ''));
     if (chat) await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId: chat.id });
+
+    // Opening a conversation clears this user's own outstanding
+    // notifications about it - whether or not they ever dismissed the
+    // entry by hand. A red dot on a chat the operator is currently reading
+    // is noise, and leaving it there is what forced them to clear the same
+    // thing twice. Scoped to this user: a teammate who has not looked at
+    // the conversation keeps their own notification.
+    if (chat) {
+      const { userId } = res.locals.auth as AuthContext;
+      const cleared = await dismissNotificationsForChat(businessId, userId, chat.id).catch((error: unknown) => {
+        // Never let a notification-tidying failure turn a successful
+        // chat-open into an error the operator sees.
+        console.error('[notifications] Failed to clear notifications on chat open:', error instanceof Error ? error.message : error);
+        return 0;
+      });
+      if (cleared > 0) {
+        await publishRealtimeEvent({ type: 'notification.cleared', businessId, userId });
+      }
+    }
+
     return res.status(200).json({ chat });
   } catch (error) {
     if (isChatNotFoundError(error)) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });

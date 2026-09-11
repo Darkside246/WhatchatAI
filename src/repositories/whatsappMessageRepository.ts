@@ -28,6 +28,10 @@ export interface WhatsAppMessageRecord {
   mediaId: string | null;
   /** The message this one quotes/replies to (WhatsApp's own reply-to, resolved to our own row id at persist time) - null when this message isn't a reply, or replies to something we never persisted. */
   quotedMessageId: string | null;
+  /** WhatsApp's own contextInfo.isForwarded - the sender forwarded this from another chat rather than writing it here. */
+  isForwarded: boolean;
+  /** WhatsApp's own contextInfo.forwardingScore - how many hops it has travelled. WhatsApp's client labels >= 5 "forwarded many times". Null when no score was sent. */
+  forwardingScore: number | null;
   rawMetadata: Record<string, unknown>;
   createdAt: string;
   /** True when this row was newly inserted; false when an existing message satisfied the identity constraint. */
@@ -58,6 +62,8 @@ interface MessageRow {
   has_media: boolean;
   media_id: string | null;
   quoted_message_id: string | null;
+  is_forwarded: boolean;
+  forwarding_score: number | null;
   raw_metadata: Record<string, unknown>;
   created_at: string;
 }
@@ -121,6 +127,8 @@ async function toRecord(row: MessageRow, wasInserted: boolean): Promise<WhatsApp
     hasMedia: row.has_media,
     mediaId: row.media_id,
     quotedMessageId: row.quoted_message_id,
+    isForwarded: row.is_forwarded ?? false,
+    forwardingScore: row.forwarding_score ?? null,
     rawMetadata: row.raw_metadata,
     createdAt: row.created_at,
     wasInserted,
@@ -146,6 +154,8 @@ export interface InsertMessageInput {
   status?: MessageStatus;
   hasMedia?: boolean;
   quotedMessageId?: string | null;
+  isForwarded?: boolean;
+  forwardingScore?: number | null;
   rawMetadata?: Record<string, unknown>;
 }
 
@@ -169,8 +179,8 @@ export class WhatsAppMessageRepository {
       `INSERT INTO whatsapp_messages
          (business_id, whatsapp_account_id, chat_id, whatsapp_message_id, remote_jid,
           sender_jid, recipient_jid, sender_contact_id, direction, message_type,
-          text_content, caption, "timestamp", from_me, is_historical, status, has_media, quoted_message_id, raw_metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+          text_content, caption, "timestamp", from_me, is_historical, status, has_media, quoted_message_id, is_forwarded, forwarding_score, raw_metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
        ON CONFLICT (business_id, whatsapp_account_id, whatsapp_message_id) DO NOTHING
        RETURNING *`,
       [
@@ -192,6 +202,8 @@ export class WhatsAppMessageRepository {
         input.status ?? 'unknown',
         input.hasMedia ?? false,
         input.quotedMessageId ?? null,
+        input.isForwarded ?? false,
+        input.forwardingScore ?? null,
         JSON.stringify(input.rawMetadata ?? {}),
       ],
     );

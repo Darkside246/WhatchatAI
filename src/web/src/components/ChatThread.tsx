@@ -640,6 +640,13 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
    */
   const NEAR_BOTTOM_TOLERANCE_PX = 80;
 
+  /** Re-arms follow-newest and scrolls there now. Used wherever the operator does something that means "I am working at the live end". */
+  function jumpToNewest() {
+    followNewestRef.current = true;
+    const list = messageListRef.current;
+    if (list) list.scrollTop = list.scrollHeight;
+  }
+
   function handleMessageListScroll() {
     const list = messageListRef.current;
     if (!list) return;
@@ -755,7 +762,7 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
     // Sending is an explicit move to the live end of the thread, so re-arm
     // follow-newest even if the operator had scrolled up to re-read
     // something before replying.
-    followNewestRef.current = true;
+    jumpToNewest();
     await dispatchSend(chatId, { messageType: 'text', text });
     // The send button steals focus on click (and Enter leaves it in place
     // only by luck once the tree re-renders) - put the caret back where the
@@ -1205,7 +1212,15 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
             <input
               ref={composerRef}
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => {
+                setDraft(event.target.value);
+                // Starting to type is an explicit move to the live end of
+                // the conversation - you are replying to the newest message,
+                // not to the history you were scrolled up in. WhatsApp
+                // behaves the same way.
+                jumpToNewest();
+              }}
+              onFocus={jumpToNewest}
               onKeyDown={handleComposerKeyDown}
               placeholder="Type a message"
               className="flex-1 bg-transparent text-body text-fg outline-none placeholder:text-fg-muted"

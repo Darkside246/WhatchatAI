@@ -312,6 +312,8 @@ export class WhatsAppMessagePersistenceService {
       isHistorical: !ingested.isLive,
       hasMedia: isMedia,
       quotedMessageId: quotedMessage?.id ?? null,
+      isForwarded: ingested.isForwarded,
+      forwardingScore: ingested.forwardingScore,
       rawMetadata: {
         upsertType: ingested.upsertType,
         jidKind: ingested.jidKind,

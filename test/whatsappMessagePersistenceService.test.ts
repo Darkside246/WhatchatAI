@@ -31,6 +31,8 @@ function ingestedMessage(overrides: Partial<IngestedWhatsAppMessage> = {}): Inge
     textPreview: 'hi',
     ingestedAt: new Date().toISOString(),
     mediaDescriptor: null,
+    isForwarded: false,
+    forwardingScore: null,
     ...overrides,
   };
 }
@@ -507,6 +509,37 @@ describe('WhatsAppMessagePersistenceService', () => {
 
       const otherBusinessId = await createTestBusiness('Other Business');
       await expect(listStatusReplies(otherBusinessId, status.id)).rejects.toThrow();
+    });
+  });
+
+  describe('forwarding metadata', () => {
+    it('persists WhatsApp\'s own isForwarded/forwardingScore off the envelope, never inferred from the text', async () => {
+      const result = await whatsappMessagePersistenceService.persist({
+        businessId,
+        whatsappAccountId: accountId,
+        accountJid,
+        ingested: ingestedMessage({
+          messageId: 'WA-FORWARDED-1',
+          textPreview: 'Check out this price list',
+          isForwarded: true,
+          forwardingScore: 7,
+        }),
+      });
+
+      expect(result.message.isForwarded).toBe(true);
+      expect(result.message.forwardingScore).toBe(7);
+    });
+
+    it('an ordinary message the customer typed themselves is not marked forwarded', async () => {
+      const result = await whatsappMessagePersistenceService.persist({
+        businessId,
+        whatsappAccountId: accountId,
+        accountJid,
+        ingested: ingestedMessage({ messageId: 'WA-NOT-FORWARDED-1', textPreview: 'Can I get three chickens tomorrow?' }),
+      });
+
+      expect(result.message.isForwarded).toBe(false);
+      expect(result.message.forwardingScore).toBeNull();
     });
   });
 });

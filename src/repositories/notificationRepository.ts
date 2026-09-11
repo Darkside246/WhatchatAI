@@ -191,6 +191,37 @@ export class NotificationRepository {
    * encrypting them at rest is real, separate work, tracked in
    * docs/ARCHITECTURE_STATUS.md's backlog, not part of this change.
    */
+  /**
+   * Clears every notification this user still has outstanding about one
+   * target - in practice, one conversation.
+   *
+   * Opening the conversation IS reading the notification: it would make no
+   * sense for a chat the operator is actively looking at to keep a red dot
+   * telling them to look at it. Dismissing rather than only marking read is
+   * deliberate, so the entry also leaves the visible list instead of
+   * lingering greyed-out; the row itself is kept as real history, exactly
+   * like dismissAllForUser below.
+   *
+   * Scoped to one user: a teammate who has not looked at the conversation
+   * keeps their own notification, since each member gets their own row (see
+   * notifyBusiness's fan-out).
+   */
+  async dismissForTarget(
+    businessId: string,
+    userId: string,
+    targetType: string,
+    targetId: string,
+  ): Promise<number> {
+    const { rowCount } = await this.db.query(
+      `UPDATE notifications SET read_at = COALESCE(read_at, now()), dismissed_at = now()
+       WHERE business_id = $1 AND user_id = $2
+         AND target_type = $3 AND target_id = $4
+         AND dismissed_at IS NULL`,
+      [businessId, userId, targetType, targetId],
+    );
+    return rowCount ?? 0;
+  }
+
   async dismissAllForUser(businessId: string, userId: string): Promise<number> {
     const { rowCount } = await this.db.query(
       `UPDATE notifications SET read_at = COALESCE(read_at, now()), dismissed_at = now()

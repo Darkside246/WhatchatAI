@@ -83,6 +83,10 @@ export interface IngestedWhatsAppMessage {
    * always being an array.
    */
   mentionedJids: string[];
+  /** WhatsApp's own contextInfo.isForwarded - true when the sender forwarded this from another chat rather than writing it here. Straight off the envelope, never inferred from the text. */
+  isForwarded: boolean;
+  /** WhatsApp's own contextInfo.forwardingScore - how many hops the message has travelled. The official client labels >= 5 "forwarded many times". Null when WhatsApp sent no score. */
+  forwardingScore: number | null;
   /** WhatsApp's own contextInfo.stanzaId when this message is a reply/quote - resolved to our own row id at persist time (see whatsappMessagePersistenceService.ts). Null when this message isn't a reply. */
   quotedStanzaId: string | null;
 }
@@ -301,7 +305,12 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
  * two independent questions about the same envelope, only one of which
  * (contentType) determines the DOWNLOADABLE_MEDIA_TYPES branch above.
  */
-function extractReplyContext(content: proto.IMessage | null | undefined): { mentionedJids: string[]; quotedStanzaId: string | null } {
+function extractReplyContext(content: proto.IMessage | null | undefined): {
+  mentionedJids: string[];
+  quotedStanzaId: string | null;
+  isForwarded: boolean;
+  forwardingScore: number | null;
+} {
   const { message } = unwrapContent(content);
   const contextInfo =
     message?.extendedTextMessage?.contextInfo ??
@@ -311,9 +320,20 @@ function extractReplyContext(content: proto.IMessage | null | undefined): { ment
     message?.documentMessage?.contextInfo ??
     message?.stickerMessage?.contextInfo ??
     null;
+
+  // WhatsApp's own forwarding metadata, exactly as the official client reads
+  // it. isForwarded is the flag WhatsApp sets when a message was forwarded
+  // rather than written to this chat; forwardingScore counts how many hops
+  // it has travelled (>= 5 is what the official client labels "forwarded
+  // many times"). Both come straight off the envelope - never inferred from
+  // the message text, which would be guessing.
+  const forwardingScore = typeof contextInfo?.forwardingScore === 'number' ? contextInfo.forwardingScore : null;
+
   return {
     mentionedJids: (contextInfo?.mentionedJid ?? []).filter((jid): jid is string => Boolean(jid)),
     quotedStanzaId: contextInfo?.stanzaId ?? null,
+    isForwarded: Boolean(contextInfo?.isForwarded) || (forwardingScore !== null && forwardingScore > 0),
+    forwardingScore,
   };
 }
 

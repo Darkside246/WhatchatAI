@@ -13,7 +13,9 @@ export type RealtimeEvent =
   | { type: 'status.media.updated'; businessId: string; mediaId: string; statusId: string }
   | { type: 'message.reaction'; businessId: string; chatId: string; messageId: string }
   | { type: 'presence.updated'; businessId: string; contactJid: string }
-  | { type: 'notification.created'; businessId: string; userId: string; notificationId: string };
+  | { type: 'notification.created'; businessId: string; userId: string; notificationId: string }
+  /** One user's notification list changed without a new one being raised - e.g. opening a conversation cleared its outstanding notifications. */
+  | { type: 'notification.cleared'; businessId: string; userId: string };
 
 export interface WhatsAppSyncState {
   /** The real socket state - never assume live updates are flowing without checking this. */

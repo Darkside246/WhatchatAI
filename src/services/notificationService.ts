@@ -84,6 +84,23 @@ export async function markAllNotificationsRead(businessId: string, userId: strin
   return notificationRepository.dismissAllForUser(businessId, userId);
 }
 
+/**
+ * Clears this user's outstanding notifications about one conversation,
+ * called when they actually open it. Opening the conversation is reading
+ * the notification - keeping a red dot on a chat the operator is looking at
+ * right now is just noise they have to clear by hand.
+ *
+ * Returns how many were cleared so the caller can skip the realtime nudge
+ * when there was nothing to clear (the common case, on every chat open).
+ */
+export async function dismissNotificationsForChat(
+  businessId: string,
+  userId: string,
+  chatId: string,
+): Promise<number> {
+  return notificationRepository.dismissForTarget(businessId, userId, 'chat', chatId);
+}
+
 export function isNotificationNotFoundError(error: unknown): error is NotificationNotFoundError {
   return error instanceof NotificationNotFoundError;
 }

@@ -53,7 +53,12 @@ export function NotificationCenter() {
   useWhatsAppSync(
     useCallback(
       (event) => {
-        if (event.type === 'notification.created' && event.userId === auth.user?.id) {
+        // Both a newly-raised notification and one cleared elsewhere (opening
+        // the conversation it belongs to) mean this list is stale.
+        if (
+          (event.type === 'notification.created' || event.type === 'notification.cleared') &&
+          event.userId === auth.user?.id
+        ) {
           void load();
         }
       },
