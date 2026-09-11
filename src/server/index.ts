@@ -83,6 +83,17 @@ import {
 } from '../services/notificationService.js';
 import { listHandoffLog, deleteHandoffLogEntry, clearHandoffLog, listWritingSamples, deleteWritingSample } from '../services/humanHandoffLogService.js';
 import {
+  getFlowState as getBrandDnaFlowState,
+  submitAnswer as submitBrandDnaAnswer,
+  synthesiseProfile as synthesiseBrandDna,
+  getProfile as getBrandDnaProfile,
+  editProfile as editBrandDnaProfile,
+  resetProfile as resetBrandDnaProfile,
+  isSensitiveAnswerRejectedError,
+  isBrandDnaNotFoundError,
+} from '../services/brandDna/brandDnaService.js';
+import { BRAND_DNA_FIELDS, type BrandDnaField } from '../repositories/brandDnaRepository.js';
+import {
   createTeam,
   listTeams,
   updateTeam,
@@ -4143,6 +4154,109 @@ app.delete('/api/workspace/handoff-log/:id', requireAuth, requirePermission('set
  * handoff log. Scoped to the requesting user: one teammate never sees
  * another's writing samples.
  */
+/**
+ * Brand DNA.
+ *
+ * Reading is open to any authenticated member - the profile shapes every
+ * reply they will see the AI send, so hiding it from them would be hiding
+ * the agent's own instructions. Every WRITE requires settings.manage: this
+ * is business-wide brand policy, not a personal preference, and the
+ * route-authorization guard requires a real permission on any mutating
+ * workspace route regardless.
+ *
+ * The userId written as provenance comes from the SESSION, never from the
+ * request body - which is the whole reason a customer's message can never
+ * become a fact about the business.
+ */
+app.get('/api/workspace/brand-dna/flow', requireAuth, async (_req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  return res.status(200).json(await getBrandDnaFlowState(businessId));
+});
+
+app.get('/api/workspace/brand-dna', requireAuth, async (_req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  return res.status(200).json({ profile: await getBrandDnaProfile(businessId) });
+});
+
+app.post('/api/workspace/brand-dna/answers', requireAuth, requirePermission('settings.manage'), async (req, res) => {
+  const { businessId, userId } = res.locals.auth as AuthContext;
+  const parsed = z
+    .object({
+      questionKey: z.string().trim().min(1).max(120),
+      questionText: z.string().trim().max(500).nullable().optional(),
+      answerText: z.string().trim().max(4000).nullable().optional(),
+      skipped: z.boolean(),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_ANSWER', details: parsed.error.flatten() });
+
+  try {
+    const state = await submitBrandDnaAnswer({
+      businessId,
+      userId,
+      questionKey: parsed.data.questionKey,
+      questionText: parsed.data.questionText ?? null,
+      answerText: parsed.data.answerText ?? null,
+      skipped: parsed.data.skipped,
+    });
+    return res.status(200).json(state);
+  } catch (error) {
+    // 422, not 500: the request was well-formed and the caller can fix it by
+    // rephrasing. The message names WHAT was recognised, never the value.
+    if (isSensitiveAnswerRejectedError(error)) {
+      return res.status(422).json({ error: 'SENSITIVE_ANSWER_REJECTED', message: error.message });
+    }
+    throw error;
+  }
+});
+
+app.post('/api/workspace/brand-dna/build', requireAuth, requirePermission('settings.manage'), async (_req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  try {
+    return res.status(200).json({ profile: await synthesiseBrandDna(businessId) });
+  } catch (error) {
+    if (isBrandDnaNotFoundError(error)) return res.status(409).json({ error: 'NOT_ENOUGH_ANSWERS', message: error.message });
+    throw error;
+  }
+});
+
+app.patch('/api/workspace/brand-dna', requireAuth, requirePermission('settings.manage'), async (req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  const parsed = z.record(z.string(), z.string().trim().max(4000).nullable()).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PROFILE_EDIT', details: parsed.error.flatten() });
+
+  // Narrowed against the repository's own field list rather than a second
+  // hand-maintained copy, so a field added to the table becomes editable
+  // automatically and an unknown key a client sends is DROPPED rather than
+  // reaching the update - which is what stops a caller writing a column
+  // that is not part of the profile.
+  const edits: Partial<Record<BrandDnaField, string | null>> = {};
+  for (const field of BRAND_DNA_FIELDS) {
+    if (!(field in parsed.data)) continue;
+    const value = parsed.data[field];
+    // An empty string means "clear this field", which is a real edit and is
+    // stored as NULL rather than as an empty value pretending to be content.
+    edits[field] = value === null || value === undefined || value.length === 0 ? null : value;
+  }
+  if (Object.keys(edits).length === 0) return res.status(400).json({ error: 'NO_EDITABLE_FIELDS' });
+
+  try {
+    return res.status(200).json({ profile: await editBrandDnaProfile(businessId, edits) });
+  } catch (error) {
+    if (isSensitiveAnswerRejectedError(error)) {
+      return res.status(422).json({ error: 'SENSITIVE_ANSWER_REJECTED', message: error.message });
+    }
+    if (isBrandDnaNotFoundError(error)) return res.status(404).json({ error: 'BRAND_DNA_NOT_FOUND' });
+    throw error;
+  }
+});
+
+app.delete('/api/workspace/brand-dna', requireAuth, requirePermission('settings.manage'), async (_req, res) => {
+  const { businessId } = res.locals.auth as AuthContext;
+  await resetBrandDnaProfile(businessId);
+  return res.status(200).json({ reset: true });
+});
+
 app.get('/api/workspace/writing-samples', requireAuth, requireAppLock, async (req, res) => {
   const { businessId, userId } = res.locals.auth as AuthContext;
   const limitParam = Number(req.query.limit);

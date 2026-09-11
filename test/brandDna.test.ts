@@ -362,14 +362,36 @@ describe('Brand DNA (real Postgres)', () => {
       }
     });
 
-    it('extracts the object even when a provider wraps it in prose or a code fence', async () => {
+    it('still works when a provider wraps the object in a markdown code fence', async () => {
+      // AiGateway strips the fence centrally, for every provider and every
+      // caller, so synthesis needs no salvage logic of its own.
       const unregister = registerFakeProvider(
         'fake-brand-dna',
-        () => 'Here is the profile:\n```json\n{"positioning":"Local and fresh."}\n```\nHope that helps.',
+        () => '```json\n{"positioning":"Local and fresh."}\n```',
       );
       try {
         await seedRealAnswers();
         expect((await synthesiseProfile(businessId)).positioning).toBe('Local and fresh.');
+      } finally {
+        unregister();
+      }
+    });
+
+    it('fails loudly when a provider answers with prose instead of a profile, rather than digging an object out of it', async () => {
+      // The gateway rejects a JSON-formatted request that did not produce
+      // JSON. Deliberate: a model that replied with commentary has not done
+      // the job, and silently salvaging an object from its prose would hide
+      // that a profile was built from something the model was not really
+      // asked to produce.
+      const unregister = registerFakeProvider(
+        'fake-brand-dna',
+        () => 'Here is the profile: {"positioning":"Local and fresh."} Hope that helps.',
+      );
+      try {
+        await seedRealAnswers();
+        await expect(synthesiseProfile(businessId)).rejects.toThrow();
+        // And nothing half-built was written.
+        expect((await getProfile(businessId))?.status).toBe('in_progress');
       } finally {
         unregister();
       }

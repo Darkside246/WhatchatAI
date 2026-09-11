@@ -298,10 +298,15 @@ export async function synthesiseProfile(businessId: string): Promise<BrandDnaPro
 
   let parsed: Record<string, unknown>;
   try {
-    // Providers differ on whether they honour responseFormat strictly, so a
-    // fenced or prose-wrapped object is extracted rather than rejected.
-    const match = /\{[\s\S]*\}/.exec(response.text);
-    parsed = JSON.parse(match ? match[0] : response.text) as Record<string, unknown>;
+    // No salvage attempt here on purpose. AiGateway already strips a
+    // markdown code fence centrally and validates that a JSON-formatted
+    // request really produced JSON, failing the provider otherwise - so by
+    // the time text reaches this line it has been parsed once already.
+    // Re-deriving an object out of prose would only reintroduce, locally,
+    // the sloppiness the gateway deliberately rejects: a model that answered
+    // with commentary rather than a profile has not done the job, and
+    // quietly digging an object out of its prose would hide that.
+    parsed = JSON.parse(response.text) as Record<string, unknown>;
   } catch {
     throw new Error('The Brand DNA profile could not be built from that response. Please try again.');
   }

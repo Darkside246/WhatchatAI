@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, type SyncStatusResponse, type WhatsAppConnectionSnapshot } from '../lib/api.js';
 
-export type AppPhase = 'loading' | 'onboarding' | 'syncing' | 'operator-setup' | 'workspace';
+export type AppPhase = 'loading' | 'onboarding' | 'syncing' | 'operator-setup' | 'brand-dna' | 'workspace';
 
 export interface AppGateState {
   phase: AppPhase;
@@ -19,6 +19,8 @@ export interface AppGateState {
   serverUnreachable: boolean;
   continueAnyway: () => void;
   skipOperatorSetup: () => void;
+  /** Leaves the Brand DNA step for later and goes straight to the workspace. The profile can still be built any time from Settings. */
+  skipBrandDna: () => void;
 }
 
 const STATUS_POLL_MS = 2500;
@@ -33,6 +35,8 @@ export function useAppGate(): AppGateState {
   const [forceContinue, setForceContinue] = useState(false);
   const [operatorConfigured, setOperatorConfigured] = useState<boolean | null>(null);
   const [skipOperator, setSkipOperator] = useState(false);
+  const [brandDnaComplete, setBrandDnaComplete] = useState<boolean | null>(null);
+  const [skipBrandDna, setSkipBrandDna] = useState(false);
   // Baileys drops and auto-reconnects an already-paired session constantly
   // (a near-guaranteed restartRequired right after first pairing, plus
   // transient blips during/after a large history sync). None of that means
@@ -120,6 +124,27 @@ export function useAppGate(): AppGateState {
     };
   }, [connection?.connected, pairedOnce]);
 
+  // Whether this business has ever built a Brand DNA profile. Checked once,
+  // after sync, for the same reason operator setup is: a brand-new account
+  // has nothing, and asking is only worth doing when there is real synced
+  // data behind it.
+  useEffect(() => {
+    if (!forceContinue && !sync) return;
+    const syncDone = forceContinue || sync?.syncStatus === 'completed';
+    if (!syncDone || brandDnaComplete !== null) return;
+    api
+      .getBrandDnaProfile()
+      .then((result) => {
+        if (mounted.current) setBrandDnaComplete(result.profile?.status === 'complete');
+      })
+      // On error, treat it as done and go straight to the workspace. Brand
+      // DNA is valuable, not load-bearing - it must never be the reason
+      // someone cannot reach their inbox.
+      .catch(() => {
+        if (mounted.current) setBrandDnaComplete(true);
+      });
+  }, [forceContinue, sync, brandDnaComplete]);
+
   // Check operator mode configuration once after sync completes.
   useEffect(() => {
     if (!forceContinue && !sync) return;
@@ -171,6 +196,14 @@ export function useAppGate(): AppGateState {
       phase = 'syncing';
     } else if (!skipOperator && operatorConfigured === false) {
       phase = 'operator-setup';
+    } else if (!skipBrandDna && brandDnaComplete === false) {
+      // Deliberately AFTER sync, and after operator setup: the adaptive
+      // follow-ups are only worth asking once there is a real connected
+      // account behind them, and a person who has just scanned a QR is
+      // still watching their history arrive. Skippable, and skipping goes
+      // straight to the workspace - a brand profile is worth having, never
+      // worth blocking someone's inbox for.
+      phase = 'brand-dna';
     } else {
       phase = 'workspace';
     }
@@ -185,6 +218,11 @@ export function useAppGate(): AppGateState {
     skipOperatorSetup: () => {
       setSkipOperator(true);
       setOperatorConfigured(true);
+    },
+    /** "I'll do this later" - goes straight to the workspace, and the profile can still be built any time from Settings. */
+    skipBrandDna: () => {
+      setSkipBrandDna(true);
+      setBrandDnaComplete(true);
     },
   };
 }

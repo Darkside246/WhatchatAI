@@ -7,6 +7,7 @@ import { OnboardingPage } from './pages/OnboardingPage.js';
 import { SyncingPage } from './pages/SyncingPage.js';
 import { WorkspaceShell } from './pages/WorkspaceShell.js';
 import { OperatorSetupPage } from './pages/OperatorSetupPage.js';
+import { BrandDnaPage } from './pages/BrandDnaPage.js';
 import { ScreenLock } from './components/ScreenLock.js';
 import { LoginPage } from './pages/LoginPage.js';
 import { RegisterPage } from './pages/RegisterPage.js';
@@ -42,6 +43,9 @@ function AuthenticatedApp() {
   }
   if (gate.phase === 'operator-setup') {
     return <OperatorSetupPage onDone={gate.skipOperatorSetup} onSkip={gate.skipOperatorSetup} />;
+  }
+  if (gate.phase === 'brand-dna') {
+    return <BrandDnaPage onDone={gate.skipBrandDna} onSkip={gate.skipBrandDna} />;
   }
 
   return (

@@ -239,6 +239,72 @@ describe('Context Trust Builder (CRM notes and knowledge base excerpts are untru
     expect(escaped).not.toMatch(/<\/?untrusted_data\b/);
   });
 
+  describe('Brand DNA in the system instruction', () => {
+    const brand = {
+      toneOfVoice: 'Warm, plain-spoken, Bajan.',
+      brandPersonality: 'A trusted neighbour.',
+      brandValues: 'Freshness, trust, local',
+      preferredVocabulary: 'fresh, local, same-day',
+      wordsToAvoid: 'cheap, discount, bargain',
+      positioning: 'The local alternative to supermarket poultry.',
+      differentiators: 'Same-day processing.',
+    };
+
+    it('carries the brand voice into the prompt so replies sound like the business, not generic AI', () => {
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ brandDna: brand } as never));
+
+      expect(instruction).toContain('Warm, plain-spoken, Bajan.');
+      expect(instruction).toContain('The local alternative to supermarket poultry.');
+      expect(instruction).toContain('fresh, local, same-day');
+    });
+
+    it('states words-to-avoid as a prohibition, separately from the positive guidance', () => {
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ brandDna: brand } as never));
+
+      // The owner telling us what must never be said in their name is closer
+      // to a rule than to style, so it must not be buried in a list of
+      // preferences the model can weigh against other instructions.
+      expect(instruction).toContain('Never use the following');
+      expect(instruction).toContain('cheap, discount, bargain');
+    });
+
+    it('the agent persona still comes AFTER the brand block, so the more specific instruction wins a conflict', () => {
+      const instruction = buildSystemInstruction(
+        fakeAgent({ persona: 'Blunt and extremely brief.' } as never),
+        fakeContext({ brandDna: brand } as never),
+      );
+
+      expect(instruction.indexOf('Warm, plain-spoken, Bajan.')).toBeLessThan(
+        instruction.indexOf('Blunt and extremely brief.'),
+      );
+    });
+
+    it('a business that never built a profile gets a byte-identical prompt to before Brand DNA existed', () => {
+      // No empty headings, no "not specified" placeholders telling the model
+      // about something it cannot use. Skipping onboarding must cost nothing.
+      const withNull = buildSystemInstruction(fakeAgent(), fakeContext({ brandDna: null } as never));
+      const withoutField = buildSystemInstruction(fakeAgent(), fakeContext());
+
+      expect(withNull).toBe(withoutField);
+      expect(withNull).not.toContain('how it wants to sound');
+    });
+
+    it('emits nothing at all when a profile exists but every voice field is empty', () => {
+      const empty = {
+        toneOfVoice: null,
+        brandPersonality: null,
+        brandValues: null,
+        preferredVocabulary: null,
+        wordsToAvoid: null,
+        positioning: null,
+        differentiators: null,
+      };
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ brandDna: empty } as never));
+      expect(instruction).not.toContain('how it wants to sound');
+      expect(instruction).not.toContain('Never use the following');
+    });
+  });
+
   it('wrapUntrustedData produces a real, well-formed boundary around honest content', () => {
     const wrapped = wrapUntrustedData('crm_notes', 'Customer prefers morning appointments.');
 

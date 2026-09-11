@@ -1,3 +1,4 @@
+import { Smartphone } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { SyncStatusResponse, WhatsAppConnectionSnapshot } from '../lib/api.js';
 
@@ -52,6 +53,23 @@ export function SyncingPage({ connection, sync, onContinueAnyway }: Props) {
         <p className="mt-2 text-caption text-fg-muted">
           {progress !== null ? `${Math.round(progress)}% reported by WhatsApp` : 'Waiting for the first data batch…'}
         </p>
+
+        {/*
+          The one instruction that actually changes the outcome, so it is
+          stated plainly rather than buried in the paragraph above. WhatsApp
+          streams history from the PHONE to this linked device: if the phone
+          sleeps, loses signal, or WhatsApp is swiped away, the stream stops
+          and the sync stalls part-finished. Almost every "my sync got stuck"
+          report is this, not a fault here.
+        */}
+        <div className="mt-4 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 text-left">
+          <Smartphone size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden />
+          <p className="text-caption text-warning">
+            <span className="font-medium">Keep your phone on and WhatsApp open</span> until this finishes. Your history
+            is coming from your phone — if it locks, loses signal, or WhatsApp is closed, the sync pauses until it is
+            back.
+          </p>
+        </div>
 
         {job && (
           <dl className="mt-6 grid grid-cols-3 gap-3 text-left text-caption text-fg-secondary">

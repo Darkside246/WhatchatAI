@@ -21,6 +21,7 @@ import { RetailOperationsRepository } from '../repositories/retailOperationsRepo
 import { DEFAULT_NAME_USAGE_LEVEL } from './ai/identityEngine.js';
 import { BusinessMembershipRepository } from '../repositories/businessMembershipRepository.js';
 import { WritingTwinRepository } from '../repositories/writingTwinRepository.js';
+import { BrandDnaRepository } from '../repositories/brandDnaRepository.js';
 import { WhatsAppOutboundMessageRepository } from '../repositories/whatsappOutboundMessageRepository.js';
 import { writingTwinService, type WritingTwinContextResult } from './writingTwinService.js';
 
@@ -34,12 +35,38 @@ export interface GatherAiHandoffContextInput {
   mediaId?: string | null;
 }
 
+/**
+ * Only the parts of the Brand DNA profile that belong in a CUSTOMER REPLY.
+ *
+ * Deliberately narrow. The full profile also holds marketing opportunities,
+ * content angles and growth ideas - genuinely useful to campaign generation,
+ * and pure noise in a prompt whose job is answering "what time do you open".
+ * Every extra line here costs tokens on every single reply and dilutes the
+ * instructions that actually matter.
+ */
+export interface BrandDnaVoice {
+  toneOfVoice: string | null;
+  brandPersonality: string | null;
+  brandValues: string | null;
+  preferredVocabulary: string | null;
+  wordsToAvoid: string | null;
+  positioning: string | null;
+  differentiators: string | null;
+}
+
 export interface AiHandoffContext {
   /** Echoed back from the input - lets downstream consumers (e.g. agentGuard's tool-invocation audit log) stay self-contained without threading extra parameters through generateAiReply. */
   businessId: string;
   chatId: string;
   crmContact: CrmContactRecord | null;
   knowledgeBase: KnowledgeBaseSearchResult;
+  /**
+   * The business's own Brand DNA, when it has built one. Null is the normal
+   * state for an account that has not done the onboarding, and the reply
+   * path must read identically either way - a brand profile improves how a
+   * reply SOUNDS, and must never be required for one to be sent.
+   */
+  brandDna: BrandDnaVoice | null;
   /** D4-B: AI-retrievable business documents (D3-C's retrieveAiDocumentContext), gathered the same way and with the same {available, results, reason} contract as knowledgeBase above - never a second retrieval/trust pattern. */
   documentContext: AiDocumentRetrievalResponse;
   conversationHistory: WhatsAppMessageRecord[];
@@ -374,6 +401,27 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     }
   }
 
+  // Best-effort, and never fatal: a business that has not done the Brand DNA
+  // onboarding has no row, and a failure to read one must not cost a real
+  // customer their reply. Read through queryAsTenant so RLS binds like every
+  // other tenant read in this file.
+  const brandDna = await new BrandDnaRepository(queryAsTenant(input.businessId))
+    .findProfile(input.businessId)
+    .then((profile) =>
+      profile && profile.status === 'complete'
+        ? {
+            toneOfVoice: profile.toneOfVoice,
+            brandPersonality: profile.brandPersonality,
+            brandValues: profile.brandValues,
+            preferredVocabulary: profile.preferredVocabulary,
+            wordsToAvoid: profile.wordsToAvoid,
+            positioning: profile.positioning,
+            differentiators: profile.differentiators,
+          }
+        : null,
+    )
+    .catch(() => null);
+
   const businessTimezone = resolveBusinessTimezone({ timezone: business?.timezone ?? null });
   const timeContext = timeService.buildContextForTimezone(businessTimezone, business ?? undefined);
 
@@ -387,6 +435,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     chatId: input.chatId,
     crmContact,
     knowledgeBase,
+    brandDna,
     documentContext,
     conversationHistory,
     aiGeneratedMessageIds,

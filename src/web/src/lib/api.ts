@@ -1508,6 +1508,52 @@ export async function previewInvoiceHtml(input: InvoicePreviewInput): Promise<st
   return response.text();
 }
 
+export interface BrandDnaQuestionDto {
+  key: string;
+  kind: 'text' | 'choice';
+  prompt: string;
+  helper?: string;
+  options?: string[];
+  multi?: boolean;
+  essential?: boolean;
+}
+
+export interface BrandDnaFlowDto {
+  question: BrandDnaQuestionDto | null;
+  answeredCount: number;
+  totalSeedCount: number;
+  readyToSynthesise: boolean;
+}
+
+export interface BrandDnaProfileDto {
+  businessId: string;
+  status: 'in_progress' | 'complete';
+  synthesisedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  brandIdentity: string | null;
+  ownerPersonality: string | null;
+  positioning: string | null;
+  targetCustomer: string | null;
+  customerProblems: string | null;
+  competitiveAdvantages: string | null;
+  brandValues: string | null;
+  toneOfVoice: string | null;
+  preferredVocabulary: string | null;
+  wordsToAvoid: string | null;
+  brandPersonality: string | null;
+  marketingPriorities: string | null;
+  socialChannels: string | null;
+  contentPreferences: string | null;
+  customerExpectations: string | null;
+  localContext: string | null;
+  differentiators: string | null;
+  brandStory: string | null;
+  marketingOpportunities: string | null;
+  contentAngles: string | null;
+  growthOpportunities: string | null;
+}
+
 export const api = {
   getWhatsAppStatus: () => request<WhatsAppConnectionSnapshot>('/whatsapp/status'),
   connectWhatsApp: () => request<WhatsAppConnectionSnapshot>('/whatsapp/connect', { method: 'POST' }),
@@ -1811,6 +1857,15 @@ export const api = {
       body: JSON.stringify({ status }),
     }),
   listCalls: () => request<{ calls: WorkspaceCallSummary[] }>('/workspace/calls'),
+  /** Brand DNA - what Aura knows about this business, and the short adaptive flow that builds it. */
+  getBrandDnaFlow: () => request<BrandDnaFlowDto>('/workspace/brand-dna/flow'),
+  getBrandDnaProfile: () => request<{ profile: BrandDnaProfileDto | null }>('/workspace/brand-dna'),
+  submitBrandDnaAnswer: (input: { questionKey: string; questionText: string | null; answerText: string | null; skipped: boolean }) =>
+    request<BrandDnaFlowDto>('/workspace/brand-dna/answers', { method: 'POST', body: JSON.stringify(input) }),
+  buildBrandDna: () => request<{ profile: BrandDnaProfileDto }>('/workspace/brand-dna/build', { method: 'POST' }),
+  editBrandDna: (fields: Partial<Record<keyof BrandDnaProfileDto, string | null>>) =>
+    request<{ profile: BrandDnaProfileDto }>('/workspace/brand-dna', { method: 'PATCH', body: JSON.stringify(fields) }),
+  resetBrandDna: () => request<{ reset: boolean }>('/workspace/brand-dna', { method: 'DELETE' }),
   /** WhatsApp Channels this account follows - broadcast feeds, read-only by nature. */
   listChannels: () => request<{ channels: WorkspaceChatSummary[] }>('/workspace/channels'),
   setChannelNotificationsEnabled: (enabled: boolean) =>

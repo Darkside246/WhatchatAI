@@ -437,6 +437,49 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
     );
   }
 
+  /**
+   * Brand DNA: how this specific business sounds.
+   *
+   * Placed BEFORE the agent's own persona deliberately. The persona is what
+   * this one agent does ("qualify inbound leads"); the brand is who the
+   * business IS, and applies to every agent it runs. When the two disagree
+   * the agent's own persona is the more specific instruction and should win,
+   * which is what ordering it last achieves.
+   *
+   * Only emitted when the owner actually built a profile. An account that
+   * skipped onboarding produces byte-identical prompts to before this
+   * existed - no empty headings, no "not specified" placeholders telling the
+   * model about a thing it cannot use.
+   */
+  if (context.brandDna) {
+    const brand = context.brandDna;
+    const brandLines: string[] = [];
+    if (brand.toneOfVoice) brandLines.push(`Tone: ${brand.toneOfVoice}`);
+    if (brand.brandPersonality) brandLines.push(`Brand personality: ${brand.brandPersonality}`);
+    if (brand.brandValues) brandLines.push(`What this business values: ${brand.brandValues}`);
+    if (brand.positioning) brandLines.push(`Positioning: ${brand.positioning}`);
+    if (brand.differentiators) brandLines.push(`What sets it apart: ${brand.differentiators}`);
+    if (brand.preferredVocabulary) brandLines.push(`Prefer these words and phrases: ${brand.preferredVocabulary}`);
+    if (brandLines.length > 0) {
+      lines.push(
+        'This business has told AURA how it wants to sound. Follow it in every reply, so your messages read ' +
+          'like this business rather than like generic AI:\n' +
+          brandLines.join('\n'),
+      );
+    }
+    // Its own instruction, and phrased as a prohibition rather than a
+    // preference: this is the owner telling us what they do not want said in
+    // their name, which is the one part of a brand profile that is closer to
+    // a rule than to style. Kept separate from the block above so it cannot
+    // be lost among positive guidance.
+    if (brand.wordsToAvoid) {
+      lines.push(
+        `Never use the following words, phrases, claims or behaviour - the business has explicitly ruled them ` +
+          `out: ${brand.wordsToAvoid}. If one would have been the natural thing to say, rephrase instead.`,
+      );
+    }
+  }
+
   if (agent.persona) lines.push(`Persona: ${agent.persona}`);
   if (agent.tone) lines.push(`Tone: ${agent.tone}`);
   if (agent.language) lines.push(`Reply in: ${agent.language}`);

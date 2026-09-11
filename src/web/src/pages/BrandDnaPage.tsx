@@ -46,7 +46,14 @@ interface Exchange {
   answer: string | null;
 }
 
-export function BrandDnaPage() {
+interface Props {
+  /** Set when shown as an onboarding step: called once the profile is built. Absent when opened from Settings. */
+  onDone?: () => void;
+  /** "I'll do this later". Always offered during onboarding - a brand profile is worth having, never worth blocking someone's inbox for. */
+  onSkip?: () => void;
+}
+
+export function BrandDnaPage({ onDone, onSkip }: Props = {}) {
   const [question, setQuestion] = useState<BrandDnaQuestionDto | null>(null);
   const [profile, setProfile] = useState<BrandDnaProfileDto | null>(null);
   const [history, setHistory] = useState<Exchange[]>([]);
@@ -281,6 +288,15 @@ export function BrandDnaPage() {
                   Skip
                 </button>
                 <span className="ml-auto text-meta text-fg-muted">{answeredCount} answered</span>
+                {onSkip && (
+                  <button
+                    type="button"
+                    onClick={onSkip}
+                    className="text-meta text-fg-muted underline underline-offset-2 hover:text-fg"
+                  >
+                    I&rsquo;ll do this later
+                  </button>
+                )}
               </div>
             </form>
           )}
@@ -292,16 +308,27 @@ export function BrandDnaPage() {
                   ? 'Got it. I have enough to build your initial Brand DNA — and I can always learn more as you use Aura.'
                   : 'I do not have quite enough yet to build a useful profile. Answer a couple more questions when you have a moment.'}
               </p>
-              {readyToSynthesise && (
-                <button
-                  type="button"
-                  onClick={() => void build()}
-                  disabled={building}
-                  className="mt-3 rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
-                >
-                  {building ? 'Building…' : 'Build my Brand DNA'}
-                </button>
-              )}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {readyToSynthesise && (
+                  <button
+                    type="button"
+                    onClick={() => void build()}
+                    disabled={building}
+                    className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+                  >
+                    {building ? 'Building…' : 'Build my Brand DNA'}
+                  </button>
+                )}
+                {onSkip && (
+                  <button
+                    type="button"
+                    onClick={onSkip}
+                    className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption text-fg-muted hover:bg-surface-2"
+                  >
+                    {readyToSynthesise ? 'Later' : 'Continue to Aura'}
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </>
@@ -376,6 +403,15 @@ export function BrandDnaPage() {
               <RotateCcw size={14} aria-hidden />
               Start over
             </button>
+            {onDone && !editing && (
+              <button
+                type="button"
+                onClick={onDone}
+                className="ml-auto rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim"
+              >
+                Continue to Aura
+              </button>
+            )}
           </div>
         </div>
       )}
