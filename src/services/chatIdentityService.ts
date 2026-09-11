@@ -87,7 +87,13 @@ export async function resolveChatIdentity(
   chat: ChatIdentityInput,
 ): Promise<ResolvedChatIdentity> {
   let phoneNumber = chat.phoneNumber;
-  let nameSources: ContactNameSources = { displayName: chat.name, whatsappJid: chat.chatJid };
+  // The chat row's own number is offered to the resolver from the start, not
+  // just returned alongside it. resolveDisplayName's priority list ends
+  // "...pushName, shortName, phoneNumber" before the raw-JID fallback, so
+  // withholding it here inverted that last step: a conversation with a known
+  // number but no contact row resolved to the raw JID, which is the one
+  // thing resolveDisplayName's own doc comment says is not a name.
+  let nameSources: ContactNameSources = { displayName: chat.name, phoneNumber, whatsappJid: chat.chatJid };
 
   try {
     const contact = chat.contactId ? await contactRepository.findById(chat.contactId) : null;

@@ -598,7 +598,8 @@ export class WhatsAppChatRepository {
          WHERE business_id = $1
        )
        SELECT c.id AS chat_id, c.unread_count, c.updated_at, na.line_number, na.account_name, na.phone_number,
-              c.name AS customer_name, c.phone_number AS customer_phone_number
+              c.name AS customer_name, c.phone_number AS customer_phone_number,
+              c.whatsapp_account_id, c.chat_jid, c.jid_kind, c.contact_id
        FROM whatsapp_chats c
        JOIN numbered_accounts na ON na.id = c.whatsapp_account_id
        WHERE c.business_id = $1 AND c.ai_mode = 'HUMAN_TAKEOVER' AND c.deleted_at IS NULL
@@ -628,4 +629,15 @@ export interface HumanTakeoverAlertRow {
   /** The customer's own chat name/number - only ever read by listHumanTakeoverAlerts() when the caller has explicitly opted in to including it (see securityAlertService.ts's Zero-Leak Rule doc comment). */
   customer_name: string | null;
   customer_phone_number: string | null;
+  /**
+   * What chatIdentityService needs to resolve the customer's real name, on
+   * the same opt-in path as the two fields above. whatsapp_chats.name alone
+   * is frequently null for a conversation whose contact row carries the
+   * address-book name - which is why an alert could show a bare number for
+   * someone the chat list names perfectly well.
+   */
+  whatsapp_account_id: string;
+  chat_jid: string;
+  jid_kind: WhatsAppJidKind;
+  contact_id: string | null;
 }
