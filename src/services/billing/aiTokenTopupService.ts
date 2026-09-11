@@ -27,12 +27,29 @@ const topupRepository = new AiTokenTopupRepository(pool);
  * usage data, which doesn't exist yet. That gives a blended raw cost of:
  *   0.75 * $1.50 + 0.25 * $9.00 = $3.375 per 1,000,000 tokens.
  *
- * Pack sizes are half of each tier's own monthly budget; prices are set
- * to land in the 50-60% profit-margin range the business asked for
- * (margin = (price - cost) / price):
- *   starter  (500K/mo)  -> 250K pack -> $1.99  (~$7.96/M effective, 57.6% margin)
- *   growth   (2M/mo)    -> 1M pack   -> $7.99  (~$7.99/M effective, 57.8% margin)
- *   business (10M/mo)   -> 5M pack   -> $37.99 (~$7.60/M effective, 55.6% margin)
+ * Pack sizes are half of each tier's own monthly budget. Prices target a
+ * 60% MARGIN on token cost, which is price = cost / (1 - 0.60) = cost x 2.5.
+ *
+ * Margin and markup are NOT the same number and the difference is large
+ * enough to be worth stating here: "add 60% to what the provider charges"
+ * is a 60% MARKUP (price = cost x 1.6) and yields only a 37.5% margin. The
+ * multiplier for a 60% margin is 2.5, not 1.6.
+ *
+ * Each price is rounded UP to a clean ending, so every pack clears 60%
+ * rather than landing just under it:
+ *   starter  (500K/mo)  -> 250K pack -> $2.19  (cost $0.84,  61.5% margin)
+ *   growth   (2M/mo)    -> 1M pack   -> $8.49  (cost $3.38,  60.3% margin)
+ *   business (10M/mo)   -> 5M pack   -> $42.99 (cost $16.88, 60.8% margin)
+ *
+ * IMPORTANT - this margin is on TOKEN COST ONLY. It does not account for
+ * payment processing, which is charged per transaction and therefore hits
+ * the small packs hardest. At a typical 2.9% + $0.30, the REAL margins are
+ * roughly 43% (starter), 54% (growth) and 56% (business) - so the starter
+ * pack keeps well under half of what this comment's headline figure
+ * suggests. Reaching 60% NET of processing would need about $3.08 / $9.91 /
+ * $46.29 instead. Left at the token-cost figure deliberately: the real
+ * processor rates for BiMPay/WiPay are not known here, and guessing them
+ * into customer-facing prices would be worse than stating the limit.
  * Enterprise is unlimited - the budget gate never fires, so no pack is
  * ever offered. Revisit this catalog if the real prompt/output token
  * ratio (once actually measurable from ai_usage_events) turns out to
@@ -41,9 +58,9 @@ const topupRepository = new AiTokenTopupRepository(pool);
 export type AiTokenTopupCatalog = Record<string, { tokens: number; priceCents: number; currency: string }>;
 
 export const TOPUP_CATALOG: AiTokenTopupCatalog = {
-  starter: { tokens: 250_000, priceCents: 199, currency: 'USD' },
-  growth: { tokens: 1_000_000, priceCents: 799, currency: 'USD' },
-  business: { tokens: 5_000_000, priceCents: 3799, currency: 'USD' },
+  starter: { tokens: 250_000, priceCents: 219, currency: 'USD' },
+  growth: { tokens: 1_000_000, priceCents: 849, currency: 'USD' },
+  business: { tokens: 5_000_000, priceCents: 4299, currency: 'USD' },
 };
 
 /** Developer Master Control page override (platform_settings key ai_token_topup_catalog), falling back to the hardcoded TOPUP_CATALOG above when nothing's been set - additive, never a regression for this already-shipped upsell flow. */

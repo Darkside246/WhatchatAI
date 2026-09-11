@@ -27,13 +27,13 @@ describe('aiTokenTopupService (real Postgres)', () => {
     it('returns the real starter pack for a business on the starter plan', async () => {
       await createTestSubscription(businessId, 'starter');
       const offer = await getTopupOffer(businessId);
-      expect(offer).toEqual({ planKey: 'starter', tokens: 250_000, priceCents: 199, currency: 'USD' });
+      expect(offer).toEqual({ planKey: 'starter', tokens: 250_000, priceCents: 219, currency: 'USD' });
     });
 
     it('returns the real growth pack for a business on the growth plan', async () => {
       await createTestSubscription(businessId, 'growth');
       const offer = await getTopupOffer(businessId);
-      expect(offer).toEqual({ planKey: 'growth', tokens: 1_000_000, priceCents: 799, currency: 'USD' });
+      expect(offer).toEqual({ planKey: 'growth', tokens: 1_000_000, priceCents: 849, currency: 'USD' });
     });
 
     it('returns null for enterprise - unlimited plans never need a top-up', async () => {
@@ -46,13 +46,51 @@ describe('aiTokenTopupService (real Postgres)', () => {
     });
   });
 
+  /**
+   * The prices above are real business values, so they are asserted
+   * literally rather than derived from the catalogue - a test that read the
+   * catalogue to check the catalogue would pass on any figure at all.
+   *
+   * This block asserts the INVARIANT behind those figures instead: every
+   * pack must clear the 60% margin the business set. That is what catches a
+   * future reprice that silently undershoots, which a hardcoded equality
+   * check cannot do (it just fails, saying nothing about why).
+   *
+   * Margin, not markup: margin = (price - cost) / price, so 60% means
+   * price = cost / 0.4, i.e. cost x 2.5 - NOT cost x 1.6, which is a 60%
+   * markup and only a 37.5% margin.
+   */
+  describe('catalogue margin', () => {
+    // 0.75 * $1.50 + 0.25 * $9.00 per 1M tokens - the same blended Gemini
+    // 3.5 Flash cost the catalogue itself is priced against.
+    const COST_PER_MILLION_USD = 3.375;
+    const TARGET_MARGIN = 0.6;
+
+    it('every token pack clears the 60% margin target on token cost', () => {
+      for (const [planKey, pack] of Object.entries(TOPUP_CATALOG)) {
+        const costUsd = (pack.tokens / 1_000_000) * COST_PER_MILLION_USD;
+        const priceUsd = pack.priceCents / 100;
+        const margin = (priceUsd - costUsd) / priceUsd;
+        expect(margin, `${planKey} pack margin`).toBeGreaterThanOrEqual(TARGET_MARGIN);
+      }
+    });
+
+    it('no pack is priced at a mere 60% MARKUP, which would be a 37.5% margin', () => {
+      for (const [planKey, pack] of Object.entries(TOPUP_CATALOG)) {
+        const costUsd = (pack.tokens / 1_000_000) * COST_PER_MILLION_USD;
+        const priceUsd = pack.priceCents / 100;
+        expect(priceUsd, `${planKey} pack price`).toBeGreaterThan(costUsd * 1.6);
+      }
+    });
+  });
+
   describe('createTopupCheckout', () => {
     it('creates a real PENDING purchase and returns real BiMPay checkout instructions', async () => {
       await createTestSubscription(businessId, 'starter');
       const { purchase, instructions } = await createTopupCheckout(businessId, 'bimpay');
       expect(purchase.status).toBe('PENDING');
       expect(purchase.tokensPurchased).toBe(250_000);
-      expect(purchase.amountMinor).toBe(199);
+      expect(purchase.amountMinor).toBe(219);
       expect(instructions).toMatchObject({ reference: purchase.checkoutReference, memoRequired: true });
     });
 
