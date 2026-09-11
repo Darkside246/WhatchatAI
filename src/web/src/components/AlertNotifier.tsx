@@ -168,6 +168,19 @@ export function AlertNotifier() {
     return () => clearInterval(timer);
   }, [groups.length]);
 
+  /**
+   * How many conversations are really outstanding right now, across every
+   * group - not how many pills happen to be in the rotation.
+   *
+   * With identity display off (the privacy default) alerts on the same line
+   * and urgency collapse into a single group, so the pill had nothing to
+   * rotate between and simply sat on one entry: there was no way to tell
+   * two waiting conversations from ten. The count is the honest answer to
+   * "how much is outstanding", and it is a real count of live alerts, never
+   * an estimate.
+   */
+  const outstandingCount = visibleAlerts.length;
+
   if (groups.length === 0) return null;
   const current = groups[rotationIndex % groups.length]!;
 
@@ -186,7 +199,16 @@ export function AlertNotifier() {
     >
       <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-current" />
       <span className="min-w-0 truncate">{groupLabel(current, showIdentity)}</span>
-      {groups.length > 1 && <span className="shrink-0 opacity-70">{rotationIndex + 1}/{groups.length}</span>}
+      {outstandingCount > 1 && (
+        <span
+          title={`${outstandingCount} conversations waiting on a human`}
+          className="shrink-0 rounded-full bg-current/20 px-1.5 py-0.5 text-meta font-semibold tabular-nums"
+        >
+          {outstandingCount > 99 ? '99+' : outstandingCount}
+        </span>
+      )}
+      {/* Only meaningful while there is genuinely more than one pill to cycle through. */}
+      {groups.length > 1 && <span className="shrink-0 opacity-70 tabular-nums">{rotationIndex + 1}/{groups.length}</span>}
       <span
         role="button"
         tabIndex={0}

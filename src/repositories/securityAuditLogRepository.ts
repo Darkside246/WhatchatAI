@@ -153,6 +153,15 @@ export interface RecordSecurityEventInput {
   rawMetadata?: Record<string, unknown>;
 }
 
+/** Real, SQL-applied filters for the developer security-events view. */
+export interface SecurityEventFilters {
+  severity?: string | undefined;
+  eventType?: string | undefined;
+  businessId?: string | undefined;
+  /** 'newest' (default) or 'oldest' - whitelisted, never interpolated. */
+  sort?: 'newest' | 'oldest' | undefined;
+}
+
 export class SecurityAuditLogRepository {
   constructor(private readonly db: Queryable) {}
 
@@ -217,17 +226,60 @@ export class SecurityAuditLogRepository {
    * developer-facing cross-tenant view) - structural fields only, never
    * raw message content (this table's own established convention).
    */
-  async listRecentAcrossPlatform(hours: number, limit = 200): Promise<Array<SecurityAuditLogRecord & { businessName: string | null }>> {
+  async listRecentAcrossPlatform(
+    hours: number,
+    limit = 200,
+    filters: SecurityEventFilters = {},
+  ): Promise<Array<SecurityAuditLogRecord & { businessName: string | null }>> {
+    // Filters are applied in SQL, not after the fact in JS: a severity or
+    // type filter has to search the whole window, otherwise it would only
+    // ever filter within the most recent `limit` rows and silently hide
+    // older matches - which is exactly the shape of bug that makes an audit
+    // view untrustworthy.
+    const conditions: string[] = ["sal.created_at > NOW() - ($1 || ' hours')::interval"];
+    const params: unknown[] = [hours];
+
+    if (filters.severity) {
+      params.push(filters.severity);
+      conditions.push(`sal.severity = $${params.length}`);
+    }
+    if (filters.eventType) {
+      params.push(filters.eventType);
+      conditions.push(`sal.event_type = $${params.length}`);
+    }
+    if (filters.businessId) {
+      params.push(filters.businessId);
+      conditions.push(`sal.business_id = $${params.length}`);
+    }
+
+    // Whitelisted, never interpolated from caller input - the only two
+    // orderings that make sense for a chronological audit view.
+    const direction = filters.sort === 'oldest' ? 'ASC' : 'DESC';
+    params.push(limit);
+
     const { rows } = await this.db.query<SecurityAuditLogRow & { business_name: string | null }>(
       `SELECT sal.*, b.name AS business_name
        FROM security_audit_logs sal
        LEFT JOIN businesses b ON b.id = sal.business_id
-       WHERE sal.created_at > NOW() - ($1 || ' hours')::interval
-       ORDER BY sal.created_at DESC
-       LIMIT $2`,
-      [hours, limit],
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY sal.created_at ${direction}
+       LIMIT $${params.length}`,
+      params,
     );
     return rows.map((row) => ({ ...toRecord(row), businessName: row.business_name }));
+  }
+
+  /** The distinct event types and severities actually present in the window, so a filter UI offers only values that will really match something. */
+  async listRecentFacetsAcrossPlatform(hours: number): Promise<{ eventTypes: string[]; severities: string[] }> {
+    const { rows } = await this.db.query<{ event_type: string; severity: string }>(
+      `SELECT DISTINCT event_type, severity FROM security_audit_logs
+        WHERE created_at > NOW() - ($1 || ' hours')::interval`,
+      [hours],
+    );
+    return {
+      eventTypes: [...new Set(rows.map((row) => row.event_type))].sort(),
+      severities: [...new Set(rows.map((row) => row.severity))].sort(),
+    };
   }
 
   async countRecentByBusinessAndTool(businessId: string, toolName: string, windowMinutes: number): Promise<number> {

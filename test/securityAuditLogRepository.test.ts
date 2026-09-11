@@ -106,3 +106,62 @@ describe('SecurityAuditLogRepository - governance aggregation methods (real Post
     expect(grouped.find((g) => g.businessId === businessB)?.count).toBe(1);
   });
 });
+
+describe('SecurityAuditLogRepository - security-event sort and filter', () => {
+  it('filters by severity and by event type, in SQL across the whole window', async () => {
+    const repo = new SecurityAuditLogRepository(pool);
+    const businessId = await createTestBusiness();
+
+    await repo.record({ businessId, eventType: 'lock_unlock_failure', severity: 'warning', rawMetadata: {} });
+    await repo.record({ businessId, eventType: 'lock_revoked', severity: 'critical', rawMetadata: {} });
+    await repo.record({ businessId, eventType: 'lock_unlock_success', severity: 'info', rawMetadata: {} });
+
+    const critical = await repo.listRecentAcrossPlatform(24, 200, { severity: 'critical' });
+    expect(critical.every((event) => event.severity === 'critical')).toBe(true);
+    expect(critical.some((event) => event.eventType === 'lock_revoked')).toBe(true);
+
+    const byType = await repo.listRecentAcrossPlatform(24, 200, { eventType: 'lock_unlock_failure' });
+    expect(byType.every((event) => event.eventType === 'lock_unlock_failure')).toBe(true);
+    expect(byType.some((event) => event.eventType === 'lock_revoked')).toBe(false);
+  });
+
+  it('sorts newest-first by default and oldest-first on request', async () => {
+    const repo = new SecurityAuditLogRepository(pool);
+    const businessId = await createTestBusiness();
+
+    await repo.record({ businessId, eventType: 'lock_unlock_success', severity: 'info', rawMetadata: { marker: 'first' } });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    await repo.record({ businessId, eventType: 'lock_unlock_success', severity: 'info', rawMetadata: { marker: 'second' } });
+
+    const scoped = { eventType: 'lock_unlock_success' as const, businessId };
+    const newest = await repo.listRecentAcrossPlatform(24, 200, scoped);
+    const oldest = await repo.listRecentAcrossPlatform(24, 200, { ...scoped, sort: 'oldest' });
+
+    expect(newest.length).toBeGreaterThanOrEqual(2);
+    expect(oldest[0]!.id).toBe(newest[newest.length - 1]!.id);
+    expect(newest[0]!.id).toBe(oldest[oldest.length - 1]!.id);
+  });
+
+  it('scopes to one business when asked, and offers only facet values really present in the window', async () => {
+    const repo = new SecurityAuditLogRepository(pool);
+    const businessId = await createTestBusiness();
+    const otherBusinessId = await createTestBusiness();
+
+    await repo.record({ businessId, eventType: 'lock_throttled', severity: 'warning', rawMetadata: {} });
+    await repo.record({ businessId: otherBusinessId, eventType: 'lock_throttled', severity: 'warning', rawMetadata: {} });
+
+    const scoped = await repo.listRecentAcrossPlatform(24, 200, { businessId });
+    expect(scoped.every((event) => event.businessId === businessId)).toBe(true);
+
+    const facets = await repo.listRecentFacetsAcrossPlatform(24);
+    expect(facets.eventTypes).toContain('lock_throttled');
+    expect(facets.severities).toContain('warning');
+  });
+
+  it('a filter that matches nothing returns an empty list, never an unfiltered one', async () => {
+    const repo = new SecurityAuditLogRepository(pool);
+    await createTestBusiness();
+    const none = await repo.listRecentAcrossPlatform(24, 200, { eventType: 'a_type_that_does_not_exist' });
+    expect(none).toEqual([]);
+  });
+});

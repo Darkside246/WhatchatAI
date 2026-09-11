@@ -141,12 +141,35 @@ router.get('/developer/trials', requireAuth, requireDeveloper, async (_req, res)
 /** The real detail behind the "Security events (24h)" stat pill - structural fields only, never raw message content. */
 router.get('/developer/security-events', requireAuth, requireDeveloper, async (req, res) => {
   const hours = Number(req.query.hours ?? 24) || 24;
-  const events = await securityAuditLogRepository.listRecentAcrossPlatform(hours);
+  const limitParam = Number(req.query.limit);
+  // Bounded: an audit view must never be able to ask for an unbounded scan.
+  const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 1000) : 200;
+
+  const asString = (value: unknown): string | undefined => {
+    const text = typeof value === 'string' ? value.trim() : '';
+    return text.length > 0 ? text : undefined;
+  };
+
+  const [events, facets] = await Promise.all([
+    securityAuditLogRepository.listRecentAcrossPlatform(hours, limit, {
+      severity: asString(req.query.severity),
+      eventType: asString(req.query.eventType),
+      businessId: asString(req.query.businessId),
+      // Anything other than an explicit 'oldest' is newest-first, so a
+      // malformed value degrades to the sensible default rather than erroring.
+      sort: req.query.sort === 'oldest' ? 'oldest' : 'newest',
+    }),
+    // The values actually present in this window, so the filter UI can only
+    // offer options that will really match something.
+    securityAuditLogRepository.listRecentFacetsAcrossPlatform(hours),
+  ]);
+
   return res.status(200).json({
     events: events.map((event) => ({
       id: event.id, eventType: event.eventType, severity: event.severity,
       businessId: event.businessId, businessName: event.businessName, createdAt: event.createdAt,
     })),
+    facets,
   });
 });
 

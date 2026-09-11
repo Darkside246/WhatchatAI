@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
   Check,
@@ -417,6 +417,14 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   const { theme } = useTheme();
   const doodleClass = THEMES.find((t) => t.id === theme)?.doodleClass ?? 'chat-sleek-bg';
   const { chatId } = useParams<{ chatId: string }>();
+  /**
+   * ?message=<id> opens the thread AT that message instead of at its live
+   * end - the "Messages for you" board uses it so an entry behaves like a
+   * bookmark. Every other way into a conversation still lands on the newest
+   * message, which is what you want when you are picking up a live chat.
+   */
+  const [searchParams] = useSearchParams();
+  const anchorMessageId = searchParams.get('message');
   const [messages, setMessages] = useState<WorkspaceMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [detail, setDetail] = useState<WorkspaceChatDetail | null>(null);
@@ -669,11 +677,30 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   useLayoutEffect(() => {
     const list = messageListRef.current;
     if (!list || !messages || messages.length === 0) return;
+
+    // An anchored open wins over the usual jump-to-newest, but only once:
+    // after landing on the bookmarked message the thread behaves normally,
+    // and the operator is left exactly where they were put rather than
+    // being dragged to the bottom by the next poll.
+    if (pendingInitialScrollRef.current && anchorMessageId) {
+      const target = list.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(anchorMessageId)}"]`);
+      if (target) {
+        target.scrollIntoView({ block: 'center' });
+        // Reading history, not following the live end.
+        followNewestRef.current = false;
+        pendingInitialScrollRef.current = false;
+        return;
+      }
+      // The anchor is not in the loaded window (or was deleted) - fall
+      // through to the newest message rather than leaving the operator
+      // stranded at the top with no explanation.
+    }
+
     if (!pendingInitialScrollRef.current && !followNewestRef.current) return;
 
     list.scrollTop = list.scrollHeight;
     pendingInitialScrollRef.current = false;
-  }, [messages, chatId]);
+  }, [messages, chatId, anchorMessageId]);
 
   /**
    * Real Gemini-drafted replies, fetched only when the newest real message
@@ -990,7 +1017,14 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
           </div>
         )}
         {messages?.map((message, index) => (
-          <div key={message.id}>
+          /* The anchored message gets a quiet ring so the operator can see
+             which one the board sent them to, rather than being dropped
+             mid-thread with no indication of why. */
+          <div
+            key={message.id}
+            data-message-id={message.id}
+            className={message.id === anchorMessageId ? 'rounded-lg ring-2 ring-accent/40' : undefined}
+          >
             {(index === 0 || dayKey(messages[index - 1]!.timestamp) !== dayKey(message.timestamp)) && (
               <div className="flex justify-center py-2">
                 <span className="rounded-full border border-border-subtle/50 bg-surface-1/90 px-3 py-1 text-meta font-medium text-fg-muted shadow-sm">

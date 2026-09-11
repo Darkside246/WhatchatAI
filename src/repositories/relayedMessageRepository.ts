@@ -9,6 +9,8 @@ export interface RelayedMessageRecord {
   recipientDescription: string;
   messageText: string;
   whenText: string | null;
+  /** The message that caused this entry, when known - lets the board open the conversation at that exact point rather than at its live end. Null for entries recorded before anchoring existed, or whose message has since been deleted. */
+  messageId: string | null;
   createdAt: string;
   dismissedAt: string | null;
 }
@@ -19,6 +21,7 @@ export interface CreateRelayedMessageInput {
   recipientDescription: string;
   messageText: string;
   whenText?: string | null;
+  messageId?: string | null;
 }
 
 interface RelayedMessageRow {
@@ -29,6 +32,7 @@ interface RelayedMessageRow {
   recipient_description: string;
   message_text: string;
   when_text: string | null;
+  message_id: string | null;
   created_at: string;
   dismissed_at: string | null;
 }
@@ -42,6 +46,7 @@ function toRecord(row: RelayedMessageRow): RelayedMessageRecord {
     recipientDescription: row.recipient_description,
     messageText: row.message_text,
     whenText: row.when_text,
+    messageId: row.message_id,
     createdAt: row.created_at,
     dismissedAt: row.dismissed_at,
   };
@@ -55,9 +60,9 @@ export class RelayedMessageRepository {
 
   async create(input: CreateRelayedMessageInput): Promise<RelayedMessageRecord> {
     const { rows } = await this.db.query<{ id: string }>(
-      `INSERT INTO relayed_messages (business_id, chat_id, recipient_description, message_text, when_text)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [input.businessId, input.chatId, input.recipientDescription, input.messageText, input.whenText ?? null],
+      `INSERT INTO relayed_messages (business_id, chat_id, recipient_description, message_text, when_text, message_id)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [input.businessId, input.chatId, input.recipientDescription, input.messageText, input.whenText ?? null, input.messageId ?? null],
     );
     const id = rows[0]?.id;
     if (!id) throw new Error('Failed to create relayed message');

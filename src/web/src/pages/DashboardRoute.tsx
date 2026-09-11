@@ -309,7 +309,13 @@ function MessageBoardCard() {
               opacity: 1 - Math.min(0.7, Math.abs(dx) / 240),
               transition: dragging ? 'none' : 'transform 150ms ease, opacity 150ms ease',
             }}
-            onClick={() => !dragging && navigate(`/chats/${m.chatId}`)}
+            /* Opens the conversation AT the message this entry is about,
+               like a bookmark, rather than at its live end - otherwise the
+               operator lands at the bottom and has to scroll back hunting
+               for the thing they just clicked on. Falls back to a normal
+               open when the entry has no anchor (recorded before anchoring
+               existed, or the message has since been deleted). */
+            onClick={() => !dragging && navigate(m.messageId ? `/chats/${m.chatId}?message=${m.messageId}` : `/chats/${m.chatId}`)}
             onPointerDown={(e) => onPointerDown(m.id, e.clientX)}
             onPointerMove={(e) => dragState?.id === m.id && onPointerMove(e.clientX)}
             onPointerUp={onPointerUp}

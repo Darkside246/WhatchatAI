@@ -1028,12 +1028,21 @@ async function executeOneToolCall(
       if (!args.recipientDescription?.trim() || !args.messageText?.trim()) {
         return { recorded: false, error: 'recipientDescription and messageText are both required.' };
       }
+      // Anchor the board entry to the customer message that prompted it, so
+      // clicking it later opens the conversation at that exact point instead
+      // of at its live end. The newest inbound turn IS the message being
+      // responded to this turn - conversationHistory is chronological and
+      // our own outbound sends are fromMe. Null when there is genuinely no
+      // inbound message to point at, rather than guessing at one.
+      const anchor = [...context.conversationHistory].reverse().find((message) => !message.fromMe) ?? null;
+
       await relayedMessageRepository.create({
         businessId: context.businessId,
         chatId: context.chatId,
         recipientDescription: args.recipientDescription.trim(),
         messageText: args.messageText.trim(),
         whenText: args.whenText?.trim() || null,
+        messageId: anchor?.id ?? null,
       });
       return { recorded: true };
     } catch (error) {

@@ -332,6 +332,8 @@ export interface RelayedMessageDto {
   recipientDescription: string;
   messageText: string;
   whenText: string | null;
+  /** The message that prompted this entry, when known - lets the board open the conversation at that exact point instead of at its live end. */
+  messageId: string | null;
   createdAt: string;
   dismissedAt: string | null;
 }
