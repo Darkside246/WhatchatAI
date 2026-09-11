@@ -3,22 +3,99 @@
  *
  * Usage:
  *   npx tsx scripts/reset-password.ts <email> <new-password>
+ *   npx tsx scripts/reset-password.ts --phone <+E.164 phone> <new-password>
  *
  * The password is supplied at runtime and is never stored in source control.
  * This utility deliberately does not call validatePasswordStrength so it can
  * recover accounts whose previous credential policy is incompatible with the
  * current verifier. Login itself does not enforce password strength.
+ *
+ * WHY --phone EXISTS. Signup identifies a person by phone number, and the
+ * developer control plane lists accounts by phone - so that is the identifier
+ * an operator actually has when someone says they cannot get in. It is not
+ * queryable in SQL: users.phone_number is encrypted per business (see
+ * developerAccountsService, which decrypts the same way for the same reason),
+ * so `WHERE phone_number = ...` matches nothing however correct the number is.
+ * This resolves it the only way it can be resolved - decrypt each candidate
+ * and compare digits.
+ *
+ * THIS IS NOT A PASSWORD RESET FEATURE. It is an operator recovering one
+ * account by hand, on the server, with database credentials. There is still
+ * no self-serve path for a user who has forgotten their password.
  */
 import 'dotenv/config';
 import { pool } from '../src/db/pool.js';
 import { hashPassword } from '../src/services/passwordHashService.js';
+import { getEncryptionService } from '../src/security/encryption/index.js';
+import { BusinessMembershipRepository } from '../src/repositories/businessMembershipRepository.js';
+import { BusinessRepository } from '../src/repositories/businessRepository.js';
+import { SessionRepository } from '../src/repositories/sessionRepository.js';
+
+interface FoundUser {
+  id: string;
+  email: string;
+  status: string;
+  businessName: string | null;
+}
+
+async function findByEmail(email: string): Promise<FoundUser[]> {
+  const { rows } = await pool.query<{ id: string; email: string; status: string }>(
+    'SELECT id, email, status FROM users WHERE email = $1 AND deleted_at IS NULL',
+    [email],
+  );
+  return rows.map((row) => ({ ...row, businessName: null }));
+}
+
+/**
+ * Matches on digits only, so +1 246 260-6993, 12462606993 and (246) 260-6993
+ * all find the same person. Whatever formatting the number was stored in is
+ * whatever the user typed at signup, and an operator reading it off a support
+ * message should not have to reproduce it exactly.
+ */
+async function findByPhone(phone: string): Promise<FoundUser[]> {
+  const wanted = phone.replace(/\D/g, '');
+  if (wanted.length === 0) return [];
+
+  const { rows } = await pool.query<{ id: string; email: string; status: string; phone_number: string | null }>(
+    'SELECT id, email, status, phone_number FROM users WHERE phone_number IS NOT NULL AND deleted_at IS NULL',
+  );
+
+  const membershipRepository = new BusinessMembershipRepository(pool);
+  const businessRepository = new BusinessRepository(pool);
+  const encryption = getEncryptionService();
+  const matches: FoundUser[] = [];
+
+  for (const row of rows) {
+    const membership = await membershipRepository.findFirstActiveForUser(row.id);
+    if (!membership || !row.phone_number) continue;
+
+    let decrypted: string | null = null;
+    try {
+      const envelope = encryption.tryParse(row.phone_number);
+      decrypted = envelope ? await encryption.decryptField(membership.businessId, envelope) : row.phone_number;
+    } catch {
+      // Encrypted under a business this user no longer belongs to. Skipped
+      // rather than fatal - one unreadable row must not hide every other
+      // account from the search.
+      continue;
+    }
+
+    if ((decrypted ?? '').replace(/\D/g, '') !== wanted) continue;
+    const business = await businessRepository.findById(membership.businessId);
+    matches.push({ id: row.id, email: row.email, status: row.status, businessName: business?.name ?? null });
+  }
+
+  return matches;
+}
 
 async function main(): Promise<void> {
-  const [emailArg, password] = process.argv.slice(2);
-  const email = emailArg?.trim().toLowerCase();
+  const args = process.argv.slice(2);
+  const byPhone = args[0] === '--phone';
+  const [identifier, password] = byPhone ? args.slice(1) : args;
 
-  if (!email || password === undefined) {
+  if (!identifier || password === undefined) {
     console.error('Usage: npx tsx scripts/reset-password.ts <email> <new-password>');
+    console.error('       npx tsx scripts/reset-password.ts --phone <+E.164 phone> <new-password>');
     process.exitCode = 1;
     return;
   }
@@ -29,18 +106,24 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { rows } = await pool.query<{ id: string; email: string; status: string }>(
-    'SELECT id, email, status FROM users WHERE email = $1 AND deleted_at IS NULL',
-    [email],
-  );
+  const found = byPhone ? await findByPhone(identifier) : await findByEmail(identifier.trim().toLowerCase());
 
-  const user = rows[0];
-  if (!user) {
-    console.error(`No active user found for ${email}.`);
+  if (found.length === 0) {
+    console.error(`No active user found for ${identifier}.`);
     process.exitCode = 1;
     return;
   }
 
+  // Two people on one number means the operator has to say which account -
+  // guessing would reset a stranger's password.
+  if (found.length > 1) {
+    console.error(`${found.length} active users match ${identifier}. Re-run with the email of the one you mean:`);
+    for (const candidate of found) console.error(`  ${candidate.email}${candidate.businessName ? ` (${candidate.businessName})` : ''}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const user = found[0]!;
   const credential = await hashPassword(password);
 
   await pool.query(
@@ -53,8 +136,15 @@ async function main(): Promise<void> {
     [credential.hash, credential.salt, JSON.stringify(credential.params), user.id],
   );
 
-  console.log(`Password reset successfully for ${user.email}.`);
+  // A forgotten password and a stolen one look identical from here, and the
+  // new credential alone evicts nobody: every session token issued before
+  // this moment stays valid until it expires on its own. Revoking them is
+  // the difference between "they can get back in" and "only they can."
+  const revoked = await new SessionRepository(pool).revokeAllForUserExcept(user.id, null);
+
+  console.log(`Password reset successfully for ${user.email}${user.businessName ? ` (${user.businessName})` : ''}.`);
   console.log(`Account status: ${user.status}.`);
+  console.log(`Signed-in sessions revoked: ${revoked}.`);
   console.log('All future logins will use the new Argon2id credential.');
 }
 
