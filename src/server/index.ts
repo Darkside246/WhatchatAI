@@ -3822,6 +3822,25 @@ app.patch('/api/workspace/settings/channel-notifications', requireWorkspaceConte
   return res.status(200).json({ channelNotificationsEnabled: business.channelNotificationsEnabled });
 });
 
+/**
+ * Whether an operator is warned before sending a message that looks like it
+ * contains personal information. ON by default - see migration 1021.
+ *
+ * The check itself runs in the browser, because it is a warning shown before
+ * the operator commits to sending, and a round trip to ask "does this look
+ * like a card number" would put a network delay in front of every keystroke-
+ * to-send. This route only stores the preference.
+ */
+app.patch('/api/workspace/settings/pii-warning', requireWorkspaceContext, requirePermission('settings.manage'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = z.object({ enabled: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_INPUT' });
+
+  const business = await new BusinessRepository(pool).setPiiWarningEnabled(businessId, parsed.data.enabled);
+  if (!business) return res.status(404).json({ error: 'BUSINESS_NOT_FOUND' });
+  return res.status(200).json({ piiWarningEnabled: business.piiWarningEnabled });
+});
+
 app.get('/api/workspace/statuses', requireWorkspaceContext, async (_req, res) => {
   const { businessId, whatsappAccountId } = res.locals.workspaceContext as {
     businessId: string;

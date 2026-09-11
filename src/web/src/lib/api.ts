@@ -614,6 +614,8 @@ export interface WorkspaceBusiness {
   nameUsageEnabled: boolean;
   /** Whether WhatsApp Channel activity may raise notifications. Off by default - channels are broadcast feeds, not conversations, so they would otherwise bury the things that genuinely need a person. */
   channelNotificationsEnabled: boolean;
+  /** Warn before sending a message that looks like it contains personal information. Default true. */
+  piiWarningEnabled: boolean;
   /** Relationship-Confidence Engine (Phase 3): off by default. When on, a genuinely ambiguous chat (in 2+ Lists with different enabled agent assignments) gets a real, deterministic keyword-count suggestion for routing - never auto-writes active_list_id. */
   relationshipConfidenceEnabled: boolean;
   /** Section 75-91: a real, pending account-deletion request (accountDeletionService.ts) - null unless the OWNER has explicitly requested it. */
@@ -1882,6 +1884,11 @@ export const api = {
   resetBrandDna: () => request<{ reset: boolean }>('/workspace/brand-dna', { method: 'DELETE' }),
   /** WhatsApp Channels this account follows - broadcast feeds, read-only by nature. */
   listChannels: () => request<{ channels: WorkspaceChatSummary[] }>('/workspace/channels'),
+  setPiiWarningEnabled: (enabled: boolean) =>
+    request<{ piiWarningEnabled: boolean }>('/workspace/settings/pii-warning', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    }),
   setChannelNotificationsEnabled: (enabled: boolean) =>
     request<{ channelNotificationsEnabled: boolean }>('/workspace/settings/channel-notifications', {
       method: 'PATCH',

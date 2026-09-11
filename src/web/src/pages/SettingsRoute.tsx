@@ -392,6 +392,11 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
   const [missionAiVisible, setMissionAiVisible] = useState(true);
   /** Off by default, matching the server - see migration 1018. Loaded from the real business record below, never assumed. */
   const [channelNotifs, setChannelNotifs] = useState(false);
+  // Defaults to true, matching the column default (migration 1021): before
+  // the real value loads, the UI should show the protective state rather
+  // than briefly claiming the warning is off.
+  const [piiWarning, setPiiWarning] = useState(true);
+  const [piiWarningError, setPiiWarningError] = useState<string | null>(null);
   const [channelNotifsError, setChannelNotifsError] = useState<string | null>(null);
   const [showMission, setShowMission] = useState(false);
   const [savingMission, setSavingMission] = useState(false);
@@ -476,6 +481,7 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
       setMission(res.business.mission ?? '');
       setMissionAiVisible(res.business.missionStatementAiVisible);
       setChannelNotifs(res.business.channelNotificationsEnabled);
+      setPiiWarning(res.business.piiWarningEnabled);
     }).catch(() => undefined);
     api.listKnowledgeBaseDocuments().then((res) => {
       const doc = res.documents.find((d) => d.title === PROFILE_KB_TITLE);
@@ -838,6 +844,37 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
                   });
                 }}
                 label="Channel notifications"
+              />
+            </div>
+
+            {/*
+              Sits beside the channel toggle because both are "what Aura does
+              without being asked", but its default is the opposite: ON. A
+              missed notification is recoverable; personal information sent to
+              a third-party model is not.
+            */}
+            <div className="flex items-start justify-between gap-3 border-t border-border-subtle pt-3">
+              <div className="min-w-0">
+                <p className="text-meta font-medium text-fg">Warn before sending personal information</p>
+                <p className="text-meta text-fg-muted">
+                  On by default. Messages in a conversation are sent to an AI provider to generate replies, so Aura
+                  checks what you type for phone numbers, emails, card numbers and ID numbers, and asks before sending.
+                  It warns — it never blocks.
+                </p>
+                {piiWarningError && <p className="mt-1 text-meta text-error">{piiWarningError}</p>}
+              </div>
+              <ToggleSwitch
+                checked={piiWarning}
+                onChange={() => {
+                  const next = !piiWarning;
+                  setPiiWarning(next);
+                  setPiiWarningError(null);
+                  api.setPiiWarningEnabled(next).catch((err: unknown) => {
+                    setPiiWarning(!next);
+                    setPiiWarningError(err instanceof Error ? err.message : 'Could not save that setting.');
+                  });
+                }}
+                label="Warn before sending personal information"
               />
             </div>
             {missionError && <p className="text-meta text-error">{missionError}</p>}

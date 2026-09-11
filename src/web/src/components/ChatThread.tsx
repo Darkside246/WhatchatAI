@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { detectPii, describePiiFindings, type PiiFinding } from '../lib/piiDetector.js';
 import {
   ArrowLeft,
   Check,
@@ -22,6 +23,7 @@ import {
   Mic,
   Square,
   CornerUpRight,
+  ShieldAlert,
 } from 'lucide-react';
 import {
   api,
@@ -469,6 +471,20 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   const [assigneeError, setAssigneeError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLInputElement>(null);
+  /** A send held back pending the operator's answer to the PII notice. */
+  const [piiPrompt, setPiiPrompt] = useState<{ findings: PiiFinding[]; text: string } | null>(null);
+  // Defaults to true so the very first render, before the business setting
+  // has loaded, errs toward warning rather than toward silently sending.
+  const [piiWarningEnabled, setPiiWarningEnabled] = useState(true);
+
+  useEffect(() => {
+    api
+      .getBusiness()
+      .then(({ business }) => setPiiWarningEnabled(business.piiWarningEnabled))
+      // On failure the warning stays ON. A setting we could not read is not
+      // permission to skip the check.
+      .catch(() => undefined);
+  }, []);
   // Which conversation is actually on screen right now, readable from inside
   // an async load that started before the operator switched away.
   const activeChatIdRef = useRef(chatId);
@@ -824,9 +840,30 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
     }
   }
 
-  async function handleSendText() {
+  /**
+   * Sends the composed text, after warning about personal information when
+   * the business has that warning on.
+   *
+   * `force` is the operator saying "yes, send it anyway" from the notice. It
+   * is a real decision they made, so it is honoured - this warns, it does not
+   * block. Sometimes sending a customer their own number back is exactly the
+   * right thing to do, and a tool that refuses legitimate work is one people
+   * route around.
+   */
+  async function handleSendText(force = false) {
     const text = draft.trim();
     if (!chatId || !text || sending) return;
+
+    if (!force && piiWarningEnabled) {
+      const findings = detectPii(text);
+      if (findings.length > 0) {
+        // The draft is deliberately NOT cleared here. If the operator
+        // decides to edit instead of send, their text must still be there.
+        setPiiPrompt({ findings, text });
+        return;
+      }
+    }
+
     setDraft('');
     setEmojiPickerOpen(false);
     setReplySuggestions([]);
@@ -1416,6 +1453,58 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
 
       {lightbox && (
         <MediaLightbox imageUrl={lightbox.url} fileName={lightbox.fileName} onClose={() => setLightbox(null)} />
+      )}
+
+      {/*
+        Names WHAT was recognised, never quotes the value back - the operator
+        can already see their own text in the composer behind this, and
+        repeating a card number into a second element only spreads it.
+
+        "Send anyway" is a real choice, not a dark pattern: it is the primary
+        action's equal, because sending is often correct and the operator is
+        the one who knows.
+      */}
+      {piiPrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-sm rounded-xl border border-border-subtle bg-surface-1 p-4 shadow-2xl">
+            <div className="flex items-start gap-2">
+              <ShieldAlert size={18} className="mt-0.5 shrink-0 text-warning" aria-hidden />
+              <div className="min-w-0">
+                <p className="text-body font-semibold text-fg">This message contains personal information</p>
+                <p className="mt-1 text-caption text-fg-secondary">
+                  It looks like it includes {describePiiFindings(piiPrompt.findings)}.
+                </p>
+                <p className="mt-2 text-meta text-fg-muted">
+                  Messages in this conversation are sent to an AI provider to generate replies. Send it only if the
+                  customer needs it.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setPiiPrompt(null);
+                  composerRef.current?.focus();
+                }}
+                className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption text-fg hover:bg-surface-2"
+              >
+                Edit message
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPiiPrompt(null);
+                  void handleSendText(true);
+                }}
+                className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim"
+              >
+                Send anyway
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
