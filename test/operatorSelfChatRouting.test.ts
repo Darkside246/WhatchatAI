@@ -266,6 +266,66 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
     expect(audit).toHaveLength(0);
   }, 15_000);
 
+  /**
+   * The real reported symptom this guards: an operator sends a message, the
+   * customer receives it, and it then vanishes from the thread in Aura.
+   *
+   * The cause was Sentinel screening outbound ECHOES - WhatsApp delivers our
+   * own sent message back as a fromMe upsert. Screening our own
+   * already-authorized content could block its persistence/linking AFTER a
+   * successful send, so the message was genuinely gone from the
+   * conversation while the customer had it on their phone.
+   *
+   * Content here is deliberately the same string the customer-direction test
+   * below still expects to be BLOCKED - so this asserts the direction is
+   * what matters, not that the content became harmless.
+   */
+  it('an outbound echo in a real customer chat is never screened by the Sentinel, and is persisted rather than vanishing from the thread', async () => {
+    const spammyText = 'free money, you\'ve won! wire transfer now: https://bit.ly/totally-legit';
+    const messageId = `OUTBOUND-ECHO-${Date.now()}`;
+    const ingested: IngestedWhatsAppMessage = {
+      messageId,
+      remoteJid: '15550009999@s.whatsapp.net', // a real customer chat, NOT the self-chat
+      jidKind: 'individual',
+      phoneNumber: '+15550009999',
+      participant: null,
+      remoteJidAlt: null,
+      participantAlt: null,
+      fromMe: true, // our own message, echoed back by WhatsApp
+      pushName: 'Owner',
+      isLive: true,
+      upsertType: 'notify',
+      messageTimestamp: new Date().toISOString(),
+      contentType: 'text',
+      documentSubtype: null,
+      mimetype: null,
+      fileName: null,
+      textPreview: spammyText,
+      fullText: spammyText,
+      mediaDescriptor: null,
+      ingestedAt: new Date().toISOString(),
+    };
+
+    const completed = waitForIncomingMessageJob(incomingMessagesWorker, messageId);
+    await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid: ACCOUNT_JID, message: ingested });
+    await completed;
+
+    // The message is really in the thread - the whole point.
+    const { rows } = await pool.query(
+      'SELECT direction FROM whatsapp_messages WHERE business_id = $1 AND whatsapp_message_id = $2',
+      [businessId, messageId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].direction).toBe('outbound');
+
+    // And the Sentinel never ran for it.
+    const { rows: audit } = await pool.query(
+      `SELECT event_type FROM security_audit_logs WHERE business_id = $1 AND event_type = 'sentinel_heuristic_block'`,
+      [businessId],
+    );
+    expect(audit).toHaveLength(0);
+  }, 15_000);
+
   it('the exact same spammy content sent as a genuine customer message is still blocked by the Sentinel', async () => {
     const spammyCommand = 'free money, you\'ve won! wire transfer now: https://bit.ly/totally-legit';
     const messageId = `CUSTOMER-SENTINEL-${Date.now()}`;

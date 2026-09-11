@@ -241,7 +241,18 @@ export type AiReplyResult =
    * docs/PHASE_3A_AI_RELIABILITY_AUDIT_AND_PROPOSAL.md section 5 (escalation
    * hop) and the aiOrchestrator caller that reads this field.
    */
-  | { status: 'unavailable'; reason: string; skipEscalation: boolean };
+  | {
+      status: 'unavailable';
+      reason: string;
+      skipEscalation: boolean;
+      /**
+       * A transient capacity/quota outage rather than a durable fault. The
+       * caller uses this to avoid forcing a HUMAN_TAKEOVER state an operator
+       * would then have to undo by hand, and to avoid surfacing a raw
+       * provider error string once per message for as long as an outage lasts.
+       */
+      providerUnavailable?: boolean;
+    };
 
 // A runaway generation should never be relayed to a real customer verbatim,
 // regardless of what the model returns.
@@ -831,6 +842,7 @@ async function tryFallbackProviders(
   contents: ReturnType<typeof toContents>,
   skipEscalation: boolean,
   replyTools?: ReturnType<typeof buildReplyTools>,
+  providerUnavailable = false,
 ): Promise<AiReplyResult> {
   const fallbackProviders = aiGateway.listProviders().filter((provider) => provider.name !== 'gemini');
   if (fallbackProviders.length === 0) {
@@ -838,6 +850,7 @@ async function tryFallbackProviders(
       status: 'unavailable',
       reason: `Gemini unavailable (${geminiReason}); no fallback provider is configured`,
       skipEscalation,
+      providerUnavailable,
     };
   }
 
@@ -901,6 +914,7 @@ async function tryFallbackProviders(
     status: 'unavailable',
     reason: `Gemini unavailable (${geminiReason}); fallback also unavailable (${lastError instanceof Error ? lastError.message : String(lastError)})`,
     skipEscalation,
+    providerUnavailable,
   };
 }
 
@@ -1387,6 +1401,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
       contents,
       true,
       replyTools,
+      true,
     );
   }
 
@@ -1491,7 +1506,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
       // against. Escalating to a second agent right now is pointless: the
       // same outage almost certainly still applies.
       geminiCircuitBreaker.recordFailure(reason);
-      return tryFallbackProviders(reason, agent, context, contents, true, replyTools);
+      return tryFallbackProviders(reason, agent, context, contents, true, replyTools, true);
     }
 
     if (classified.category === 'auth' || classified.category === 'provider_config') {

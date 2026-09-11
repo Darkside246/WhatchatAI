@@ -49,7 +49,7 @@ export class OpenAIResponsesProvider implements RegisteredAiProvider {
   private readonly baseUrl: string;
 
   constructor(
-    model = process.env.OPENAI_GATEWAY_MODEL || 'gpt-5.6-luna',
+    model = process.env.OPENAI_GATEWAY_MODEL || 'gpt-5.4-mini',
     priority = 20,
   ) {
     this.model = model;

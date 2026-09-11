@@ -13,7 +13,22 @@ export type RealtimeEvent =
   | { type: 'status.media.updated'; businessId: string; mediaId: string; statusId: string }
   | { type: 'message.reaction'; businessId: string; chatId: string; messageId: string }
   | { type: 'presence.updated'; businessId: string; contactJid: string }
-  | { type: 'notification.created'; businessId: string; userId: string; notificationId: string }
+  | {
+      type: 'notification.created';
+      businessId: string;
+      userId: string;
+      notificationId: string;
+      /**
+       * What the notification is about, so a client already looking at that
+       * thing can clear it immediately. message.new and notification.created
+       * are separate publishes and a handoff notification is created later in
+       * processJob, so a chat-open mark-read can land BEFORE the notification
+       * exists - leaving a red dot on the conversation the operator is
+       * reading right now. Carrying the target is what closes that race.
+       */
+      targetType: string | null;
+      targetId: string | null;
+    }
   /** One user's notification list changed without a new one being raised - e.g. opening a conversation cleared its outstanding notifications. */
   | { type: 'notification.cleared'; businessId: string; userId: string };
 

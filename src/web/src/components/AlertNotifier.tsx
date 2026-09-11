@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { X } from 'lucide-react';
 import { api, type HumanTakeoverAlertDto } from '../lib/api.js';
 
@@ -83,10 +83,18 @@ function groupLabel(group: AlertGroup, showIdentity: boolean): string {
  * With more than one unresolved handoff, it automatically cycles through
  * them one at a time every few seconds, so a busy line with several
  * waiting customers is never represented by just the first (or loudest)
- * one. Clicking the pill opens that chat WITHOUT dismissing it - only the
- * X removes it (or the underlying handoff genuinely resolving
- * server-side), so glancing at a chat to check on it never silently loses
- * the alert. Each mount polls/dismisses independently (component-local
+ * one. Opening the conversation dismisses its pill - by clicking the pill
+ * or by reaching that chat any other way - because opening it IS the
+ * acknowledgement, and an alert still shouting about the thread the
+ * operator is reading right now is the noise they have to clear twice. The
+ * X remains for dismissing without opening, and a handoff genuinely
+ * resolving server-side still clears it on its own.
+ *
+ * Detected from the router rather than a cross-component event, so it holds
+ * however the chat was reached and the two components stay uncoupled. It is
+ * deliberately a LOCAL dismissal only: the server-side takeover state is
+ * untouched, so the AI stays paused while the human finishes handling it.
+ * Each mount polls/dismisses independently (component-local
  * state), so dismissing one on the lock screen and the other in the
  * header is expected, not a bug.
  *
@@ -99,6 +107,7 @@ function groupLabel(group: AlertGroup, showIdentity: boolean): string {
  */
 export function AlertNotifier() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [alerts, setAlerts] = useState<HumanTakeoverAlertDto[]>([]);
   const [dismissed, setDismissed] = useState<Record<string, string>>({});
   const [showIdentity, setShowIdentity] = useState<boolean>(getAlertShowIdentity);
@@ -152,6 +161,17 @@ export function AlertNotifier() {
       return next;
     });
   }
+
+  // Opening a conversation acknowledges its alert. Keyed on triggeredAt like
+  // every other dismissal here, so a genuinely NEW handoff on the same chat
+  // raises the pill again rather than staying permanently silenced.
+  const openChatId = /^\/chats\/([^/]+)$/.exec(location.pathname)?.[1] ?? null;
+  useEffect(() => {
+    if (!openChatId) return;
+    const alert = alerts.find((candidate) => candidate.chatId === openChatId);
+    if (!alert) return;
+    setDismissed((previous) => (previous[openChatId] === alert.triggeredAt ? previous : { ...previous, [openChatId]: alert.triggeredAt }));
+  }, [openChatId, alerts]);
 
   const visibleAlerts = alerts.filter((alert) => dismissed[alert.chatId] !== alert.triggeredAt);
   const groups = groupAlerts(visibleAlerts, showIdentity);

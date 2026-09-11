@@ -386,6 +386,38 @@ describe('generateAiReply - circuit-breaker separation and one-time notification
     expect(getGeminiConfigCircuitBreaker('business-1').getState()).toBe('CLOSED');
   });
 
+  // providerUnavailable is what tells the worker a failure is TRANSIENT, so
+  // it can avoid forcing a HUMAN_TAKEOVER state an operator must undo by
+  // hand and avoid repeating a raw provider error once per inbound message.
+  // Marking the wrong class transient would silently swallow a real,
+  // never-self-recovering config fault, so each class is asserted here.
+  it('2f. a capacity (503) failure is flagged providerUnavailable - the transient class', async () => {
+    aiReplyGenerateContentMock.mockRejectedValue(new ApiError({ message: 'unavailable', status: 503 }));
+
+    const result = await generateAiReply(fakeAgent(), fakeContext());
+
+    expect(result.status).toBe('unavailable');
+    if (result.status === 'unavailable') expect(result.providerUnavailable).toBe(true);
+  });
+
+  it('2g. an auth (401) failure is NOT flagged providerUnavailable - a bad key never recovers on its own and must still reach an operator', async () => {
+    aiReplyGenerateContentMock.mockRejectedValue(new ApiError({ message: 'invalid key', status: 401 }));
+
+    const result = await generateAiReply(fakeAgent(), fakeContext());
+
+    expect(result.status).toBe('unavailable');
+    if (result.status === 'unavailable') expect(result.providerUnavailable ?? false).toBe(false);
+  });
+
+  it('2h. a provider_config (404) failure is NOT flagged providerUnavailable either', async () => {
+    aiReplyGenerateContentMock.mockRejectedValue(new ApiError({ message: 'model not found', status: 404 }));
+
+    const result = await generateAiReply(fakeAgent(), fakeContext());
+
+    expect(result.status).toBe('unavailable');
+    if (result.status === 'unavailable') expect(result.providerUnavailable ?? false).toBe(false);
+  });
+
   it('3a. a programming-class error (a plain bug, not an ApiError) fails loud, skips Goose/escalation, and touches neither breaker', async () => {
     aiReplyGenerateContentMock.mockRejectedValueOnce(new TypeError("Cannot read properties of undefined (reading 'x')"));
 
@@ -543,6 +575,28 @@ describe('orchestrateAiReply - escalation hop is skipped for a failure class it 
     if (outcome.kind === 'unavailable') expect(outcome.agent.id).toBe(primaryAgentId); // never escalated
     expect(aiReplyGenerateContentMock).toHaveBeenCalledTimes(1);
     void escalationAgentId;
+  });
+
+  // The worker reads outcome.code to decide whether a failure is transient.
+  // If this stops being set, a provider capacity blip silently starts
+  // forcing HUMAN_TAKEOVER on every affected chat again - a state an
+  // operator then has to undo by hand, one conversation at a time.
+  it('9a-ii. a capacity failure surfaces code AI_PROVIDER_UNAVAILABLE so the worker can treat it as transient', async () => {
+    aiReplyGenerateContentMock.mockRejectedValue(new ApiError({ message: 'unavailable', status: 503 }));
+
+    const outcome = await orchestrateAiReply({ businessId, chatId, contactId: null, queryText: 'Are you open today?' });
+
+    expect(outcome.kind).toBe('unavailable');
+    if (outcome.kind === 'unavailable') expect(outcome.code).toBe('AI_PROVIDER_UNAVAILABLE');
+  });
+
+  it('9b-ii. an auth failure carries NO such code - a bad key never recovers on its own, so it must still reach an operator', async () => {
+    aiReplyGenerateContentMock.mockRejectedValue(new ApiError({ message: 'invalid key', status: 401 }));
+
+    const outcome = await orchestrateAiReply({ businessId, chatId, contactId: null, queryText: 'hi' });
+
+    expect(outcome.kind).toBe('unavailable');
+    if (outcome.kind === 'unavailable') expect(outcome.code).toBeUndefined();
   });
 
   it('9b. an auth failure never invokes the escalation agent - the same broken key would fail identically', async () => {

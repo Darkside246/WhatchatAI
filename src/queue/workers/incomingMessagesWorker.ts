@@ -134,7 +134,18 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     (stripDeviceSuffix(message.remoteJid) === accountJid ||
       (message.remoteJidAlt !== null && stripDeviceSuffix(message.remoteJidAlt) === accountJid));
 
-  if (!isSelfChat) {
+  // Sentinel screens customer-originated content only. An outbound echo
+  // (fromMe=true) is our own already-authorized message coming back from
+  // WhatsApp; screening it again can block persistence and linking AFTER a
+  // successful send, so the operator watches their own sent message vanish
+  // from the thread while the customer has already received it. Confirmed
+  // in production, not theorised.
+  //
+  // This strictly widens what is skipped: isSelfChat already required
+  // fromMe, so every message skipped before is still skipped now. Nothing
+  // a customer sends escapes screening, because a customer's message is
+  // never fromMe.
+  if (!message.fromMe) {
     const verdict = await runSentinel({
       businessId,
       whatsappAccountId,
@@ -543,6 +554,31 @@ async function runAiHandoff(params: {
   // configured" or the literal API error) into the notification, so the
   // operator does not have to guess.
   if (outcome.kind === 'unavailable') {
+    // A capacity/quota outage is a transient condition of the provider, not
+    // a fault in this conversation. Flipping the chat to HUMAN_TAKEOVER for
+    // it would leave a state an operator has to undo by hand once the
+    // provider recovers, and the AI_FAILURE notification below would repeat
+    // a raw provider error string once per inbound message for as long as
+    // the outage lasts. The next message retries normally.
+    //
+    // It is still recorded in the handoff log: a real customer message went
+    // unanswered, and the operator is entitled to see that it happened and
+    // why. The log is the right place for it precisely because it does not
+    // interrupt - and the chat still carries its unread count, so it keeps
+    // showing up as waiting on a reply, which is the honest signal.
+    if (outcome.code === 'AI_PROVIDER_UNAVAILABLE') {
+      console.error(`[IncomingMessagesWorker] AI provider unavailable; no reply sent for chat ${chatId}: ${outcome.reason}`);
+      await recordHumanHandoff({
+        businessId,
+        whatsappAccountId,
+        chatId,
+        reason: 'ai_unavailable',
+        reasonDetail: outcome.reason ?? null,
+        messageId,
+      });
+      return;
+    }
+
     console.log(`[IncomingMessagesWorker] AI reply unavailable for chat ${chatId}: ${outcome.reason}`);
     await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER', 'ai_unavailable');
     await recordHumanHandoff({ businessId, whatsappAccountId, chatId, reason: 'ai_unavailable', reasonDetail: outcome.reason ?? null, messageId });

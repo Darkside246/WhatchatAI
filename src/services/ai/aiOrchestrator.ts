@@ -34,7 +34,12 @@ export type OrchestratedAiOutcome =
    * Never string-match `reason` for this - that's a human-facing
    * sentence, not a stable identifier.
    */
-  | { kind: 'unavailable'; agent: AiAgentRecord; reason: string; code?: 'AI_BUDGET_EXCEEDED' }
+  | {
+      kind: 'unavailable';
+      agent: AiAgentRecord;
+      reason: string;
+      code?: 'AI_BUDGET_EXCEEDED' | 'AI_PROVIDER_UNAVAILABLE';
+    }
   /**
    * A real reply was generated but the Outbound Leak Guard blocked it
    * before it ever left this process - the (leaked) text is deliberately
@@ -194,9 +199,19 @@ export async function orchestrateAiReply(input: OrchestrateAiReplyInput): Promis
       if (escalatedReply.status === 'generated') {
         return guardGeneratedText(input.businessId, escalationAgent, escalatedReply.text);
       }
-      return { kind: 'unavailable', agent: escalationAgent, reason: escalatedReply.reason };
+      return {
+        kind: 'unavailable',
+        agent: escalationAgent,
+        reason: escalatedReply.reason,
+        ...(escalatedReply.providerUnavailable ? { code: 'AI_PROVIDER_UNAVAILABLE' as const } : {}),
+      };
     }
   }
 
-  return { kind: 'unavailable', agent, reason: reply.reason };
+  return {
+    kind: 'unavailable',
+    agent,
+    reason: reply.reason,
+    ...(reply.providerUnavailable ? { code: 'AI_PROVIDER_UNAVAILABLE' as const } : {}),
+  };
 }

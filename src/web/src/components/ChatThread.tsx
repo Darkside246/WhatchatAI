@@ -469,6 +469,14 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   const [assigneeError, setAssigneeError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLInputElement>(null);
+  // Which conversation is actually on screen right now, readable from inside
+  // an async load that started before the operator switched away.
+  const activeChatIdRef = useRef(chatId);
+  const messageLoadRef = useRef<{ chatId: string; promise: Promise<void> } | null>(null);
+
+  useEffect(() => {
+    activeChatIdRef.current = chatId;
+  }, [chatId]);
   const messageListRef = useRef<HTMLDivElement>(null);
   /**
    * Whether the operator is currently reading the live end of the thread.
@@ -489,19 +497,51 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
       .catch(() => undefined);
   }, []);
 
+  /**
+   * Two guarantees, both of which matter in a real inbox:
+   *
+   * 1. A response is DISCARDED if the operator has moved to another
+   *    conversation while it was in flight. Without this, a slow load for
+   *    chat A resolves after a switch to chat B and paints A's messages
+   *    into B's thread - one customer's messages shown under another
+   *    customer's name. In a messaging product that is not a cosmetic bug.
+   *
+   * 2. Concurrent loads for the SAME chat share one request. Bursts are
+   *    routine here (message.new, message.status and media.updated can all
+   *    land within a few milliseconds of one another), and each one used to
+   *    cost its own round trip and its own re-render.
+   */
   async function load(currentChatId: string) {
+    const inFlight = messageLoadRef.current;
+    if (inFlight?.chatId === currentChatId) return inFlight.promise;
+
+    const promise = (async () => {
+      try {
+        const { messages: list } = await api.listMessages(currentChatId);
+        if (activeChatIdRef.current !== currentChatId) return;
+        setMessages([...list].reverse());
+        setError(null);
+      } catch (err) {
+        if (activeChatIdRef.current !== currentChatId) return;
+        setError(err instanceof Error ? err.message : 'Failed to load messages.');
+      }
+    })();
+    messageLoadRef.current = { chatId: currentChatId, promise };
     try {
-      const { messages: list } = await api.listMessages(currentChatId);
-      setMessages([...list].reverse());
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load messages.');
+      await promise;
+    } finally {
+      if (messageLoadRef.current?.promise === promise) messageLoadRef.current = null;
     }
   }
 
   async function loadDetail(currentChatId: string) {
     try {
       const result = await api.getChatDetail(currentChatId);
+      // Same stale-response guard as load(), and it matters more here: this
+      // response carries the customer's NAME and NUMBER, so applying a late
+      // one after a switch puts one customer's identity in the header above
+      // another customer's messages.
+      if (activeChatIdRef.current !== currentChatId) return;
       setDetail(result);
     } catch {
       // The header degrades to the loading state; the message list's own
@@ -896,6 +936,13 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
       if (event.type === 'message.new') markRead(chatId);
     }
     if (event.type === 'chat.updated' && event.chatId === chatId) void loadDetail(chatId);
+    // A notification about the conversation already on screen. Marking the
+    // chat read is what clears it server-side (and publishes
+    // notification.cleared, which the bell already listens for), so this
+    // needs no second endpoint and no client-side event bus.
+    if (event.type === 'notification.created' && event.targetType === 'chat' && event.targetId === chatId) {
+      markRead(chatId);
+    }
     // Presence is keyed by JID, not chatId - only refresh when it's really this contact.
     if (event.type === 'presence.updated' && detail?.chat.chatJid === event.contactJid) void loadDetail(chatId);
   });
