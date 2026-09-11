@@ -300,8 +300,52 @@ describe('generateAiReply - sender attribution (a real reported bug: a team memb
     // from the business side), but is explicitly labeled as NOT the AI's
     // own words - the actual fix, since role alone can't distinguish them.
     expect(humanSentTurn?.role).toBe('model');
-    expect(humanSentTurn?.parts[0]?.text).toContain('A real team member replied here personally, not you');
+    expect(humanSentTurn?.parts[0]?.text).toContain('A real team member on your own side typed this');
     expect(humanSentTurn?.parts[0]?.text).toContain('my father will give me a piece of his chicken');
+  });
+
+  /**
+   * Real regression coverage for a production failure: an operator typed
+   * "ok give me a min" while working a chat, the customer sent a bare "Ok",
+   * and what went out TO THE CUSTOMER was "Take all the time you need,
+   * <operator's name>." The turn was correctly labelled as not the
+   * customer's words - but nothing told the model not to ANSWER it, and a
+   * contentless customer turn leaves the colleague's line as the most
+   * answerable thing in the transcript.
+   *
+   * Both halves of the operator's requirement are asserted: never reply to
+   * them, but stay aware of what they said so it can be carried into the
+   * reply to the customer.
+   */
+  it('tells the model never to answer a team member\u2019s turn, while still using it as context', async () => {
+    aiReplyGenerateContentMock.mockResolvedValueOnce({ text: 'Sure, happy to help!' });
+
+    const operatorTurn = fakeMessage({ id: 'human-msg-2', fromMe: true, textContent: 'ok give me a min' });
+    const customerTurn = fakeMessage({ id: 'customer-msg-2', fromMe: false, textContent: 'Ok' });
+
+    await generateAiReply(fakeAgent(), fakeContext({
+      conversationHistory: [customerTurn, operatorTurn],
+      aiGeneratedMessageIds: new Set(),
+    }));
+
+    const call = aiReplyGenerateContentMock.mock.calls[0]?.[0];
+    const systemInstruction = String(call?.config?.systemInstruction ?? '');
+    const contents = call?.contents as Array<{ role: string; parts: Array<{ text: string }> }>;
+    const operatorSent = contents.find((c) => c.parts[0]?.text.includes('ok give me a min'));
+
+    // The prohibition, on the turn itself and as a standing rule.
+    expect(operatorSent?.parts[0]?.text).toContain('Never reply to it');
+    expect(systemInstruction).toContain('Never answer them');
+    expect(systemInstruction).toContain('never address them by name');
+
+    // And the other half - the operator is an extension of the business, so
+    // what they said has to remain usable, not just ignored.
+    expect(operatorSent?.parts[0]?.text).toContain('Use it as context');
+    expect(systemInstruction).toContain('honour their promises');
+
+    // The specific failure shape: a short customer turn must not send the
+    // model looking for the colleague's line to answer instead.
+    expect(systemInstruction).toContain('do not reach past it');
   });
 
   it('labels each group participant\'s own turn with their real, verified name - never lets one participant\'s remark blend into another\'s', async () => {

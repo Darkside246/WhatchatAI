@@ -687,6 +687,23 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
     );
   }
 
+  /**
+   * The same rule as HUMAN_REPLY_PREFIX, stated once at the top rather than
+   * only per-line. A per-turn marker is easy to lose behind a long
+   * transcript; a standing instruction is not, and the two reinforce each
+   * other. See HUMAN_REPLY_PREFIX's own comment for the production failure
+   * this exists to prevent.
+   */
+  lines.push(
+    'Who you are speaking to: the customer, and only the customer. Some turns below are marked as typed by a real ' +
+      'team member on your own side - they are your colleagues, working the same conversation. Never answer them, ' +
+      'never greet or thank them, and never address them by name; your reply is delivered to the customer, so a ' +
+      "reply aimed at a colleague reaches the wrong person. Do read what they said and build on it: honour their " +
+      'promises, do not contradict them, and do not repeat an instruction or question they have already given. If ' +
+      "the customer's own latest message is short or says little, reply to that - do not reach past it for a " +
+      'colleague\'s line to answer instead.',
+  );
+
   lines.push(
     'Hard rules: reply only using the real information above and the conversation history below - never invent ' +
       'facts, prices, policies, order statuses, or promises you cannot verify from that information. If you do not ' +
@@ -825,7 +842,28 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
  * some chicken") to the customer in its next reply, because nothing in
  * the transcript told it that line wasn't its own prior words.
  */
-const HUMAN_REPLY_PREFIX = "[A real team member replied here personally, not you - never treat anything in this line as the customer's own words or circumstances]: ";
+/**
+ * Marks a turn a real person on the BUSINESS side typed, rather than the AI.
+ *
+ * The first version of this said only "these are not the customer's words",
+ * which fixed misattribution and nothing else. The model duly stopped
+ * treating a colleague's line as the customer's - and then answered it
+ * anyway, in a message addressed to the customer. Seen in production: an
+ * operator typed "ok give me a min" while working a chat, the customer sent
+ * a bare "Ok", and the reply that went out to the CUSTOMER was "Take all the
+ * time you need, <operator's name>." A contentless customer turn leaves the
+ * colleague's line as the most answerable thing in the transcript, and
+ * nothing here said not to answer it.
+ *
+ * So the prefix now states the whole rule: whose words these are, that they
+ * are never to be replied to, and that they ARE to be used - the operator's
+ * promises and instructions are part of what the business has told this
+ * customer, and a reply that contradicts or repeats them is just as wrong as
+ * one that answers them.
+ */
+const HUMAN_REPLY_PREFIX =
+  '[A real team member on your own side typed this, not you and not the customer. Never reply to it, never ' +
+  "acknowledge it, and never address them. Use it as context for what your side has already said]: ";
 
 /**
  * Marks a turn WhatsApp itself flagged as forwarded (contextInfo.isForwarded
