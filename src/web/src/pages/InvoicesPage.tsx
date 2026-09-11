@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { InvoiceContactDetails } from '../components/InvoiceContactDetails.js';
 import { Plus, Receipt, FileText, CheckSquare, Send, DollarSign, X, Eye, Trash2, Ban, Palette } from 'lucide-react';
 import { api, ApiError, previewInvoiceHtml, type InvoiceDto, type InvoiceLineItemDto, type CreateInvoiceInput } from '../lib/api.js';
 import { InvoiceCustomizePanel } from '../components/InvoiceCustomizePanel.js';
@@ -560,6 +561,14 @@ export function InvoicesPage() {
                   <p className={`text-body font-semibold font-tabular-nums ${t.color}`}>{t.value}</p>
                 </div>
               ))}
+            </div>
+
+            {/* The contact details printed on every document, edited here
+                rather than buried in Settings - they are part of what a
+                document looks like, so they belong where documents are
+                made. */}
+            <div className="mt-4">
+              <InvoiceContactDetails />
             </div>
           </div>
 

@@ -398,14 +398,6 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
   const [missionSaved, setMissionSaved] = useState<string | null>(null);
   const [missionError, setMissionError] = useState<string | null>(null);
 
-  // Invoice contact details (real businesses columns, migration 989) - shown in the invoice/quote/receipt header, deliberately separate from the AI-knowledge "Business details" address/alt-phone above (those feed the AI's knowledge base; these feed documents customers actually receive).
-  const [invoiceAddress, setInvoiceAddress] = useState('');
-  const [invoicePhone, setInvoicePhone] = useState('');
-  const [showInvoiceContact, setShowInvoiceContact] = useState(false);
-  const [savingInvoiceContact, setSavingInvoiceContact] = useState(false);
-  const [invoiceContactSaved, setInvoiceContactSaved] = useState(false);
-  const [invoiceContactError, setInvoiceContactError] = useState<string | null>(null);
-
   // WA photo
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -483,8 +475,6 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
       setVision(res.business.vision ?? '');
       setMission(res.business.mission ?? '');
       setMissionAiVisible(res.business.missionStatementAiVisible);
-      setInvoiceAddress(res.business.address ?? '');
-      setInvoicePhone(res.business.phone ?? '');
       setChannelNotifs(res.business.channelNotificationsEnabled);
     }).catch(() => undefined);
     api.listKnowledgeBaseDocuments().then((res) => {
@@ -544,18 +534,6 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
     }
   }
 
-  async function handleSaveInvoiceContact(e: FormEvent) {
-    e.preventDefault();
-    setSavingInvoiceContact(true); setInvoiceContactSaved(false); setInvoiceContactError(null);
-    try {
-      await api.setBusinessContactDetails({ address: invoiceAddress.trim() || null, phone: invoicePhone.trim() || null });
-      setInvoiceContactSaved(true);
-    } catch (err) {
-      setInvoiceContactError(err instanceof ApiError ? err.message : 'Failed to save.');
-    } finally {
-      setSavingInvoiceContact(false);
-    }
-  }
 
   async function handlePhotoSelected(file: File) {
     if (!file.type.startsWith('image/')) { setWaError('Please choose an image file.'); return; }
@@ -872,36 +850,14 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
         )}
 
         {/* Invoice contact details accordion - real businesses columns (migration 989), deliberately separate from the AI-knowledge Business details section above: this address/phone appear in the header of every invoice/quote/receipt this business generates, never fed to the AI. */}
-        <button type="button" onClick={() => setShowInvoiceContact((v) => !v)}
-          className="flex w-full items-center justify-between text-caption font-medium text-fg-secondary hover:text-fg">
-          <span className="flex items-center gap-1.5">
-            {showInvoiceContact ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
-            Invoice contact details
-          </span>
-          <span className="text-meta text-fg-muted">Shown on invoices, quotes &amp; receipts</span>
-        </button>
-
-        {showInvoiceContact && (
-          <form onSubmit={handleSaveInvoiceContact} className="space-y-2 pl-4">
-            <p className="text-meta text-fg-muted">Separate from the business details above - this is what appears in the header of documents your customers actually receive.</p>
-            <div>
-              <label className="text-meta font-medium text-fg-muted">Address</label>
-              <input value={invoiceAddress} onChange={(e) => setInvoiceAddress(e.target.value)} placeholder="Street, city, country"
-                className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
-            </div>
-            <div>
-              <label className="text-meta font-medium text-fg-muted">Phone</label>
-              <input value={invoicePhone} onChange={(e) => setInvoicePhone(e.target.value)} placeholder="+1 246 …"
-                className="mt-0.5 block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent" />
-            </div>
-            {invoiceContactError && <p className="text-meta text-error">{invoiceContactError}</p>}
-            {invoiceContactSaved && <p className="text-meta text-success">Saved.</p>}
-            <button type="submit" disabled={savingInvoiceContact}
-              className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50">
-              {savingInvoiceContact ? 'Saving…' : 'Save'}
-            </button>
-          </form>
-        )}
+        {/* Invoice contact details moved to the Invoices section, where
+            documents are actually made - they are part of what a document
+            looks like, not a general workspace setting. This pointer stays
+            so anyone who remembers them being here is not left hunting. */}
+        <p className="text-caption text-fg-muted">
+          Invoice contact details (the address and phone printed on invoices, quotes and receipts) are now edited in the
+          Invoices section, alongside the documents they appear on.
+        </p>
       </div>
     </div>
   );
