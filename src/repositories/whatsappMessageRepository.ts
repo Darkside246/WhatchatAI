@@ -1,6 +1,7 @@
 import type { Queryable } from './types.js';
 import type { MessageDirection, MessageStatus, MessageType } from '../domain/whatsapp/types.js';
 import { getEncryptionService } from '../security/encryption/index.js';
+import type { StructuredMessagePayload } from '../services/whatsappMessageIngestionService.js';
 
 export interface WhatsAppMessageRecord {
   id: string;
@@ -30,6 +31,8 @@ export interface WhatsAppMessageRecord {
   quotedMessageId: string | null;
   /** WhatsApp's own contextInfo.isForwarded - the sender forwarded this from another chat rather than writing it here. */
   isForwarded: boolean;
+  /** Decrypted structured detail for a location / shared contact / poll message. Null for every other type. */
+  structuredPayload: StructuredMessagePayload | null;
   /** WhatsApp's own contextInfo.forwardingScore - how many hops it has travelled. WhatsApp's client labels >= 5 "forwarded many times". Null when no score was sent. */
   forwardingScore: number | null;
   rawMetadata: Record<string, unknown>;
@@ -63,6 +66,7 @@ interface MessageRow {
   media_id: string | null;
   quoted_message_id: string | null;
   is_forwarded: boolean;
+  structured_payload: string | null;
   forwarding_score: number | null;
   raw_metadata: Record<string, unknown>;
   created_at: string;
@@ -85,6 +89,31 @@ interface MessageRow {
  * it is never silently invisible, but the row itself degrades to
  * "content unavailable" rather than taking the whole batch down.
  */
+/**
+ * Decrypts and parses a structured payload, degrading to null rather than
+ * failing the read - same reasoning as decryptTextContent below. A payload
+ * that cannot be decrypted or parsed means the message renders as its plain
+ * type label, which is exactly what it did before this column existed; it
+ * must never take down a whole batch of messages.
+ */
+async function decryptStructuredPayload(
+  businessId: string,
+  value: string | null,
+): Promise<StructuredMessagePayload | null> {
+  if (value === null) return null;
+  const envelope = getEncryptionService().tryParse(value);
+  if (!envelope) return null;
+  try {
+    return JSON.parse(await getEncryptionService().decryptField(businessId, envelope)) as StructuredMessagePayload;
+  } catch (error) {
+    console.error(
+      `[whatsappMessageRepository] Failed to decrypt or parse a structured payload for business ${businessId}:`,
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  }
+}
+
 async function decryptTextContent(businessId: string, textContent: string | null): Promise<string | null> {
   if (textContent === null) return null;
   const envelope = getEncryptionService().tryParse(textContent);
@@ -128,6 +157,7 @@ async function toRecord(row: MessageRow, wasInserted: boolean): Promise<WhatsApp
     mediaId: row.media_id,
     quotedMessageId: row.quoted_message_id,
     isForwarded: row.is_forwarded ?? false,
+    structuredPayload: await decryptStructuredPayload(row.business_id, row.structured_payload),
     forwardingScore: row.forwarding_score ?? null,
     rawMetadata: row.raw_metadata,
     createdAt: row.created_at,
@@ -155,6 +185,7 @@ export interface InsertMessageInput {
   hasMedia?: boolean;
   quotedMessageId?: string | null;
   isForwarded?: boolean;
+  structuredPayload?: StructuredMessagePayload | null;
   forwardingScore?: number | null;
   rawMetadata?: Record<string, unknown>;
 }
@@ -175,12 +206,22 @@ export class WhatsAppMessageRepository {
             .then((envelope) => getEncryptionService().serialize(envelope))
         : Promise.resolve(null);
 
+    // A location's coordinates, a shared contact's card and a poll's content
+    // are all personal data, so the structured payload gets exactly the same
+    // at-rest protection as the message body itself - see migration 1015.
+    const encryptedStructuredPayload =
+      input.structuredPayload != null
+        ? getEncryptionService()
+            .encryptField(input.businessId, JSON.stringify(input.structuredPayload))
+            .then((envelope) => getEncryptionService().serialize(envelope))
+        : Promise.resolve(null);
+
     const { rows } = await this.db.query<MessageRow>(
       `INSERT INTO whatsapp_messages
          (business_id, whatsapp_account_id, chat_id, whatsapp_message_id, remote_jid,
           sender_jid, recipient_jid, sender_contact_id, direction, message_type,
-          text_content, caption, "timestamp", from_me, is_historical, status, has_media, quoted_message_id, is_forwarded, forwarding_score, raw_metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+          text_content, caption, "timestamp", from_me, is_historical, status, has_media, quoted_message_id, is_forwarded, forwarding_score, structured_payload, raw_metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
        ON CONFLICT (business_id, whatsapp_account_id, whatsapp_message_id) DO NOTHING
        RETURNING *`,
       [
@@ -204,6 +245,7 @@ export class WhatsAppMessageRepository {
         input.quotedMessageId ?? null,
         input.isForwarded ?? false,
         input.forwardingScore ?? null,
+        await encryptedStructuredPayload,
         JSON.stringify(input.rawMetadata ?? {}),
       ],
     );

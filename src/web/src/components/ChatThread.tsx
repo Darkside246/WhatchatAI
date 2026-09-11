@@ -22,6 +22,7 @@ import {
   Trash2,
   Mic,
   Square,
+  CornerUpRight,
 } from 'lucide-react';
 import {
   api,
@@ -41,6 +42,7 @@ import { useTheme } from '../hooks/useTheme.js';
 import { THEMES } from '../theme.js';
 import { Avatar } from './Avatar.js';
 import { MediaLightbox } from './MediaLightbox.js';
+import { StructuredMessageCard } from './StructuredMessageCard.js';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder.js';
 
 type AiMode = WorkspaceChatDetail['chat']['aiMode'];
@@ -1086,6 +1088,15 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
               {!message.fromMe && detail?.chat.chatType === 'group' && message.senderName && (
                 <p className="mb-0.5 truncate text-meta font-semibold text-accent">{message.senderName}</p>
               )}
+              {/* WhatsApp's own forwarding flag, shown the way the official
+                  client shows it - so the operator knows at a glance that the
+                  customer passed this along rather than wrote it. */}
+              {message.isForwarded && (
+                <p className="mb-0.5 flex items-center gap-1 text-meta italic opacity-70">
+                  <CornerUpRight size={10} aria-hidden />
+                  {(message.forwardingScore ?? 0) >= 5 ? 'Forwarded many times' : 'Forwarded'}
+                </p>
+              )}
               {message.hasMedia && message.media ? (
                 <div className="space-y-1">
                   <MediaContent
@@ -1099,6 +1110,11 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
                     <p className="whitespace-pre-wrap break-words">{message.caption ?? message.textContent}</p>
                   )}
                 </div>
+              ) : message.structuredPayload ? (
+                /* A location, shared contact or poll carries real content
+                   WhatsApp does not put in the text body - rendered properly
+                   instead of as the bare word "Location"/"Poll". */
+                <StructuredMessageCard payload={message.structuredPayload} />
               ) : (
                 <p className="whitespace-pre-wrap break-words">{messageBody(message)}</p>
               )}

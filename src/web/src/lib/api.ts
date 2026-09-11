@@ -89,6 +89,12 @@ export interface StatusReplyDto {
   timestamp: string;
 }
 
+/** Structured detail for the non-media message types that carry real content of their own. Mirrors the server's own union. */
+export type StructuredMessagePayload =
+  | { kind: 'location'; latitude: number; longitude: number; name: string | null; address: string | null; isLive: boolean }
+  | { kind: 'contacts'; contacts: Array<{ displayName: string | null; vcard: string | null }> }
+  | { kind: 'poll'; question: string | null; options: string[]; selectableCount: number | null };
+
 export interface WorkspaceMessage {
   id: string;
   chatId: string;
@@ -107,6 +113,12 @@ export interface WorkspaceMessage {
   reactions: WorkspaceReaction[];
   /** True only when the AI reply pipeline sent this message - never inferred, read from the real dispatch record. */
   aiGenerated: boolean;
+  /** WhatsApp's own contextInfo.isForwarded - the sender passed this along from another chat rather than writing it here. */
+  isForwarded?: boolean;
+  /** WhatsApp's own forwardingScore. The official client labels >= 5 "forwarded many times". */
+  forwardingScore?: number | null;
+  /** Real content for the message types WhatsApp does not put in text: where a location actually is, whose card was shared, what a poll asked. */
+  structuredPayload?: StructuredMessagePayload | null;
   /**
    * Real delete-for-everyone state. 'revoke_sent' means WhatsApp accepted the
    * instruction - it is NOT a guarantee every recipient's device dropped it,

@@ -33,6 +33,7 @@ function ingestedMessage(overrides: Partial<IngestedWhatsAppMessage> = {}): Inge
     mediaDescriptor: null,
     isForwarded: false,
     forwardingScore: null,
+    structuredPayload: null,
     ...overrides,
   };
 }
@@ -586,5 +587,110 @@ describe('read receipts - the fix for the unread badge returning after a refresh
     const keys = await new WhatsAppMessageRepository(pool).listInboundKeysForReceipt(inbound.chat.id, otherBusinessId);
 
     expect(keys).toEqual([]);
+  });
+});
+
+describe('structured message payloads (location, shared contacts, polls)', () => {
+  let businessId: string;
+  let accountId: string;
+  const accountJid = '15550001111@s.whatsapp.net';
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId, accountJid);
+  });
+
+  it('keeps a location\'s real coordinates instead of only its type', async () => {
+    const result = await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({
+        messageId: 'WA-LOC-1',
+        contentType: 'location',
+        textPreview: null,
+        structuredPayload: {
+          kind: 'location',
+          latitude: 13.1939,
+          longitude: -59.5432,
+          name: 'Bridgetown',
+          address: 'Barbados',
+          isLive: false,
+        },
+      }),
+    });
+
+    expect(result.message.structuredPayload).toEqual({
+      kind: 'location',
+      latitude: 13.1939,
+      longitude: -59.5432,
+      name: 'Bridgetown',
+      address: 'Barbados',
+      isLive: false,
+    });
+  });
+
+  it('keeps a shared contact card, and a poll\'s question and options', async () => {
+    const contact = await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({
+        messageId: 'WA-CONTACT-1',
+        contentType: 'contact',
+        structuredPayload: { kind: 'contacts', contacts: [{ displayName: 'John Smith', vcard: 'BEGIN:VCARD\nFN:John Smith\nTEL:+12465551234\nEND:VCARD' }] },
+      }),
+    });
+    expect(contact.message.structuredPayload).toMatchObject({ kind: 'contacts' });
+
+    const poll = await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({
+        messageId: 'WA-POLL-1',
+        contentType: 'poll',
+        structuredPayload: { kind: 'poll', question: 'Pickup or delivery?', options: ['Pickup', 'Delivery'], selectableCount: 1 },
+      }),
+    });
+    expect(poll.message.structuredPayload).toEqual({
+      kind: 'poll',
+      question: 'Pickup or delivery?',
+      options: ['Pickup', 'Delivery'],
+      selectableCount: 1,
+    });
+  });
+
+  it('stores the payload ENCRYPTED at rest - coordinates are among the most sensitive data a customer sends', async () => {
+    await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({
+        messageId: 'WA-LOC-ENC',
+        contentType: 'location',
+        structuredPayload: { kind: 'location', latitude: 13.1939, longitude: -59.5432, name: 'Home', address: null, isLive: false },
+      }),
+    });
+
+    // Raw SQL: what a database dump without MASTER_ENCRYPTION_KEY reveals.
+    const { rows } = await pool.query<{ structured_payload: string | null }>(
+      'SELECT structured_payload FROM whatsapp_messages WHERE whatsapp_message_id = $1',
+      ['WA-LOC-ENC'],
+    );
+    expect(rows[0]!.structured_payload).not.toContain('13.1939');
+    expect(rows[0]!.structured_payload).not.toContain('-59.5432');
+    expect(rows[0]!.structured_payload).not.toContain('Home');
+  });
+
+  it('an ordinary text message carries no structured payload rather than an empty one', async () => {
+    const result = await whatsappMessagePersistenceService.persist({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid,
+      ingested: ingestedMessage({ messageId: 'WA-PLAIN-1', textPreview: 'just a message' }),
+    });
+    expect(result.message.structuredPayload).toBeNull();
   });
 });

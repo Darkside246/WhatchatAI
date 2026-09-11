@@ -83,6 +83,8 @@ export interface IngestedWhatsAppMessage {
    * always being an array.
    */
   mentionedJids: string[];
+  /** Structured detail for a location / shared contact / poll message - the real content WhatsApp does not put in the text body. Null for every other type. */
+  structuredPayload: StructuredMessagePayload | null;
   /** WhatsApp's own contextInfo.isForwarded - true when the sender forwarded this from another chat rather than writing it here. Straight off the envelope, never inferred from the text. */
   isForwarded: boolean;
   /** WhatsApp's own contextInfo.forwardingScore - how many hops the message has travelled. The official client labels >= 5 "forwarded many times". Null when WhatsApp sent no score. */
@@ -100,7 +102,25 @@ interface ClassifiedContent {
   fullText: string | null;
   /** The fully-unwrapped message content, only set for real downloadable media types. */
   rawMediaMessage: proto.IMessage | null;
+  /**
+   * The structured detail of a non-media message type that carries real
+   * content WhatsApp does not put in text: a location's coordinates, a
+   * shared contact's card, a poll's question and options.
+   *
+   * Without this these messages were classified correctly and then rendered
+   * as a bare type label - the operator could see that "a location" had
+   * arrived but not where, or that "a poll" had arrived but not what it
+   * asked. Only fields WhatsApp actually sent are included; nothing is
+   * defaulted or invented.
+   */
+  structuredPayload: StructuredMessagePayload | null;
 }
+
+/** Structured detail for the non-media message types that carry real content of their own. */
+export type StructuredMessagePayload =
+  | { kind: 'location'; latitude: number; longitude: number; name: string | null; address: string | null; isLive: boolean }
+  | { kind: 'contacts'; contacts: Array<{ displayName: string | null; vcard: string | null }> }
+  | { kind: 'poll'; question: string | null; options: string[]; selectableCount: number | null };
 
 const MAX_BUFFER_SIZE = 500;
 const TEXT_PREVIEW_MAX_LENGTH = 200;
@@ -169,6 +189,7 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
     textPreview: null,
     fullText: null,
     rawMediaMessage: null,
+    structuredPayload: null,
   };
 
   const { message, isViewOnce } = unwrapContent(content);
@@ -228,6 +249,7 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
       textPreview: message.documentMessage.caption ? truncatePreview(message.documentMessage.caption) : null,
       fullText: message.documentMessage.caption ?? null,
       rawMediaMessage: media(message),
+      structuredPayload: null,
     };
   }
   if (message.stickerMessage) {
@@ -239,19 +261,71 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
     };
   }
   if (message.locationMessage || message.liveLocationMessage) {
-    return { ...empty, contentType: 'location' };
+    const location = message.locationMessage ?? message.liveLocationMessage;
+    const latitude = location?.degreesLatitude;
+    const longitude = location?.degreesLongitude;
+    return {
+      ...empty,
+      contentType: 'location',
+      // Coordinates only when WhatsApp really sent both - a half-known
+      // position is not a position, and a defaulted 0/0 would put every
+      // such message in the Gulf of Guinea.
+      structuredPayload:
+        typeof latitude === 'number' && typeof longitude === 'number'
+          ? {
+              kind: 'location',
+              latitude,
+              longitude,
+              name: (location as { name?: string | null } | null)?.name ?? null,
+              address: (location as { address?: string | null } | null)?.address ?? null,
+              isLive: Boolean(message.liveLocationMessage),
+            }
+          : null,
+    };
   }
   if (message.contactsArrayMessage) {
-    return { ...empty, contentType: 'contacts' };
+    const contacts = (message.contactsArrayMessage.contacts ?? []).map((contact) => ({
+      displayName: contact.displayName ?? null,
+      vcard: contact.vcard ?? null,
+    }));
+    return {
+      ...empty,
+      contentType: 'contacts',
+      structuredPayload: contacts.length > 0 ? { kind: 'contacts', contacts } : null,
+    };
   }
   if (message.contactMessage) {
-    return { ...empty, contentType: 'contact' };
+    return {
+      ...empty,
+      contentType: 'contact',
+      structuredPayload: {
+        kind: 'contacts',
+        contacts: [{ displayName: message.contactMessage.displayName ?? null, vcard: message.contactMessage.vcard ?? null }],
+      },
+    };
   }
   if (message.reactionMessage) {
     return { ...empty, contentType: 'reaction', textPreview: message.reactionMessage.text ?? null, fullText: message.reactionMessage.text ?? null };
   }
   if (message.pollCreationMessage || message.pollCreationMessageV2 || message.pollCreationMessageV3) {
-    return { ...empty, contentType: 'poll' };
+    const poll = message.pollCreationMessage ?? message.pollCreationMessageV2 ?? message.pollCreationMessageV3;
+    const options = (poll?.options ?? [])
+      .map((option) => option.optionName ?? '')
+      .filter((name) => name.trim().length > 0);
+    return {
+      ...empty,
+      contentType: 'poll',
+      // The question doubles as the preview text, so a poll finally reads as
+      // something in the chat list instead of the word "Poll".
+      textPreview: poll?.name ? truncatePreview(poll.name) : null,
+      fullText: poll?.name ?? null,
+      structuredPayload: {
+        kind: 'poll',
+        question: poll?.name ?? null,
+        options,
+        selectableCount: typeof poll?.selectableOptionsCount === 'number' ? poll.selectableOptionsCount : null,
+      },
+    };
   }
   if (message.pollUpdateMessage) {
     return { ...empty, contentType: 'poll_response' };

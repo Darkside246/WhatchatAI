@@ -326,6 +326,7 @@ export class WhatsAppMessagePersistenceService {
       quotedMessageId: quotedMessage?.id ?? null,
       isForwarded: ingested.isForwarded,
       forwardingScore: ingested.forwardingScore,
+      structuredPayload: ingested.structuredPayload,
       rawMetadata: {
         upsertType: ingested.upsertType,
         jidKind: ingested.jidKind,
