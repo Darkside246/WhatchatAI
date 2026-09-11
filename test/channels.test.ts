@@ -46,6 +46,27 @@ describe('WhatsApp Channels', () => {
     expect(chats.some((chat) => chat.id === channel.id)).toBe(false);
   });
 
+  it('never shows a raw newsletter JID as a channel name when WhatsApp has not sent one', async () => {
+    // The real symptom, seen in the running app: a channel with no name yet
+    // rendered as "120363151346599421@newsletter". That is an internal
+    // address, not a name - the same mistake as showing a raw LID instead of
+    // a contact's name. WhatsApp simply has not sent the metadata for that
+    // channel, and saying so is more honest than showing the identifier.
+    await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '120363151346599421@newsletter',
+      jidKind: 'newsletter',
+      chatType: 'newsletter',
+    });
+
+    const channels = await workspaceService.listChannels(businessId, accountId);
+    const unnamed = channels.find((channel) => channel.chatJid === '120363151346599421@newsletter');
+    expect(unnamed).toBeDefined();
+    expect(unnamed!.displayName).not.toContain('@newsletter');
+    expect(unnamed!.displayName).toBe('WhatsApp Channel');
+  });
+
   it('never lists another tenant\'s channels', async () => {
     const otherBusinessId = await createTestBusiness();
     const otherAccountId = await createTestAccount(otherBusinessId, '15559998888@s.whatsapp.net');

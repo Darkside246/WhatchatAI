@@ -671,7 +671,14 @@ export class WorkspaceService {
         chatType: chat.chatType,
         // A channel's own name is the only identity it has - there is no
         // contact behind it, so no name resolution to do.
-        displayName: chat.name ?? chat.chatJid,
+        //
+        // But falling back to the raw JID printed
+        // "120363151346599421@newsletter" as a channel's NAME in the UI,
+        // which is an internal identifier, not something to show a person -
+        // the same mistake as showing a raw LID instead of a contact name.
+        // WhatsApp has simply not sent us the metadata for that channel yet;
+        // saying so is more honest than showing the address.
+        displayName: chat.name ?? 'WhatsApp Channel',
         phoneNumber: null,
         unreadCount: chat.unreadCount,
         lastMessageAt: chat.lastMessageAt,

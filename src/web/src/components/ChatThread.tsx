@@ -291,7 +291,7 @@ function formatFileSize(bytes: number | null): string {
  * actually 'downloaded'. Pending/failed/unavailable each get an honest,
  * distinct state instead of a fake preview.
  */
-function MediaContent({
+export function MediaContent({
   media,
   caption,
   onImageClick,
