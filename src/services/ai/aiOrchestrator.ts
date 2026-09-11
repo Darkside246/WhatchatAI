@@ -26,11 +26,22 @@ export type OrchestratedAiOutcome =
   | { kind: 'reply'; agent: AiAgentRecord; text: string }
   /**
    * code is a real, machine-readable discriminator for the handful of
-   * 'unavailable' causes a caller needs to react to differently -
-   * currently only 'AI_BUDGET_EXCEEDED' (Section 34-40's real
-   * budget-override flow), which the worker uses to fire a distinct,
-   * once-per-month upsell notification instead of (or alongside) the
-   * generic AI_FAILURE hand-off notification every other cause gets.
+   * 'unavailable' causes a caller needs to react to differently:
+   *
+   * - 'AI_BUDGET_EXCEEDED' (Section 34-40's real budget-override flow),
+   *   which the worker uses to fire a distinct, once-per-month upsell
+   *   notification instead of (or alongside) the generic AI_FAILURE
+   *   hand-off notification every other cause gets.
+   * - 'AI_PROVIDER_UNAVAILABLE', a TRANSIENT capacity/quota outage. The
+   *   worker neither forces HUMAN_TAKEOVER (a state an operator would have
+   *   to undo by hand once the provider recovers) nor raises the generic
+   *   AI_FAILURE notification (which would repeat a raw provider error once
+   *   per inbound message for the length of the outage). It still records
+   *   the handoff-log entry, because a real customer message went
+   *   unanswered. Set ONLY for self-recovering failures: an auth or
+   *   provider_config fault must keep reaching an operator, since retrying
+   *   cannot fix a bad key or a wrong model name.
+   *
    * Never string-match `reason` for this - that's a human-facing
    * sentence, not a stable identifier.
    */

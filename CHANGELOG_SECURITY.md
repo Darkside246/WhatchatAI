@@ -1,6 +1,51 @@
 # CHANGELOG_SECURITY.md
 
 
+## 2026-09-11 (later) - reconciling the retired test-deployment branch
+
+The droplet had been running `fix-human-message-attribution-target`, which
+diverged from `build/property-operations-os` by 27 commits. That branch is
+retired; each commit was reviewed rather than discarded. Security-relevant
+outcomes:
+
+**CHANGED**
+- The Tiered Security Sentinel gate in `incomingMessagesWorker` is now
+  `!message.fromMe` rather than `!isSelfChat`. This STRICTLY WIDENS what is
+  skipped, and the widening is confined to our own outbound echoes:
+  `isSelfChat` already required `fromMe`, and a customer's message is never
+  `fromMe`, so no inbound customer content stops being screened. Screening
+  our own already-authorized content could block its persistence and linking
+  after a successful send, which made operators' sent messages disappear
+  from the thread while the customer already had them. Outbound AI text
+  remains covered by the separate Outbound Leak Guard, which is unchanged.
+  A regression test asserts the echo is persisted AND that no
+  `sentinel_heuristic_block` audit row is written, using content the
+  neighbouring customer-direction test still expects to be blocked - so the
+  test pins the direction, not the content.
+- A transient AI provider capacity/quota outage no longer forces
+  `HUMAN_TAKEOVER` and no longer emits an `AI_FAILURE` notification carrying
+  a raw provider error string once per inbound message. It is flagged
+  `AI_PROVIDER_UNAVAILABLE` and still recorded in `human_handoff_log`, so a
+  customer message that went unanswered remains auditable. Auth and
+  `provider_config` failures are deliberately NOT flagged: they never
+  self-recover and must keep reaching an operator. Tests pin that split at
+  both the reply-service and orchestrator layers.
+- `notification.created` realtime events now carry `targetType`/`targetId`.
+  These are the same non-personal target identifiers already present on the
+  notification row; no customer name, number or message text was added to
+  the event payload.
+
+**FIXED**
+- `ChatThread.loadDetail` applied a chat-detail response even when the
+  operator had already switched conversations, so a slow response could
+  render one customer's name and number in the header above another
+  customer's messages. Both `load` and `loadDetail` now discard responses
+  for a conversation that is no longer on screen. This fault was present on
+  both branches.
+- `OPENAI_GATEWAY_MODEL` defaulted to a model name that does not exist,
+  so every OpenAI-provider call would have failed.
+
+
 ## 2026-09-11 - Operator Mode / chat handling, an encrypted handoff log, and dependency patching
 
 **CHANGED**
