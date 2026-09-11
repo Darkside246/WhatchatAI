@@ -1213,6 +1213,8 @@ export interface WorkspaceChatDetail {
   crmContact: WorkspaceCrmContact | null;
   /** For a `@lid` identity, the real phone number resolved from Baileys' own lid<->phone mapping, when known. */
   resolvedPhoneNumber: string | null;
+  /** The server-resolved name for this conversation, built from the same sources (and the same @lid sibling fallback) the chat list uses, so header and list can never disagree about who a conversation belongs to. */
+  displayName: string;
   /** Null for group chats (no single "online" state) or when no presence.update event has ever arrived for this contact. */
   presence: WorkspacePresence | null;
 }

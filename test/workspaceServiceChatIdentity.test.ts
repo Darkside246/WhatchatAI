@@ -135,4 +135,133 @@ describe('workspaceService chat-list filtering and @lid identity resolution', ()
     expect(chats[0]?.displayName).toBe('+12468376687');
     expect(chats[0]?.phoneNumber).toBe('+12468376687');
   });
+  it('shows the real address-book name on a @lid chat by borrowing it from the phone-keyed contact row WhatsApp already synced', async () => {
+    // The production shape behind chats rendering as "WhatsApp User (2694…)"
+    // while that same person's status updates showed their real name:
+    // WhatsApp addresses the chat by a privacy @lid whose contact row has no
+    // name at all, and delivers the address-book name on the ordinary phone
+    // JID's row instead. Nothing is imported or invented here - both rows are
+    // real, already-synced contacts, and the pairing comes from a mapping
+    // Baileys itself supplied.
+    const chatRepository = new WhatsAppChatRepository(pool);
+    const contactRepository = new WhatsAppContactRepository(pool);
+    const jidMappingRepository = new WhatsAppJidMappingRepository(pool);
+
+    const lidJid = '269281631678624@lid';
+    const phoneJid = '12465551234@s.whatsapp.net';
+
+    const lidContact = await contactRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      whatsappJid: lidJid,
+      jidKind: 'lid',
+    });
+    await contactRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      whatsappJid: phoneJid,
+      jidKind: 'individual',
+      phoneNumber: '+12465551234',
+      displayName: 'Kathy-Ann Caddle',
+    });
+    await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: lidJid,
+      jidKind: 'lid',
+      chatType: 'individual',
+      contactId: lidContact.id,
+    });
+    await jidMappingRepository.upsert(businessId, accountId, lidJid, phoneJid, '+12465551234', 'baileys_alt_jid', 'high');
+
+    const chats = await workspaceService.listChats(businessId, accountId);
+    expect(chats[0]?.displayName).toBe('Kathy-Ann Caddle');
+    // The chat is still addressed by its real routing identity - only the
+    // presentation name was borrowed.
+    expect(chats[0]?.chatJid).toBe(lidJid);
+    expect(chats[0]?.phoneNumber).toBe('+12465551234');
+
+    const chat = await chatRepository.findByJid(businessId, accountId, lidJid);
+    const detail = await workspaceService.getChatDetail(businessId, accountId, chat!.id);
+    expect(detail.displayName).toBe('Kathy-Ann Caddle');
+  });
+
+  it('never borrows a name across tenants or across WhatsApp accounts', async () => {
+    const chatRepository = new WhatsAppChatRepository(pool);
+    const contactRepository = new WhatsAppContactRepository(pool);
+    const jidMappingRepository = new WhatsAppJidMappingRepository(pool);
+
+    const otherBusinessId = await createTestBusiness();
+    const otherAccountId = await createTestAccount(otherBusinessId);
+
+    const lidJid = '111222333444555@lid';
+    const phoneJid = '12465559999@s.whatsapp.net';
+
+    // The named phone-keyed row belongs to a DIFFERENT business entirely.
+    await contactRepository.upsertFromWhatsApp({
+      businessId: otherBusinessId,
+      whatsappAccountId: otherAccountId,
+      whatsappJid: phoneJid,
+      jidKind: 'individual',
+      phoneNumber: '+12465559999',
+      displayName: 'Someone Else\'s Customer',
+    });
+
+    const lidContact = await contactRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      whatsappJid: lidJid,
+      jidKind: 'lid',
+    });
+    await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: lidJid,
+      jidKind: 'lid',
+      chatType: 'individual',
+      contactId: lidContact.id,
+    });
+    await jidMappingRepository.upsert(businessId, accountId, lidJid, phoneJid, '+12465559999', 'baileys_alt_jid', 'high');
+
+    const chats = await workspaceService.listChats(businessId, accountId);
+    // Falls back to the honest phone number, never the other tenant's name.
+    expect(chats[0]?.displayName).toBe('+12465559999');
+  });
+
+  it('leaves a @lid chat that already has its own real name completely untouched', async () => {
+    const chatRepository = new WhatsAppChatRepository(pool);
+    const contactRepository = new WhatsAppContactRepository(pool);
+    const jidMappingRepository = new WhatsAppJidMappingRepository(pool);
+
+    const lidJid = '777888999000111@lid';
+    const phoneJid = '12465557777@s.whatsapp.net';
+
+    const lidContact = await contactRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      whatsappJid: lidJid,
+      jidKind: 'lid',
+      pushName: 'Name From The LID Row',
+    });
+    await contactRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      whatsappJid: phoneJid,
+      jidKind: 'individual',
+      phoneNumber: '+12465557777',
+      displayName: 'Name From The Phone Row',
+    });
+    await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: lidJid,
+      jidKind: 'lid',
+      chatType: 'individual',
+      contactId: lidContact.id,
+    });
+    await jidMappingRepository.upsert(businessId, accountId, lidJid, phoneJid, '+12465557777', 'baileys_alt_jid', 'high');
+
+    const chats = await workspaceService.listChats(businessId, accountId);
+    expect(chats[0]?.displayName).toBe('Name From The LID Row');
+  });
 });

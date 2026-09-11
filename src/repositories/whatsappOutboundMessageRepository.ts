@@ -315,10 +315,38 @@ export class WhatsAppOutboundMessageRepository {
   }
 
   /** Batched read for the message list view - which of these persisted messages the AI reply pipeline sent, vs a human agent. */
+  /**
+   * Which of these persisted messages this app's AI actually generated - the
+   * one thing that separates an AI reply from a human operator's own typing,
+   * since both land as `fromMe`.
+   *
+   * Matching on `message_id` alone used to be racy. That column is filled in
+   * by linkPersistedMessage only once WhatsApp has echoed our send back and
+   * that echo has been persisted; an AI context gather running inside that
+   * window saw its own just-sent reply as an unlinked fromMe row and
+   * therefore labelled it a human message. That is precisely how a
+   * business-side statement could later be attributed to the wrong author.
+   *
+   * The provider's own whatsapp_message_id closes the window with no write
+   * at all: markSent() records it the instant our send call returns, so the
+   * relationship already exists before the echo does. Matching on either
+   * identity is race-free by construction, and deliberately keeps every
+   * extra cost on this read rather than on the WhatsApp ingestion
+   * transaction - see migration 1011 for why a write-side trigger was
+   * rejected. Backed by whatsapp_outbound_messages_message_identity_idx.
+   *
+   * Identity only: never message text, contact names, or model output.
+   */
   async listAiGeneratedMessageIds(messageIds: string[]): Promise<string[]> {
     if (messageIds.length === 0) return [];
     const { rows } = await this.db.query<{ message_id: string }>(
-      `SELECT message_id FROM whatsapp_outbound_messages WHERE message_id = ANY($1) AND requested_by = 'ai'`,
+      `SELECT DISTINCT m.id AS message_id
+         FROM whatsapp_messages m
+         JOIN whatsapp_outbound_messages o
+           ON o.business_id = m.business_id
+          AND o.whatsapp_account_id = m.whatsapp_account_id
+          AND (o.message_id = m.id OR o.whatsapp_message_id = m.whatsapp_message_id)
+        WHERE m.id = ANY($1) AND o.requested_by = 'ai'`,
       [messageIds],
     );
     return rows.map((row) => row.message_id);

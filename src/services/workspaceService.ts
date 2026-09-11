@@ -1,5 +1,6 @@
 import { pool } from '../db/pool.js';
 import { resolveDisplayName, type ContactNameSources } from '../domain/whatsapp/displayName.js';
+import { borrowSiblingContactName } from './chatIdentityService.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
 import { BusinessRepository, isValidTimezone, type BusinessRecord } from '../repositories/businessRepository.js';
 import { WhatsAppChatRepository, type ChatAiMode } from '../repositories/whatsappChatRepository.js';
@@ -548,6 +549,8 @@ export class WorkspaceService {
         if (phoneNumber) nameSources = { ...nameSources, phoneNumber };
       }
 
+      nameSources = await this.borrowSiblingContactName(businessId, whatsappAccountId, chat.jidKind, phoneNumber, nameSources);
+
       const displayName = resolveDisplayName(nameSources);
 
       let lastMessagePreview: string | null = null;
@@ -711,6 +714,37 @@ export class WorkspaceService {
    * table genuinely has nothing yet. A live hit is persisted immediately,
    * so this is a one-time cost per LID, not a repeated live query.
    */
+  /**
+   * Fills in a `@lid` chat's missing name from the phone-keyed contact row
+   * WhatsApp already synced for the very same person.
+   *
+   * A `@lid` contact row routinely carries no name at all - WhatsApp puts
+   * the address-book name on the phone JID's row instead. Without this, a
+   * real conversation showed as "WhatsApp User (2694…)" in the chat list
+   * while that same person's status updates showed their real name, because
+   * statuses are published under the phone identity and chats are addressed
+   * by the LID.
+   *
+   * Strictly a read-side join over rows this tenant already has: it imports
+   * nothing, writes nothing, and creates no contact. It only ever runs when
+   * (a) the chat really is a LID, (b) a phone number was already resolved
+   * from a Baileys-supplied mapping, and (c) no real name is known yet - so
+   * a chat that already displays correctly is never touched, and a name is
+   * never invented for someone WhatsApp has not told us about.
+   */
+  private async borrowSiblingContactName(
+    businessId: string,
+    whatsappAccountId: string,
+    jidKind: string,
+    phoneNumber: string | null,
+    nameSources: ContactNameSources,
+  ): Promise<ContactNameSources> {
+    // Delegated to chatIdentityService so the chat list, the chat header and
+    // every notification resolve a conversation's customer identity through
+    // exactly one implementation - see that module's own doc comment.
+    return borrowSiblingContactName(businessId, whatsappAccountId, jidKind, phoneNumber, nameSources);
+  }
+
   private async resolveAndPersistLidPhoneNumber(
     businessId: string,
     whatsappAccountId: string,
@@ -751,11 +785,38 @@ export class WorkspaceService {
         ? await this.presenceRepository.findLatest(businessId, whatsappAccountId, chat.chatJid)
         : null;
 
+    // One authoritative, server-resolved name for this conversation, built
+    // from exactly the same sources (and the same @lid sibling fallback) the
+    // chat list uses - so the header and the list can no longer disagree
+    // about who a conversation belongs to, and neither has to re-derive a
+    // name chain of its own.
+    let nameSources: ContactNameSources = contact
+      ? {
+          verifiedName: contact.verifiedName,
+          businessName: contact.businessName,
+          displayName: contact.displayName ?? chat.name,
+          username: contact.username,
+          pushName: contact.pushName,
+          shortName: contact.shortName,
+          phoneNumber: contact.phoneNumber ?? resolvedPhoneNumber,
+          whatsappJid: contact.whatsappJid,
+        }
+      : { displayName: chat.name, phoneNumber: resolvedPhoneNumber, whatsappJid: chat.chatJid };
+
+    nameSources = await this.borrowSiblingContactName(
+      businessId,
+      whatsappAccountId,
+      chat.jidKind,
+      resolvedPhoneNumber,
+      nameSources,
+    );
+
     return {
       chat,
       contact,
       crmContact,
       resolvedPhoneNumber,
+      displayName: resolveDisplayName(nameSources),
       presence: presence ? { state: presence.presenceState, lastSeenAt: presence.lastSeenAt } : null,
     };
   }

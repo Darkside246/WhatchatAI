@@ -43,6 +43,14 @@ jobs:
       DATABASE_URL: postgresql://whatchatai:whatchatai@127.0.0.1:5432/whatchatai_test
       REDIS_URL: redis://127.0.0.1:6379/1
       NODE_ENV: test
+      # A throwaway per-run key, NOT the production one. CI builds an empty
+      # database every run, so nothing it encrypts ever needs to be read back
+      # by another run. Without this the field-level encryption service has no
+      # master key and ~230 tests fail on "MASTER_ENCRYPTION_KEY is not
+      # configured" - a missing CI secret, not a real regression. The real key
+      # must never be put here: it is what makes production message bodies
+      # readable, and it must stay stable for the life of that database.
+      MASTER_ENCRYPTION_KEY: TEHNhbXBsZUNJT25seUtleU5vdFByb2R1Y3Rpb24xMg==
     steps:
       - name: Checkout
         uses: actions/checkout@v4

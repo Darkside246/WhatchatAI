@@ -3,6 +3,7 @@ import { Bell, Check, X } from 'lucide-react';
 import { api, type NotificationDto } from '../lib/api.js';
 import { useWhatsAppSync } from '../hooks/useWhatsAppSync.js';
 import { useAuth } from '../hooks/useAuth.js';
+import { useNavigate } from 'react-router-dom';
 
 const SEVERITY_DOT: Record<NotificationDto['severity'], string> = {
   info: 'bg-info',
@@ -29,6 +30,7 @@ function formatRelativeTime(iso: string): string {
  */
 export function NotificationCenter() {
   const auth = useAuth();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationDto[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -88,6 +90,20 @@ export function NotificationCenter() {
   }
 
   async function handleMarkRead(notification: NotificationDto) {
+    // Navigation happens regardless of read state: re-opening an
+    // already-read notification should still take you to the conversation
+    // it is about, which is the whole reason to click it.
+    //
+    // Routed by the notification's own stable targetId (a chat id), never by
+    // its title text - a display name can change, and two conversations can
+    // legitimately share one. Only 'chat' targets are navigable today;
+    // anything else (an AI configuration warning, a billing notice) is left
+    // as a plain read receipt rather than sent somewhere arbitrary.
+    if (notification.targetType === 'chat' && notification.targetId) {
+      setOpen(false);
+      navigate(`/chats/${notification.targetId}`);
+    }
+
     if (notification.readAt) return;
     setNotifications((prev) => prev.map((n) => (n.id === notification.id ? { ...n, readAt: new Date().toISOString() } : n)));
     setUnreadCount((count) => Math.max(0, count - 1));

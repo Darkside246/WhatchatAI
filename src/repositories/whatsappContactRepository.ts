@@ -165,6 +165,49 @@ export class WhatsAppContactRepository {
     return rows.map(toRecord);
   }
 
+  /**
+   * The phone-keyed (`@s.whatsapp.net`) sibling of a `@lid` identity, and
+   * only when that row actually carries a real name.
+   *
+   * WhatsApp hands the same human to us under two identities: a privacy
+   * `@lid` used to address the chat, and the ordinary phone JID that
+   * contacts sync arrives under. The address-book name ("Kathy-Ann Caddle")
+   * lands on the phone-keyed row; the `@lid` row that a chat actually points
+   * at frequently has no name at all, which is what left real conversations
+   * labelled "WhatsApp User (2694…)" in the chat list while the very same
+   * person's status updates showed their real name.
+   *
+   * This reads rows WhatsApp already synced into this tenant's own
+   * whatsapp_contacts table - it never imports a phone book, never creates a
+   * contact, and never stores anything new. The `phone_number` it is keyed
+   * by comes from whatsapp_jid_mappings, which is only ever written from a
+   * pairing Baileys itself supplied, so no identity is inferred here.
+   * Tenant- and account-scoped like every other read in this repository.
+   */
+  async findNamedByPhoneNumber(
+    businessId: string,
+    whatsappAccountId: string,
+    phoneNumber: string,
+  ): Promise<WhatsAppContactRecord | null> {
+    const { rows } = await this.db.query<ContactRow>(
+      `SELECT * FROM whatsapp_contacts
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND phone_number = $3
+         AND jid_kind = 'individual' AND deleted_at IS NULL
+         AND COALESCE(
+               NULLIF(btrim(verified_name), ''),
+               NULLIF(btrim(business_name), ''),
+               NULLIF(btrim(display_name), ''),
+               NULLIF(btrim(username), ''),
+               NULLIF(btrim(push_name), ''),
+               NULLIF(btrim(short_name), '')
+             ) IS NOT NULL
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [businessId, whatsappAccountId, phoneNumber],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
   /** Reconciliation read: @lid contacts with no phone number yet - real candidates for repair once a jid_mapping exists. */
   async findUnresolvedLidContacts(businessId: string, whatsappAccountId: string): Promise<WhatsAppContactRecord[]> {
     const { rows } = await this.db.query<ContactRow>(

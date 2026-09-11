@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -422,7 +422,23 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   const [detail, setDetail] = useState<WorkspaceChatDetail | null>(null);
   const [savingMode, setSavingMode] = useState(false);
   const [modeError, setModeError] = useState<string | null>(null);
-  const [draft, setDraft] = useState('');
+  /**
+   * Drafts belong to the conversation, not to the component: switching to
+   * another chat and back must not silently destroy half-typed text, and a
+   * customer message arriving mid-sentence (the 6s poll below replaces the
+   * whole `messages` array) must never reset the input. Keyed by the stable
+   * chat id rather than the display name, which can change under us.
+   */
+  const [draftsByChatId, setDraftsByChatId] = useState<Record<string, string>>({});
+  const draft = chatId ? (draftsByChatId[chatId] ?? '') : '';
+  /** Same call signature as a plain useState setter, so existing call sites (the emoji picker's appending updater included) keep working unchanged. */
+  const setDraft = (value: string | ((previous: string) => string)) => {
+    if (!chatId) return;
+    setDraftsByChatId((previous) => {
+      const current = previous[chatId] ?? '';
+      return { ...previous, [chatId]: typeof value === 'function' ? value(current) : value };
+    });
+  };
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const recorder = useVoiceRecorder();
@@ -440,6 +456,17 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   const [savingAssignee, setSavingAssignee] = useState(false);
   const [assigneeError, setAssigneeError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLInputElement>(null);
+  const messageListRef = useRef<HTMLDivElement>(null);
+  /**
+   * Whether the operator is currently reading the live end of the thread.
+   * Starts true so the first render of a freshly-opened chat lands on the
+   * newest message; set to false the moment they deliberately scroll up, so
+   * an arriving message never yanks them away from what they are reading.
+   */
+  const followNewestRef = useRef(true);
+  /** Forces the one unconditional jump-to-newest when a chat is first opened, regardless of follow state. */
+  const pendingInitialScrollRef = useRef(true);
 
   useEffect(() => {
     Promise.all([api.listMembers(), api.listTeams()])
@@ -586,18 +613,60 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
     setMessages(null);
     setDetail(null);
     setModeError(null);
-    setDraft('');
+    // The draft is deliberately NOT cleared here: it is keyed by chat id, so
+    // leaving it alone is what lets an operator switch away mid-sentence and
+    // come back to their own unsent text.
     setSendError(null);
     setEmojiPickerOpen(false);
     setReplySuggestions([]);
     setReactionPickerFor(null);
     setReactionError(null);
+    // A newly-opened conversation always starts at its live end, whatever the
+    // operator's scroll position was in the previous one.
+    followNewestRef.current = true;
+    pendingInitialScrollRef.current = true;
     void load(chatId);
     void loadDetail(chatId);
     markRead(chatId);
     const timer = setInterval(() => void load(chatId), 6000);
     return () => clearInterval(timer);
   }, [chatId]);
+
+  /**
+   * How close to the live end still counts as "reading the newest messages".
+   * A small tolerance rather than an exact match, because a rendered thread
+   * is rarely scrolled to a pixel-perfect bottom (sub-pixel row heights, an
+   * image that just finished loading, a trackpad's inertial overshoot).
+   */
+  const NEAR_BOTTOM_TOLERANCE_PX = 80;
+
+  function handleMessageListScroll() {
+    const list = messageListRef.current;
+    if (!list) return;
+    const distanceFromBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
+    followNewestRef.current = distanceFromBottom <= NEAR_BOTTOM_TOLERANCE_PX;
+  }
+
+  /**
+   * Standard chat scrolling, and deliberately the only place this component
+   * moves the thread: it follows the newest message while the operator is
+   * already at the live end (a chat they just opened, a reply they just
+   * sent, a customer message that just arrived), and does nothing at all
+   * while they are reading further up. Reading history is an explicit
+   * action, so an incoming message must never interrupt it.
+   *
+   * useLayoutEffect, not useEffect: the jump happens in the same frame the
+   * new messages are painted, so the thread never visibly flashes at the
+   * wrong offset first.
+   */
+  useLayoutEffect(() => {
+    const list = messageListRef.current;
+    if (!list || !messages || messages.length === 0) return;
+    if (!pendingInitialScrollRef.current && !followNewestRef.current) return;
+
+    list.scrollTop = list.scrollHeight;
+    pendingInitialScrollRef.current = false;
+  }, [messages, chatId]);
 
   /**
    * Real Gemini-drafted replies, fetched only when the newest real message
@@ -683,7 +752,15 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
     setDraft('');
     setEmojiPickerOpen(false);
     setReplySuggestions([]);
+    // Sending is an explicit move to the live end of the thread, so re-arm
+    // follow-newest even if the operator had scrolled up to re-read
+    // something before replying.
+    followNewestRef.current = true;
     await dispatchSend(chatId, { messageType: 'text', text });
+    // The send button steals focus on click (and Enter leaves it in place
+    // only by luck once the tree re-renders) - put the caret back where the
+    // operator is about to type, without an arbitrary timeout.
+    composerRef.current?.focus();
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -796,7 +873,12 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
     );
   }
 
+  // The server already resolved this against the full name hierarchy,
+  // including the @lid -> phone-keyed-sibling fallback the chat list uses.
+  // The local chain below is kept only for a detail payload that predates
+  // that field, never as a competing source of truth.
   const headerName =
+    detail?.displayName ??
     detail?.contact?.displayName ??
     detail?.contact?.pushName ??
     detail?.chat.name ??
@@ -870,7 +952,11 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
         </button>
       </div>
 
-      <div className={`flex-1 space-y-2 overflow-y-auto bg-surface-0 px-4 py-4 ${doodleClass}`}>
+      <div
+        ref={messageListRef}
+        onScroll={handleMessageListScroll}
+        className={`flex-1 space-y-2 overflow-y-auto bg-surface-0 px-4 py-4 ${doodleClass}`}
+      >
         {error && <p className="text-caption text-error">{error}</p>}
         {reactionError && <p className="text-caption text-error">{reactionError}</p>}
         {revokeError && <p className="text-caption text-error">{revokeError}</p>}
@@ -1108,13 +1194,21 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
               </button>
             </div>
           ) : (
+            /* Deliberately never `disabled`: a disabled input is blurred by
+               the browser, which is what previously threw the caret out of
+               the composer on every send and left it in <body> once the
+               send finished. Double-sends are already prevented by
+               handleSendText's own `sending` guard and the send button's
+               disabled state, so nothing is lost by keeping the field live -
+               and the operator can start typing their next line immediately,
+               exactly as they can in WhatsApp itself. */
             <input
+              ref={composerRef}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={handleComposerKeyDown}
-              disabled={sending}
               placeholder="Type a message"
-              className="flex-1 bg-transparent text-body text-fg outline-none placeholder:text-fg-muted disabled:opacity-50"
+              className="flex-1 bg-transparent text-body text-fg outline-none placeholder:text-fg-muted"
             />
           )}
           {recorder.state === 'recording' ? (

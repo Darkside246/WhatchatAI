@@ -51,6 +51,14 @@ const ALLOWLIST: Record<string, AllowlistEntry> = {
     reason: 'permanent-exception',
     note: 'Diagnostics only (settings-page connectivity check) - not a business AI path.',
   },
+  'src/security/sentinel/outboundLeakGuard.ts': {
+    reason: 'permanent-exception',
+    note: 'Security classifier, same rule as aiSentinel above - its own doc comment says it deliberately mirrors that file (same model selection, same fail-to-"unavailable" behavior). A leak check must never silently inherit cross-provider failover onto a model with different safety tuning nobody chose; it must fail closed instead.',
+  },
+  'src/server/index.ts': {
+    reason: 'permanent-exception',
+    note: 'Diagnostics only, same rule as aiEngineStatusService above: a null-check gating the "Test Gemini connection" button so it reports "not configured" honestly instead of attempting a call with no key. Not a business AI path - the reply path it reports on is aiReplyService.',
+  },
   'src/services/aiReplyService.ts': {
     reason: 'migrate-to-gateway',
     note: 'PATH A - production WhatsApp replies. AiGateway now supports tool-calling (P5.3) and a same-provider reduced-request retry equivalent to this file\'s 400-retry fallback - the migration itself (P5.4) is a deliberate, separately-audited swap of the live path, not yet done.',

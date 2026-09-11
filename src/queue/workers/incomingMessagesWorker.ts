@@ -30,6 +30,7 @@ import { WhatsAppChatRepository } from '../../repositories/whatsappChatRepositor
 import { BusinessRepository } from '../../repositories/businessRepository.js';
 import { CrmContactRepository } from '../../repositories/crmContactRepository.js';
 import { notifyBusiness } from '../../services/notificationService.js';
+import { resolveNotificationSubject } from '../../services/chatIdentityService.js';
 import { NotificationRepository } from '../../repositories/notificationRepository.js';
 import { getTopupOffer } from '../../services/billing/aiTokenTopupService.js';
 import { publishRealtimeEvent } from '../../realtime/pubsub.js';
@@ -331,6 +332,47 @@ const DEFAULT_BLOCKED_REPLY_MESSAGE = 'Let me get someone from the team to help 
  * processMediaDownload once a media message's real bytes are ready (or have
  * definitively failed to download).
  */
+/**
+ * A human-handoff notification that names the CUSTOMER whose conversation
+ * needs attention, never the operator whose WhatsApp account happens to be
+ * the connected one. Resolved through chatIdentityService so the title
+ * agrees with what the chat list and chat header show for the same
+ * conversation, and falls back to an honest generic sentence when nobody
+ * has been identified rather than naming the wrong person.
+ *
+ * targetId carries the stable chat id, so clicking the notification opens
+ * exactly this conversation - never a lookup by display name, which can
+ * change and is not unique.
+ */
+async function notifyConversationNeedsHuman(
+  businessId: string,
+  whatsappAccountId: string,
+  chatId: string,
+  body: string,
+): Promise<void> {
+  let subject: string | null = null;
+  try {
+    const chat = await chatRepository.findByIdForBusiness(chatId, businessId);
+    if (chat) subject = await resolveNotificationSubject(businessId, whatsappAccountId, chat);
+  } catch (error) {
+    // Naming the customer is an enrichment; failing to do so must never
+    // swallow the notification itself.
+    console.error('[IncomingMessagesWorker] Could not resolve a notification subject:', error instanceof Error ? error.message : error);
+  }
+
+  await notifyBusiness({
+    businessId,
+    type: 'HUMAN_HANDOFF',
+    severity: 'warning',
+    title: subject ? `${subject} needs a human` : 'A conversation needs a human',
+    body,
+    targetType: 'chat',
+    targetId: chatId,
+  }).catch((error) => {
+    console.error('[IncomingMessagesWorker] Failed to dispatch HUMAN_HANDOFF notification:', error);
+  });
+}
+
 async function runAiHandoff(params: {
   businessId: string;
   whatsappAccountId: string;
@@ -461,17 +503,12 @@ async function runAiHandoff(params: {
     if (isGroup) return;
     await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER', 'no_agent');
     await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
-    await notifyBusiness({
+    await notifyConversationNeedsHuman(
       businessId,
-      type: 'HUMAN_HANDOFF',
-      severity: 'warning',
-      title: 'A conversation needs a human',
-      body: 'No AI agent matched this message (no active agent, or none of your agents\' keywords matched), so nothing was sent.',
-      targetType: 'chat',
-      targetId: chatId,
-    }).catch((error) => {
-      console.error('[IncomingMessagesWorker] Failed to dispatch HUMAN_HANDOFF notification:', error);
-    });
+      whatsappAccountId,
+      chatId,
+      'No AI agent matched this message (no active agent, or none of your agents\' keywords matched), so nothing was sent.',
+    );
     return;
   }
 
@@ -483,17 +520,12 @@ async function runAiHandoff(params: {
     console.warn(`[IncomingMessagesWorker] Chat ${chatId}: ${outcome.reason}`);
     await chatRepository.setAiMode(chatId, 'HUMAN_TAKEOVER', 'blocked_keyword');
     await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId });
-    await notifyBusiness({
+    await notifyConversationNeedsHuman(
       businessId,
-      type: 'HUMAN_HANDOFF',
-      severity: 'warning',
-      title: 'A conversation needs a human',
-      body: `A blocked keyword ("${outcome.matchedKeyword}") matched, so no AI reply was sent.`,
-      targetType: 'chat',
-      targetId: chatId,
-    }).catch((error) => {
-      console.error('[IncomingMessagesWorker] Failed to dispatch HUMAN_HANDOFF notification:', error);
-    });
+      whatsappAccountId,
+      chatId,
+      `A blocked keyword ("${outcome.matchedKeyword}") matched, so no AI reply was sent.`,
+    );
     return;
   }
 

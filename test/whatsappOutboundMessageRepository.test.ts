@@ -175,6 +175,117 @@ describe('WhatsAppOutboundMessageRepository (real Postgres)', () => {
     expect(await repository.listAiGeneratedMessageIds([])).toEqual([]);
   });
 
+  it('regression: identifies an AI send correctly in the window BEFORE its echo has been linked - the attribution race', async () => {
+    // The real production window: markSent() has recorded the provider's own
+    // whatsapp_message_id, WhatsApp has echoed the message back and it has
+    // been persisted, but linkPersistedMessage has not run yet (it fires
+    // after the persist transaction commits). An AI context gather landing
+    // here previously saw its own just-sent reply as an unlinked fromMe row
+    // and labelled it a HUMAN operator message - which is how a business-side
+    // statement gets attributed to the wrong author.
+    const repository = new WhatsAppOutboundMessageRepository(pool);
+    const aiSend = await repository.createIdempotent({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      toJid,
+      idempotencyKey: 'idem-ai-unlinked',
+      messageType: 'text',
+      textContent: 'AI reply awaiting its echo',
+      requestedBy: 'ai',
+    });
+    const humanSend = await repository.createIdempotent({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      toJid,
+      idempotencyKey: 'idem-human-unlinked',
+      messageType: 'text',
+      textContent: 'Operator reply awaiting its echo',
+    });
+
+    await repository.markSending(aiSend.id);
+    await repository.markSent(aiSend.id, 'WA-AI-UNLINKED');
+    await repository.markSending(humanSend.id);
+    await repository.markSent(humanSend.id, 'WA-HUMAN-UNLINKED');
+
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO whatsapp_messages
+         (business_id, whatsapp_account_id, chat_id, whatsapp_message_id, remote_jid, sender_jid, direction,
+          message_type, text_content, "timestamp", from_me)
+       VALUES
+         ($1, $2, $3, 'WA-AI-UNLINKED', $4, $4, 'outbound', 'text', 'AI reply awaiting its echo', now(), true),
+         ($1, $2, $3, 'WA-HUMAN-UNLINKED', $4, $4, 'outbound', 'text', 'Operator reply awaiting its echo', now(), true)
+       RETURNING id`,
+      [businessId, accountId, chatId, toJid],
+    );
+    const [aiMessageId, humanMessageId] = rows.map((row) => row.id);
+
+    // Deliberately NO linkPersistedMessage call - this is the race window.
+    const { rows: unlinked } = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM whatsapp_outbound_messages
+        WHERE id = ANY($1) AND message_id IS NULL`,
+      [[aiSend.id, humanSend.id]],
+    );
+    expect(unlinked[0]?.count).toBe('2');
+
+    const aiGeneratedIds = await repository.listAiGeneratedMessageIds([aiMessageId!, humanMessageId!]);
+    expect(aiGeneratedIds).toEqual([aiMessageId]);
+    // The operator's own send is still correctly NOT attributed to the AI.
+    expect(aiGeneratedIds).not.toContain(humanMessageId);
+  });
+
+  it('never attributes across businesses or WhatsApp accounts even when a provider message id repeats', async () => {
+    const repository = new WhatsAppOutboundMessageRepository(pool);
+    const otherBusinessId = await createTestBusiness();
+    const otherAccountId = await createTestAccount(otherBusinessId, '15559998888@s.whatsapp.net');
+
+    // Another tenant's AI send that happens to carry the same provider id.
+    const { rows: otherChatRows } = await pool.query<{ id: string }>(
+      `INSERT INTO whatsapp_chats (business_id, whatsapp_account_id, chat_jid, jid_kind, chat_type)
+       VALUES ($1, $2, '15557776666@s.whatsapp.net', 'individual', 'individual') RETURNING id`,
+      [otherBusinessId, otherAccountId],
+    );
+    const otherSend = await repository.createIdempotent({
+      businessId: otherBusinessId,
+      whatsappAccountId: otherAccountId,
+      chatId: otherChatRows[0]!.id,
+      toJid: '15557776666@s.whatsapp.net',
+      idempotencyKey: 'idem-other-tenant',
+      messageType: 'text',
+      textContent: 'Other tenant AI reply',
+      requestedBy: 'ai',
+    });
+    await repository.markSending(otherSend.id);
+    await repository.markSent(otherSend.id, 'WA-SHARED-ID');
+
+    // Our own tenant's message carrying that same provider id, sent by a human.
+    const humanSend = await repository.createIdempotent({
+      businessId,
+      whatsappAccountId: accountId,
+      chatId,
+      toJid,
+      idempotencyKey: 'idem-ours-shared-id',
+      messageType: 'text',
+      textContent: 'Our operator reply',
+    });
+    await repository.markSending(humanSend.id);
+    await repository.markSent(humanSend.id, 'WA-SHARED-ID');
+
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO whatsapp_messages
+         (business_id, whatsapp_account_id, chat_id, whatsapp_message_id, remote_jid, sender_jid, direction,
+          message_type, text_content, "timestamp", from_me)
+       VALUES ($1, $2, $3, 'WA-SHARED-ID', $4, $4, 'outbound', 'text', 'Our operator reply', now(), true)
+       RETURNING id`,
+      [businessId, accountId, chatId, toJid],
+    );
+
+    // Must come back empty: the only AI row with that provider id belongs to
+    // a different tenant entirely.
+    expect(await repository.listAiGeneratedMessageIds([rows[0]!.id])).toEqual([]);
+  });
+
   it('tracks the real status lifecycle: queued -> sending -> sent', async () => {
     const repository = new WhatsAppOutboundMessageRepository(pool);
     const record = await repository.createIdempotent({

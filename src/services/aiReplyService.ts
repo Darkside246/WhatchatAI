@@ -2,6 +2,7 @@ import { ApiError } from '@google/genai';
 import type { GoogleGenAI, Content, GenerateContentResponse, FunctionCall } from '@google/genai';
 import { getGeminiClient } from './geminiClient.js';
 import { aiGateway } from './ai/aiGateway.js';
+import { toProviderToolDefinitions } from './ai/geminiToolSchemaBridge.js';
 import { pool, queryAsTenant } from '../db/pool.js';
 import { ADVICE_RESTRICTED_CATEGORIES, type AiAgentRecord } from '../repositories/aiAgentRepository.js';
 import type { AiHandoffContext } from './aiContextGathererService.js';
@@ -805,6 +806,7 @@ async function tryFallbackProviders(
   context: AiHandoffContext,
   contents: ReturnType<typeof toContents>,
   skipEscalation: boolean,
+  replyTools?: ReturnType<typeof buildReplyTools>,
 ): Promise<AiReplyResult> {
   const fallbackProviders = aiGateway.listProviders().filter((provider) => provider.name !== 'gemini');
   if (fallbackProviders.length === 0) {
@@ -815,30 +817,67 @@ async function tryFallbackProviders(
     };
   }
 
-  try {
+  const allowlist = fallbackProviders.map((provider) => provider.name);
+  // Every turn toContents builds starts with a real {text} part (a caption,
+  // or an honest media placeholder), so flattening to text here only ever
+  // drops inline media bytes a fallback provider could not have used. Parts
+  // beyond the first are joined rather than silently discarded.
+  const transcript = contents.map((content) => ({
+    role: content.role === 'model' ? ('assistant' as const) : ('user' as const),
+    content: content.parts
+      .map((part) => (typeof (part as { text?: unknown }).text === 'string' ? (part as { text: string }).text : ''))
+      .filter((text) => text.length > 0)
+      .join('\n'),
+  }));
+
+  const tools = toProviderToolDefinitions(replyTools);
+
+  async function attempt(withTools: boolean): Promise<string> {
     const response = await aiGateway.generate({
       tenantId: agent.businessId,
-      operation: 'reply.fallback',
-      providerAllowlist: fallbackProviders.map((provider) => provider.name),
+      operation: withTools ? 'reply.fallback' : 'reply.fallback.textonly',
+      providerAllowlist: allowlist,
       messages: [
-        { role: 'system', content: buildSystemInstruction(agent, context, { toolsAvailable: false }) },
-        ...contents.map((content) => ({
-          role: content.role === 'model' ? ('assistant' as const) : ('user' as const),
-          content: (content.parts[0] as { text: string }).text,
-        })),
+        { role: 'system', content: buildSystemInstruction(agent, context, { toolsAvailable: withTools }) },
+        ...transcript,
       ],
+      ...(withTools ? { tools } : {}),
     });
-    const fallbackText = response.text.slice(0, MAX_REPLY_CHARS);
-    await recordCommitmentIfDetected(fallbackText, context);
-    await recordNameUsageIfDetected(fallbackText, context);
-    return { status: 'generated', text: fallbackText };
-  } catch (error) {
-    return {
-      status: 'unavailable',
-      reason: `Gemini unavailable (${geminiReason}); fallback also unavailable (${error instanceof Error ? error.message : String(error)})`,
-      skipEscalation,
-    };
+    return response.text.slice(0, MAX_REPLY_CHARS);
   }
+
+  // Stage 1 - coherence. Offer the same persona AND the same tools the
+  // primary had, so a customer gets the same real behaviour whichever model
+  // actually answered: "tell Hasan to call me at 6" writes a real
+  // relayed_messages row on OpenAI/Groq/Cerebras/Mistral exactly as it does
+  // on Gemini, instead of a friendly reply that recorded nothing. The
+  // gateway itself excludes any provider that does not advertise function
+  // calling when tools are present, so this stage only ever reaches
+  // genuinely tool-capable providers.
+  //
+  // Stage 2 - availability. Only once every tool-capable provider has failed
+  // do we fall through to the text-only chain (OpenRouter, Goose). Those
+  // providers really cannot run a tool, so they are told so honestly
+  // (toolsAvailable: false), which is what stops the model claiming an
+  // action it never took - the same guarantee buildSystemInstruction's
+  // always-on rule enforces on the primary path.
+  let lastError: unknown;
+  for (const withTools of tools.length > 0 ? [true, false] : [false]) {
+    try {
+      const fallbackText = await attempt(withTools);
+      await recordCommitmentIfDetected(fallbackText, context);
+      await recordNameUsageIfDetected(fallbackText, context);
+      return { status: 'generated', text: fallbackText };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  return {
+    status: 'unavailable',
+    reason: `Gemini unavailable (${geminiReason}); fallback also unavailable (${lastError instanceof Error ? lastError.message : String(lastError)})`,
+    skipEscalation,
+  };
 }
 
 /**
@@ -1285,8 +1324,21 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
   const geminiCircuitBreaker = getGeminiCircuitBreaker(agent.businessId);
   const geminiConfigCircuitBreaker = getGeminiConfigCircuitBreaker(agent.businessId);
 
+  // Built once, here, and handed to BOTH the primary Gemini call and the
+  // fallback chain. That is the whole point: every allowlist, forbidden-tool,
+  // autonomy-level and AI-actions-paused decision for this turn is already
+  // baked in, so a fallback provider is offered precisely the tools this
+  // agent was allowed - never a wider set, and no longer an empty one.
+  const replyTools = buildReplyTools(
+    context.connectedMeetingProviders ?? [],
+    agent,
+    context.aiActionsPaused ?? false,
+    context.hasPropertyData ?? false,
+    context.hasRetailData ?? false,
+  );
+
   const genAi = getGeminiClient();
-  if (!genAi) return tryFallbackProviders('GEMINI_API_KEY is not configured', agent, context, contents, true);
+  if (!genAi) return tryFallbackProviders('GEMINI_API_KEY is not configured', agent, context, contents, true, replyTools);
 
   // Sustained Gemini outages must not cost every queued message a full
   // network timeout before falling back - once several consecutive real
@@ -1301,6 +1353,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
       context,
       contents,
       true,
+      replyTools,
     );
   }
 
@@ -1326,7 +1379,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
           // no-tools bare retry below on every single reply. maxOutputTokens
           // alone is the safety net for response length now.
           maxOutputTokens: 1024,
-          tools: buildReplyTools(context.connectedMeetingProviders ?? [], agent, context.aiActionsPaused ?? false, context.hasPropertyData ?? false, context.hasRetailData ?? false),
+          tools: replyTools,
         },
       });
       await recordAiUsage(model, 'primary', response, agent, context);
@@ -1371,7 +1424,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
     const text = response.text?.trim();
     if (!text) {
       console.warn(`[aiReplyService] Gemini returned an empty response for chat ${context.chatId}; falling back to Goose.`);
-      return tryFallbackProviders('Reply model returned an empty response', agent, context, contents, false);
+      return tryFallbackProviders('Reply model returned an empty response', agent, context, contents, false, replyTools);
     }
 
     const finalText = text.slice(0, MAX_REPLY_CHARS);
@@ -1405,7 +1458,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
       // against. Escalating to a second agent right now is pointless: the
       // same outage almost certainly still applies.
       geminiCircuitBreaker.recordFailure(reason);
-      return tryFallbackProviders(reason, agent, context, contents, true);
+      return tryFallbackProviders(reason, agent, context, contents, true, replyTools);
     }
 
     if (classified.category === 'auth' || classified.category === 'provider_config') {
@@ -1436,13 +1489,13 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
           );
         });
       }
-      return tryFallbackProviders(reason, agent, context, contents, true);
+      return tryFallbackProviders(reason, agent, context, contents, true, replyTools);
     }
 
     // 'malformed_request' - the one class where a *different* agent's own
     // prompt shape could plausibly avoid the same 400, so escalation stays
     // worth trying. Feeds neither breaker: retrying via a probe cannot fix
     // a request shape problem.
-    return tryFallbackProviders(reason, agent, context, contents, false);
+    return tryFallbackProviders(reason, agent, context, contents, false, replyTools);
   }
 }

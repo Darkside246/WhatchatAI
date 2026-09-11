@@ -33,6 +33,19 @@ const NAME_PRIORITY: (keyof ContactNameSources)[] = [
  * of surfacing the raw protocol string - the full LID is never lost, it's
  * still the caller's `whatsappJid` for every actual messaging operation.
  */
+/**
+ * Whether any genuine *name* source is present - deliberately excluding
+ * phoneNumber, which resolveDisplayName only falls back to precisely because
+ * no real name was found. Shares NAME_PRIORITY with the resolver so the two
+ * can never drift into disagreeing about what counts as a name.
+ */
+export function hasRealName(sources: ContactNameSources): boolean {
+  return NAME_PRIORITY.filter((key) => key !== 'phoneNumber').some((key) => {
+    const value = sources[key];
+    return typeof value === 'string' && value.trim().length > 0;
+  });
+}
+
 export function resolveDisplayName(sources: ContactNameSources): string {
   for (const key of NAME_PRIORITY) {
     const value = sources[key];
