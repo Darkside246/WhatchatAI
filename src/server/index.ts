@@ -222,6 +222,7 @@ import {
   getScheduledStatus,
   listStatusReplies,
   scheduleStatus,
+  publishStatusNow,
   cancelScheduledStatus,
   deleteScheduledStatus,
   isScheduledStatusNotFoundError,
@@ -1501,6 +1502,19 @@ app.get('/api/workspace/scheduled-statuses/:id', requireWorkspaceContext, async 
 });
 
 /** "Status comments" - real replies WhatsApp delivered to this status, see scheduledStatusService.ts's listStatusReplies. */
+/** Publish a draft status immediately - same queue, same worker, same real publish as a scheduled one, just with no delay. */
+app.post('/api/workspace/scheduled-statuses/:id/publish-now', requireWorkspaceContext, requirePermission('marketing.send'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    const status = await publishStatusNow(businessId, String(req.params.id ?? ''));
+    return res.status(202).json({ status });
+  } catch (error) {
+    if (isScheduledStatusNotFoundError(error)) return res.status(404).json({ error: 'SCHEDULED_STATUS_NOT_FOUND' });
+    if (isInvalidScheduledStatusError(error)) return res.status(409).json({ error: 'INVALID_STATUS_STATE', message: (error as Error).message });
+    throw error;
+  }
+});
+
 app.get('/api/workspace/scheduled-statuses/:id/replies', requireWorkspaceContext, async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
   try {
@@ -3768,6 +3782,30 @@ app.get('/api/workspace/statuses', requireWorkspaceContext, async (_req, res) =>
   };
   const statuses = await workspaceService.listStatuses(businessId, whatsappAccountId);
   return res.status(200).json({ statuses });
+});
+
+/** Reply to a customer's status - a real DM to the publisher that quotes the status, sent through the ordinary outbound pipeline. */
+app.post('/api/workspace/statuses/:id/reply', requireWorkspaceContext, requirePermission('whatsapp.send'), async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = z.object({ text: z.string().trim().min(1).max(10000) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_REPLY_PAYLOAD' });
+
+  try {
+    const result = await workspaceService.replyToStatus(businessId, whatsappAccountId, String(req.params.id ?? ''), parsed.data.text);
+    return res.status(202).json(result);
+  } catch (error) {
+    if (isChatNotFoundError(error)) {
+      // Honest and specific: the status is real, but there is no
+      // conversation with whoever posted it, and inventing one would be
+      // fabricating a relationship that does not exist.
+      return res.status(409).json({
+        error: 'NO_CONVERSATION_WITH_PUBLISHER',
+        message: 'No conversation exists with the person who posted this status yet.',
+      });
+    }
+    if ((error as { code?: string }).code === 'CHAT_NOT_FOUND') return res.status(404).json({ error: 'STATUS_NOT_FOUND' });
+    throw error;
+  }
 });
 
 app.patch('/api/workspace/statuses/:id/view', requireWorkspaceContext, async (req, res) => {

@@ -1,5 +1,5 @@
 import { Worker, type Job } from 'bullmq';
-import type { AnyMessageContent } from '@whiskeysockets/baileys';
+import type { AnyMessageContent, MiscMessageGenerationOptions } from '@whiskeysockets/baileys';
 import { queueConnection } from '../connection.js';
 import { OUTBOUND_MESSAGES_QUEUE, type OutboundMessageJobData } from '../queues/outboundMessagesQueue.js';
 import { whatsappConnectionManager } from '../../services/whatsappConnectionManager.js';
@@ -12,6 +12,7 @@ import {
   type WhatsAppOutboundMessageRecord,
 } from '../../repositories/whatsappOutboundMessageRepository.js';
 import { computeTypingDelayMs, sleep } from '../../services/humanlikeTypingDelay.js';
+import { WhatsAppStatusRepository } from '../../repositories/whatsappStatusRepository.js';
 
 /**
  * Deliberately run in the same process as the API server (imported from
@@ -23,6 +24,7 @@ import { computeTypingDelayMs, sleep } from '../../services/humanlikeTypingDelay
  * send anything, no matter how the job itself is structured.
  */
 const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
+const statusRepository = new WhatsAppStatusRepository(pool);
 
 /**
  * Builds the real Baileys send payload for an outbound request. Media
@@ -217,9 +219,44 @@ async function processOutboundMessage(job: Job<OutboundMessageJobData>): Promise
   // own doc comment for why this must be a separate write from markSending.
   await outboundMessageRepository.markSendAttempted(record.id);
 
+  /**
+   * A WhatsApp status reply is an ordinary direct message that QUOTES the
+   * status, which is what makes both sides see it threaded under the right
+   * post. Without the quote the recipient gets a bare message with no idea
+   * what it refers to.
+   *
+   * The quoted stub is keyed on status@broadcast with the status's own
+   * WhatsApp id and its publisher as participant - the real identifiers
+   * WhatsApp itself uses for a status, never invented ones. If the status
+   * row has since been cleaned up (they expire after 24 hours) the message
+   * is sent as a plain DM rather than failing: the reply is still real and
+   * still wanted.
+   */
+  let sendOptions: MiscMessageGenerationOptions | undefined;
+  if (record.replyToStatusId) {
+    const status = await statusRepository.findByIdForBusiness(record.replyToStatusId, record.businessId);
+    if (status) {
+      sendOptions = {
+        quoted: {
+          key: { remoteJid: 'status@broadcast', id: status.statusId, participant: status.publisherJid, fromMe: false },
+          message: { conversation: status.textContent ?? '' },
+        },
+      };
+    } else {
+      console.warn(
+        `[OutboundDispatchWorker] Status ${record.replyToStatusId} is gone (expired or cleaned up) - sending outbound ${record.id} as a plain message.`,
+      );
+    }
+  }
+
   let sent: Awaited<ReturnType<typeof socket.sendMessage>>;
   try {
-    sent = await socket.sendMessage(record.toJid, content);
+    // Only passes a third argument when there genuinely is one: an ordinary
+    // send keeps the exact call shape it has always had, rather than
+    // acquiring a trailing `undefined`.
+    sent = sendOptions
+      ? await socket.sendMessage(record.toJid, content, sendOptions)
+      : await socket.sendMessage(record.toJid, content);
   } catch (error) {
     // sendMessage itself threw: we are still running, so we know for
     // certain no message id was ever returned - this is an ordinary

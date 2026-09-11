@@ -23,6 +23,8 @@ export interface WhatsAppOutboundMessageRecord {
   whatsappMessageId: string | null;
   messageId: string | null;
   requestedBy: string;
+  /** Set when this send is a reply to a customer's status - the dispatcher quotes that status so WhatsApp threads it correctly. */
+  replyToStatusId: string | null;
   createdAt: string;
   sentAt: string | null;
   /** Set the instant before the real Baileys sendMessage call - see markSendAttempted(). Non-null on resume means the previous attempt may already have reached WhatsApp. */
@@ -46,6 +48,8 @@ export interface CreateOutboundMessageInput {
   mediaDurationSeconds?: number | null;
   /** The whole content of a 'contact' or 'poll' send. Encrypted before it touches the database. */
   structuredPayload?: OutboundStructuredPayload | null;
+  /** The status this text send is a reply to, so the dispatcher can quote it and WhatsApp threads it under the right post. */
+  replyToStatusId?: string | null;
   /** Defaults to 'human' (the column's own DB default) when omitted. */
   requestedBy?: string;
 }
@@ -70,6 +74,7 @@ interface OutboundMessageRow {
   whatsapp_message_id: string | null;
   message_id: string | null;
   requested_by: string;
+  reply_to_status_id: string | null;
   created_at: string;
   sent_at: string | null;
   send_attempted_at: string | null;
@@ -96,6 +101,7 @@ function toRecord(row: OutboundMessageRow, wasCreated: boolean): WhatsAppOutboun
     whatsappMessageId: row.whatsapp_message_id,
     messageId: row.message_id,
     requestedBy: row.requested_by,
+    replyToStatusId: row.reply_to_status_id,
     createdAt: row.created_at,
     sentAt: row.sent_at,
     sendAttemptedAt: row.send_attempted_at,
@@ -118,8 +124,8 @@ export class WhatsAppOutboundMessageRepository {
       `INSERT INTO whatsapp_outbound_messages
          (business_id, whatsapp_account_id, chat_id, to_jid, idempotency_key, message_type,
           text_content, caption, media_storage_reference, media_mime_type, media_file_name,
-          media_duration_seconds, structured_payload, requested_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          media_duration_seconds, structured_payload, reply_to_status_id, requested_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        ON CONFLICT (business_id, whatsapp_account_id, idempotency_key) DO NOTHING
        RETURNING *`,
       [
@@ -140,6 +146,7 @@ export class WhatsAppOutboundMessageRepository {
               await getEncryptionService().encryptField(input.businessId, JSON.stringify(input.structuredPayload)),
             )
           : null,
+        input.replyToStatusId ?? null,
         input.requestedBy ?? 'human',
       ],
     );

@@ -1,6 +1,7 @@
 import { pool } from '../db/pool.js';
 import { resolveDisplayName, type ContactNameSources } from '../domain/whatsapp/displayName.js';
 import { borrowSiblingContactName } from './chatIdentityService.js';
+import { whatsappOutboundMessageService } from './whatsappOutboundMessageService.js';
 import { WhatsAppAccountRepository } from '../repositories/whatsappAccountRepository.js';
 import { BusinessRepository, isValidTimezone, type BusinessRecord } from '../repositories/businessRepository.js';
 import { WhatsAppChatRepository, type ChatAiMode } from '../repositories/whatsappChatRepository.js';
@@ -691,6 +692,47 @@ export class WorkspaceService {
     }
 
     return summaries;
+  }
+
+  /**
+   * Replies to a customer's status.
+   *
+   * A status reply is an ordinary direct message to the person who posted,
+   * which quotes the status so both sides see it threaded under the right
+   * post - so this resolves the publisher's own conversation and sends
+   * through the exact same outbound pipeline as any other message. There is
+   * no separate send path that could drift from it.
+   *
+   * Fails honestly when there is no conversation with that publisher yet:
+   * a status can arrive from someone this business has never messaged, and
+   * silently creating a chat for them would be inventing a relationship.
+   */
+  async replyToStatus(
+    businessId: string,
+    whatsappAccountId: string,
+    statusId: string,
+    text: string,
+  ): Promise<{ outboundMessageId: string; chatId: string }> {
+    const status = await this.statusRepository.findByIdForBusiness(statusId, businessId);
+    if (!status || status.whatsappAccountId !== whatsappAccountId) throw this.notFound();
+
+    const chat = await this.chatRepository.findByJid(businessId, whatsappAccountId, status.publisherJid);
+    if (!chat) {
+      const error = new Error('No conversation exists with the person who posted this status yet.') as ChatNotFoundError;
+      error.code = 'CHAT_NOT_FOUND';
+      throw error;
+    }
+
+    const outbound = await whatsappOutboundMessageService.send({
+      businessId,
+      whatsappAccountId,
+      chatId: chat.id,
+      messageType: 'text',
+      text,
+      replyToStatusId: status.id,
+    });
+
+    return { outboundMessageId: outbound.id, chatId: chat.id };
   }
 
   /** Idempotent, tenant-scoped - see whatsappStatusRepository.ts's markViewed. */

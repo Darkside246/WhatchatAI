@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { ImageOff, FileWarning, Loader2 } from 'lucide-react';
-import { api, mediaUrl, type WorkspaceStatus } from '../lib/api.js';
+import { ImageOff, FileWarning, Loader2, Send } from 'lucide-react';
+import { api, mediaUrl, ApiError, type WorkspaceStatus } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
 import { Avatar } from './Avatar.js';
 
@@ -15,6 +15,75 @@ function formatTime(iso: string): string {
  * group is expanded, so its natural aspect ratio (object-contain) never
  * fights a grid row's stretched height the way the old grid layout did.
  */
+/**
+ * Reply to a customer's status, from the Status panel.
+ *
+ * Sends a real direct message to whoever posted, quoting the status so both
+ * sides see it threaded under the right post - the same thing the official
+ * client does. A status from someone this business has never messaged has no
+ * conversation to send into, and that is reported honestly rather than
+ * silently creating one.
+ */
+function StatusReplyBox({ statusId }: { statusId: string }) {
+  const [text, setText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function send() {
+    const trimmed = text.trim();
+    if (!trimmed || sending) return;
+    setSending(true);
+    setError(null);
+    try {
+      await api.replyToStatus(statusId, trimmed);
+      setText('');
+      setSent(true);
+    } catch (err) {
+      setError(
+        err instanceof ApiError && err.code === 'NO_CONVERSATION_WITH_PUBLISHER'
+          ? 'You have no conversation with this person yet, so there is nowhere to send a reply.'
+          : err instanceof Error
+            ? err.message
+            : 'Could not send that reply.',
+      );
+    } finally {
+      setSending(false);
+    }
+  }
+
+  if (sent) return <p className="mt-1.5 text-meta text-success">Reply sent.</p>;
+
+  return (
+    <div className="mt-1.5">
+      <div className="flex items-center gap-2">
+        <input
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              void send();
+            }
+          }}
+          placeholder="Reply to this status"
+          className="flex-1 rounded-full border border-border-subtle bg-surface-2 px-3 py-1.5 text-caption text-fg outline-none focus:border-accent"
+        />
+        <button
+          type="button"
+          onClick={() => void send()}
+          disabled={sending || text.trim().length === 0}
+          className="shrink-0 text-accent hover:text-accent-dim disabled:cursor-not-allowed disabled:opacity-50"
+          title="Send reply"
+        >
+          <Send size={16} strokeWidth={1.75} aria-hidden />
+        </button>
+      </div>
+      {error && <p className="mt-1 text-meta text-error">{error}</p>}
+    </div>
+  );
+}
+
 function StatusExpanded({ status }: { status: WorkspaceStatus }) {
   if (status.statusType === 'text') {
     // Real text content, emoji included - a plain string renders exactly as
@@ -247,7 +316,10 @@ export function StatusesPanel({ className = '' }: Props) {
               {expanded && (
                 <div className="space-y-2 px-2 pb-3">
                   {group.items.map((item) => (
-                    <StatusExpanded key={item.id} status={item} />
+                    <div key={item.id}>
+                      <StatusExpanded status={item} />
+                      <StatusReplyBox statusId={item.id} />
+                    </div>
                   ))}
                 </div>
               )}

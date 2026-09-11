@@ -106,6 +106,35 @@ export async function scheduleStatus(businessId: string, id: string): Promise<Sc
   return updated;
 }
 
+/**
+ * Publishes a draft status right now, rather than at a future scheduledAt.
+ *
+ * The whole status feature was schedule-only: composing something to post
+ * immediately meant inventing a time a minute or two ahead and waiting for
+ * it. This takes the same DRAFT through the same queue, the same worker and
+ * the same real WhatsApp publish - the only difference is a zero delay, so
+ * there is no second, parallel publish path that could drift from the
+ * scheduled one.
+ *
+ * scheduledAt is left exactly as the operator set it: it is a record of what
+ * they asked for, and rewriting it to "now" would quietly falsify that.
+ * DRAFT-only, like scheduleStatus - publishing something already SCHEDULED
+ * or PUBLISHED would risk a duplicate post.
+ */
+export async function publishStatusNow(businessId: string, id: string): Promise<ScheduledStatusRecord> {
+  const record = await requireOwn(businessId, id);
+  if (record.status !== 'DRAFT') {
+    throw new InvalidScheduledStatusError(`Status is "${record.status}" - only a DRAFT can be published immediately.`);
+  }
+
+  const updated = await scheduledStatusRepository.updateStatus(id, 'SCHEDULED');
+  if (!updated) throw new ScheduledStatusNotFoundError('Scheduled status not found.');
+  // Durably SCHEDULED before enqueueing, same ordering as scheduleStatus, so
+  // a slow or unreachable Redis can never hang the caller or lose the row.
+  await enqueueWithTimeout(enqueueScheduledStatus({ scheduledStatusId: id }, 0), `immediate status ${id}`);
+  return updated;
+}
+
 export async function cancelScheduledStatus(businessId: string, id: string): Promise<ScheduledStatusRecord> {
   const record = await requireOwn(businessId, id);
   if (record.status !== 'DRAFT' && record.status !== 'SCHEDULED') {

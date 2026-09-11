@@ -656,14 +656,23 @@ function NewStatusForm({ onCreated, onCancel }: { onCreated: () => void; onCance
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
+  /**
+   * Posting now and scheduling build the identical draft and go through the
+   * identical queue, worker and real WhatsApp publish - "now" simply means a
+   * zero delay. There is no second publish path that could behave
+   * differently from the scheduled one.
+   *
+   * scheduledAt is required by the draft either way, so an immediate post
+   * records the moment it was actually asked for rather than a fictional
+   * future time.
+   */
+  async function submit(immediate: boolean) {
     setBusy(true);
     setError(null);
     try {
       const input: Parameters<typeof api.createScheduledStatus>[0] = {
         statusType,
-        scheduledAt: new Date(scheduledAt).toISOString(),
+        scheduledAt: immediate ? new Date().toISOString() : new Date(scheduledAt).toISOString(),
       };
       if (statusType === 'text') {
         input.textContent = textContent.trim();
@@ -675,13 +684,27 @@ function NewStatusForm({ onCreated, onCancel }: { onCreated: () => void; onCance
         if (caption.trim()) input.caption = caption.trim();
       }
       const result = await api.createScheduledStatus(input);
-      await api.scheduleStatus(result.status.id);
+      if (immediate) await api.publishStatusNow(result.status.id);
+      else await api.scheduleStatus(result.status.id);
       onCreated();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Could not schedule that status.');
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : immediate
+              ? 'Could not post that status.'
+              : 'Could not schedule that status.',
+      );
     } finally {
       setBusy(false);
     }
+  }
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    await submit(false);
   }
 
   return (
@@ -691,8 +714,8 @@ function NewStatusForm({ onCreated, onCancel }: { onCreated: () => void; onCance
         Back to Status
       </button>
 
-      <h2 className="text-body-lg font-semibold text-fg">Schedule a Status</h2>
-      <p className="mt-1 text-caption text-fg-muted">Posts to WhatsApp Status, visible to your real saved contacts, at the time you choose.</p>
+      <h2 className="text-body-lg font-semibold text-fg">Post a Status</h2>
+      <p className="mt-1 text-caption text-fg-muted">Posts to WhatsApp Status, visible to your real saved contacts - now, or at a time you choose.</p>
 
       <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-4">
         <div className="flex gap-1.5">
@@ -760,9 +783,26 @@ function NewStatusForm({ onCreated, onCancel }: { onCreated: () => void; onCance
 
         {error && <p className="text-caption text-error">{error}</p>}
 
-        <button type="submit" disabled={busy} className="self-start rounded-lg bg-accent px-4 py-2 text-body font-medium text-white hover:bg-accent-dim disabled:opacity-50">
-          {busy ? 'Scheduling…' : 'Schedule'}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          {/* Post now needs no scheduled time, so it is not gated on one -
+              scheduling still is, since a scheduled post without a time is
+              not a scheduled post. */}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void submit(true)}
+            className="rounded-lg bg-accent px-4 py-2 text-body font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+          >
+            {busy ? 'Working…' : 'Post now'}
+          </button>
+          <button
+            type="submit"
+            disabled={busy || scheduledAt.trim().length === 0}
+            className="rounded-lg border border-border-subtle px-4 py-2 text-body font-medium text-fg hover:bg-surface-2 disabled:opacity-50"
+          >
+            {busy ? 'Working…' : 'Schedule for later'}
+          </button>
+        </div>
       </form>
     </div>
   );

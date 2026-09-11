@@ -30,6 +30,8 @@ export interface SendOutboundMessageInput {
   caption?: string;
   /** The whole content of a 'contact' or 'poll' send - these types carry neither text nor media. */
   structuredPayload?: OutboundStructuredPayload | undefined;
+  /** Set when this send is a reply to a customer's status, so the dispatcher quotes that status and WhatsApp threads it under the right post. */
+  replyToStatusId?: string | undefined;
   /** Base64-encoded raw file bytes. Required for every messageType except 'text', unless mediaStorageReference is supplied directly instead. */
   mediaBase64?: string;
   /**
@@ -149,6 +151,7 @@ export class WhatsAppOutboundMessageService {
       mediaDurationSeconds,
       mediaFileName: input.mediaFileName ?? null,
       structuredPayload: input.structuredPayload ?? null,
+      replyToStatusId: input.replyToStatusId ?? null,
       requestedBy: input.requestedBy ?? 'human',
     });
 

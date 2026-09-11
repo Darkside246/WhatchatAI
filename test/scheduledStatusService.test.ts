@@ -5,6 +5,7 @@ import {
   listScheduledStatuses,
   getScheduledStatus,
   scheduleStatus,
+  publishStatusNow,
   cancelScheduledStatus,
   isInvalidScheduledStatusError,
   isScheduledStatusNotFoundError,
@@ -103,5 +104,42 @@ describe('scheduledStatusService (real Status posts, real BullMQ-backed scheduli
     const statuses = await listScheduledStatuses(businessId);
     expect(statuses.map((s) => s.id)).toContain(status.id);
     expect(await listScheduledStatuses(otherBusinessId)).toHaveLength(0);
+  });
+
+  it('publishes a DRAFT immediately, without needing a future scheduledAt', async () => {
+    const status = await createScheduledStatus(businessId, accountId, ownerId, {
+      statusType: 'text',
+      textContent: 'Open now!',
+      scheduledAt: futureIso(1),
+    });
+
+    const published = await publishStatusNow(businessId, status.id);
+
+    // Same state machine as a scheduled post - the worker takes it from here.
+    expect(published.status).toBe('SCHEDULED');
+    // The operator's own requested time is preserved, not rewritten to "now".
+    expect(published.scheduledAt).toBe(status.scheduledAt);
+  });
+
+  it('refuses to publish anything that is not a DRAFT, so a post can never be duplicated', async () => {
+    const status = await createScheduledStatus(businessId, accountId, ownerId, {
+      statusType: 'text',
+      textContent: 'Once only',
+      scheduledAt: futureIso(30),
+    });
+    await publishStatusNow(businessId, status.id);
+
+    await expect(publishStatusNow(businessId, status.id)).rejects.toSatisfy(isInvalidScheduledStatusError);
+  });
+
+  it('never publishes another tenant\'s status', async () => {
+    const status = await createScheduledStatus(businessId, accountId, ownerId, {
+      statusType: 'text',
+      textContent: 'Ours',
+      scheduledAt: futureIso(30),
+    });
+    const otherBusinessId = await createTestBusiness();
+
+    await expect(publishStatusNow(otherBusinessId, status.id)).rejects.toSatisfy(isScheduledStatusNotFoundError);
   });
 });

@@ -101,6 +101,15 @@ export class WhatsAppStatusRepository {
   }
 
   /** Idempotent - only ever sets viewed_at once, never re-stamps an already-viewed status. Scoped by business so one tenant can never mark another's status viewed. */
+  /** Tenant-scoped lookup - a cross-tenant id returns null, indistinguishable from a genuinely nonexistent one. */
+  async findByIdForBusiness(id: string, businessId: string): Promise<WhatsAppStatusRecord | null> {
+    const { rows } = await this.db.query<StatusRow>(
+      'SELECT * FROM whatsapp_statuses WHERE id = $1 AND business_id = $2',
+      [id, businessId],
+    );
+    return rows[0] ? toRecord(rows[0], false) : null;
+  }
+
   async markViewed(businessId: string, id: string): Promise<void> {
     await this.db.query(
       'UPDATE whatsapp_statuses SET viewed_at = now() WHERE id = $1 AND business_id = $2 AND viewed_at IS NULL',

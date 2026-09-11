@@ -1802,6 +1802,12 @@ export const api = {
   listCalls: () => request<{ calls: WorkspaceCallSummary[] }>('/workspace/calls'),
   listStatuses: () => request<{ statuses: WorkspaceStatus[] }>('/workspace/statuses'),
   markStatusViewed: (id: string) => request<{ ok: true }>(`/workspace/statuses/${id}/view`, { method: 'PATCH' }),
+  /** Replies to a customer's status - a real DM to whoever posted it, quoting the status so it threads under the right post. */
+  replyToStatus: (id: string, text: string) =>
+    request<{ outboundMessageId: string; chatId: string }>(`/workspace/statuses/${id}/reply`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
   getLockStatus: () => request<LockStatusResponse>('/security/lock/status'),
   getUnlockChallenge: () => request<UnlockChallengeResponse>('/security/lock/challenge'),
   setupLock: (body: { salt: string; pinHash: string; argon2Params: Argon2ParamsDto }) =>
@@ -2005,6 +2011,9 @@ export const api = {
     ),
 
   listScheduledStatuses: () => request<{ statuses: ScheduledStatusDto[] }>('/workspace/scheduled-statuses'),
+  /** Publishes a draft status immediately - same queue, same worker and same real publish as a scheduled one, with no delay. */
+  publishStatusNow: (id: string) =>
+    request<{ status: ScheduledStatusDto }>(`/workspace/scheduled-statuses/${id}/publish-now`, { method: 'POST' }),
   createScheduledStatus: (input: {
     statusType: 'text' | 'image' | 'video';
     textContent?: string;
