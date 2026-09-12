@@ -237,6 +237,47 @@ export interface FoodPaymentRequestRecord {
   confirmationReference: string | null;
 }
 
+/** What a service day came to. Every figure is for one business, between two instants. */
+export interface FoodServiceSummary {
+  orders: { taken: number; completed: number; cancelled: number };
+  money: {
+    /** Everything billed on orders taken in the window, cancelled ones excluded. */
+    soldCents: number;
+    /** Confirmed through AURA. Can undercount - a payment taken at the counter never passed through us. */
+    collectedCents: number;
+    /** Billed and not yet settled. The figure an owner chases. */
+    outstandingCents: number;
+    currency: string;
+    byMethod: { method: string; cents: number; orders: number }[];
+  };
+  service: {
+    /** Tickets that broke the business's own time limit. */
+    lateOrders: number;
+    /** Median and worst time from order to leaving the pass, in seconds. Null with nothing finished. */
+    medianMinutesToLeave: number | null;
+    slowestMinutesToLeave: number | null;
+  };
+  delivery: { runs: number; delivered: number; failed: number };
+  /** Photo findings a person was shown and never cleared. */
+  qc: { flagged: number; unacknowledged: number };
+}
+
+/** One order still owed for. What an owner reads out at closing time. */
+export interface FoodOutstandingPayment {
+  orderId: string;
+  orderNumber: number;
+  customerName: string | null;
+  customerPhone: string | null;
+  chatId: string | null;
+  totalCents: number;
+  currency: string;
+  paymentState: FoodPaymentState;
+  method: FoodPaymentMethodKey | null;
+  askedAt: string | null;
+  placedAt: string;
+  stage: FoodOrderStage;
+}
+
 export interface FoodDeliveryZoneRecord {
   id: string;
   businessId: string;
@@ -1844,6 +1885,174 @@ export class FoodOperationsRepository {
       [businessId, id, by, reference],
     );
     return rows[0] ? toPaymentRequest(rows[0]) : null;
+  }
+
+  // ── What happened today ────────────────────────────────────────────────
+
+  /**
+   * One service day, in one pass.
+   *
+   * Deliberately a handful of aggregates in a single round trip rather than
+   * a query per figure: this is read at closing time on a phone over a
+   * restaurant's wifi, and eight sequential queries is the difference
+   * between a screen that appears and one somebody gives up on.
+   *
+   * Every window is [from, to) - half open, so an order at exactly the
+   * rollover instant belongs to the new service and to one service only.
+   */
+  async serviceSummary(businessId: string, window: { from: Date; to: Date }): Promise<FoodServiceSummary> {
+    const { rows } = await this.db.query<{
+      taken: string; completed: string; cancelled: string;
+      sold: string; outstanding: string; currency: string | null;
+      late: string; median_seconds: string | null; slowest_seconds: string | null;
+    }>(
+      `SELECT
+         COUNT(*) AS taken,
+         COUNT(*) FILTER (WHERE stage = 'COMPLETED') AS completed,
+         COUNT(*) FILTER (WHERE stage = 'CANCELLED') AS cancelled,
+         /* Cancelled orders are excluded from money: nobody owes for food
+            that was never made, and counting them makes a bad night look
+            like a good one. */
+         COALESCE(SUM(total_cents) FILTER (WHERE stage <> 'CANCELLED'), 0) AS sold,
+         COALESCE(SUM(total_cents) FILTER (WHERE stage <> 'CANCELLED' AND payment_state NOT IN ('PAID', 'WAIVED', 'NOT_REQUIRED')), 0) AS outstanding,
+         MIN(currency) AS currency,
+         COUNT(*) FILTER (
+           WHERE stage <> 'CANCELLED'
+             AND EXISTS (
+               SELECT 1 FROM food_order_events breach
+               WHERE breach.business_id = food_orders.business_id AND breach.order_id = food_orders.id
+                 AND breach.to_stage IN ('READY_FOR_PICKUP', 'OUT_FOR_DELIVERY')
+                 AND breach.created_at - food_orders.placed_at >
+                   COALESCE((SELECT make_interval(secs => sla_breach_seconds) FROM food_settings WHERE business_id = $1), interval '15 minutes')
+             )
+         ) AS late,
+         /* Order to pass, which is the number a kitchen can actually act
+            on - time after it leaves belongs to a driver or a customer. */
+         PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY left_pass.seconds) AS median_seconds,
+         MAX(left_pass.seconds) AS slowest_seconds
+       FROM food_orders
+       LEFT JOIN LATERAL (
+         SELECT EXTRACT(EPOCH FROM MIN(event.created_at) - food_orders.placed_at) AS seconds
+         FROM food_order_events event
+         WHERE event.business_id = food_orders.business_id AND event.order_id = food_orders.id
+           AND event.to_stage IN ('READY_FOR_PICKUP', 'OUT_FOR_DELIVERY')
+       ) AS left_pass ON true
+       WHERE business_id = $1 AND placed_at >= $2 AND placed_at < $3`,
+      [businessId, window.from, window.to],
+    );
+
+    const totals = rows[0];
+
+    const [collected, delivery, qc] = await Promise.all([
+      this.db.query<{ method: string; cents: string; orders: string }>(
+        `SELECT method, COALESCE(SUM(amount_cents), 0) AS cents, COUNT(DISTINCT order_id) AS orders
+         FROM food_payment_requests
+         WHERE business_id = $1 AND confirmed_at >= $2 AND confirmed_at < $3
+         GROUP BY method ORDER BY cents DESC`,
+        [businessId, window.from, window.to],
+      ),
+      this.db.query<{ runs: string; delivered: string; failed: string }>(
+        `SELECT COUNT(*) AS runs,
+                COUNT(*) FILTER (WHERE state = 'DELIVERED') AS delivered,
+                COUNT(*) FILTER (WHERE state IN ('FAILED', 'RETURNED')) AS failed
+         FROM food_order_deliveries
+         WHERE business_id = $1 AND assigned_at >= $2 AND assigned_at < $3`,
+        [businessId, window.from, window.to],
+      ),
+      this.db.query<{ flagged: string; unacknowledged: string }>(
+        `SELECT COUNT(*) FILTER (WHERE raised_count > 0) AS flagged,
+                COUNT(*) FILTER (WHERE raised_count > 0 AND acknowledged_at IS NULL) AS unacknowledged
+         FROM food_qc_checks
+         WHERE business_id = $1 AND created_at >= $2 AND created_at < $3`,
+        [businessId, window.from, window.to],
+      ),
+    ]);
+
+    const collectedRows = collected.rows.map((row) => ({
+      method: row.method,
+      cents: Number(row.cents),
+      orders: Number(row.orders),
+    }));
+
+    return {
+      orders: {
+        taken: Number(totals?.taken ?? 0),
+        completed: Number(totals?.completed ?? 0),
+        cancelled: Number(totals?.cancelled ?? 0),
+      },
+      money: {
+        soldCents: Number(totals?.sold ?? 0),
+        collectedCents: collectedRows.reduce((sum, row) => sum + row.cents, 0),
+        outstandingCents: Number(totals?.outstanding ?? 0),
+        // The business's own currency, taken from its orders rather than
+        // assumed: there is no sensible default and a wrong symbol on a
+        // money figure is worse than none.
+        currency: totals?.currency ?? 'BBD',
+        byMethod: collectedRows,
+      },
+      service: {
+        lateOrders: Number(totals?.late ?? 0),
+        medianMinutesToLeave: totals?.median_seconds == null ? null : Math.round(Number(totals.median_seconds) / 60),
+        slowestMinutesToLeave: totals?.slowest_seconds == null ? null : Math.round(Number(totals.slowest_seconds) / 60),
+      },
+      delivery: {
+        runs: Number(delivery.rows[0]?.runs ?? 0),
+        delivered: Number(delivery.rows[0]?.delivered ?? 0),
+        failed: Number(delivery.rows[0]?.failed ?? 0),
+      },
+      qc: {
+        flagged: Number(qc.rows[0]?.flagged ?? 0),
+        unacknowledged: Number(qc.rows[0]?.unacknowledged ?? 0),
+      },
+    };
+  }
+
+  /**
+   * Who still owes, oldest first.
+   *
+   * Not limited to the service window: an order unpaid from Tuesday is
+   * still unpaid on Friday, and a summary that forgets it is how a debt
+   * becomes a write-off. The window bounds the report; this list bounds
+   * nothing.
+   */
+  async outstandingPayments(businessId: string, limit = 100): Promise<FoodOutstandingPayment[]> {
+    const { rows } = await this.db.query<{
+      order_id: string; order_number: string; customer_name: string | null; customer_phone: string | null;
+      chat_id: string | null; total_cents: string; currency: string; payment_state: FoodPaymentState;
+      method: FoodPaymentMethodKey | null; asked_at: string | null; placed_at: string; stage: FoodOrderStage;
+    }>(
+      `SELECT
+         o.id AS order_id, o.order_number, o.customer_name, o.customer_phone, o.chat_id,
+         o.total_cents, o.currency, o.payment_state, o.placed_at, o.stage,
+         ask.method, ask.requested_at AS asked_at
+       FROM food_orders o
+       LEFT JOIN LATERAL (
+         SELECT method, requested_at FROM food_payment_requests r
+         WHERE r.business_id = o.business_id AND r.order_id = o.id AND r.confirmed_at IS NULL
+         ORDER BY requested_at DESC LIMIT 1
+       ) AS ask ON true
+       WHERE o.business_id = $1
+         AND o.stage <> 'CANCELLED'
+         AND o.payment_state NOT IN ('PAID', 'WAIVED', 'NOT_REQUIRED')
+       ORDER BY o.placed_at
+       LIMIT $2`,
+      [businessId, limit],
+    );
+
+    return rows.map((row) => ({
+      orderId: row.order_id,
+      orderNumber: Number(row.order_number),
+      customerName: row.customer_name,
+      customerPhone: row.customer_phone,
+      chatId: row.chat_id,
+      totalCents: Number(row.total_cents),
+      currency: row.currency,
+      paymentState: row.payment_state,
+      method: row.method,
+      askedAt: row.asked_at,
+      placedAt: row.placed_at,
+      stage: row.stage,
+    }));
   }
 
   async listZones(businessId: string): Promise<FoodDeliveryZoneRecord[]> {

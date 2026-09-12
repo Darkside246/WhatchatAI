@@ -7,6 +7,8 @@ import { importMenu } from '../services/food/menuImportService.js';
 import { FOOD_PAYMENT_METHODS, PAYMENT_ALIAS_KINDS, PAYMENT_METHOD_CAPABILITIES, availableMethods } from '../domain/food/paymentMethods.js';
 import { sendPaymentRequest } from '../services/food/sendPaymentRequest.js';
 import { confirmationGuidance } from '../services/food/paymentRequest.js';
+import { currentServiceDay, serviceDayBounds } from '../domain/food/serviceDay.js';
+import { BusinessRepository } from '../repositories/businessRepository.js';
 import { DEFAULT_NOTIFICATION_TEMPLATES, FOOD_NOTIFICATION_EVENTS, NOTIFICATION_MERGE_FIELDS, type FoodNotificationEvent, type NotificationOverrides } from '../services/food/orderNotifications.js';
 import { raisedFindings } from '../domain/food/qcFindings.js';
 import { MAX_QC_PHOTO_BYTES, QC_PHOTO_MIME_TYPES, runQcVisionCheck } from '../services/food/qcVisionCheck.js';
@@ -24,6 +26,7 @@ import { hasPermission } from '../domain/auth/permissions.js';
 
 const router = Router();
 const repository = new FoodOperationsRepository(pool);
+const businessRepository = new BusinessRepository(pool);
 
 router.use(requireAuth);
 router.use(requireProductAccess('food'));
@@ -1309,5 +1312,60 @@ function methodToPaymentMethod(method: string): 'CASH' | 'BANK_TRANSFER' | 'CARD
       return 'OTHER';
   }
 }
+
+// ── What happened today ──────────────────────────────────────────────────
+
+/**
+ * The closing-time screen.
+ *
+ * Scoped to the business's OWN service day, not a UTC one: a kitchen that
+ * closes at one in the morning has one service, and cutting it at midnight
+ * UTC splits a Friday night across two reports that agree with neither.
+ *
+ * The outstanding list is deliberately NOT bounded by the window. An order
+ * unpaid from Tuesday is still unpaid on Friday, and a summary that forgets
+ * it is how a debt becomes a write-off.
+ */
+router.get('/summary', requirePermission('food.view'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+
+  const parsed = z
+    .object({
+      day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      /** When this business's day rolls over. A 4am shop's Friday includes Saturday's small hours. */
+      rolloverHour: z.coerce.number().int().min(0).max(23).optional(),
+    })
+    .safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_DAY', details: parsed.error.flatten() });
+
+  const business = await businessRepository.findById(auth.businessId);
+  // Falls back to UTC rather than failing: a summary in the wrong zone is
+  // worth more than no summary, and the header says which zone it used.
+  const timezone = business?.timezone ?? 'UTC';
+  const rolloverHour = parsed.data.rolloverHour ?? 0;
+
+  let window: { from: Date; to: Date };
+  const day = parsed.data.day ?? currentServiceDay(timezone, new Date(), rolloverHour);
+  try {
+    window = serviceDayBounds(day, timezone, { rolloverHour });
+  } catch {
+    return res.status(400).json({ error: 'INVALID_DAY' });
+  }
+
+  const [summary, outstanding] = await Promise.all([
+    repository.serviceSummary(auth.businessId, window),
+    repository.outstandingPayments(auth.businessId),
+  ]);
+
+  return res.status(200).json({
+    day,
+    timezone,
+    rolloverHour,
+    from: window.from.toISOString(),
+    to: window.to.toISOString(),
+    summary,
+    outstanding,
+  });
+});
 
 export { router as foodOperationsRouter };
