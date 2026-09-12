@@ -5,6 +5,7 @@ import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js
 import { Pin, Mic, Image as ImageIcon, Video, FileText, Sticker, MapPin, UserSquare, Archive } from 'lucide-react';
 import { Avatar } from './Avatar.js';
 import { MediaLightbox } from './MediaLightbox.js';
+import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 
 const AI_MODE_DOT: Record<WorkspaceChatSummary['aiMode'], string> = {
   AI_ACTIVE: 'bg-accent',
@@ -189,9 +190,9 @@ export function ChatListPane({ className = '' }: Props) {
 
   useEffect(() => {
     void load();
-    const timer = setInterval(load, FALLBACK_POLL_MS);
-    return () => clearInterval(timer);
   }, []);
+
+  useVisiblePolling(load, FALLBACK_POLL_MS);
 
   useEffect(() => {
     // Loaded once, not on the same poll cadence as chats - a business's own

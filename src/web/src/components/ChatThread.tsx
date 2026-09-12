@@ -46,6 +46,7 @@ import { MediaLightbox } from './MediaLightbox.js';
 import { StructuredMessageCard } from './StructuredMessageCard.js';
 import { AttachmentMenu, ContactComposer, PollComposer } from './AttachmentMenu.js';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder.js';
+import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 
 type AiMode = WorkspaceChatDetail['chat']['aiMode'];
 
@@ -707,9 +708,13 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
     void load(chatId);
     void loadDetail(chatId);
     markRead(chatId);
-    const timer = setInterval(() => void load(chatId), 6000);
-    return () => clearInterval(timer);
   }, [chatId]);
+
+  // Fallback for anything the realtime channel misses, paused while the tab
+  // is in the background - see useVisiblePolling.
+  useVisiblePolling(() => {
+    if (chatId) void load(chatId);
+  }, 6000, Boolean(chatId));
 
   /**
    * How close to the live end still counts as "reading the newest messages".

@@ -58,6 +58,15 @@ export function useAppGate(): AppGateState {
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     async function poll() {
+      // Nothing is read while nobody is looking. The loop keeps its shape
+      // and its timer - the request, the parse and the re-render are what
+      // cost anything, and they are what is skipped. Coming back to the tab
+      // fires a fetch immediately (see the visibilitychange listener below)
+      // rather than waiting out the remaining interval.
+      if (document.hidden) {
+        if (mounted.current) timer = setTimeout(poll, STATUS_POLL_MS);
+        return;
+      }
       try {
         const snapshot = await api.getWhatsAppStatus();
         consecutiveFailures.current = 0;
@@ -89,7 +98,21 @@ export function useAppGate(): AppGateState {
     }
 
     void poll();
-    return () => clearTimeout(timer);
+
+    // Coming back to the tab re-reads at once, so a stale connection status
+    // is never what greets someone returning to the page.
+    const onVisible = () => {
+      if (!document.hidden) {
+        clearTimeout(timer);
+        void poll();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   useEffect(() => {

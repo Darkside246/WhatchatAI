@@ -3,6 +3,7 @@ import { ImageOff, FileWarning, Loader2, Send } from 'lucide-react';
 import { api, mediaUrl, ApiError, type WorkspaceStatus } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
 import { Avatar } from './Avatar.js';
+import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 
 const POLL_MS = 8000;
 
@@ -239,9 +240,9 @@ export function StatusesPanel({ className = '' }: Props) {
 
   useEffect(() => {
     void load();
-    const timer = setInterval(load, POLL_MS);
-    return () => clearInterval(timer);
   }, []);
+
+  useVisiblePolling(load, POLL_MS);
 
   const { connected } = useWhatsAppSync((event: RealtimeEvent) => {
     if (event.type === 'status.media.updated') void load();

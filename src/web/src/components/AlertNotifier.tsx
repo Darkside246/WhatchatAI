@@ -147,6 +147,13 @@ export function AlertNotifier() {
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     async function poll() {
+      // Skipped while the tab is in the background - see useVisiblePolling
+      // for the reasoning. The timer is left running so the loop keeps its
+      // shape; the request, the parse and the re-render are the cost.
+      if (document.hidden) {
+        if (!cancelled) timer = setTimeout(poll, POLL_MS);
+        return;
+      }
       try {
         const { alerts: fetched } = await api.listHumanTakeoverAlerts(showIdentity);
         if (cancelled) return;
@@ -168,9 +175,19 @@ export function AlertNotifier() {
     }
 
     void poll();
+
+    const onVisible = () => {
+      if (!document.hidden && !cancelled) {
+        clearTimeout(timer);
+        void poll();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
     };
     // Re-polls immediately with the new includeIdentity value the moment the
     // setting changes, rather than waiting up to POLL_MS for the next tick.

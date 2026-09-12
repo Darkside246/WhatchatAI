@@ -3,6 +3,7 @@ import { ArrowDownLeft, ArrowUpRight, Video, Phone as PhoneIcon } from 'lucide-r
 import { api, type WorkspaceCallSummary } from '../lib/api.js';
 import { useWhatsAppSync, type RealtimeEvent } from '../hooks/useWhatsAppSync.js';
 import { Avatar } from './Avatar.js';
+import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 
 const POLL_MS = 8000;
 
@@ -56,9 +57,9 @@ export function CallHistoryPanel({ className = '' }: Props) {
 
   useEffect(() => {
     void load();
-    const timer = setInterval(load, POLL_MS);
-    return () => clearInterval(timer);
   }, []);
+
+  useVisiblePolling(load, POLL_MS);
 
   const { connected } = useWhatsAppSync((event: RealtimeEvent) => {
     if (event.type === 'call.updated') void load();
