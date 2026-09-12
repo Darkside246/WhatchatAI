@@ -7,11 +7,12 @@ import type { WhatsAppMessageRecord } from '../src/repositories/whatsappMessageR
  * orders by timestamp DESC). Every fixture here is built in that order, because
  * the bug this covers was reading it as though it were chronological.
  */
-function message(id: string, fromMe: boolean, textContent: string): WhatsAppMessageRecord {
+function message(id: string, fromMe: boolean, textContent: string, messageType = 'text'): WhatsAppMessageRecord {
   return {
     id,
     fromMe,
     textContent,
+    messageType,
     direction: fromMe ? 'outbound' : 'inbound',
   } as unknown as WhatsAppMessageRecord;
 }
@@ -38,6 +39,18 @@ describe('the customer message a turn is about', () => {
   it('skips past our own replies to reach it', () => {
     const history = [message('out2', true, 'sent'), message('out1', true, 'also sent'), message('in1', false, 'asked')];
     expect(latestInboundMessage(history)?.id).toBe('in1');
+  });
+
+  /**
+   * A system notice arrives on the customer's side of the chat without
+   * being anything the customer said, so it is never what a turn is about.
+   */
+  it('is never a system notice', () => {
+    const history = [
+      message('sys', false, 'Disappearing messages turned on - 7 days', 'system'),
+      message('said', false, 'can you remind him about it tomorrow at 1'),
+    ];
+    expect(latestInboundMessage(history)?.id).toBe('said');
   });
 
   /**

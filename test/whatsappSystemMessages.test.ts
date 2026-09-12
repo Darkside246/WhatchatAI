@@ -149,3 +149,38 @@ describe('WhatsApp system messages', () => {
     });
   });
 });
+
+/**
+ * A system notice now carries real text, which is the point - but text on
+ * the customer's side of a chat is exactly what makes the AI answer. These
+ * two guards are what stop "Disappearing messages turned on - 7 days" from
+ * becoming a question the agent replies to.
+ */
+describe('a system notice is never a turn the AI answers', () => {
+  let businessId: string;
+  let accountId: string;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId, ACCOUNT_JID);
+  });
+
+  it('is not an unanswered inbound message', async () => {
+    const input = (ingested: IngestedWhatsAppMessage) => ({
+      businessId,
+      whatsappAccountId: accountId,
+      accountJid: ACCOUNT_JID,
+      ingested,
+    });
+
+    const asked = await whatsappMessagePersistenceService.persist(input(ingest('WA-ASK', { conversation: 'are you open?' })));
+    await whatsappMessagePersistenceService.persist(
+      input(ingest('WA-EPH', { protocolMessage: { type: EPHEMERAL_SETTING, ephemeralExpiration: 604_800 } })),
+    );
+
+    const messages = new WhatsAppMessageRepository(pool);
+    const unanswered = await messages.findUnansweredInboundSince(asked.chat.id, null);
+    expect(unanswered.map((message) => message.whatsappMessageId)).toEqual(['WA-ASK']);
+  });
+});

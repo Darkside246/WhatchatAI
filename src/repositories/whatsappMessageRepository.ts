@@ -504,6 +504,10 @@ export class WhatsAppMessageRepository {
       `SELECT * FROM whatsapp_messages m
        WHERE m.chat_id = $1 AND m.from_me = false AND m.is_historical = false
          AND m.has_media = false AND m.deleted_at IS NULL
+         -- A system notice is not something a customer said. Disappearing
+         -- messages being switched on is not a question, and treating it as
+         -- an unanswered inbound turn makes the AI reply to it.
+         AND m.message_type <> 'system'
          AND (
            $2::uuid IS NULL
            OR m.created_at > (SELECT created_at FROM whatsapp_messages WHERE id = $2::uuid)

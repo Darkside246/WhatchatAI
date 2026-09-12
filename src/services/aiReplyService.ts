@@ -119,7 +119,10 @@ const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
  * the ordering is the kind of thing a reader assumes rather than checks.
  */
 export function latestInboundMessage(history: AiHandoffContext['conversationHistory']) {
-  return history.find((message) => !message.fromMe) ?? null;
+  // System notices arrive on the customer's side of the chat but are not
+  // things the customer said - anchoring a taken message to "Disappearing
+  // messages turned on" would point the operator at a notice.
+  return history.find((message) => !message.fromMe && message.messageType !== 'system') ?? null;
 }
 
 /**
@@ -923,6 +926,11 @@ function toContents(
   groupSenderNameByContactId: Map<string, string>,
 ) {
   const chronological = history
+    // A system notice ("Disappearing messages turned on - 7 days") is a
+    // fact about the chat, not a turn in it. It carries real text now, so
+    // without this it would enter the transcript as something the customer
+    // said - and, as the last such turn, as the thing being answered.
+    .filter((message) => message.messageType !== 'system')
     .filter((message) => Boolean(message.textContent) || message.hasMedia)
     .slice()
     .reverse();
