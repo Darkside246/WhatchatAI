@@ -21,7 +21,12 @@ function hashToken(token: string): string {
 
 function baseUrl(): string {
   const configured = process.env.APP_BASE_URL?.trim();
-  return configured && configured.length > 0 ? configured.replace(/\/+$/, '') : '';
+  if (configured && configured.length > 0) return configured.replace(/\/+$/, '');
+  // Same silent failure as the password reset link - a relative URL in
+  // an email is not clickable, so say so rather than let a user sit
+  // unverified wondering why the button does nothing.
+  console.error('[emailVerificationService] APP_BASE_URL is not set, so this verification link will not be clickable from an email client.');
+  return '';
 }
 
 /**

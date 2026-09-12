@@ -27,9 +27,38 @@ function migrationNumber(filename: string): number {
 }
 
 function loadMigrationFiles(): { name: string; sql: string }[] {
-  return readdirSync(MIGRATIONS_DIR)
-    .filter((file) => file.endsWith('.sql'))
-    .sort((a, b) => migrationNumber(a) - migrationNumber(b))
+  const files = readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql'));
+
+  /**
+   * Two migrations sharing a number sort equally, so their order falls back
+   * to whatever readdirSync returned - which is the filesystem's business,
+   * not ours. It happens to be harmless for the one existing collision (903,
+   * two unrelated files), but the next pair might depend on each other and
+   * would then apply in one order on a developer's machine and the other in
+   * production. Caught here, at boot, rather than as a confusing failure in
+   * whichever environment lost the coin toss.
+   */
+  const seen = new Map<number, string>();
+  for (const file of files) {
+    const number = migrationNumber(file);
+    const existing = seen.get(number);
+    if (existing && existing !== file) {
+      const ordered = [existing, file].sort();
+      // Named rather than counted, so the fix is obvious: renumber the later
+      // one. Renaming an ALREADY APPLIED migration is not the fix - names are
+      // what schema_migrations records, so a rename re-applies it.
+      if (number !== 903) {
+        throw new Error(
+          `Two migrations share the number ${number}: ${ordered.join(' and ')}. ` +
+            'Give the newer one an unused number - their apply order is otherwise decided by the filesystem.',
+        );
+      }
+    }
+    seen.set(number, file);
+  }
+
+  return files
+    .sort((a, b) => migrationNumber(a) - migrationNumber(b) || a.localeCompare(b))
     .map((name) => ({
       name,
       sql: readFileSync(path.join(MIGRATIONS_DIR, name), 'utf8'),

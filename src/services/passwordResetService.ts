@@ -105,13 +105,29 @@ export async function requestPasswordReset(email: string): Promise<{ channel: De
 }
 
 /**
- * Where the link points. Falls back to a relative path, which still works
- * when the mail is opened on the same origin - better than baking in a
- * wrong host that sends people to somebody else's site.
+ * Where the link points.
+ *
+ * Falls back to a relative path rather than baking in a wrong host that
+ * would send people to somebody else's site - but a relative URL in an
+ * EMAIL is not clickable, so that fallback means the reset link silently
+ * does not work. Silently is the part worth fixing: an operator who has not
+ * set APP_BASE_URL has no way to discover it except from a customer who
+ * cannot get back into their account.
+ *
+ * So it is logged loudly, once per send, naming the variable and the
+ * consequence. Still not thrown: a reset token HAS been issued by this
+ * point, and refusing to send would leave the user with neither a working
+ * link nor an explanation.
  */
 function resetBaseUrl(): string {
   const configured = process.env.APP_BASE_URL?.trim();
-  return configured && configured.length > 0 ? configured.replace(/\/+$/, '') : '';
+  if (configured && configured.length > 0) return configured.replace(/\/+$/, '');
+
+  console.error(
+    '[passwordResetService] APP_BASE_URL is not set, so this reset link is relative and will not be clickable ' +
+      'from an email client. Set APP_BASE_URL to the public origin of the app.',
+  );
+  return '';
 }
 
 /**

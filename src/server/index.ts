@@ -391,6 +391,18 @@ const authLimiter = rateLimit({
 app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/login', authLimiter);
 app.use('/api/trials/register', authLimiter);
+/**
+ * Password reset, which was reachable at 300/min under the global limiter
+ * alone. requestPasswordReset has its own per-account brake, and that stops
+ * one victim being buried - but not a caller walking a list of addresses to
+ * bury a hundred of them, or to burn the email provider's quota and sending
+ * reputation on the way. The per-account limit and this one answer different
+ * questions, so both belong.
+ */
+app.use('/api/auth/password/forgot', authLimiter);
+app.use('/api/auth/password/reset', authLimiter);
+/** Same reasoning: a token-guessing loop is a credential attack. */
+app.use('/api/auth/email/verify', authLimiter);
 
 // 20mb (not the old 2mb) to fit base64-encoded outbound media uploads -
 // this is one global parser, so every route's real ceiling moved with it.
