@@ -118,6 +118,10 @@ export const NOTIFICATION_MERGE_FIELDS = [
   { token: '{{name}}', description: "The customer's name, or nothing when it is not known" },
   { token: '{{order_number}}', description: "The order's own number" },
   { token: '{{total}}', description: 'The order total, in the order currency' },
+  {
+    token: '{{driver}}',
+    description: "The driver's name, once one has been put on the order, and nothing before that",
+  },
 ] as const;
 
 /**
@@ -130,6 +134,14 @@ export function notificationFor(
   event: FoodNotificationEvent,
   order: FoodOrderRecord,
   settings: FoodSettingsRecord,
+  /**
+   * Who is driving it, when somebody is.
+   *
+   * Optional, and the shipped wording does not use it. Telling a customer
+   * an employee's name is the business's decision to make, not a default
+   * we make for them - so {{driver}} is offered and never assumed.
+   */
+  context: { driverName?: string | null } = {},
 ): string | null {
   const verbosity = settings.notificationVerbosity;
   const overrides = settings.notificationOverrides;
@@ -142,13 +154,29 @@ export function notificationFor(
   // never have been attempted.
   if (!order.chatId) return null;
 
+  const chosen = (verbosity === 'CUSTOM' ? overrides[event]?.template?.trim() : undefined) || DEFAULT_NOTIFICATION_TEMPLATES[event];
+
+  /**
+   * A business that wrote "on the way with {{driver}}" and has not
+   * assigned anybody gets our wording instead of their sentence with a
+   * hole in it.
+   *
+   * Substituting an empty string would send "Your order is on the way
+   * with." to a real customer - which is worse than the plain default,
+   * and is exactly the kind of thing nobody notices until it has gone out
+   * a hundred times. Only {{driver}} is treated this way: it is the one
+   * token that can be genuinely absent at the moment the message is sent.
+   */
   const template =
-    (verbosity === 'CUSTOM' ? overrides[event]?.template?.trim() : undefined) || DEFAULT_NOTIFICATION_TEMPLATES[event];
+    chosen.includes('{{driver}}') && !context.driverName?.trim() ? DEFAULT_NOTIFICATION_TEMPLATES[event] : chosen;
 
   const rendered = template
     .replaceAll('{{name}}', order.customerName?.trim() ?? '')
     .replaceAll('{{order_number}}', String(order.orderNumber))
     .replaceAll('{{total}}', formatMoney(order.totalCents, order.currency))
+    // Empty when nobody has been assigned, so a template carrying the
+    // token still reads properly before a driver is chosen.
+    .replaceAll('{{driver}}', context.driverName?.trim() ?? '')
     .replace(/\s{2,}/g, ' ')
     .replace(/\s+([,.])/g, '$1')
     .trim();

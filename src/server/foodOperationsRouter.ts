@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { pool } from '../db/pool.js';
-import { FoodOperationsRepository, IllegalPaymentTransitionError, IllegalStageTransitionError, KitchenPaymentGateError, QcPhotoRequiredError, UnknownMenuCategoryError } from '../repositories/foodOperationsRepository.js';
+import { FoodOperationsRepository, IllegalAssignmentTransitionError, IllegalPaymentTransitionError, IllegalStageTransitionError, KitchenPaymentGateError, OrderAlreadyAssignedError, OrderNotDeliverableError, QcPhotoRequiredError, UnknownMenuCategoryError } from '../repositories/foodOperationsRepository.js';
+import { DRIVER_ASSIGNMENT_STATES } from '../domain/food/driverAssignment.js';
+import { DEFAULT_NOTIFICATION_TEMPLATES, FOOD_NOTIFICATION_EVENTS, NOTIFICATION_MERGE_FIELDS, type FoodNotificationEvent, type NotificationOverrides } from '../services/food/orderNotifications.js';
 import { raisedFindings } from '../domain/food/qcFindings.js';
 import { MAX_QC_PHOTO_BYTES, QC_PHOTO_MIME_TYPES, runQcVisionCheck } from '../services/food/qcVisionCheck.js';
 import { buildStorageReference, storeMedia } from '../media/mediaStorage.js';
@@ -42,6 +44,7 @@ router.get('/board', requirePermission('food.view'), async (_req, res) => {
   // screen polls every five seconds and a query per ticket would put that
   // into double figures of round trips.
   const qcChecks = await repository.latestQcCheckByOrder(auth.businessId, orders.map((order) => order.id));
+  const deliveries = await repository.liveDeliveriesByOrder(auth.businessId, orders.map((order) => order.id));
 
   return res.status(200).json({
     serverTime: now.toISOString(),
@@ -58,6 +61,9 @@ router.get('/board', requirePermission('food.view'), async (_req, res) => {
           ? releaseToKitchen({ paymentState: order.paymentState, paymentRequiredBeforeKitchen: settings.paymentRequiredBeforeKitchen })
           : null;
       const qc = qcChecks.get(order.id) ?? null;
+      // Who has the food. Carried on the card so the board can answer the
+      // only question anybody asks about an order that has left.
+      const delivery = deliveries.get(order.id) ?? null;
       return {
         ...order,
         elapsedSeconds: elapsed,
@@ -74,6 +80,7 @@ router.get('/board', requirePermission('food.view'), async (_req, res) => {
          * on a screen somebody is working at speed.
          */
         qcPhotoOutstanding: settings.qcPhotoRequired && order.stage === 'QUALITY_CHECK' && qc === null,
+        delivery,
         slaBand: slaBand(elapsed, {
           ...(settings.slaWarningSeconds !== null ? { warningSeconds: settings.slaWarningSeconds } : {}),
           ...(settings.slaBreachSeconds !== null ? { breachSeconds: settings.slaBreachSeconds } : {}),
@@ -243,7 +250,17 @@ router.post('/orders/:orderId/payment', requirePermission('food.manage'), async 
 
 router.get('/settings', requirePermission('food.view'), async (_req, res) => {
   const auth = res.locals.auth as AuthContext;
-  return res.status(200).json({ settings: await repository.getSettings(auth.businessId) });
+  return res.status(200).json({
+    settings: await repository.getSettings(auth.businessId),
+    /**
+     * The shipped wording and the tokens that may appear in it, sent
+     * alongside rather than hardcoded in the browser - a default that
+     * changes on the server and not on the screen is a screen that lies
+     * about what a customer will receive.
+     */
+    notificationDefaults: DEFAULT_NOTIFICATION_TEMPLATES,
+    mergeFields: NOTIFICATION_MERGE_FIELDS,
+  });
 });
 
 const settingsSchema = z.object({
@@ -251,6 +268,14 @@ const settingsSchema = z.object({
   tableServiceEnabled: z.boolean().optional(),
   qcPhotoRequired: z.boolean().optional(),
   qcVisionEnabled: z.boolean().optional(),
+  /** How much a customer is told as their order moves. CUSTOM hands the decision to the overrides below. */
+  notificationVerbosity: z.enum(['MINIMAL', 'STANDARD', 'DETAILED', 'CUSTOM']).optional(),
+  notificationOverrides: z
+    .record(
+      z.enum(FOOD_NOTIFICATION_EVENTS),
+      z.object({ enabled: z.boolean().optional(), template: z.string().trim().max(1000).optional() }),
+    )
+    .optional(),
   paymentRequiredNotice: z.string().trim().max(2000).nullish(),
   slaWarningSeconds: z.number().int().min(60).max(86_400).nullish(),
   slaBreachSeconds: z.number().int().min(60).max(86_400).nullish(),
@@ -267,7 +292,30 @@ router.patch('/settings', requirePermission('food.approve'), async (req, res) =>
     return res.status(400).json({ error: 'INVALID_SLA', message: 'The warning time has to come before the breach time.' });
   }
 
-  return res.status(200).json({ settings: await repository.saveSettings(auth.businessId, parsed.data, auth.userId) });
+  const { notificationOverrides, ...rest } = parsed.data;
+
+  // Rebuilt rather than passed straight through: zod types every key of a
+  // record as present-but-possibly-undefined, and under
+  // exactOptionalPropertyTypes an explicit undefined is not the same thing
+  // as an absent key. Dropping the empty ones here keeps a stored override
+  // meaning "the owner set this" rather than "the browser sent a blank".
+  const overrides: NotificationOverrides = {};
+  for (const [event, override] of Object.entries(notificationOverrides ?? {})) {
+    if (!override) continue;
+    const template = override.template?.trim();
+    overrides[event as FoodNotificationEvent] = {
+      ...(override.enabled !== undefined ? { enabled: override.enabled } : {}),
+      ...(template ? { template } : {}),
+    };
+  }
+
+  return res.status(200).json({
+    settings: await repository.saveSettings(
+      auth.businessId,
+      { ...rest, ...(notificationOverrides !== undefined ? { notificationOverrides: overrides } : {}) },
+      auth.userId,
+    ),
+  });
 });
 
 const termsSchema = z
@@ -830,6 +878,150 @@ router.post('/qc-checks/:checkId/acknowledge', requirePermission('food.manage'),
   const acknowledged = await repository.acknowledgeQcCheck(auth.businessId, checkId, auth.userId, parsed.data.note ?? null);
   if (!acknowledged) return res.status(404).json({ error: 'CHECK_NOT_FOUND_OR_ALREADY_ACKNOWLEDGED' });
   return res.status(200).json({ status: 'acknowledged' });
+});
+
+// ── Drivers ──────────────────────────────────────────────────────────────
+
+router.get('/drivers', requirePermission('food.view'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const activeOnly = req.query.activeOnly === 'true';
+  return res.status(200).json({ drivers: await repository.listDrivers(auth.businessId, { activeOnly }) });
+});
+
+const driverSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  phoneNumber: z.string().trim().max(32).nullish(),
+  vehicle: z.string().trim().max(80).nullish(),
+  notes: z.string().trim().max(500).nullish(),
+});
+
+router.post('/drivers', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = driverSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_DRIVER', details: parsed.error.flatten() });
+
+  try {
+    return res.status(201).json({
+      driver: await repository.createDriver({
+        businessId: auth.businessId,
+        name: parsed.data.name,
+        phoneNumber: parsed.data.phoneNumber ?? null,
+        vehicle: parsed.data.vehicle ?? null,
+        notes: parsed.data.notes ?? null,
+      }),
+    });
+  } catch (error) {
+    if ((error as { code?: string }).code === '23505') {
+      return res.status(409).json({ error: 'DRIVER_EXISTS', message: 'Somebody is already driving under that name.' });
+    }
+    throw error;
+  }
+});
+
+router.patch('/drivers/:driverId', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const driverId = String(req.params.driverId ?? '');
+  if (!uuid.safeParse(driverId).success) return res.status(400).json({ error: 'INVALID_DRIVER_ID' });
+
+  const parsed = driverSchema.partial().safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_DRIVER', details: parsed.error.flatten() });
+
+  const driver = await repository.updateDriver(auth.businessId, driverId, {
+    ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+    ...(parsed.data.phoneNumber !== undefined ? { phoneNumber: parsed.data.phoneNumber ?? null } : {}),
+    ...(parsed.data.vehicle !== undefined ? { vehicle: parsed.data.vehicle ?? null } : {}),
+    ...(parsed.data.notes !== undefined ? { notes: parsed.data.notes ?? null } : {}),
+  });
+  if (!driver) return res.status(404).json({ error: 'DRIVER_NOT_FOUND' });
+  return res.status(200).json({ driver });
+});
+
+/**
+ * A driver who has stopped working here.
+ *
+ * There is deliberately no DELETE route. Their deliveries are a record of
+ * what happened, and deleting the driver would rewrite it - so they go
+ * inactive and drop off the picker instead.
+ */
+router.post('/drivers/:driverId/active', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const driverId = String(req.params.driverId ?? '');
+  if (!uuid.safeParse(driverId).success) return res.status(400).json({ error: 'INVALID_DRIVER_ID' });
+
+  const parsed = z.object({ active: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_ACTIVE' });
+
+  const driver = await repository.setDriverActive(auth.businessId, driverId, parsed.data.active);
+  if (!driver) return res.status(404).json({ error: 'DRIVER_NOT_FOUND' });
+  return res.status(200).json({ driver });
+});
+
+router.get('/drivers/:driverId/runs', requirePermission('food.view'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const driverId = String(req.params.driverId ?? '');
+  if (!uuid.safeParse(driverId).success) return res.status(400).json({ error: 'INVALID_DRIVER_ID' });
+  return res.status(200).json({ runs: await repository.listDriverRuns(auth.businessId, driverId) });
+});
+
+// ── Deliveries ───────────────────────────────────────────────────────────
+
+/** Putting a driver on an order. Always a person choosing a person - nothing here dispatches by itself. */
+router.post('/orders/:orderId/delivery', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const orderId = String(req.params.orderId ?? '');
+  if (!uuid.safeParse(orderId).success) return res.status(400).json({ error: 'INVALID_ORDER_ID' });
+
+  const parsed = z.object({ driverId: uuid, note: z.string().trim().max(500).optional() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_ASSIGNMENT', details: parsed.error.flatten() });
+
+  try {
+    const delivery = await repository.assignDriver(auth.businessId, orderId, parsed.data.driverId, {
+      userId: auth.userId,
+      note: parsed.data.note ?? null,
+    });
+    if (!delivery) return res.status(404).json({ error: 'ORDER_OR_DRIVER_NOT_FOUND' });
+    return res.status(201).json({ delivery });
+  } catch (error) {
+    // 409, not 400: the request was fine and somebody simply got there
+    // first, which during a rush is normal rather than exceptional.
+    if (error instanceof OrderAlreadyAssignedError) {
+      const live = await repository.findLiveDelivery(auth.businessId, orderId);
+      return res.status(409).json({ error: 'ALREADY_ASSIGNED', message: error.message, delivery: live });
+    }
+    if (error instanceof OrderNotDeliverableError) {
+      return res.status(422).json({ error: 'NOT_DELIVERABLE', message: error.message });
+    }
+    throw error;
+  }
+});
+
+router.post('/deliveries/:deliveryId/state', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const deliveryId = String(req.params.deliveryId ?? '');
+  if (!uuid.safeParse(deliveryId).success) return res.status(400).json({ error: 'INVALID_DELIVERY_ID' });
+
+  const parsed = z
+    .object({
+      state: z.enum(DRIVER_ASSIGNMENT_STATES),
+      failureReason: z.string().trim().min(3).max(500).optional(),
+      note: z.string().trim().max(500).optional(),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_STATE', details: parsed.error.flatten() });
+
+  try {
+    const delivery = await repository.moveDelivery(auth.businessId, deliveryId, parsed.data.state, {
+      failureReason: parsed.data.failureReason ?? null,
+      note: parsed.data.note ?? null,
+    });
+    if (!delivery) return res.status(404).json({ error: 'DELIVERY_NOT_FOUND' });
+    return res.status(200).json({ delivery });
+  } catch (error) {
+    if (error instanceof IllegalAssignmentTransitionError) {
+      return res.status(409).json({ error: 'ILLEGAL_DELIVERY_TRANSITION', message: error.message });
+    }
+    throw error;
+  }
 });
 
 export { router as foodOperationsRouter };

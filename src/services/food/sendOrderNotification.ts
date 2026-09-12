@@ -33,7 +33,15 @@ export async function sendOrderNotification(
 ): Promise<NotificationOutcome> {
   try {
     const settings = await repository.getSettings(order.businessId);
-    const body = notificationFor(event, order, settings);
+
+    // Looked up only for the message that could name a driver. Every other
+    // event would be paying for a query whose answer it cannot use.
+    const driverName =
+      event === 'OUT_FOR_DELIVERY'
+        ? (await repository.findLiveDelivery(order.businessId, order.id))?.driverName ?? null
+        : null;
+
+    const body = notificationFor(event, order, settings, { driverName });
 
     // notificationFor already returns null for an order with no
     // conversation, so the two are separated here only to give the caller

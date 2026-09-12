@@ -140,6 +140,38 @@ export interface FoodBoardOrderDto {
   qcAcknowledgedAt: string | null;
   /** This ticket still owes a photo before it can leave the pass. */
   qcPhotoOutstanding: boolean;
+
+  /** Who has the food, once somebody has been put on it. Null when nobody has. */
+  delivery: FoodDeliveryDto | null;
+}
+
+export type FoodDeliveryState = 'ASSIGNED' | 'COLLECTED' | 'DELIVERED' | 'FAILED' | 'RETURNED' | 'CANCELLED';
+
+export interface FoodDeliveryDto {
+  id: string;
+  orderId: string;
+  driverId: string;
+  /** Carried on the assignment so a board never needs a second lookup to name who has the order. */
+  driverName: string;
+  driverPhone: string | null;
+  driverVehicle: string | null;
+  state: FoodDeliveryState;
+  assignedAt: string;
+  collectedAt: string | null;
+  finishedAt: string | null;
+  failureReason: string | null;
+  note: string | null;
+}
+
+export interface FoodDriverDto {
+  id: string;
+  name: string;
+  phoneNumber: string | null;
+  vehicle: string | null;
+  notes: string | null;
+  /** Drivers are never deleted - their deliveries are a record of what happened. They go inactive instead. */
+  active: boolean;
+  createdAt: string;
 }
 
 export interface FoodQcFindingDto {
@@ -149,9 +181,20 @@ export interface FoodQcFindingDto {
   message: string;
 }
 
+export type FoodNotificationEventName =
+  | 'ORDER_RECEIVED'
+  | 'PAYMENT_CONFIRMED'
+  | 'IN_KITCHEN'
+  | 'READY_FOR_PICKUP'
+  | 'OUT_FOR_DELIVERY'
+  | 'COMPLETED';
+
 export interface FoodSettingsDto {
   paymentRequiredBeforeKitchen: boolean;
   tableServiceEnabled: boolean;
+  /** How much a customer is told as their order moves. CUSTOM hands the decision to the overrides. */
+  notificationVerbosity: 'MINIMAL' | 'STANDARD' | 'DETAILED' | 'CUSTOM';
+  notificationOverrides: Partial<Record<FoodNotificationEventName, { enabled?: boolean; template?: string }>>;
   /** Must a photo be taken before an order leaves the pass. */
   qcPhotoRequired: boolean;
   /** Is that photo read against the order. Separate from requiring one. */
@@ -2355,8 +2398,42 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(note ? { note } : {}),
     }),
+
+  listFoodDrivers: (activeOnly = false) =>
+    request<{ drivers: FoodDriverDto[] }>(`/food-operations/drivers${activeOnly ? '?activeOnly=true' : ''}`),
+  createFoodDriver: (input: { name: string; phoneNumber?: string | null; vehicle?: string | null; notes?: string | null }) =>
+    request<{ driver: FoodDriverDto }>('/food-operations/drivers', { method: 'POST', body: JSON.stringify(input) }),
+  updateFoodDriver: (
+    driverId: string,
+    patch: Partial<{ name: string; phoneNumber: string | null; vehicle: string | null; notes: string | null }>,
+  ) => request<{ driver: FoodDriverDto }>(`/food-operations/drivers/${driverId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  /** There is no delete. A driver who has stopped working here goes inactive and drops off the picker. */
+  setFoodDriverActive: (driverId: string, active: boolean) =>
+    request<{ driver: FoodDriverDto }>(`/food-operations/drivers/${driverId}/active`, {
+      method: 'POST',
+      body: JSON.stringify({ active }),
+    }),
+  listFoodDriverRuns: (driverId: string) =>
+    request<{ runs: FoodDeliveryDto[] }>(`/food-operations/drivers/${driverId}/runs`),
+
+  assignFoodDriver: (orderId: string, driverId: string, note?: string) =>
+    request<{ delivery: FoodDeliveryDto }>(`/food-operations/orders/${orderId}/delivery`, {
+      method: 'POST',
+      body: JSON.stringify(note ? { driverId, note } : { driverId }),
+    }),
+  moveFoodDelivery: (deliveryId: string, state: FoodDeliveryState, extras: { failureReason?: string; note?: string } = {}) =>
+    request<{ delivery: FoodDeliveryDto }>(`/food-operations/deliveries/${deliveryId}/state`, {
+      method: 'POST',
+      body: JSON.stringify({ state, ...extras }),
+    }),
   getFoodMenu: () => request<{ items: FoodMenuItemDto[] }>('/food-operations/menu'),
-  getFoodSettings: () => request<{ settings: FoodSettingsDto }>('/food-operations/settings'),
+  /** The shipped wording and the usable tokens come from the server, so a screen cannot show a default the server no longer sends. */
+  getFoodSettings: () =>
+    request<{
+      settings: FoodSettingsDto;
+      notificationDefaults: Record<FoodNotificationEventName, string>;
+      mergeFields: { token: string; description: string }[];
+    }>('/food-operations/settings'),
   saveFoodSettings: (patch: Partial<FoodSettingsDto>) =>
     request<{ settings: FoodSettingsDto }>('/food-operations/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
   setFoodMenuAvailability: (itemId: string, available: boolean) =>

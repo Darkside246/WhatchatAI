@@ -5,6 +5,7 @@ import type { FoodPaymentMethod, FoodPaymentState, KitchenRelease } from '../dom
 import { canTransitionPayment, releaseToKitchen } from '../domain/food/paymentGate.js';
 import type { FoodNotificationEvent, NotificationOverrides, NotificationVerbosity } from '../services/food/orderNotifications.js';
 import { raisedFindings, type QcFinding } from '../domain/food/qcFindings.js';
+import { canTransitionAssignment, isFinalAssignmentState, whyNotAssignable, type DriverAssignmentState } from '../domain/food/driverAssignment.js';
 
 export interface FoodMenuCategoryRecord {
   id: string;
@@ -165,6 +166,37 @@ export interface FoodQcCheckRecord {
   createdAt: string;
 }
 
+export interface FoodDriverRecord {
+  id: string;
+  name: string;
+  phoneNumber: string | null;
+  vehicle: string | null;
+  notes: string | null;
+  /**
+   * Left rather than deleted. A driver who stops working here still drove
+   * the deliveries they drove, and deleting them would rewrite that.
+   */
+  active: boolean;
+  createdAt: string;
+}
+
+export interface FoodDeliveryRecord {
+  id: string;
+  orderId: string;
+  driverId: string;
+  /** Carried alongside the id so a board does not need a second lookup to say who has the food. */
+  driverName: string;
+  driverPhone: string | null;
+  driverVehicle: string | null;
+  state: DriverAssignmentState;
+  assignedAt: string;
+  assignedBy: string | null;
+  collectedAt: string | null;
+  finishedAt: string | null;
+  failureReason: string | null;
+  note: string | null;
+}
+
 export interface FoodDeliveryZoneRecord {
   id: string;
   businessId: string;
@@ -233,6 +265,34 @@ function toQcCheck(row: QcCheckRow): FoodQcCheckRecord {
     observation: row.observation ?? {}, findings: row.findings ?? [], raisedCount: Number(row.raised_count),
     provider: row.provider, model: row.model, checkedBy: row.checked_by,
     acknowledgedAt: row.acknowledged_at, acknowledgementNote: row.acknowledgement_note, createdAt: row.created_at,
+  };
+}
+
+interface DriverRow {
+  id: string; name: string; phone_number: string | null; vehicle: string | null;
+  notes: string | null; active: boolean; created_at: string;
+}
+
+function toDriver(row: DriverRow): FoodDriverRecord {
+  return {
+    id: row.id, name: row.name, phoneNumber: row.phone_number, vehicle: row.vehicle,
+    notes: row.notes, active: row.active, createdAt: row.created_at,
+  };
+}
+
+interface DeliveryRow {
+  id: string; order_id: string; driver_id: string; state: DriverAssignmentState;
+  assigned_at: string; assigned_by: string | null; collected_at: string | null;
+  finished_at: string | null; failure_reason: string | null; note: string | null;
+  driver_name: string; driver_phone: string | null; driver_vehicle: string | null;
+}
+
+function toDelivery(row: DeliveryRow): FoodDeliveryRecord {
+  return {
+    id: row.id, orderId: row.order_id, driverId: row.driver_id, driverName: row.driver_name,
+    driverPhone: row.driver_phone, driverVehicle: row.driver_vehicle, state: row.state,
+    assignedAt: row.assigned_at, assignedBy: row.assigned_by, collectedAt: row.collected_at,
+    finishedAt: row.finished_at, failureReason: row.failure_reason, note: row.note,
   };
 }
 
@@ -308,6 +368,14 @@ export class UnknownMenuCategoryError extends Error {}
  * failing with something generic.
  */
 export class QcPhotoRequiredError extends Error {}
+
+/** Somebody else put a driver on this order first. Normal during a rush, not an application bug. */
+export class OrderAlreadyAssignedError extends Error {}
+
+/** A driver on an order nobody is driving anywhere - a collection, a table, a finished order. */
+export class OrderNotDeliverableError extends Error {}
+
+export class IllegalAssignmentTransitionError extends Error {}
 
 /**
  * Raised when an order was sent to the kitchen without payment clearing.
@@ -1304,6 +1372,200 @@ export class FoodOperationsRepository {
       [businessId, id, by, note],
     );
     return (rowCount ?? 0) > 0;
+  }
+
+  // ── Drivers ────────────────────────────────────────────────────────────
+
+  async listDrivers(businessId: string, options: { activeOnly?: boolean } = {}): Promise<FoodDriverRecord[]> {
+    const { rows } = await this.db.query<DriverRow>(
+      `SELECT * FROM food_drivers
+       WHERE business_id = $1 AND ($2::boolean IS NOT TRUE OR active = true)
+       ORDER BY active DESC, name`,
+      [businessId, options.activeOnly ?? false],
+    );
+    return rows.map(toDriver);
+  }
+
+  async createDriver(input: {
+    businessId: string; name: string; phoneNumber?: string | null; vehicle?: string | null; notes?: string | null;
+  }): Promise<FoodDriverRecord> {
+    const { rows } = await this.db.query<DriverRow>(
+      `INSERT INTO food_drivers (business_id, name, phone_number, vehicle, notes)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [input.businessId, input.name.trim(), input.phoneNumber ?? null, input.vehicle ?? null, input.notes ?? null],
+    );
+    return toDriver(rows[0]!);
+  }
+
+  async updateDriver(
+    businessId: string,
+    id: string,
+    patch: { name?: string; phoneNumber?: string | null; vehicle?: string | null; notes?: string | null },
+  ): Promise<FoodDriverRecord | null> {
+    const { rows } = await this.db.query<DriverRow>(
+      `UPDATE food_drivers SET
+         name = COALESCE($3, name),
+         phone_number = COALESCE($4, phone_number),
+         vehicle = COALESCE($5, vehicle),
+         notes = COALESCE($6, notes),
+         updated_at = now()
+       WHERE business_id = $1 AND id = $2 RETURNING *`,
+      [businessId, id, patch.name ?? null, patch.phoneNumber ?? null, patch.vehicle ?? null, patch.notes ?? null],
+    );
+    return rows[0] ? toDriver(rows[0]) : null;
+  }
+
+  /**
+   * A driver who has stopped working here.
+   *
+   * There is deliberately no delete. Their deliveries are a record of what
+   * happened, and the schema's ON DELETE RESTRICT makes this the only
+   * route rather than merely the recommended one.
+   */
+  async setDriverActive(businessId: string, id: string, active: boolean): Promise<FoodDriverRecord | null> {
+    const { rows } = await this.db.query<DriverRow>(
+      'UPDATE food_drivers SET active = $3, updated_at = now() WHERE business_id = $1 AND id = $2 RETURNING *',
+      [businessId, id, active],
+    );
+    return rows[0] ? toDriver(rows[0]) : null;
+  }
+
+  // ── Deliveries ─────────────────────────────────────────────────────────
+
+  private static readonly DELIVERY_SELECT = `
+    SELECT delivery.*, driver.name AS driver_name, driver.phone_number AS driver_phone, driver.vehicle AS driver_vehicle
+    FROM food_order_deliveries delivery
+    JOIN food_drivers driver ON driver.business_id = delivery.business_id AND driver.id = delivery.driver_id`;
+
+  /**
+   * Puts a driver on an order.
+   *
+   * The one-live-assignment rule is enforced by a unique partial index
+   * rather than by reading first and then writing: two people assigning
+   * two drivers in the same moment is exactly what happens during a rush,
+   * and the second one has to lose in the database.
+   */
+  async assignDriver(
+    businessId: string,
+    orderId: string,
+    driverId: string,
+    actor: { userId?: string | null; note?: string | null } = {},
+  ): Promise<FoodDeliveryRecord | null> {
+    const order = await this.findOrder(businessId, orderId);
+    if (!order) return null;
+
+    const refusal = whyNotAssignable(order);
+    if (refusal) throw new OrderNotDeliverableError(refusal);
+
+    try {
+      const { rows } = await this.db.query<{ id: string }>(
+        `INSERT INTO food_order_deliveries (business_id, order_id, driver_id, assigned_by, note)
+         SELECT $1, $2, $3, $4, $5
+         WHERE EXISTS (SELECT 1 FROM food_drivers WHERE business_id = $1 AND id = $3 AND active = true)
+         RETURNING id`,
+        [businessId, orderId, driverId, actor.userId ?? null, actor.note ?? null],
+      );
+      const id = rows[0]?.id;
+      // No row means the driver is not this business's, or is no longer
+      // working here - which from the caller's side is "not found".
+      if (!id) return null;
+      return await this.findDelivery(businessId, id);
+    } catch (error) {
+      // 23505: the live-assignment index. Somebody got there first.
+      if ((error as { code?: string }).code === '23505') {
+        throw new OrderAlreadyAssignedError('Somebody has already put a driver on this order.');
+      }
+      throw error;
+    }
+  }
+
+  async findDelivery(businessId: string, id: string): Promise<FoodDeliveryRecord | null> {
+    const { rows } = await this.db.query<DeliveryRow>(
+      `${FoodOperationsRepository.DELIVERY_SELECT} WHERE delivery.business_id = $1 AND delivery.id = $2`,
+      [businessId, id],
+    );
+    return rows[0] ? toDelivery(rows[0]) : null;
+  }
+
+  /** The assignment that is actually live on this order, if any. */
+  async findLiveDelivery(businessId: string, orderId: string): Promise<FoodDeliveryRecord | null> {
+    const { rows } = await this.db.query<DeliveryRow>(
+      `${FoodOperationsRepository.DELIVERY_SELECT}
+       WHERE delivery.business_id = $1 AND delivery.order_id = $2
+         AND delivery.state IN ('ASSIGNED', 'COLLECTED', 'FAILED')`,
+      [businessId, orderId],
+    );
+    return rows[0] ? toDelivery(rows[0]) : null;
+  }
+
+  /**
+   * The live assignment for each of these orders, in one query - the board
+   * needs it for every ticket at once, and a query per card would put a
+   * kitchen screen's five-second poll into double figures of round trips.
+   */
+  async liveDeliveriesByOrder(businessId: string, orderIds: string[]): Promise<Map<string, FoodDeliveryRecord>> {
+    if (orderIds.length === 0) return new Map();
+    const { rows } = await this.db.query<DeliveryRow>(
+      `${FoodOperationsRepository.DELIVERY_SELECT}
+       WHERE delivery.business_id = $1 AND delivery.order_id = ANY($2::uuid[])
+         AND delivery.state IN ('ASSIGNED', 'COLLECTED', 'FAILED')`,
+      [businessId, orderIds],
+    );
+    return new Map(rows.map((row) => [row.order_id, toDelivery(row)]));
+  }
+
+  /** What this driver has carried. The question asked of a name rather than of an order. */
+  async listDriverRuns(businessId: string, driverId: string, limit = 50): Promise<FoodDeliveryRecord[]> {
+    const { rows } = await this.db.query<DeliveryRow>(
+      `${FoodOperationsRepository.DELIVERY_SELECT}
+       WHERE delivery.business_id = $1 AND delivery.driver_id = $2
+       ORDER BY delivery.created_at DESC LIMIT $3`,
+      [businessId, driverId, limit],
+    );
+    return rows.map(toDelivery);
+  }
+
+  /**
+   * Moves an assignment along.
+   *
+   * A failure needs a reason, because "failed" on its own tells the next
+   * person nothing they can act on - and the next person is usually
+   * standing in a shop holding food that has come back.
+   */
+  async moveDelivery(
+    businessId: string,
+    id: string,
+    to: DriverAssignmentState,
+    actor: { failureReason?: string | null; note?: string | null } = {},
+  ): Promise<FoodDeliveryRecord | null> {
+    const existing = await this.findDelivery(businessId, id);
+    if (!existing) return null;
+    if (existing.state === to) return existing;
+
+    if (!canTransitionAssignment(existing.state, to)) {
+      throw new IllegalAssignmentTransitionError(`A delivery cannot go from ${existing.state} to ${to}.`);
+    }
+    if (to === 'FAILED' && !actor.failureReason?.trim()) {
+      throw new IllegalAssignmentTransitionError('Say what went wrong - a failed delivery with no reason helps nobody.');
+    }
+
+    const { rows } = await this.db.query<DeliveryRow>(
+      `WITH updated AS (
+         UPDATE food_order_deliveries SET
+           state = $3,
+           collected_at = CASE WHEN $3 = 'COLLECTED' THEN COALESCE(collected_at, now()) ELSE collected_at END,
+           finished_at = CASE WHEN $4::boolean THEN COALESCE(finished_at, now()) ELSE finished_at END,
+           failure_reason = COALESCE($5, failure_reason),
+           note = COALESCE($6, note),
+           updated_at = now()
+         WHERE business_id = $1 AND id = $2
+         RETURNING *
+       )
+       SELECT updated.*, driver.name AS driver_name, driver.phone_number AS driver_phone, driver.vehicle AS driver_vehicle
+       FROM updated JOIN food_drivers driver ON driver.business_id = updated.business_id AND driver.id = updated.driver_id`,
+      [businessId, id, to, isFinalAssignmentState(to), actor.failureReason ?? null, actor.note ?? null],
+    );
+    return rows[0] ? toDelivery(rows[0]) : null;
   }
 
   async listZones(businessId: string): Promise<FoodDeliveryZoneRecord[]> {

@@ -3,6 +3,9 @@ import { Link } from 'react-router-dom';
 import { AlertTriangle, Bike, BookOpen, Camera, ChefHat, ClipboardCheck, Eye, MessageSquare, Navigation, PackageCheck, RotateCcw, Settings2, Store, Undo2, X } from 'lucide-react';
 import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand } from '../lib/api.js';
 import { QcPhotoButton } from '../components/QcPhotoButton.js';
+import { DeliveryControl } from '../components/DeliveryControl.js';
+import { DriverRoster } from '../components/DriverRoster.js';
+import { CustomerUpdates } from '../components/CustomerUpdates.js';
 import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 import { KitchenSettings } from '../components/KitchenSettings.js';
 import { MenuEditor } from '../components/MenuEditor.js';
@@ -250,8 +253,14 @@ export function FoodOperationsPage() {
               <X size={16} aria-hidden />
             </button>
           </div>
-          <div className="max-w-xl">
-            <KitchenSettings />
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="max-w-xl">
+              <KitchenSettings />
+            </div>
+            <div className="max-w-xl space-y-6">
+              <DriverRoster />
+              <CustomerUpdates />
+            </div>
           </div>
         </section>
       )}
@@ -407,6 +416,13 @@ function OrderCard({
             ))}
           </ul>
         </div>
+      )}
+
+      {/* Only where somebody is actually driving. A collection ticket does
+          not need a driver picker, and a board full of controls nobody
+          presses is a board people stop reading. */}
+      {order.fulfilmentMethod === 'DELIVERY' && (order.stage === 'QUALITY_CHECK' || order.stage === 'OUT_FOR_DELIVERY') && (
+        <DeliveryControl order={order} busy={busy} onChanged={onPhotoTaken} />
       )}
 
       <div className="mt-2 flex items-center gap-2 border-t border-border-subtle pt-2">
