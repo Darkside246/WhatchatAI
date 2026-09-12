@@ -1962,7 +1962,7 @@ function TeamCard({ team, members, onChanged }: { team: TeamDto; members: Member
           {team.description && <p className="text-meta text-fg-muted">{team.description}</p>}
         </div>
         {canManage && (
-          <button type="button" onClick={handleDeleteTeam} disabled={busy} className="text-fg-muted hover:text-error">
+          <button type="button" onClick={handleDeleteTeam} disabled={busy} className="text-fg-muted hover:text-error" aria-label="Delete this team">
             <Trash2 size={13} aria-hidden />
           </button>
         )}

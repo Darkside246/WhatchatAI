@@ -1,9 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { hardenLinks, sanitizeLegalHtml } from '../lib/sanitizeHtml.js';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Shield, Loader2 } from 'lucide-react';
 import { api } from '../lib/api.js';
 
 export function PrivacyPage() {
+  /**
+   * The rendered document, so every external link can be given
+   * rel="noopener noreferrer" after it is injected. Modern browsers imply
+   * noopener for target="_blank", but "modern" is not every browser a
+   * customer uses and the attribute costs nothing.
+   */
+  const legalRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const [doc, setDoc] = useState<{ title: string; contentHtml: string; version: string; effectiveAt: string } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -15,6 +23,8 @@ export function PrivacyPage() {
       .catch(() => setError('Could not load Privacy Policy.'))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => { hardenLinks(legalRef.current); });
 
   return (
     <main className="min-h-full bg-surface-0 text-fg">
@@ -51,9 +61,15 @@ export function PrivacyPage() {
             <p className="mt-1.5 text-caption text-fg-muted">
               Version {doc.version} · Effective {new Date(doc.effectiveAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
             </p>
+            {/* Sanitised before it is injected. These documents are
+                developer-authored today with no route that writes one, so
+                nothing user-controlled reaches here - which is precisely why
+                the guard wants to exist BEFORE somebody adds an admin
+                editor, rather than after it becomes stored XSS. */}
             <div
+              ref={legalRef}
               className="legal-prose mt-8"
-              dangerouslySetInnerHTML={{ __html: doc.contentHtml }}
+              dangerouslySetInnerHTML={{ __html: sanitizeLegalHtml(doc.contentHtml) }}
             />
           </>
         )}

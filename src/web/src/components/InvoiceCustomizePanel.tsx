@@ -182,7 +182,7 @@ export function InvoiceCustomizePanel({ onClose }: { onClose: () => void }) {
         <div className="flex w-96 shrink-0 flex-col border-r border-border-subtle">
           <div className="flex shrink-0 items-center justify-between border-b border-border-subtle px-5 py-4">
             <h2 className="text-body font-semibold text-fg">Customize documents</h2>
-            <button type="button" onClick={onClose} className="rounded p-1 text-fg-muted hover:text-fg"><X size={16} /></button>
+            <button type="button" aria-label="Close" onClick={onClose} className="rounded p-1 text-fg-muted hover:text-fg"><X size={16} /></button>
           </div>
 
           <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">

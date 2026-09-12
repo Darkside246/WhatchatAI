@@ -148,7 +148,7 @@ function CreateInvoiceModal({ onClose, onCreated }: { onClose: () => void; onCre
         <div className="flex w-[480px] shrink-0 flex-col border-r border-border-subtle">
         <div className="flex shrink-0 items-center justify-between border-b border-border-subtle px-5 py-4">
           <h2 className="text-body font-semibold text-fg">New document</h2>
-          <button type="button" onClick={onClose} className="rounded p-1 text-fg-muted hover:text-fg"><X size={16} /></button>
+          <button type="button" aria-label="Close" onClick={onClose} className="rounded p-1 text-fg-muted hover:text-fg"><X size={16} /></button>
         </div>
         <form onSubmit={(e) => void handleSubmit(e)} className="min-h-0 flex-1 overflow-y-auto p-5 space-y-4">
           <div className="grid grid-cols-3 gap-3">
@@ -337,7 +337,7 @@ function InvoiceDetailPanel({ invoice, lineItems, onUpdate, onDeleted, onClose }
           <span className="text-body font-semibold text-fg">{invoice.invoiceNumber}</span>
           <span className={`rounded-full px-2 py-0.5 text-meta font-medium ${STATUS_BADGE[invoice.status]}`}>{invoice.status.replace('_', ' ')}</span>
         </div>
-        <button type="button" onClick={onClose} className="rounded p-1 text-fg-muted hover:text-fg"><X size={16} /></button>
+        <button type="button" aria-label="Close" onClick={onClose} className="rounded p-1 text-fg-muted hover:text-fg"><X size={16} /></button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-5 space-y-4">

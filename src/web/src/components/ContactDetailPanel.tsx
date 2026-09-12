@@ -52,7 +52,7 @@ export function ContactDetailPanel({ onClose }: Props) {
       <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
         <h2 className="text-body font-semibold text-fg">Conversation details</h2>
         {onClose && (
-          <button type="button" onClick={onClose} className="text-fg-muted hover:text-fg lg:hidden">
+          <button type="button" onClick={onClose} className="text-fg-muted hover:text-fg lg:hidden" aria-label="Close contact details">
             <X size={18} aria-hidden />
           </button>
         )}

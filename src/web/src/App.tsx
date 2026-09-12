@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth.js';
 import { useAppGate } from './hooks/useAppGate.js';
@@ -14,8 +14,13 @@ import { ResetPasswordPage } from './pages/ResetPasswordPage.js';
 import { VerifyEmailPage } from './pages/VerifyEmailPage.js';
 import { RegisterPage } from './pages/RegisterPage.js';
 import { PublicLandingPage, TrialStartPage } from './pages/PublicLandingPage.js';
-import { TermsPage } from './pages/TermsPage.js';
-import { PrivacyPage } from './pages/PrivacyPage.js';
+/**
+ * Lazy, so the HTML sanitiser these two pages need does not sit in the entry
+ * bundle for everybody. Legal pages are read once, if ever; the sanitiser is
+ * ~30kB and every other screen was paying for it.
+ */
+const TermsPage = lazy(() => import('./pages/TermsPage.js').then((m) => ({ default: m.TermsPage })));
+const PrivacyPage = lazy(() => import('./pages/PrivacyPage.js').then((m) => ({ default: m.PrivacyPage })));
 import { ConsentConfirmPage } from './pages/ConsentConfirmPage.js';
 
 /**
@@ -77,8 +82,11 @@ export default function App() {
     if (location.pathname === '/reset-password') return <ResetPasswordPage />;
     if (location.pathname === '/verify-email') return <VerifyEmailPage />;
     if (location.pathname === '/register') return <RegisterPage />;
-    if (location.pathname === '/terms') return <TermsPage />;
-    if (location.pathname === '/privacy') return <PrivacyPage />;
+    // A boundary each, rather than one around the whole switch: a blank
+    // screen while an unrelated route loads is worse than a brief fallback
+    // on the page actually being opened.
+    if (location.pathname === '/terms') return <Suspense fallback={null}><TermsPage /></Suspense>;
+    if (location.pathname === '/privacy') return <Suspense fallback={null}><PrivacyPage /></Suspense>;
     if (location.pathname === '/consent/confirm') return <ConsentConfirmPage />;
     return <PublicLandingPage />;
   }
