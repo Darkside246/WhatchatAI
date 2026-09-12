@@ -105,6 +105,24 @@ const approvalService = new ApprovalService(pool);
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
 
 /**
+ * The customer message this turn is actually about.
+ *
+ * conversationHistory arrives NEWEST-FIRST (WhatsAppMessageRepository.listByChat
+ * orders by timestamp DESC) - see toContents below, which reverses it to get
+ * the chronological transcript. Both callers of this helper had independently
+ * reversed it first and then taken the first inbound, which is the OLDEST
+ * message in the window rather than the newest: up to fifty messages and
+ * potentially days off.
+ *
+ * That is a plain find on a newest-first list, and it is a helper rather than
+ * two identical one-liners because both sites got it wrong the same way, and
+ * the ordering is the kind of thing a reader assumes rather than checks.
+ */
+export function latestInboundMessage(history: AiHandoffContext['conversationHistory']) {
+  return history.find((message) => !message.fromMe) ?? null;
+}
+
+/**
  * Section 04's first pipeline stage, run before the Gemini call. Never
  * throws and never blocks the reply - a classification miss must not cost
  * a customer their reply, the same "best-effort, reply always wins"
@@ -117,7 +135,7 @@ const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
  * SSN or card number ends up persisted in plaintext.
  */
 async function classifyAndAuditInboundMessage(agent: AiAgentRecord, context: AiHandoffContext): Promise<void> {
-  const latestInbound = [...context.conversationHistory].reverse().find((m) => m.direction === 'inbound');
+  const latestInbound = latestInboundMessage(context.conversationHistory);
   const text = latestInbound?.textContent ?? latestInbound?.caption;
   if (!text) return;
   try {
@@ -1183,10 +1201,10 @@ async function executeOneToolCall(
       // Anchor the board entry to the customer message that prompted it, so
       // clicking it later opens the conversation at that exact point instead
       // of at its live end. The newest inbound turn IS the message being
-      // responded to this turn - conversationHistory is chronological and
-      // our own outbound sends are fromMe. Null when there is genuinely no
-      // inbound message to point at, rather than guessing at one.
-      const anchor = [...context.conversationHistory].reverse().find((message) => !message.fromMe) ?? null;
+      // responded to this turn, and it is the same turn toContents() treats
+      // as the triggering one. Null when there is genuinely no inbound
+      // message to point at, rather than guessing at one.
+      const anchor = latestInboundMessage(context.conversationHistory);
 
       await relayedMessageRepository.create({
         businessId: context.businessId,
