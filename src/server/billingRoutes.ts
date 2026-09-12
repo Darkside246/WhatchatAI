@@ -11,6 +11,12 @@ import { getTopupOffer, createTopupCheckout, verifyTopupPayment, NoTopupOfferErr
 import { getMemoryTopupOffer, createMemoryTopupCheckout, verifyMemoryTopupPayment, NoMemoryTopupOfferError, MemoryTopupVerificationError } from '../services/billing/aiMemoryTopupService.js';
 import { getUpgradeOffer, createUpgradeCheckout, verifyUpgradePayment, NoUpgradeOfferError, UpgradeVerificationError } from '../services/billing/planUpgradeService.js';
 import { PAYMENT_PROVIDER_KINDS, isProviderConfigured, isProviderEnabled, isProviderUsable } from '../services/billing/paymentProviderStatusService.js';
+import { isInvalidCredentialsError } from '../services/authService.js';
+import {
+  deleteBusinessAsDeveloper,
+  CannotDeleteOwnBusinessError,
+  BusinessNotFoundError,
+} from '../services/accountDeletionService.js';
 import {
   listAllAccounts,
   manuallyChangeBusinessPlan,
@@ -486,6 +492,33 @@ router.patch('/developer/businesses/:businessId/trial', requireAuth, requireDeve
   } catch (error) {
     if (error instanceof BusinessHasNoSubscriptionError) return res.status(409).json({ error: 'NO_LIVE_SUBSCRIPTION', message: error.message });
     if (error instanceof NotTrialingError) return res.status(409).json({ error: 'NOT_TRIALING', message: error.message });
+    throw error;
+  }
+});
+
+/**
+ * Irreversible erasure of another account, on a developer's instruction.
+ *
+ * DELETE with a body carrying the password, rather than a query parameter:
+ * a query string is logged by proxies, reverse proxies and browser history
+ * as a matter of course, and this one is the caller's own live credential.
+ */
+const developerPurgeSchema = z.object({ password: z.string().min(1) });
+
+router.delete('/developer/businesses/:businessId', requireAuth, requireDeveloper, async (req, res) => {
+  const businessId = z.string().uuid().safeParse(req.params.businessId);
+  if (!businessId.success) return res.status(400).json({ error: 'INVALID_BUSINESS_ID' });
+  const parsed = developerPurgeSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'PASSWORD_REQUIRED' });
+
+  const auth = res.locals.auth as AuthContext;
+  try {
+    await deleteBusinessAsDeveloper(auth.userId, auth.businessId, parsed.data.password, businessId.data);
+    return res.status(200).json({ status: 'business_purged' });
+  } catch (error) {
+    if (isInvalidCredentialsError(error)) return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Your password is incorrect.' });
+    if (error instanceof CannotDeleteOwnBusinessError) return res.status(400).json({ error: 'CANNOT_DELETE_OWN_BUSINESS', message: error.message });
+    if (error instanceof BusinessNotFoundError) return res.status(404).json({ error: 'BUSINESS_NOT_FOUND', message: error.message });
     throw error;
   }
 });

@@ -67,6 +67,8 @@ export type SecurityEventType =
   | 'phone_number_changed'
   /** A signed-in person changed their own password (passwordChangeService.ts). */
   | 'password_changed'
+  /** A developer erased another account from the control plane (accountDeletionService.ts). Platform-scoped, since the business it refers to no longer exists. */
+  | 'business_purged_by_developer'
   | 'ai_output_leak_blocked'
   | 'ai_output_leak_check_unavailable'
   /** A generated reply addressed a team member instead of the customer; the direct address was removed before sending (teamAddressGuard.ts). */

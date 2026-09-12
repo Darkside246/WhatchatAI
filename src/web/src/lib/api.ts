@@ -2314,6 +2314,16 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ planKey }),
     }),
+  /**
+   * Erases another account immediately and irreversibly. Confirmed with the
+   * caller's own password, sent in the body rather than the query string -
+   * query strings end up in proxy logs and browser history.
+   */
+  purgeBusiness: (businessId: string, password: string) =>
+    request<{ status: string }>(`/billing/developer/businesses/${businessId}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ password }),
+    }),
   /** Gives a trialing business more days. Refused for a subscription that is not TRIALING - there is no trial to extend. */
   extendBusinessTrial: (businessId: string, days: number) =>
     request<{ subscription: { trialEndsAt: string | null } }>(`/billing/developer/businesses/${businessId}/trial`, {

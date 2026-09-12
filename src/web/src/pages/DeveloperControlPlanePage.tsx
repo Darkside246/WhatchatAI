@@ -508,6 +508,79 @@ function PaymentProviderRow({
   );
 }
 
+/**
+ * Confirmation for an erasure that cannot be undone.
+ *
+ * Asks for the caller's OWN password, not a typed-out business name.
+ * Copying a name off the screen proves only that someone can read; a
+ * password proves the person at the keyboard is the account holder, which
+ * is what matters when an unlocked laptop or a forgotten open tab is the
+ * realistic threat.
+ *
+ * Says plainly what survives. "Delete everything" is not quite true here -
+ * invoice amounts and dates are kept, stripped of the customer, because tax
+ * authorities require them - and an operator agreeing to something
+ * irreversible should not later discover the description was approximate.
+ */
+function PurgeAccountDialog({
+  account, busy, error, onCancel, onConfirm,
+}: {
+  account: DeveloperAccount;
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: (password: string) => Promise<void>;
+}) {
+  const [password, setPassword] = useState('');
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div role="dialog" aria-modal="true" aria-label="Delete this account" className="w-full max-w-md rounded-2xl border border-border-subtle bg-surface-1 p-5 shadow-2xl">
+        <h3 className="text-body font-semibold text-error">Delete this account permanently</h3>
+        <p className="mt-2 text-caption text-fg-secondary">
+          {account.businessName ?? 'This business'}
+          {account.phoneNumber ? ` (${account.phoneNumber})` : ''} will be erased immediately. This cannot be undone.
+        </p>
+        <ul className="mt-3 space-y-1 text-caption text-fg-muted">
+          <li>· Every conversation, contact, message and file</li>
+          <li>· The WhatsApp connection and its session</li>
+          <li>· The subscription, and the owner&rsquo;s sign-in</li>
+          <li>· Invoice amounts and dates are kept for tax records, with the customer removed</li>
+          <li>· The phone number stays blocked from starting another free trial</li>
+        </ul>
+
+        <label className="mt-4 block">
+          <span className="mb-1 block text-caption font-medium text-fg-secondary">Confirm with your own password</span>
+          <input
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            disabled={busy}
+            className="block w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-caption text-fg outline-none focus:border-accent disabled:opacity-50"
+          />
+        </label>
+
+        {error && <p role="alert" className="mt-2 text-caption text-error">{error}</p>}
+
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} disabled={busy} className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-2 disabled:opacity-50">
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={busy || password.length === 0}
+            onClick={() => void onConfirm(password)}
+            className="rounded-lg bg-error px-3 py-1.5 text-caption font-medium text-white disabled:opacity-50"
+          >
+            {busy ? 'Deleting…' : 'Delete permanently'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const SUBSCRIPTION_STATUS_STYLE: Record<string, string> = {
   ACTIVE: 'bg-success/15 text-success',
   TRIALING: 'bg-info/15 text-info',
@@ -519,13 +592,14 @@ const SUBSCRIPTION_STATUS_STYLE: Record<string, string> = {
 
 /** One row in the Accounts table - phone number as the real identifier, a real trial/plan status, and the manual "change plan" override this feature exists for. */
 function PlatformAccountRow({
-  account, plans, busy, onChangePlan, onExtendTrial,
+  account, plans, busy, onChangePlan, onExtendTrial, onDelete,
 }: {
   account: DeveloperAccount;
   plans: DeveloperPlan[];
   busy: boolean;
   onChangePlan: (businessId: string, planKey: string) => Promise<void>;
   onExtendTrial: (businessId: string, days: number) => Promise<void>;
+  onDelete: (account: DeveloperAccount) => void;
 }) {
   const [selectedPlanKey, setSelectedPlanKey] = useState(account.planKey ?? '');
   const [extendDays, setExtendDays] = useState('7');
@@ -599,6 +673,22 @@ function PlatformAccountRow({
                   Extend trial
                 </button>
               </>
+            )}
+            {/*
+              Opens a confirmation that asks for the caller's own password.
+              Never deletes on this click - a single click that erases
+              someone else's business, on a table where the rows look alike,
+              is a mis-click waiting to happen.
+            */}
+            {!account.isDeveloper && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onDelete(account)}
+                className="rounded-lg border border-error/50 px-2 py-1 text-caption font-medium text-error hover:bg-error/10 disabled:opacity-50"
+              >
+                Delete
+              </button>
             )}
           </div>
         ) : (
@@ -1496,6 +1586,9 @@ export function DeveloperControlPlanePage() {
   const [platformAccounts, setPlatformAccounts] = useState<DeveloperAccount[]>([]);
   const [changingPlanForBusinessId, setChangingPlanForBusinessId] = useState<string | null>(null);
   const [planChangeError, setPlanChangeError] = useState<string | null>(null);
+  const [purgeTarget, setPurgeTarget] = useState<DeveloperAccount | null>(null);
+  const [purging, setPurging] = useState(false);
+  const [purgeError, setPurgeError] = useState<string | null>(null);
   const [catalogOpen, setCatalogOpen] = useState(true);
   const [platformTrials, setPlatformTrials] = useState<Awaited<ReturnType<typeof api.getPlatformTrials>>['trials'] | null>(null);
   const [securityEvents, setSecurityEvents] = useState<Awaited<ReturnType<typeof api.getPlatformSecurityEvents>>['events'] | null>(null);
@@ -1634,6 +1727,22 @@ export function DeveloperControlPlanePage() {
       setPlanChangeError(error instanceof Error ? error.message : 'Could not change the plan.');
     } finally {
       setChangingPlanForBusinessId(null);
+    }
+  };
+
+  const handlePurge = async (password: string) => {
+    if (!purgeTarget?.businessId) return;
+    setPurging(true);
+    setPurgeError(null);
+    try {
+      await api.purgeBusiness(purgeTarget.businessId, password);
+      const { accounts } = await api.getDeveloperAccounts();
+      setPlatformAccounts(accounts);
+      setPurgeTarget(null);
+    } catch (error) {
+      setPurgeError(error instanceof Error ? error.message : 'Could not delete the account.');
+    } finally {
+      setPurging(false);
     }
   };
 
@@ -1816,6 +1925,18 @@ export function DeveloperControlPlanePage() {
                 <p className="text-caption text-fg-muted">Loading…</p>
               ) : (
                 <div className="overflow-x-auto">
+                  {purgeTarget && (
+                    <PurgeAccountDialog
+                      account={purgeTarget}
+                      busy={purging}
+                      error={purgeError}
+                      onCancel={() => {
+                        setPurgeTarget(null);
+                        setPurgeError(null);
+                      }}
+                      onConfirm={handlePurge}
+                    />
+                  )}
                   {planChangeError && (
                     <p role="alert" className="mb-3 rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-caption text-error">
                       {planChangeError}
@@ -1841,6 +1962,7 @@ export function DeveloperControlPlanePage() {
                           busy={changingPlanForBusinessId === account.businessId}
                           onChangePlan={handleChangeBusinessPlan}
                           onExtendTrial={handleExtendTrial}
+                          onDelete={setPurgeTarget}
                         />
                       ))}
                     </tbody>
