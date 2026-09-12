@@ -82,6 +82,52 @@ export class WhatsAppMessagePersistenceService {
    * Once the transaction commits, a download job is enqueued so a worker
    * fetches, verifies, and stores the real bytes out-of-band.
    */
+  /**
+   * Applies a protocolMessage that CHANGES an existing message rather than
+   * being one: a delete-for-everyone, or an edit.
+   *
+   * WhatsApp delivers both as ordinary-looking messages on the chat. Treated
+   * as messages they became contentless rows that the thread rendered as the
+   * literal words "System message", sitting next to the very message they
+   * were instructing us to remove or rewrite - the deletion never happened,
+   * the edit never landed, and the operator got a meaningless bubble for
+   * each.
+   *
+   * `consumed` true means the caller must not persist this as a message.
+   * It is true even when the target is unknown to us, which is normal - a
+   * customer can delete or edit something older than our history, and
+   * WhatsApp's own client shows nothing in that case either. `chatId` is
+   * the thread that actually changed, for a realtime refresh, and is null
+   * whenever nothing did.
+   */
+  async applySystemEvent(input: PersistIngestedMessageInput): Promise<{ consumed: boolean; chatId: string | null }> {
+    const event = input.ingested.systemEvent;
+    if (event?.kind !== 'revoke' && event?.kind !== 'edit') return { consumed: false, chatId: null };
+
+    const { businessId, whatsappAccountId } = input;
+    if (!event.targetMessageId) return { consumed: true, chatId: null };
+
+    try {
+      const chatId =
+        event.kind === 'revoke'
+          ? await this.messageRepository.markDeletedByPeer(businessId, whatsappAccountId, event.targetMessageId)
+          : event.newText
+            ? await this.messageRepository.applyPeerEdit(businessId, whatsappAccountId, event.targetMessageId, event.newText)
+            : null;
+      return { consumed: true, chatId };
+    } catch (error) {
+      // Consumed either way. Re-persisting a failed deletion as a "System
+      // message" bubble would be the worse of the two outcomes: the thread
+      // would gain a meaningless row AND still show the message the sender
+      // asked to withdraw.
+      console.error(
+        `[WhatsAppMessagePersistenceService] Could not apply a ${event.kind} for message ${event.targetMessageId}:`,
+        error instanceof Error ? error.message : error,
+      );
+      return { consumed: true, chatId: null };
+    }
+  }
+
   async persist(input: PersistIngestedMessageInput): Promise<PersistIngestedMessageResult> {
     const result = await withTransaction((client) => this.persistWithClient(client, input));
 

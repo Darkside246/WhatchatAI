@@ -91,6 +91,12 @@ export interface IngestedWhatsAppMessage {
   forwardingScore: number | null;
   /** WhatsApp's own contextInfo.stanzaId when this message is a reply/quote - resolved to our own row id at persist time (see whatsappMessagePersistenceService.ts). Null when this message isn't a reply. */
   quotedStanzaId: string | null;
+  /**
+   * What a protocolMessage envelope actually is - a deletion, an edit, a
+   * disappearing-messages change, or WhatsApp's own plumbing. Null for
+   * every ordinary message, which is almost all of them.
+   */
+  systemEvent: WhatsAppSystemEvent | null;
 }
 
 interface ClassifiedContent {
@@ -114,6 +120,8 @@ interface ClassifiedContent {
    * defaulted or invented.
    */
   structuredPayload: StructuredMessagePayload | null;
+  /** What a protocolMessage envelope actually is. Null for every ordinary message - only a protocolMessage sets it. */
+  systemEvent: WhatsAppSystemEvent | null;
 }
 
 /** Structured detail for the non-media message types that carry real content of their own. */
@@ -126,14 +134,97 @@ const MAX_BUFFER_SIZE = 500;
 const TEXT_PREVIEW_MAX_LENGTH = 200;
 
 /**
- * proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE - a real,
- * numbered enum member confirmed in Baileys' own WAProto/index.d.ts. Used
- * as a raw numeric literal rather than importing the `proto` namespace as
- * a runtime value: this file already imports `proto` as a type only, and
- * nothing else in this codebase imports it as a value, so a literal here
- * is the more surgical change.
+ * proto.Message.ProtocolMessage.Type, as real numbered enum members from
+ * Baileys' own WAProto/index.d.ts. Raw numeric literals rather than an
+ * import: this file takes `proto` as a type only, nothing else in this
+ * codebase imports it as a value, and the numbers are wire format - they
+ * cannot change without breaking every WhatsApp client at once.
  */
-const PROTOCOL_MESSAGE_TYPE_GROUP_MEMBER_LABEL_CHANGE = 30;
+const PROTOCOL_MESSAGE_TYPE = {
+  REVOKE: 0,
+  EPHEMERAL_SETTING: 3,
+  MESSAGE_EDIT: 14,
+  GROUP_MEMBER_LABEL_CHANGE: 30,
+} as const;
+
+/**
+ * What a protocolMessage envelope actually is.
+ *
+ * Every subtype used to collapse into one contentless 'system' row, and the
+ * chat then rendered its generic fallback: the literal words "System
+ * message", over and over, in the middle of a real conversation. Most of
+ * those were never conversation at all - they are WhatsApp's own plumbing
+ * (app-state key shares, history-sync notifications, peer-data operations,
+ * LID migration) that the official client never shows anyone, and the rest
+ * were real events whose meaning was thrown away.
+ *
+ * So each envelope is now identified. 'plumbing' is dropped before it can
+ * reach the database; the others each say what happened.
+ */
+export type WhatsAppSystemEvent =
+  /** The sender deleted a message for everyone. targetMessageId is WhatsApp's own id for the message being withdrawn. */
+  | { kind: 'revoke'; targetMessageId: string | null }
+  /** The sender edited an earlier message. newText is the replacement body. */
+  | { kind: 'edit'; targetMessageId: string | null; newText: string | null }
+  /** Disappearing messages were turned on, off, or changed. Zero seconds means off. */
+  | { kind: 'ephemeral_setting'; expirationSeconds: number }
+  /** A group member was given a short label/nickname by another member. */
+  | { kind: 'member_label'; label: string }
+  /** WhatsApp talking to itself. Never a conversation message, never persisted. */
+  | { kind: 'plumbing'; typeCode: number };
+
+/** Real, human wording for a system event - never the raw subtype name, and never the word "System message". */
+function describeSystemEvent(event: WhatsAppSystemEvent): string | null {
+  switch (event.kind) {
+    case 'revoke':
+      return 'This message was deleted';
+    case 'ephemeral_setting':
+      return event.expirationSeconds > 0
+        ? `Disappearing messages turned on - ${formatDuration(event.expirationSeconds)}`
+        : 'Disappearing messages turned off';
+    case 'member_label':
+      return `Member tag: ${event.label}`;
+    // An edit is applied to the message it edits, so it has no line of its
+    // own; plumbing never reaches a conversation at all.
+    case 'edit':
+    case 'plumbing':
+      return null;
+  }
+}
+
+/** WhatsApp offers 24 hours, 7 days and 90 days; anything else is still described honestly rather than rounded to one of them. */
+function formatDuration(seconds: number): string {
+  const days = Math.round(seconds / 86_400);
+  if (days >= 1) return `${days} day${days === 1 ? '' : 's'}`;
+  const hours = Math.round(seconds / 3_600);
+  if (hours >= 1) return `${hours} hour${hours === 1 ? '' : 's'}`;
+  return `${seconds} seconds`;
+}
+
+function classifyProtocolMessage(protocol: proto.Message.IProtocolMessage): WhatsAppSystemEvent {
+  const typeCode = typeof protocol.type === 'number' ? protocol.type : -1;
+
+  if (typeCode === PROTOCOL_MESSAGE_TYPE.REVOKE) {
+    return { kind: 'revoke', targetMessageId: protocol.key?.id ?? null };
+  }
+  if (typeCode === PROTOCOL_MESSAGE_TYPE.MESSAGE_EDIT) {
+    const edited = protocol.editedMessage;
+    const newText = edited?.conversation ?? edited?.extendedTextMessage?.text ?? null;
+    return { kind: 'edit', targetMessageId: protocol.key?.id ?? null, newText };
+  }
+  if (typeCode === PROTOCOL_MESSAGE_TYPE.EPHEMERAL_SETTING) {
+    return { kind: 'ephemeral_setting', expirationSeconds: Number(protocol.ephemeralExpiration ?? 0) };
+  }
+  if (typeCode === PROTOCOL_MESSAGE_TYPE.GROUP_MEMBER_LABEL_CHANGE && protocol.memberLabel?.label) {
+    return { kind: 'member_label', label: protocol.memberLabel.label };
+  }
+
+  // Everything else: app-state key share/request, history sync
+  // notification, msg-fanout backfill, initial security notification,
+  // peer data operations, LID migration mapping, bot feedback, and the
+  // rest. The official client shows none of them to anyone.
+  return { kind: 'plumbing', typeCode };
+}
 
 function classifyDocument(
   mimetype: string | null | undefined,
@@ -190,6 +281,7 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
     fullText: null,
     rawMediaMessage: null,
     structuredPayload: null,
+    systemEvent: null,
   };
 
   const { message, isViewOnce } = unwrapContent(content);
@@ -250,6 +342,7 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
       fullText: message.documentMessage.caption ?? null,
       rawMediaMessage: media(message),
       structuredPayload: null,
+      systemEvent: null,
     };
   }
   if (message.stickerMessage) {
@@ -348,22 +441,19 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
     return { ...empty, contentType: 'interactive', textPreview: interactiveText ? truncatePreview(interactiveText) : null, fullText: interactiveText };
   }
   if (message.protocolMessage) {
-    // WhatsApp's real "member tag" feature - a group member assigns
-    // another member a short label/nickname. Was previously
-    // indistinguishable from every other protocolMessage subtype (message
-    // edits, ephemeral-setting changes, history-sync notifications, etc.),
-    // all silently collapsed into a contentless 'system' bucket - the
-    // chat UI's own generic "System message" fallback (messageBody() in
-    // ChatThread.tsx) was the only thing a user ever saw, with the real
-    // label text discarded. Populating textPreview/fullText here surfaces
-    // it through that exact same fallback path with no frontend change
-    // needed - messageBody() already prefers real text content over the
-    // generic label whenever it's present.
-    if (message.protocolMessage.type === PROTOCOL_MESSAGE_TYPE_GROUP_MEMBER_LABEL_CHANGE && message.protocolMessage.memberLabel?.label) {
-      const label = message.protocolMessage.memberLabel.label;
-      return { ...empty, contentType: 'system', textPreview: truncatePreview(`Member tag: ${label}`), fullText: `Member tag: ${label}` };
-    }
-    return { ...empty, contentType: 'system' };
+    // Identified rather than collapsed - see WhatsAppSystemEvent. The
+    // description, where there is one, is put in textPreview/fullText so it
+    // reaches the chat through the path that already prefers real text over
+    // the generic type label, with no frontend change needed.
+    const systemEvent = classifyProtocolMessage(message.protocolMessage);
+    const description = describeSystemEvent(systemEvent);
+    return {
+      ...empty,
+      contentType: 'system',
+      textPreview: description ? truncatePreview(description) : null,
+      fullText: description,
+      systemEvent,
+    };
   }
 
   return empty;
@@ -519,3 +609,24 @@ export class WhatsAppMessageIngestionService {
 }
 
 export const whatsappMessageIngestionService = new WhatsAppMessageIngestionService();
+
+/**
+ * Whether this envelope belongs in a conversation at all.
+ *
+ * WhatsApp's own plumbing - app-state key shares and requests, history-sync
+ * notifications, msg-fanout backfill, the initial security-notification
+ * sync, peer data operations, LID migration mapping, bot feedback - arrives
+ * as ordinary-looking messages on ordinary chats. The official client shows
+ * none of it to anyone. Persisting it produced a row with no content, which
+ * the chat then rendered as the literal words "System message" in the
+ * middle of a real conversation, and which the AI saw as a turn that had
+ * happened.
+ *
+ * Called by both ingestion consumers (the live messages.upsert handler and
+ * the history-sync path) rather than inside ingestUpsert itself, so the
+ * in-memory buffer and the diagnostic counters still see everything that
+ * really arrived.
+ */
+export function isConversationalMessage(message: IngestedWhatsAppMessage): boolean {
+  return message.systemEvent?.kind !== 'plumbing';
+}

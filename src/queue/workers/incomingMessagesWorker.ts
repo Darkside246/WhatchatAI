@@ -167,6 +167,22 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     }
   }
 
+  // A delete-for-everyone or an edit changes an existing message rather
+  // than being one. Consumed here so it never becomes a bubble of its own.
+  const systemEvent = await whatsappMessagePersistenceService.applySystemEvent({
+    businessId,
+    whatsappAccountId,
+    accountJid,
+    ingested: message,
+  });
+  if (systemEvent.consumed) {
+    if (systemEvent.chatId) {
+      await publishRealtimeEvent({ type: 'message.new', businessId, chatId: systemEvent.chatId });
+      await publishRealtimeEvent({ type: 'chat.updated', businessId, chatId: systemEvent.chatId });
+    }
+    return;
+  }
+
   const result = await whatsappMessagePersistenceService.persist({
     businessId,
     whatsappAccountId,

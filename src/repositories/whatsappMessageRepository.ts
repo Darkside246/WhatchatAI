@@ -340,6 +340,77 @@ export class WhatsAppMessageRepository {
     );
   }
 
+  /**
+   * The sender withdrew this message for everyone (WhatsApp's own
+   * "delete for everyone" - a protocolMessage of type REVOKE naming the
+   * message being withdrawn).
+   *
+   * A real soft delete, not a flag: every read in this repository already
+   * filters on `deleted_at IS NULL`, so the message leaves the thread, the
+   * AI's transcript, the counts and the exports at once - which is what
+   * the person who deleted it asked for. The row itself is kept so a
+   * replay of the same revoke is a no-op rather than a resurrection.
+   *
+   * Distinct from revoke_status, which tracks OUR OWN outbound deletions:
+   * that records what we asked WhatsApp to do, this records what somebody
+   * else actually did.
+   *
+   * Returns the affected chat's id so the caller can refresh it, or null
+   * when the message was never persisted here - which is normal, since a
+   * customer can delete something older than our history.
+   */
+  async markDeletedByPeer(businessId: string, whatsappAccountId: string, whatsappMessageId: string): Promise<string | null> {
+    const { rows } = await this.db.query<{ chat_id: string }>(
+      `UPDATE whatsapp_messages
+         SET deleted_at = now(), updated_at = now()
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND whatsapp_message_id = $3 AND deleted_at IS NULL
+       RETURNING chat_id`,
+      [businessId, whatsappAccountId, whatsappMessageId],
+    );
+    return rows[0]?.chat_id ?? null;
+  }
+
+  /**
+   * The sender edited this message (a protocolMessage of type MESSAGE_EDIT
+   * carrying the replacement body).
+   *
+   * The edit replaces the text in place, the way it does in WhatsApp
+   * itself, rather than arriving as a second message - two bubbles saying
+   * nearly the same thing would misrepresent a conversation that only ever
+   * had one. raw_metadata records only THAT it was edited and when.
+   *
+   * The previous wording is deliberately not kept. raw_metadata is stored
+   * in the clear (text_content is not - see insert above), so keeping the
+   * old body there would quietly move a customer's own words out from
+   * behind the at-rest encryption that exists specifically to protect
+   * them. Knowing a message was changed is the part an operator actually
+   * needs; a second plaintext copy of what it used to say is not worth
+   * that.
+   *
+   * Returns the affected chat's id, or null when the message was never
+   * persisted here or already reads exactly as the edit would leave it.
+   */
+  async applyPeerEdit(
+    businessId: string,
+    whatsappAccountId: string,
+    whatsappMessageId: string,
+    newText: string,
+  ): Promise<string | null> {
+    const existing = await this.findByWhatsAppId(businessId, whatsappAccountId, whatsappMessageId);
+    if (!existing || existing.textContent === newText) return null;
+
+    const envelope = await getEncryptionService().encryptField(businessId, newText);
+    const { rowCount } = await this.db.query(
+      `UPDATE whatsapp_messages
+         SET text_content = $4,
+             raw_metadata = raw_metadata || jsonb_build_object('editedAt', now()::text),
+             updated_at = now()
+       WHERE id = $1 AND business_id = $2 AND whatsapp_account_id = $3 AND deleted_at IS NULL`,
+      [existing.id, businessId, whatsappAccountId, getEncryptionService().serialize(envelope)],
+    );
+    return (rowCount ?? 0) > 0 ? existing.chatId : null;
+  }
+
   async attachMedia(id: string, mediaId: string): Promise<void> {
     await this.db.query(
       'UPDATE whatsapp_messages SET media_id = $2, has_media = true, updated_at = now() WHERE id = $1',

@@ -8,7 +8,7 @@ import {
 import QRCode from 'qrcode';
 import path from 'node:path';
 import { lstat, realpath, rm } from 'node:fs/promises';
-import { WhatsAppMessageIngestionService } from './whatsappMessageIngestionService.js';
+import { WhatsAppMessageIngestionService, isConversationalMessage } from './whatsappMessageIngestionService.js';
 import { whatsappSyncService } from './whatsappSyncService.js';
 import { enqueueIncomingMessage } from '../queue/queues/incomingMessagesQueue.js';
 import {
@@ -886,7 +886,14 @@ export class WhatsAppTenantConnection {
       // real conversation - these get their own table (whatsapp_statuses),
       // never whatsapp_messages/whatsapp_chats.
       const statusUpdates = ingested.filter((message) => message.remoteJid === STATUS_BROADCAST_JID);
-      const chatMessages = ingested.filter((message) => message.remoteJid !== STATUS_BROADCAST_JID);
+      // isConversationalMessage drops WhatsApp's own plumbing - app-state key
+      // shares, history-sync notifications, peer data operations and the rest.
+      // They arrive looking like ordinary messages on ordinary chats, and
+      // persisting them put a contentless row in the middle of a real
+      // conversation that rendered as the words "System message".
+      const chatMessages = ingested.filter(
+        (message) => message.remoteJid !== STATUS_BROADCAST_JID && isConversationalMessage(message),
+      );
       this.enqueueIngestedMessages(chatMessages);
       this.enqueueStatusUpdates(statusUpdates);
     });

@@ -11,6 +11,7 @@ import { WhatsAppGroupMemberRepository } from '../repositories/whatsappGroupMemb
 import { WhatsAppJidMappingRepository } from '../repositories/whatsappJidMappingRepository.js';
 import { WhatsAppSyncJobRepository } from '../repositories/whatsappSyncJobRepository.js';
 import type { WhatsAppMessageIngestionService } from './whatsappMessageIngestionService.js';
+import { isConversationalMessage } from './whatsappMessageIngestionService.js';
 import { whatsappMessagePersistenceService } from './whatsappMessagePersistenceService.js';
 import { persistStatusUpdate } from './whatsappStatusPersistenceService.js';
 import { whatsappReconciliationService } from './whatsappReconciliationService.js';
@@ -249,7 +250,13 @@ export class WhatsAppSyncService {
     // were silently misfiled as ordinary messages - see
     // docs/PHASE_1_STATUS_TEXT_FIX_PROPOSAL.md.
     const statusUpdates = ingested.filter((message) => message.remoteJid === STATUS_BROADCAST_JID);
-    const chatMessages = ingested.filter((message) => message.remoteJid !== STATUS_BROADCAST_JID);
+    // Same two exclusions the live path applies - see the comment there.
+    // History sync is where WhatsApp's plumbing arrives in bulk, so this is
+    // the path that used to fill a freshly-paired inbox with "System
+    // message" rows.
+    const chatMessages = ingested.filter(
+      (message) => message.remoteJid !== STATUS_BROADCAST_JID && isConversationalMessage(message),
+    );
 
     let processed = 0;
     let failed = 0;
@@ -271,7 +278,12 @@ export class WhatsAppSyncService {
 
     for (const message of chatMessages) {
       try {
-        await whatsappMessagePersistenceService.persist({ businessId, whatsappAccountId, accountJid, ingested: message });
+        // A delete-for-everyone or an edit changes an existing message
+        // rather than being one - applied, never persisted as a bubble.
+        const { consumed } = await whatsappMessagePersistenceService.applySystemEvent({ businessId, whatsappAccountId, accountJid, ingested: message });
+        if (!consumed) {
+          await whatsappMessagePersistenceService.persist({ businessId, whatsappAccountId, accountJid, ingested: message });
+        }
         processed += 1;
       } catch (error) {
         // Real, recorded failure - not silently swallowed. The sync job's
