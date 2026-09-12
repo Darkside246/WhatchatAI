@@ -52,6 +52,7 @@ import { mapBaileysCallStatus, callTypeFromEvent, isTerminalCallStatus } from '.
 import { classifyJid, derivePhoneNumber, stripDeviceSuffix } from '../../domain/whatsapp/jid.js';
 import { decodeBuffersFromQueue } from '../../domain/whatsapp/binaryCodec.js';
 import { storeMedia } from '../../media/mediaStorage.js';
+import { isBroadcastFeed } from '../../domain/whatsapp/chatType.js';
 import { mediaFallbackText } from '../../services/ai/mediaContext.js';
 import { sweepStaleFunnelInstances } from '../../services/funnelService.js';
 import { runSecurityScan } from '../../services/securityScanService.js';
@@ -232,6 +233,15 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     !message.fromMe &&
     message.isLive &&
     result.chat.aiMode === 'AI_ACTIVE' &&
+    // A WhatsApp Channel is a broadcast feed - only its owner can post to
+    // it, so there is no reply to write and nowhere to send one. Without
+    // this, every post from every channel the account follows was treated
+    // as a customer message: it burned a real AI call, the send failed or
+    // was meaningless, and any failure path (no agent, provider down)
+    // flipped the channel to HUMAN_TAKEOVER. Seen in production as an
+    // urgent-handover queue filling up with news and football feeds that
+    // nobody could answer even if they wanted to.
+    !isBroadcastFeed(result.chat) &&
     !result.media &&
     Boolean(result.message.textContent) &&
     // Cheap, binary pre-check only - avoids scheduling debounce work at all
@@ -721,6 +731,9 @@ async function maybeTriggerMediaAiHandoff(
 
   const chat = await chatRepository.findByIdForBusiness(message.chatId, message.businessId);
   if (!chat || chat.aiMode !== 'AI_ACTIVE') return;
+  // Same reason as the text path above - and channels post photos and
+  // videos constantly, so this is the busier of the two routes into it.
+  if (isBroadcastFeed(chat)) return;
 
   // No debounce/batch here (one media job = one message) - the gate is
   // evaluated against this single message in isolation. See

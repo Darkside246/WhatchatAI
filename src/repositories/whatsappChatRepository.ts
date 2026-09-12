@@ -594,6 +594,7 @@ export class WhatsAppChatRepository {
       `SELECT id, name, phone_number, updated_at FROM whatsapp_chats
        WHERE business_id = $1 AND ai_mode = 'HUMAN_TAKEOVER' AND deleted_at IS NULL
          AND unread_count > 0
+         AND chat_type <> 'newsletter'
        ORDER BY updated_at ASC LIMIT $2`,
       [businessId, limit],
     );
@@ -619,6 +620,12 @@ export class WhatsAppChatRepository {
        FROM whatsapp_chats c
        JOIN numbered_accounts na ON na.id = c.whatsapp_account_id
        WHERE c.business_id = $1 AND c.ai_mode = 'HUMAN_TAKEOVER' AND c.deleted_at IS NULL
+         -- A channel is a broadcast feed only its owner can post to. There
+         -- is no reply a human could send, so it can never be something
+         -- "waiting on a human" - see isBroadcastFeed in
+         -- incomingMessagesWorker.ts, which is what stops new ones arriving
+         -- in this state at all.
+         AND c.chat_type <> 'newsletter'
        ORDER BY c.updated_at DESC`,
       [businessId],
     );

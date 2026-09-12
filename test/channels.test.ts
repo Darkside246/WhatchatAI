@@ -6,6 +6,8 @@ import { WhatsAppChatRepository } from '../src/repositories/whatsappChatReposito
 import { NotificationRepository } from '../src/repositories/notificationRepository.js';
 import { notifyBusiness } from '../src/services/notificationService.js';
 import { workspaceService } from '../src/services/workspaceService.js';
+import { listHumanTakeoverAlerts } from '../src/services/securityAlertService.js';
+import { isBroadcastFeed } from '../src/domain/whatsapp/chatType.js';
 import { whatsappConnectionManager } from '../src/services/whatsappConnectionManager.js';
 import { createTestAccount, createTestBusiness, createTestUser, resetDatabase } from './helpers.js';
 
@@ -160,6 +162,79 @@ describe('WhatsApp Channels', () => {
     });
 
     expect(await workspaceService.listChannels(businessId, accountId)).toEqual([]);
+  });
+});
+
+/**
+ * A channel is a broadcast feed: only its owner can post to it, so there is
+ * no reply an operator or the AI could send. Nothing in the ingestion path
+ * knew that, so channel posts scheduled real AI calls and any failure along
+ * the way set the chat to HUMAN_TAKEOVER - which is what the urgent-handover
+ * pill and the "What to do next" list both read. An operator was shown a
+ * queue of news and football feeds described as conversations waiting on a
+ * person, none of which could be answered even in principle.
+ */
+describe('a channel is never something waiting on a human', () => {
+  let businessId: string;
+  let accountId: string;
+  const chatRepository = new WhatsAppChatRepository(pool);
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId);
+  });
+
+  it('stays out of the urgent-handover alerts even when its ai_mode says HUMAN_TAKEOVER', async () => {
+    const channel = await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '120363000000000009@newsletter',
+      jidKind: 'newsletter',
+      chatType: 'newsletter',
+      name: 'Barbados Today News',
+      unreadCount: 12,
+    });
+    const conversation = await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '12465559999@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+      unreadCount: 3,
+    });
+    await chatRepository.setAiMode(channel.id, 'HUMAN_TAKEOVER');
+    await chatRepository.setAiMode(conversation.id, 'HUMAN_TAKEOVER');
+
+    const alerts = await listHumanTakeoverAlerts(businessId);
+    // The real conversation still gets through - this excludes feeds, not
+    // everything.
+    expect(alerts.map((alert) => alert.chatId)).toEqual([conversation.id]);
+  });
+
+  it('is recognised as a feed rather than a conversation, whatever else is true of it', () => {
+    // The predicate both AI entry points consult before considering a
+    // reply - the text debounce and the media-download path.
+    expect(isBroadcastFeed({ chatType: 'newsletter' })).toBe(true);
+    expect(isBroadcastFeed({ chatType: 'individual' })).toBe(false);
+    expect(isBroadcastFeed({ chatType: 'group' })).toBe(false);
+    expect(isBroadcastFeed({ chatType: 'broadcast' })).toBe(false);
+  });
+
+  it('stays out of the "what to do next" list', async () => {
+    const channel = await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '120363000000000010@newsletter',
+      jidKind: 'newsletter',
+      chatType: 'newsletter',
+      name: 'Premier League',
+      unreadCount: 56,
+    });
+    await chatRepository.setAiMode(channel.id, 'HUMAN_TAKEOVER');
+
+    const waiting = await chatRepository.listNeedingHumanTakeover(businessId);
+    expect(waiting.map((chat) => chat.id)).not.toContain(channel.id);
   });
 });
 
