@@ -452,6 +452,17 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
     });
   };
   const [sending, setSending] = useState(false);
+  /**
+   * A real upload in flight: the file's name, and how much of it has
+   * actually reached the server.
+   *
+   * percent goes null once the body is fully transferred, because at that
+   * point the honest answer is no longer a number - the server still has to
+   * decode the file and hand it to WhatsApp, which on a large video takes
+   * its own time. A bar sitting at 100% above a send that has not happened
+   * yet is a worse lie than no bar.
+   */
+  const [upload, setUpload] = useState<{ name: string; percent: number | null } | null>(null);
   /** Which structured composer is open, if any - the contact card builder or the poll builder. */
   const [composerMode, setComposerMode] = useState<'contact' | 'poll' | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -822,11 +833,19 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
     }
   }
 
-  async function dispatchSend(currentChatId: string, body: SendMessageBody) {
+  async function dispatchSend(currentChatId: string, body: SendMessageBody, uploadName?: string) {
     setSending(true);
     setSendError(null);
+    if (uploadName) setUpload({ name: uploadName, percent: 0 });
     try {
-      const { outboundMessage } = await api.sendMessage(currentChatId, body);
+      // Only an actual file goes through the progress-reporting path. A text
+      // message is a few hundred bytes and finishes before a bar could be
+      // read, so it keeps the plain request.
+      const { outboundMessage } = uploadName
+        ? await api.sendMessageWithProgress(currentChatId, body, (percent) =>
+            setUpload((current) => (current ? { ...current, percent: percent >= 100 ? null : percent } : current)),
+          )
+        : await api.sendMessage(currentChatId, body);
       // The real message row lands asynchronously once WhatsApp echoes the
       // send back through the normal sync pipeline - the 6s poll (and any
       // message.new event that arrives sooner) picks it up. A manual
@@ -837,6 +856,7 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
       setSendError(err instanceof Error ? err.message : 'Failed to send message.');
     } finally {
       setSending(false);
+      setUpload(null);
     }
   }
 
@@ -917,11 +937,15 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
 
     try {
       const mediaBase64 = await blobToBase64(recording.blob);
-      await dispatchSend(chatId, {
-        messageType: 'voice_note',
-        mediaBase64,
-        mediaMimeType: recording.mimeType,
-      });
+      await dispatchSend(
+        chatId,
+        {
+          messageType: 'voice_note',
+          mediaBase64,
+          mediaMimeType: recording.mimeType,
+        },
+        'Voice note',
+      );
     } catch (err) {
       setSendError(err instanceof Error ? err.message : 'Could not send that voice note.');
     }
@@ -947,12 +971,16 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
 
     try {
       const mediaBase64 = await readFileAsBase64(file);
-      await dispatchSend(chatId, {
-        messageType: messageTypeForMime(file.type || 'application/octet-stream'),
-        mediaBase64,
-        mediaMimeType: file.type || 'application/octet-stream',
-        mediaFileName: file.name,
-      });
+      await dispatchSend(
+        chatId,
+        {
+          messageType: messageTypeForMime(file.type || 'application/octet-stream'),
+          mediaBase64,
+          mediaMimeType: file.type || 'application/octet-stream',
+          mediaFileName: file.name,
+        },
+        file.name,
+      );
     } catch (err) {
       setSendError(err instanceof Error ? err.message : 'Failed to read the selected file.');
     }
@@ -1314,6 +1342,23 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {upload && (
+          <div className="mb-2 rounded-lg border border-border-subtle bg-surface-2 px-3 py-2">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="truncate text-caption text-fg-secondary">{upload.name}</span>
+              <span className="shrink-0 text-meta tabular-nums text-fg-muted">
+                {upload.percent === null ? 'Sending…' : `${upload.percent}%`}
+              </span>
+            </div>
+            <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-surface-3">
+              <div
+                className={`h-full bg-accent transition-[width] ${upload.percent === null ? 'animate-pulse' : ''}`}
+                style={{ width: `${upload.percent ?? 100}%` }}
+              />
+            </div>
           </div>
         )}
 

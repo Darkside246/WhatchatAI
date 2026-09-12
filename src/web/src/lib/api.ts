@@ -1380,6 +1380,61 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export { ApiError };
 
 /**
+ * The same POST as request(), but reporting how much has actually gone up.
+ *
+ * XMLHttpRequest rather than fetch, for one reason: fetch has no upload
+ * progress. There is no event for it and no way to derive one - a large
+ * video simply sits there with nothing on screen until the whole body has
+ * been transferred. XHR's upload.onprogress is the only way a browser will
+ * tell you, so this one call site keeps it.
+ *
+ * WHAT THE NUMBER MEANS, precisely, because a percentage that means
+ * something other than what people assume is worse than no percentage.
+ * It is the share of the request body that has reached AURA's server. It is
+ * NOT how far WhatsApp has got: after this reaches 100% the server still
+ * has to decode the file and hand it to WhatsApp, which takes its own time
+ * on a large video. Callers are expected to stop showing a number at that
+ * point and say the send is in progress instead - see ChatThread's use of
+ * it - rather than leaving a finished-looking bar above an unfinished send.
+ */
+async function postWithUploadProgress<T>(path: string, body: unknown, onProgress: (percent: number) => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api${path}`);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.withCredentials = true;
+
+    xhr.upload.onprogress = (event) => {
+      // lengthComputable is false when the browser cannot know the total.
+      // Reporting a made-up number there would be a fake progress bar, so
+      // nothing is reported and the caller keeps showing its indefinite state.
+      if (event.lengthComputable && event.total > 0) {
+        onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      }
+    };
+
+    xhr.onload = () => {
+      let parsed: { error?: string; message?: string } = {};
+      try {
+        parsed = JSON.parse(xhr.responseText || '{}');
+      } catch {
+        // Left empty - handled by the status check below, same as request().
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(parsed as T);
+        return;
+      }
+      reject(new ApiError(xhr.status, parsed.error ?? 'UNKNOWN_ERROR', parsed.message ?? xhr.statusText));
+    };
+
+    xhr.onerror = () => reject(new ApiError(0, 'NETWORK_ERROR', 'The upload could not reach the server.'));
+    xhr.onabort = () => reject(new ApiError(0, 'UPLOAD_ABORTED', 'The upload was cancelled.'));
+
+    xhr.send(JSON.stringify(body));
+  });
+}
+
+/**
  * Section 67 (CRM Data Export): triggers a real browser download of every
  * real contact/lead this business owns - a real file, not a preview.
  * Bypasses request() above since the response is a file, not JSON.
@@ -1578,6 +1633,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  /** Same send, reporting real transferred bytes - see postWithUploadProgress for exactly what the percentage covers. */
+  sendMessageWithProgress: (chatId: string, body: SendMessageBody, onProgress: (percent: number) => void) =>
+    postWithUploadProgress<{ outboundMessage: OutboundMessageDto }>(`/workspace/chats/${chatId}/messages`, body, onProgress),
   // The send endpoint returns 202 the instant a send is queued, not once it
   // actually succeeds or fails (dispatch is async) - this is how a caller
   // finds out the real outcome.
