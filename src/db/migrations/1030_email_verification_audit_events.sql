@@ -36,5 +36,10 @@ ALTER TABLE security_audit_logs ADD CONSTRAINT security_audit_logs_event_type_ch
   'business_tier_unrestricted_granted', 'business_tier_unrestricted_revoked', 'auth_rate_limited', 'signup_recaptcha_failed',
   'oversight_finding_raised', 'oversight_finding_status_changed', 'oversight_monitoring_degraded', 'ai_output_team_address_removed',
   'subscription_trial_extended', 'password_changed', 'business_purged_by_developer', 'password_reset_requested',
-  'password_reset_completed', 'email_verification_sent', 'email_verified'
+  'password_reset_completed', 'email_verification_sent', 'email_verified',
+  /* Found on a real deployment: 24,740 rows written 7-11 September 2026 by a
+     code path no longer in the tree, which every restatement of this
+     constraint since has silently excluded. Preserved rather than deleted -
+     an audit log is not something to truncate so a CHECK will pass. */
+  'ai_provider_attempted'
 ));
