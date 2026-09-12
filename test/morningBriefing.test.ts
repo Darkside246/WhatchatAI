@@ -121,7 +121,7 @@ describe('workspaceService.getMorningBriefing (real Postgres, real aggregation)'
 
   it('surfaces real chats needing a human takeover, same signal as getNextBestActions', async () => {
     const chat = await chatRepo.upsertFromWhatsApp({ businessId, whatsappAccountId: accountId, chatJid: '15550001111@s.whatsapp.net', jidKind: 'individual', chatType: 'individual', name: 'Waiting Customer' });
-    await chatRepo.setAiMode(chat.id, 'HUMAN_TAKEOVER', 'manual_reply_detected');
+    await chatRepo.setAiMode(chat.id, 'HUMAN_TAKEOVER', 'ai_unavailable');
     await pool.query('UPDATE whatsapp_chats SET unread_count = 1 WHERE id = $1', [chat.id]);
 
     const briefing = await workspaceService.getMorningBriefing(businessId, sinceIso);
@@ -131,7 +131,7 @@ describe('workspaceService.getMorningBriefing (real Postgres, real aggregation)'
 
   it('reuses the exact same recommendedPriorities as getNextBestActions - no second, drifting implementation', async () => {
     const chat = await chatRepo.upsertFromWhatsApp({ businessId, whatsappAccountId: accountId, chatJid: '15550002222@s.whatsapp.net', jidKind: 'individual', chatType: 'individual', name: 'A Customer' });
-    await chatRepo.setAiMode(chat.id, 'HUMAN_TAKEOVER', 'manual_reply_detected');
+    await chatRepo.setAiMode(chat.id, 'HUMAN_TAKEOVER', 'ai_unavailable');
     await pool.query('UPDATE whatsapp_chats SET unread_count = 1 WHERE id = $1', [chat.id]);
 
     const [briefing, nba] = await Promise.all([
@@ -145,7 +145,7 @@ describe('workspaceService.getMorningBriefing (real Postgres, real aggregation)'
     const otherBusinessId = await createTestBusiness('Other Business');
     const otherAccountId = await createTestAccount(otherBusinessId, '15550003333@s.whatsapp.net');
     const otherChat = await chatRepo.upsertFromWhatsApp({ businessId: otherBusinessId, whatsappAccountId: otherAccountId, chatJid: '15550003333@s.whatsapp.net', jidKind: 'individual', chatType: 'individual' });
-    await chatRepo.setAiMode(otherChat.id, 'HUMAN_TAKEOVER', 'manual_reply_detected');
+    await chatRepo.setAiMode(otherChat.id, 'HUMAN_TAKEOVER', 'ai_unavailable');
     await pool.query('UPDATE whatsapp_chats SET unread_count = 1 WHERE id = $1', [otherChat.id]);
     await auditRepo.record({ businessId: otherBusinessId, whatsappAccountId: otherAccountId, eventType: 'message_risk_flagged', severity: 'warning', reason: 'other business', rawMetadata: {} });
     await journalRepo.record({ businessId: otherBusinessId, agentId: null, entryType: 'ACTION_TAKEN', summary: 'other business action' });

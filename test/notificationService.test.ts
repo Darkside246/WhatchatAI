@@ -164,10 +164,17 @@ describe('notificationService (real, per-user, never a shared broadcast row)', (
       expect(notifications.map((n) => n.title)).toEqual(['Still new']);
     });
 
-    it('drops a chat notification once that chat has no unread messages left', async () => {
+    /**
+     * A rule tying visibility to a chat's unread count was tried here and
+     * removed: unread_count says whether a message has been READ, not
+     * whether the conversation has been HANDLED. A chat the AI escalates
+     * after the operator has already read the last message needs a person
+     * and has an unread count of zero, so that rule hid real work.
+     */
+    it('keeps a handoff notification for a chat with nothing unread', async () => {
       const accountId = await createTestAccount(businessId);
       const chatRepository = new WhatsAppChatRepository(pool);
-      const answered = await chatRepository.upsertFromWhatsApp({
+      const chat = await chatRepository.upsertFromWhatsApp({
         businessId,
         whatsappAccountId: accountId,
         chatJid: '15550001212@s.whatsapp.net',
@@ -175,20 +182,11 @@ describe('notificationService (real, per-user, never a shared broadcast row)', (
         chatType: 'individual',
         unreadCount: 0,
       });
-      const waiting = await chatRepository.upsertFromWhatsApp({
-        businessId,
-        whatsappAccountId: accountId,
-        chatJid: '15550001213@s.whatsapp.net',
-        jidKind: 'individual',
-        chatType: 'individual',
-        unreadCount: 2,
-      });
 
-      await notifyUser(ownerId, { businessId, type: 'HUMAN_HANDOFF', severity: 'warning', title: 'Handled', targetType: 'chat', targetId: answered.id });
-      await notifyUser(ownerId, { businessId, type: 'HUMAN_HANDOFF', severity: 'warning', title: 'Waiting', targetType: 'chat', targetId: waiting.id });
+      await notifyUser(ownerId, { businessId, type: 'HUMAN_HANDOFF', severity: 'warning', title: 'Needs a person', targetType: 'chat', targetId: chat.id });
 
       const { notifications } = await listNotifications(businessId, ownerId);
-      expect(notifications.map((n) => n.title)).toEqual(['Waiting']);
+      expect(notifications.map((n) => n.title)).toEqual(['Needs a person']);
     });
 
     it('keeps a notification that does not point at a chat', async () => {

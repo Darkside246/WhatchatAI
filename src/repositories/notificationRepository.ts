@@ -126,22 +126,21 @@ export class NotificationRepository {
    * What is actually outstanding for this person right now.
    *
    * This used to return every non-dismissed notification ever created, so
-   * the same backlog reappeared on every login and every refresh - already
-   * read, and often about conversations long since dealt with. Two rules
-   * now decide what is still live:
+   * the same backlog reappeared on every login and every refresh, already
+   * read. Unread is now the rule: a notification that has been read has
+   * done its job, and showing it again the next time someone signs in is
+   * not history, it is noise. A read-side filter only - nothing is deleted
+   * or marked, so the rows remain a complete record.
    *
-   *   1. UNREAD. A notification that has been read has done its job.
-   *      Showing it again the next time someone signs in is not history, it
-   *      is noise - and the row survives either way, so nothing is lost.
-   *
-   *   2. STILL UNANSWERED. A notification pointing at a chat with no unread
-   *      messages left is stale by definition: the thing it was raised
-   *      about has been handled. Notifications that do not point at a chat
-   *      (billing, security, system) have nothing to check and always pass.
-   *
-   * Both are read-side filters. Nothing is deleted or marked, so the
-   * underlying rows remain a complete record for anything that wants the
-   * full history.
+   * A SECOND RULE WAS TRIED AND REMOVED: dropping any notification whose
+   * chat had no unread messages left, on the theory that it had been dealt
+   * with. It is wrong. unread_count measures whether a message has been
+   * READ, not whether the conversation has been HANDLED - a chat the AI
+   * escalates after the operator has already read the last message needs a
+   * person and has an unread count of zero. That rule hid real work, and
+   * the tests for setAiMode's own HUMAN_HANDOFF notification caught it.
+   * Staleness on open is already covered: opening a chat dismisses its
+   * notifications outright.
    */
   async listForUser(businessId: string, userId: string, limit = 50): Promise<NotificationRecord[]> {
     const { rows } = await this.db.query<NotificationRow>(
@@ -149,13 +148,6 @@ export class NotificationRepository {
        WHERE n.business_id = $1 AND n.user_id = $2
          AND n.dismissed_at IS NULL
          AND n.read_at IS NULL
-         AND NOT EXISTS (
-           SELECT 1 FROM whatsapp_chats c
-           WHERE n.target_type = 'chat'
-             AND c.id = n.target_id
-             AND c.business_id = n.business_id
-             AND (c.unread_count = 0 OR c.deleted_at IS NOT NULL)
-         )
        ORDER BY n.created_at DESC
        LIMIT $3`,
       [businessId, userId, limit],
