@@ -68,9 +68,14 @@ describe('agentGuard / AI Security Governor (real Postgres tenant, actor, and ra
     expect(listRegisteredTools().map((tool) => tool.name).sort()).toEqual([
       'check_property_status',
       'check_retail_order_status',
+      // Food ordering: quoting reads the catalogue and writes nothing,
+      // placing an order puts a real ticket in front of a real kitchen.
+      'confirm_food_order',
       'get_current_time',
+      'list_menu',
       'list_properties',
       'list_retail_products',
+      'quote_food_order',
       'schedule_google_meet',
       'schedule_zoom_meeting',
       'take_a_message',

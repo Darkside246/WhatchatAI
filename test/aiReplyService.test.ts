@@ -687,9 +687,9 @@ describe('Durable conversation state (Phase 3 - supplements raw history, never r
 });
 
 describe('generateAiReply tool boundary is unaffected by document content (Phase D4-B, items 9 and 10)', () => {
-  it('exactly nine AI tools are registered - get_current_time/list_properties/check_property_status/list_retail_products/check_retail_order_status (READ), update_conversation_memory/take_a_message (WRITE), schedule_google_meet/schedule_zoom_meeting (SEND) - and no others', () => {
+  it('exactly twelve AI tools are registered, each at an explicit risk tier - and no others', () => {
     const tools = listRegisteredTools();
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(12);
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
     expect(byName.get(GET_CURRENT_TIME_TOOL_NAME)?.risk).toBe('READ');
     expect(byName.get(UPDATE_CONVERSATION_STATE_TOOL_NAME)?.risk).toBe('WRITE');
@@ -700,6 +700,15 @@ describe('generateAiReply tool boundary is unaffected by document content (Phase
     expect(byName.get('check_property_status')?.risk).toBe('READ');
     expect(byName.get('list_retail_products')?.risk).toBe('READ');
     expect(byName.get('check_retail_order_status')?.risk).toBe('READ');
+
+    // Food ordering. Reading the menu and pricing an order write nothing,
+    // and a customer changing their mind five times must not need five
+    // approvals - but placing an order puts a real ticket in front of a
+    // real kitchen, which is the same class of commitment as booking a
+    // meeting. That tier is what makes the autonomy ladder govern it.
+    expect(byName.get('list_menu')?.risk).toBe('READ');
+    expect(byName.get('quote_food_order')?.risk).toBe('READ');
+    expect(byName.get('confirm_food_order')?.risk).toBe('SEND');
   });
 
   it("9/10. a hostile document instructing the AI to call a tool never changes the declared tools array - Gemini still has only the existing registered tools", async () => {

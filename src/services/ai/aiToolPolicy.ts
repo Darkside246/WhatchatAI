@@ -43,6 +43,29 @@ const AI_TOOL_POLICY: Record<string, AiToolPolicyEntry> = {
       'Creates a real Zoom meeting and returns a join link sent directly to the customer in this chat. A genuine ' +
       'externally-visible side effect - same SEND tier as schedule_google_meet.',
   },
+  list_menu: {
+    name: 'list_menu',
+    risk: 'READ',
+    description:
+      "Lists this business's real menu from FoodOperationsRepository - names, prices and live availability. No arguments, no side effect.",
+  },
+  quote_food_order: {
+    name: 'quote_food_order',
+    risk: 'READ',
+    description:
+      'Prices a proposed order against the live catalogue WITHOUT creating anything. READ despite taking arguments: ' +
+      'it writes nothing, and a customer changing their mind five times must not need five approvals. Every figure ' +
+      'comes from the catalogue - the arguments carry no price, total or SKU, because the schema has nowhere to put one.',
+  },
+  confirm_food_order: {
+    name: 'confirm_food_order',
+    risk: 'SEND',
+    description:
+      'Creates a real order and puts a real ticket in front of a real kitchen. SEND tier, the same as booking a ' +
+      'meeting: a genuine, externally-visible commitment that a person may have to undo. The autonomy ladder ' +
+      'therefore governs it - at level 2 the business approves each one before it reaches the board. Prices and ' +
+      'totals are computed server-side from the catalogue and cannot be supplied by the caller.',
+  },
   list_properties: {
     name: 'list_properties',
     risk: 'READ',

@@ -29,6 +29,13 @@ import { CHECK_PROPERTY_STATUS_TOOL_NAME, checkPropertyStatusFunctionDeclaration
 import { LIST_RETAIL_PRODUCTS_TOOL_NAME, listRetailProductsFunctionDeclaration } from './retail/listRetailProductsTool.js';
 import { CHECK_RETAIL_ORDER_STATUS_TOOL_NAME, checkRetailOrderStatusFunctionDeclaration, type CheckRetailOrderStatusToolArgs } from './retail/checkRetailOrderStatusTool.js';
 import { TAKE_MESSAGE_TOOL_NAME, takeMessageFunctionDeclaration, type TakeMessageToolArgs } from './messages/takeMessageTool.js';
+import {
+  LIST_MENU_TOOL_NAME, QUOTE_FOOD_ORDER_TOOL_NAME, CONFIRM_FOOD_ORDER_TOOL_NAME,
+  listMenuFunctionDeclaration, quoteFoodOrderFunctionDeclaration, confirmFoodOrderFunctionDeclaration,
+  type ConfirmFoodOrderToolArgs, type QuoteFoodOrderToolArgs,
+} from './food/foodOrderTools.js';
+import { FoodOperationsRepository } from '../repositories/foodOperationsRepository.js';
+import { confirmProposal, resolveProposal, type DraftOrderProposal, type ProposedLine } from './food/orderIntake.js';
 import { RelayedMessageRepository } from '../repositories/relayedMessageRepository.js';
 import { RetailOperationsRepository } from '../repositories/retailOperationsRepository.js';
 import { recomputeLeadScoreForContact } from './leadScoringService.js';
@@ -58,6 +65,68 @@ const propertyConversationBindingRepository = new PropertyConversationBindingRep
 const retailOperationsRepository = new RetailOperationsRepository(pool);
 const aiUsageRepository = new AiUsageRepository(pool);
 const aiCommitmentRepository = new AiCommitmentRepository(pool);
+const foodOperationsRepository = new FoodOperationsRepository(pool);
+
+
+/**
+ * Turns the model's arguments into a proposal.
+ *
+ * Note what does NOT cross this boundary: no price, no total, no SKU, no
+ * availability. The schema has no such field, so there is nothing here to
+ * strip - the resolver reads every figure from the catalogue itself.
+ */
+function toFoodProposal(args: ConfirmFoodOrderToolArgs | QuoteFoodOrderToolArgs, context: AiHandoffContext): DraftOrderProposal {
+  const full = args as ConfirmFoodOrderToolArgs;
+  const fulfilment = String(full.fulfilmentMethod ?? 'PICKUP').toUpperCase();
+
+  const lines: ProposedLine[] = (full.lines ?? [])
+    .filter((line) => typeof line?.item === 'string' && line.item.trim().length > 0)
+    .map((line) => ({
+      reference: String(line.item).trim(),
+      quantity: Number.isFinite(line.quantity) && Number(line.quantity) > 0 ? Math.floor(Number(line.quantity)) : 1,
+      modifiers: (line.modifiers ?? [])
+        .filter((modifier) => typeof modifier?.name === 'string' && modifier.name.trim().length > 0)
+        .map((modifier) => ({
+          name: String(modifier.name).trim(),
+          action: modifier.action === 'remove' || modifier.action === 'on_side' ? modifier.action : ('add' as const),
+        })),
+      notes: typeof line.notes === 'string' && line.notes.trim() ? line.notes.trim() : null,
+    }));
+
+  return {
+    chatId: context.chatId,
+    customerName: context.contactNameSources?.pushName ?? null,
+    fulfilmentMethod: fulfilment === 'DELIVERY' || fulfilment === 'DINE_IN' ? fulfilment : 'PICKUP',
+    lines,
+    deliveryLatitude: typeof full.deliveryLatitude === 'number' ? full.deliveryLatitude : null,
+    deliveryLongitude: typeof full.deliveryLongitude === 'number' ? full.deliveryLongitude : null,
+    deliveryNotes: full.deliveryNotes?.trim() || null,
+    tableLabel: full.tableLabel?.trim() || null,
+    allergenNotes: full.allergenNotes?.trim() || null,
+    kitchenNotes: full.kitchenNotes?.trim() || null,
+  };
+}
+
+/** Money as the model should say it out loud, never as cents it might read back wrong. */
+function describeMoney(totals: { subtotalCents: number; deliveryFeeCents: number; totalCents: number; currency: string }) {
+  return {
+    currency: totals.currency,
+    subtotal: (totals.subtotalCents / 100).toFixed(2),
+    deliveryFee: (totals.deliveryFeeCents / 100).toFixed(2),
+    total: (totals.totalCents / 100).toFixed(2),
+  };
+}
+
+/**
+ * A problem, as something to say rather than a code to interpret.
+ *
+ * Each one is a question somebody has to be asked, and the sentence was
+ * written for that - so the model is handed the words and told to use
+ * them, not an enum it would have to invent phrasing for.
+ */
+function toModelProblem(problem: { kind: string; customerFacing: string }) {
+  return { issue: problem.kind, sayToCustomer: problem.customerFacing };
+}
 
 /**
  * Real, deterministic detection (never a second AI call) - see
@@ -369,12 +438,16 @@ const MAX_REPLY_CHARS = 2000;
  * "never offer a tool with nothing real behind it" rule as the meeting
  * tools above, not a property-vertical-only allowlist.
  */
-function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: AiAgentRecord, aiActionsPaused: boolean, hasPropertyData: boolean, hasRetailData: boolean) {
+function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: AiAgentRecord, aiActionsPaused: boolean, hasPropertyData: boolean, hasRetailData: boolean, hasFoodData: boolean) {
   let functionDeclarations = [getCurrentTimeFunctionDeclaration, updateConversationStateFunctionDeclaration, takeMessageFunctionDeclaration];
   if (connectedMeetingProviders.includes('google_meet')) functionDeclarations.push(scheduleMeetingFunctionDeclaration);
   if (connectedMeetingProviders.includes('zoom')) functionDeclarations.push(scheduleZoomMeetingFunctionDeclaration);
   if (hasPropertyData) functionDeclarations.push(listPropertiesFunctionDeclaration, checkPropertyStatusFunctionDeclaration);
   if (hasRetailData) functionDeclarations.push(listRetailProductsFunctionDeclaration, checkRetailOrderStatusFunctionDeclaration);
+  // Offered to whichever agent is already handling this conversation, never
+  // to a separate "food agent" - the customer is talking to one business,
+  // and a handover between two agents is a seam they would feel.
+  if (hasFoodData) functionDeclarations.push(listMenuFunctionDeclaration, quoteFoodOrderFunctionDeclaration, confirmFoodOrderFunctionDeclaration);
   // Defensive against undefined, not just empty: allowedTools/forbiddenTools
   // are required on AiAgentRecord, but test/ isn't covered by
   // npm run typecheck (see tsconfig.json's include), so an older fakeAgent()
@@ -1181,7 +1254,10 @@ async function executeOneToolCall(
     call.name !== CHECK_PROPERTY_STATUS_TOOL_NAME &&
     call.name !== LIST_RETAIL_PRODUCTS_TOOL_NAME &&
     call.name !== CHECK_RETAIL_ORDER_STATUS_TOOL_NAME &&
-    call.name !== TAKE_MESSAGE_TOOL_NAME
+    call.name !== TAKE_MESSAGE_TOOL_NAME &&
+    call.name !== LIST_MENU_TOOL_NAME &&
+    call.name !== QUOTE_FOOD_ORDER_TOOL_NAME &&
+    call.name !== CONFIRM_FOOD_ORDER_TOOL_NAME
   ) {
     // Fails closed on any tool name this codebase did not explicitly
     // register (defense in depth beyond the declared tools above) - never
@@ -1305,6 +1381,72 @@ async function executeOneToolCall(
         error instanceof Error ? error.message : error,
       );
       return { recorded: false, error: 'Could not record that message right now.' };
+    }
+  }
+
+  if (call.name === LIST_MENU_TOOL_NAME) {
+    const menu = await foodOperationsRepository.listMenu(context.businessId);
+    return {
+      // Availability is included rather than filtered out: an agent that
+      // cannot see a sold-out item cannot tell a customer it is sold out,
+      // and would sound as though the business had never heard of it.
+      items: menu.map((item) => ({
+        name: item.name,
+        category: item.category,
+        price: (item.priceCents / 100).toFixed(2),
+        currency: item.currency,
+        available: item.available,
+        ...(item.description ? { description: item.description } : {}),
+        ...(item.allergens.length > 0 ? { allergens: item.allergens } : {}),
+      })),
+    };
+  }
+
+  if (call.name === QUOTE_FOOD_ORDER_TOOL_NAME || call.name === CONFIRM_FOOD_ORDER_TOOL_NAME) {
+    const args = (call.args ?? {}) as unknown as ConfirmFoodOrderToolArgs;
+    const proposal = toFoodProposal(args, context);
+    const confirmingMessageId = latestInboundMessage(context.conversationHistory)?.id ?? null;
+
+    if (proposal.lines.length === 0) {
+      return { error: 'No items were given. Ask the customer what they would like before calling this.' };
+    }
+
+    try {
+      if (call.name === QUOTE_FOOD_ORDER_TOOL_NAME) {
+        const result = await resolveProposal(foodOperationsRepository, context.businessId, proposal);
+        if (!result.ok) return { priced: false, problems: result.problems.map(toModelProblem) };
+        return {
+          priced: true,
+          ...describeMoney(result.resolved),
+          lines: result.resolved.lines.map((line) => ({ name: line.name, quantity: line.quantity, notes: line.notes })),
+        };
+      }
+
+      const result = await confirmProposal(foodOperationsRepository, context.businessId, proposal, {
+        // Keyed on the customer's own confirming message - the turn where
+        // they said yes - so a retry of this turn, or a redelivered job,
+        // cannot put a second ticket in front of the kitchen.
+        idempotencyKey: confirmingMessageId ? `food-confirm:${confirmingMessageId}` : null,
+      });
+      if (!result.ok) return { placed: false, problems: result.problems.map(toModelProblem) };
+
+      return {
+        placed: true,
+        orderNumber: result.confirmed.order.orderNumber,
+        ...describeMoney({
+          subtotalCents: result.confirmed.order.subtotalCents,
+          deliveryFeeCents: result.confirmed.order.deliveryFeeCents,
+          totalCents: result.confirmed.order.totalCents,
+          currency: result.confirmed.order.currency,
+        }),
+        // Passed through verbatim - it is the operator's own wording about
+        // their own payment terms, and paraphrasing a commercial policy is
+        // exactly the kind of improvisation this whole design prevents.
+        ...(result.confirmed.notice ? { tellTheCustomer: result.confirmed.notice } : {}),
+      };
+    } catch (error) {
+      console.error(`[aiReplyService] Food order tool failed (chat ${context.chatId}):`, error instanceof Error ? error.message : error);
+      return { error: 'That could not be completed right now. Tell the customer someone will follow up, and do not claim the order was placed.' };
     }
   }
 
@@ -1622,6 +1764,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
     context.aiActionsPaused ?? false,
     context.hasPropertyData ?? false,
     context.hasRetailData ?? false,
+    context.hasFoodData ?? false,
   );
 
   const genAi = getGeminiClient();

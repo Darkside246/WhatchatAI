@@ -18,6 +18,7 @@ import { ZoomMeetingRepository } from '../repositories/zoomMeetingRepository.js'
 import type { MeetingProvider } from './meeting/meetingProvider.js';
 import { PropertyOperationsRepository } from '../repositories/propertyOperationsRepository.js';
 import { RetailOperationsRepository } from '../repositories/retailOperationsRepository.js';
+import { FoodOperationsRepository } from '../repositories/foodOperationsRepository.js';
 import { DEFAULT_NAME_USAGE_LEVEL } from './ai/identityEngine.js';
 import { BusinessMembershipRepository } from '../repositories/businessMembershipRepository.js';
 import { WritingTwinRepository } from '../repositories/writingTwinRepository.js';
@@ -174,6 +175,12 @@ export interface AiHandoffContext {
   /** Same "never offer a tool with nothing real behind it" rule as hasPropertyData above, gating list_retail_products/check_retail_order_status. */
   hasRetailData: boolean;
   /**
+   * True when this business actually has a menu. Food order-taking tools
+   * are offered only then, so a plumber's agent is never handed a tool
+   * that would return an empty menu every time.
+   */
+  hasFoodData: boolean;
+  /**
    * Emergency "Stop All Agents" kill switch (businesses.ai_actions_paused).
    * The authoritative enforcement is agentGuard.ts's guardToolInvocation -
    * this field only lets buildReplyTools avoid offering a tool Gemini would
@@ -290,6 +297,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
   const zoomMeetingRepository = new ZoomMeetingRepository(pool);
   const propertyOperationsRepository = new PropertyOperationsRepository(pool);
   const retailOperationsRepository = new RetailOperationsRepository(pool);
+  const foodOperationsRepository = new FoodOperationsRepository(pool);
   const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
 
   // A single, fast indexed lookup - resolved before the main batch below
@@ -313,7 +321,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     : null;
   const useListScopedMemory = !!(activeListId && activeListAssignment?.rememberListSpecificInfo);
 
-  const [crmContact, whatsappContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState, customerMemory, googleMeetingConnection, zoomMeetingConnection, properties, products, learnContext] = await Promise.all([
+  const [crmContact, whatsappContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState, customerMemory, googleMeetingConnection, zoomMeetingConnection, properties, products, menuItems, learnContext] = await Promise.all([
     input.contactId
       ? crmContactRepository.findByWhatsAppContact(input.businessId, input.contactId)
       : Promise.resolve(null),
@@ -342,6 +350,10 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     zoomMeetingRepository.getConnectionByBusiness(input.businessId),
     propertyOperationsRepository.listProperties(input.businessId),
     retailOperationsRepository.listProducts(input.businessId),
+    // Every item, not just the available ones: an agent that cannot see a
+    // sold-out item cannot tell a customer it is sold out, and would look
+    // as though the business had never heard of it.
+    foodOperationsRepository.listMenu(input.businessId),
     resolveLearnContext(input.businessId),
   ]);
 
@@ -453,6 +465,9 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     connectedMeetingProviders,
     hasPropertyData: properties.length > 0,
     hasRetailData: products.length > 0,
+    // Same "never offer a tool with nothing real behind it" rule: a
+    // business with no menu is never handed order-taking tools.
+    hasFoodData: menuItems.length > 0,
     aiActionsPaused: business?.aiActionsPaused ?? false,
     customerMemoryEnabled: business?.customerMemoryEnabled ?? true,
     nameUsageLevel: business?.nameUsageLevel ?? DEFAULT_NAME_USAGE_LEVEL,

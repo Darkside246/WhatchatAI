@@ -2286,6 +2286,9 @@ export const api = {
       body: JSON.stringify(note ? { stage, note } : { stage }),
     }),
   getFoodMenu: () => request<{ items: FoodMenuItemDto[] }>('/food-operations/menu'),
+  getFoodSettings: () => request<{ settings: FoodSettingsDto }>('/food-operations/settings'),
+  saveFoodSettings: (patch: Partial<FoodSettingsDto>) =>
+    request<{ settings: FoodSettingsDto }>('/food-operations/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
   setFoodMenuAvailability: (itemId: string, available: boolean) =>
     request<{ item: FoodMenuItemDto }>(`/food-operations/menu/${itemId}/availability`, {
       method: 'POST',

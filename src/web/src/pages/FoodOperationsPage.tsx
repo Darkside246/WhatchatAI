@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertTriangle, Bike, ChefHat, ClipboardCheck, MessageSquare, Navigation, PackageCheck, RotateCcw, Store, Undo2 } from 'lucide-react';
+import { AlertTriangle, Bike, ChefHat, ClipboardCheck, MessageSquare, Navigation, PackageCheck, RotateCcw, Settings2, Store, Undo2, X } from 'lucide-react';
 import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand } from '../lib/api.js';
 import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
+import { KitchenSettings } from '../components/KitchenSettings.js';
 
 /**
  * The kitchen board.
@@ -66,6 +67,7 @@ export function FoodOperationsPage() {
    * worse than neither showing a timer at all.
    */
   const [drift, setDrift] = useState(0);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -153,10 +155,40 @@ export function FoodOperationsPage() {
             <RotateCcw size={14} aria-hidden />
             Refresh
           </button>
+          <button
+            type="button"
+            onClick={() => setSettingsOpen((open) => !open)}
+            aria-expanded={settingsOpen}
+            className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2"
+          >
+            <Settings2 size={14} aria-hidden />
+            Setup
+          </button>
         </div>
       </header>
 
       {error && <p className="border-b border-error/30 bg-error/10 px-4 py-2 text-caption text-error">{error}</p>}
+
+      {/* On the board rather than buried in Settings, because these are the
+          decisions an owner changes while looking at their own service -
+          turning the payment gate off during a quiet afternoon, widening
+          the ticket times after a bad Friday. */}
+      {settingsOpen && (
+        <section className="border-b border-border-subtle bg-surface-1 px-4 py-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div>
+              <h2 className="text-body font-semibold text-fg">Kitchen setup</h2>
+              <p className="text-meta text-fg-muted">How orders behave. Your agent's wording lives on the Agents page.</p>
+            </div>
+            <button type="button" onClick={() => setSettingsOpen(false)} aria-label="Close setup" className="rounded-md p-1 text-fg-muted hover:bg-surface-2 hover:text-fg">
+              <X size={16} aria-hidden />
+            </button>
+          </div>
+          <div className="max-w-xl">
+            <KitchenSettings />
+          </div>
+        </section>
+      )}
 
       {orders !== null && orders.length === 0 && !error && (
         <div className="flex flex-1 flex-col items-center justify-center px-6 py-16 text-center text-fg-muted">
