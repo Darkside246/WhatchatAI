@@ -51,6 +51,7 @@ import { BusinessDocumentRepository } from '../../repositories/businessDocumentR
 import { mapBaileysCallStatus, callTypeFromEvent, isTerminalCallStatus } from '../../domain/whatsapp/callStatus.js';
 import { classifyJid, derivePhoneNumber, stripDeviceSuffix } from '../../domain/whatsapp/jid.js';
 import { decodeBuffersFromQueue } from '../../domain/whatsapp/binaryCodec.js';
+import { findMediaContentKey, normaliseMediaDescriptorForDownload } from '../../domain/whatsapp/mediaDescriptor.js';
 import { storeMedia } from '../../media/mediaStorage.js';
 import { isBroadcastFeed } from '../../domain/whatsapp/chatType.js';
 import { mediaFallbackText } from '../../services/ai/mediaContext.js';
@@ -793,21 +794,11 @@ function logGateDecision(chatId: string, gate: GroupParticipationGateResult): vo
 // Configurable, not hardcoded: operators can raise/lower this per deployment.
 const MAX_MEDIA_DOWNLOAD_BYTES = Number(process.env.MEDIA_MAX_DOWNLOAD_BYTES ?? 100 * 1024 * 1024);
 
-const MEDIA_CONTENT_KEYS = [
-  'imageMessage',
-  'videoMessage',
-  'audioMessage',
-  'documentMessage',
-  'stickerMessage',
-] as const;
-
 /** Pulls the sender-declared plaintext SHA-256 off whichever media field is present, for real integrity verification against the bytes we actually downloaded. */
 function extractDeclaredSha256(message: proto.IMessage): Buffer | null {
-  for (const key of MEDIA_CONTENT_KEYS) {
-    const content = message[key];
-    if (content?.fileSha256) return Buffer.from(content.fileSha256);
-  }
-  return null;
+  const key = findMediaContentKey(message);
+  const content = key ? message[key] : null;
+  return content?.fileSha256 ? Buffer.from(content.fileSha256) : null;
 }
 
 interface HttpLikeError {
@@ -955,8 +946,20 @@ async function processMediaDownload(data: MediaDownloadJobData): Promise<void> {
     return;
   }
 
-  const waMessage = { key: decoded.key, message: decoded.message } as WAMessage;
-  const declaredSha256 = extractDeclaredSha256(decoded.message);
+  // The descriptor has just come back through JSON, which strips the
+  // protobuf prototype Baileys' own full-media-vs-thumbnail test relies on -
+  // see normaliseMediaDescriptorForDownload for what that silently does to
+  // media whose sender never set `url`.
+  const normalised = normaliseMediaDescriptorForDownload(decoded.message);
+  if (!normalised.ok) {
+    console.error(`[RealtimeEventsWorker] Media ${mediaId} cannot be downloaded: ${normalised.reason}`);
+    await mediaRepository.failTerminally(mediaId, 'failed', 'internal', normalised.reason, normalised.reason);
+    await publishMediaOutcome(businessId, mediaId);
+    return;
+  }
+
+  const waMessage = { key: decoded.key, message: normalised.message } as WAMessage;
+  const declaredSha256 = extractDeclaredSha256(normalised.message);
   const outcome = await attemptMediaDownload(businessId, mediaId, waMessage, declaredSha256);
 
   if (outcome.kind === 'success') {
