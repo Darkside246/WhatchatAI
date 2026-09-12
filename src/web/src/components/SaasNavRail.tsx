@@ -1,8 +1,10 @@
+import { useEffect, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   MessageCircle, BarChart3, Bot, Contact, Zap, Megaphone, Mail, CreditCard, Settings,
   Building2, CookingPot, Store, Truck, UsersRound, Receipt, ShoppingBag, Scissors,
-  Car, Stethoscope, Scale, Hotel, HardHat, Package, KeyRound, History, ShieldCheck, CalendarClock, PlugZap, type LucideIcon,
+  Car, Stethoscope, Scale, Hotel, HardHat, Package, KeyRound, History, ShieldCheck, CalendarClock, PlugZap,
+  MoreHorizontal, type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth.js';
 
@@ -263,23 +265,89 @@ export function SaasNavBottomBar() {
     product = 'platform';
   }
 
-  const items = NAV_ITEMS[product].slice(0, 5);
+  const items = NAV_ITEMS[product];
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  /**
+   * Real bug this closes: this bar used to render NAV_ITEMS.slice(0, 5) and
+   * silently drop everything after it. Most verticals have ten or more
+   * destinations, so on a phone the majority of the product - Settings
+   * included, which is where half the controls people go looking for live -
+   * simply could not be reached. Not hidden behind a menu: absent, with
+   * nothing on screen to suggest more existed.
+   *
+   * Four fixed slots plus "More" when there is an overflow, so the bar keeps
+   * its size and everything stays reachable. With five or fewer items there
+   * is nothing to overflow and all five are shown directly.
+   */
+  const needsOverflow = items.length > 5;
+  const primary = needsOverflow ? items.slice(0, 4) : items;
+  const overflow = needsOverflow ? items.slice(4) : [];
+  const overflowIsActive = overflow.some((item) => location.pathname.startsWith(item.to));
+
+  // Navigating closes the sheet - without this it stays open over the page
+  // the person just chose.
+  useEffect(() => {
+    setMoreOpen(false);
+  }, [location.pathname]);
 
   return (
-    <nav className="flex shrink-0 items-center justify-around border-t border-border-subtle bg-surface-1 py-2 md:hidden">
-      {items.map((item) => (
-        <NavLink
-          key={`${item.label}-${item.to}`}
-          to={item.to}
-          className={({ isActive }) =>
-            `flex h-10 w-10 items-center justify-center rounded-lg ${isActive ? 'bg-accent-soft text-accent' : 'text-fg-muted'}`
-          }
-          title={item.label}
-        >
-          <item.icon size={20} strokeWidth={1.75} aria-hidden />
-        </NavLink>
-      ))}
-    </nav>
+    <>
+      {moreOpen && (
+        <div className="fixed inset-0 z-40 bg-black/40 md:hidden" onClick={() => setMoreOpen(false)} role="presentation" />
+      )}
+
+      {moreOpen && (
+        <div className="fixed inset-x-0 bottom-14 z-50 max-h-[60vh] overflow-y-auto rounded-t-2xl border-t border-border-subtle bg-surface-1 p-2 shadow-lg md:hidden">
+          <ul>
+            {overflow.map((item) => (
+              <li key={`${item.label}-${item.to}`}>
+                <NavLink
+                  to={item.to}
+                  className={({ isActive }) =>
+                    `flex items-center gap-3 rounded-lg px-3 py-3 text-body ${
+                      isActive ? 'bg-accent-soft text-accent' : 'text-fg-secondary'
+                    }`
+                  }
+                >
+                  <item.icon size={20} strokeWidth={1.75} aria-hidden />
+                  {item.label}
+                </NavLink>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <nav className="relative z-50 flex shrink-0 items-center justify-around border-t border-border-subtle bg-surface-1 py-2 md:hidden">
+        {primary.map((item) => (
+          <NavLink
+            key={`${item.label}-${item.to}`}
+            to={item.to}
+            className={({ isActive }) =>
+              `flex h-10 w-10 items-center justify-center rounded-lg ${isActive ? 'bg-accent-soft text-accent' : 'text-fg-muted'}`
+            }
+            title={item.label}
+          >
+            <item.icon size={20} strokeWidth={1.75} aria-hidden />
+          </NavLink>
+        ))}
+
+        {needsOverflow && (
+          <button
+            type="button"
+            onClick={() => setMoreOpen((open) => !open)}
+            aria-expanded={moreOpen}
+            aria-label={`More — ${overflow.length} more sections`}
+            className={`flex h-10 w-10 items-center justify-center rounded-lg ${
+              moreOpen || overflowIsActive ? 'bg-accent-soft text-accent' : 'text-fg-muted'
+            }`}
+          >
+            <MoreHorizontal size={20} strokeWidth={1.75} aria-hidden />
+          </button>
+        )}
+      </nav>
+    </>
   );
 }
 

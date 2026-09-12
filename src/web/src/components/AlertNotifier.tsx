@@ -213,7 +213,11 @@ export function AlertNotifier() {
       type="button"
       onClick={() => navigate(`/chats/${mostRecent(current).chatId}`)}
       title="Open this chat"
-      className={`flex max-w-xs items-center gap-2 rounded-full border px-3 py-1 text-caption font-medium transition ${
+      // Has to be able to shrink on a phone. max-w-xs alone is 320px, which
+      // on a ~390px screen leaves nothing for the search button, the bell and
+      // the account menu either side of it - the row overflowed and the pill
+      // was clipped mid-word against the edge.
+      className={`flex min-w-0 max-w-[52vw] items-center gap-2 rounded-full border px-3 py-1 text-caption font-medium transition sm:max-w-xs ${
         current.urgency === 'HIGH' ? 'border-error/60 bg-error/15 text-error' : 'border-warning/60 bg-warning/15 text-warning'
       }`}
     >
