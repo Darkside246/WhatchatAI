@@ -179,6 +179,7 @@ import {
   BusinessDeletionNotPendingError,
 } from '../services/accountDeletionService.js';
 import { changePhoneNumber, PhoneNumberAlreadyInUseError } from '../services/phoneNumberChangeService.js';
+import { changePassword, SamePasswordError } from '../services/passwordChangeService.js';
 import { InvalidPhoneNumberError, normalizePhoneToE164 } from '../services/phoneNormalizationService.js';
 import {
   listMembers,
@@ -688,6 +689,35 @@ app.patch('/api/auth/account/phone', requireAuth, async (req, res) => {
     if (isInvalidCredentialsError(error)) return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
     if (error instanceof InvalidPhoneNumberError) return res.status(400).json({ error: 'INVALID_PHONE_NUMBER', message: error.message });
     if (error instanceof PhoneNumberAlreadyInUseError) return res.status(409).json({ error: 'PHONE_ALREADY_IN_USE' });
+    throw error;
+  }
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  // Bounded here as well as in validatePasswordStrength so a multi-megabyte
+  // string is rejected before it reaches Argon2, which would otherwise hash
+  // it at real CPU cost.
+  newPassword: z.string().min(1).max(200),
+});
+
+app.post('/api/auth/account/password', requireAuth, async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = changePasswordSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PASSWORD_CHANGE_PAYLOAD', details: parsed.error.flatten() });
+  try {
+    const { otherSessionsRevoked } = await changePassword(
+      auth.businessId,
+      auth.userId,
+      parsed.data.currentPassword,
+      parsed.data.newPassword,
+      auth.sessionId,
+    );
+    return res.status(200).json({ status: 'password_updated', otherSessionsRevoked });
+  } catch (error) {
+    if (isInvalidCredentialsError(error)) return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Your current password is incorrect.' });
+    if (isWeakPasswordError(error)) return res.status(400).json({ error: 'WEAK_PASSWORD', message: error.message });
+    if (error instanceof SamePasswordError) return res.status(400).json({ error: 'SAME_PASSWORD', message: error.message });
     throw error;
   }
 });

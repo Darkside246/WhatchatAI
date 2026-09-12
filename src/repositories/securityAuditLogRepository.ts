@@ -65,6 +65,8 @@ export type SecurityEventType =
   | 'account_deletion_requested'
   | 'account_deletion_cancelled'
   | 'phone_number_changed'
+  /** A signed-in person changed their own password (passwordChangeService.ts). */
+  | 'password_changed'
   | 'ai_output_leak_blocked'
   | 'ai_output_leak_check_unavailable'
   /** A generated reply addressed a team member instead of the customer; the direct address was removed before sending (teamAddressGuard.ts). */

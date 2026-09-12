@@ -2303,6 +2303,12 @@ export const api = {
         planName: string | null;
       }>;
     }>('/billing/developer/accounts'),
+  /** Changes the signed-in person's own password. Confirmed with the current one; every other session is signed out on success. */
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<{ status: string; otherSessionsRevoked: number }>('/auth/account/password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    }),
   setBusinessPlan: (businessId: string, planKey: string) =>
     request<{ subscription: unknown; planName: string }>(`/billing/developer/businesses/${businessId}/plan`, {
       method: 'PATCH',

@@ -1,5 +1,5 @@
 import type { Queryable } from './types.js';
-import type { PasswordParams } from '../services/passwordHashService.js';
+import type { PasswordParams, StoredPasswordCredential } from '../services/passwordHashService.js';
 import { getEncryptionService } from '../security/encryption/index.js';
 
 export type PlatformRole = 'CLIENT' | 'DEVELOPER';
@@ -143,6 +143,21 @@ export class UserRepository {
     await this.db.query(
       'UPDATE users SET phone_number = $2, phone_number_hash = $3, updated_at = now() WHERE id = $1',
       [userId, getEncryptionService().serialize(envelope), phoneHash],
+    );
+  }
+
+  /**
+   * Writes a new password credential. The three columns move together -
+   * a hash without its matching salt and params cannot be verified, so
+   * splitting this into separate writes would risk an account that nobody,
+   * including its owner, can sign in to.
+   */
+  async updatePassword(userId: string, credential: StoredPasswordCredential): Promise<void> {
+    await this.db.query(
+      `UPDATE users
+       SET password_hash = $2, password_salt = $3, password_params = $4, updated_at = now()
+       WHERE id = $1`,
+      [userId, credential.hash, credential.salt, JSON.stringify(credential.params)],
     );
   }
 

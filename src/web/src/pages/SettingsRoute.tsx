@@ -1319,6 +1319,115 @@ function AlertBannerCard() {
   );
 }
 
+/**
+ * Changing your own password.
+ *
+ * AURA had no way to do this at all until now - no endpoint, no screen -
+ * so every password it ever set was permanent until someone with database
+ * access ran the admin recovery script again. A password handed to a
+ * customer stayed theirs forever.
+ *
+ * Asks for the current password even though the person is already signed
+ * in: a borrowed laptop or a stolen session token would otherwise be enough
+ * to lock the real owner out of their own account.
+ */
+function ChangePasswordCard() {
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  // Checked in the browser purely so the mismatch is caught before a round
+  // trip - the server never sees this field and never trusts it.
+  const mismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
+  const canSubmit = currentPassword.length > 0 && newPassword.length > 0 && !mismatch && !busy;
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!canSubmit) return;
+    setBusy(true);
+    setError(null);
+    setDone(null);
+    try {
+      const result = await api.changePassword(currentPassword, newPassword);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setDone(
+        result.otherSessionsRevoked > 0
+          ? `Password changed. ${result.otherSessionsRevoked} other signed-in ${result.otherSessionsRevoked === 1 ? 'device was' : 'devices were'} signed out.`
+          : 'Password changed. You had no other signed-in devices.',
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not change the password.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      <h2 className="text-body font-semibold text-fg">Password</h2>
+      <p className="mt-1 text-caption text-fg-muted">
+        Changing your password signs out every other device you are signed in on. This one stays signed in.
+      </p>
+
+      <form onSubmit={handleSubmit} className="mt-4 max-w-sm space-y-3">
+        <label className="block">
+          <span className="mb-1 block text-caption font-medium text-fg-secondary">Current password</span>
+          <input
+            type="password"
+            autoComplete="current-password"
+            value={currentPassword}
+            onChange={(e) => setCurrentPassword(e.target.value)}
+            disabled={busy}
+            className="block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-caption text-fg outline-none focus:border-accent disabled:opacity-50"
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-caption font-medium text-fg-secondary">New password</span>
+          <input
+            type="password"
+            autoComplete="new-password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            disabled={busy}
+            className="block w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-caption text-fg outline-none focus:border-accent disabled:opacity-50"
+          />
+          <span className="mt-1 block text-meta text-fg-muted">At least 8 characters.</span>
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-caption font-medium text-fg-secondary">Confirm new password</span>
+          <input
+            type="password"
+            autoComplete="new-password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            disabled={busy}
+            className={`block w-full rounded-lg border bg-surface-1 px-3 py-2 text-caption text-fg outline-none focus:border-accent disabled:opacity-50 ${
+              mismatch ? 'border-error' : 'border-border-subtle'
+            }`}
+          />
+          {mismatch && <span className="mt-1 block text-meta text-error">The two new passwords do not match.</span>}
+        </label>
+
+        {error && <p role="alert" className="text-caption text-error">{error}</p>}
+        {done && <p role="status" className="text-caption text-success">{done}</p>}
+
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          className="rounded-lg bg-accent px-3 py-2 text-caption font-medium text-white disabled:opacity-50"
+        >
+          {busy ? 'Changing…' : 'Change password'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function AccountCard() {
   const auth = useAuth();
   const [busy, setBusy] = useState(false);
@@ -2240,6 +2349,7 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
               <AccountCard />
               <SecurityCard />
             </div>
+            <ChangePasswordCard />
             <SessionsCard />
             <OperatorModeCard />
             <DangerZoneCard />
