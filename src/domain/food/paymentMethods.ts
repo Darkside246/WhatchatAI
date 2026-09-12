@@ -32,6 +32,24 @@ export const FOOD_PAYMENT_METHODS = [
 
 export type FoodPaymentMethodKey = (typeof FOOD_PAYMENT_METHODS)[number];
 
+/**
+ * How a customer addresses a payment.
+ *
+ * BiMPay supports three aliases alongside the account number - email,
+ * mobile number and nickname - and which one a business registered changes
+ * what we tell the customer to type. "Send it to 2460000000" and "send it
+ * to pay@shop.bb" are not interchangeable sentences.
+ */
+export const PAYMENT_ALIAS_KINDS = ['EMAIL', 'MOBILE', 'NICKNAME', 'ACCOUNT_NUMBER'] as const;
+export type PaymentAliasKind = (typeof PAYMENT_ALIAS_KINDS)[number];
+
+export const ALIAS_KIND_LABEL: Record<PaymentAliasKind, string> = {
+  EMAIL: 'email address',
+  MOBILE: 'mobile number',
+  NICKNAME: 'nickname',
+  ACCOUNT_NUMBER: 'account number',
+};
+
 export type ConfirmationKind =
   /**
    * Somebody has to look and say the money arrived. Not a shortcoming to
@@ -69,6 +87,19 @@ export interface PaymentMethodCapability {
   aliasLabel: string | null;
   /** Set when the integration is not built yet, so nothing can be switched on that would silently do nothing. */
   notYetIntegrated: boolean;
+  /**
+   * Whether a completed payment can be pulled back.
+   *
+   * BiMPay settles in real time and is IRREVOCABLE - the Central Bank is
+   * explicit that transactions cannot be reversed. That is not a footnote:
+   * it means a refund on this rail is a NEW payment going out, not a
+   * reversal of one that came in, and it means there is no chargeback to
+   * fear once money has arrived. Both facts change what the software
+   * should say and do, so the rail declares it.
+   */
+  irrevocable: boolean;
+  /** Which alias kinds this method accepts, when it uses one. */
+  aliasKinds: readonly PaymentAliasKind[];
 }
 
 export const PAYMENT_METHOD_CAPABILITIES: Record<FoodPaymentMethodKey, PaymentMethodCapability> = {
@@ -81,6 +112,8 @@ export const PAYMENT_METHOD_CAPABILITIES: Record<FoodPaymentMethodKey, PaymentMe
     needsAlias: false,
     aliasLabel: null,
     notYetIntegrated: false,
+    irrevocable: false,
+    aliasKinds: [],
   },
   BANK_TRANSFER: {
     key: 'BANK_TRANSFER',
@@ -91,19 +124,24 @@ export const PAYMENT_METHOD_CAPABILITIES: Record<FoodPaymentMethodKey, PaymentMe
     needsAlias: true,
     aliasLabel: 'Account details to give the customer',
     notYetIntegrated: false,
+    irrevocable: false,
+    aliasKinds: ['ACCOUNT_NUMBER'],
   },
   BIMPAY: {
     key: 'BIMPAY',
     label: 'BiMPay',
     description:
-      'Barbados’ instant payment system. We message the customer your alias, the amount and the order number, ' +
-      'and you confirm when it arrives — instantly, in your own app. We cannot send the request-to-pay for you: ' +
-      'that is created in your bank’s app, not by us.',
+      'Barbados’ instant payment system. We message the customer your alias, the amount and the order number, and ' +
+      'you confirm when it arrives — in real time, in your own app. Money cannot be pulled back once sent, so a ' +
+      'confirmed BiMPay payment cannot be cancelled on you. We cannot create the request-to-pay for you: that is ' +
+      'made in your bank’s app, not by us.',
     confirmation: 'MANUAL',
     auraCanRequest: false,
     needsAlias: true,
     aliasLabel: 'Your BiMPay alias or number',
     notYetIntegrated: false,
+    irrevocable: true,
+    aliasKinds: ['MOBILE', 'EMAIL', 'NICKNAME', 'ACCOUNT_NUMBER'],
   },
   ONE_STPAY: {
     key: 'ONE_STPAY',
@@ -116,6 +154,8 @@ export const PAYMENT_METHOD_CAPABILITIES: Record<FoodPaymentMethodKey, PaymentMe
     needsAlias: true,
     aliasLabel: 'The email or mobile number to pay',
     notYetIntegrated: false,
+    irrevocable: false,
+    aliasKinds: ['EMAIL', 'MOBILE'],
   },
   WIPAY: {
     key: 'WIPAY',
@@ -132,6 +172,8 @@ export const PAYMENT_METHOD_CAPABILITIES: Record<FoodPaymentMethodKey, PaymentMe
     needsAlias: false,
     aliasLabel: null,
     notYetIntegrated: true,
+    irrevocable: false,
+    aliasKinds: [],
   },
   FAC: {
     key: 'FAC',
@@ -142,6 +184,8 @@ export const PAYMENT_METHOD_CAPABILITIES: Record<FoodPaymentMethodKey, PaymentMe
     needsAlias: false,
     aliasLabel: null,
     notYetIntegrated: true,
+    irrevocable: false,
+    aliasKinds: [],
   },
   CARD_IN_PERSON: {
     key: 'CARD_IN_PERSON',
@@ -152,6 +196,8 @@ export const PAYMENT_METHOD_CAPABILITIES: Record<FoodPaymentMethodKey, PaymentMe
     needsAlias: false,
     aliasLabel: null,
     notYetIntegrated: false,
+    irrevocable: false,
+    aliasKinds: [],
   },
   ON_ACCOUNT: {
     key: 'ON_ACCOUNT',
@@ -162,6 +208,8 @@ export const PAYMENT_METHOD_CAPABILITIES: Record<FoodPaymentMethodKey, PaymentMe
     needsAlias: false,
     aliasLabel: null,
     notYetIntegrated: false,
+    irrevocable: false,
+    aliasKinds: [],
   },
   OTHER: {
     key: 'OTHER',
@@ -172,6 +220,8 @@ export const PAYMENT_METHOD_CAPABILITIES: Record<FoodPaymentMethodKey, PaymentMe
     needsAlias: false,
     aliasLabel: null,
     notYetIntegrated: false,
+    irrevocable: false,
+    aliasKinds: [],
   },
 };
 
@@ -187,6 +237,39 @@ export function canEnable(method: FoodPaymentMethodKey): boolean {
 }
 
 /** Methods a business can actually use today. */
+/**
+ * What BiMPay can and cannot do for a food business, as of September 2026.
+ *
+ * Written down because the roll-out is phased and the phase matters. From
+ * the Central Bank's own material:
+ *
+ *   - Phase 1's e-wallet is aimed at individuals making person-to-person
+ *     payments. A micro-merchant - somebody running an informal business -
+ *     can receive payment into that individual wallet, which is exactly
+ *     what a one-van roti business will do.
+ *   - The MERCHANT wallet, with a merchant app carrying product prices and
+ *     fuller transaction reports, arrives in phase 2.
+ *   - Request-to-pay, bulk payments and QR codes are business features of
+ *     the system, reached through a participant's own app.
+ *   - The secure APIs the Central Bank describes are between PARTICIPANTS
+ *     - banks, credit unions and payment service providers - over ISO
+ *     20022. Becoming a participant is how a platform would connect
+ *     directly, and the material says other payment service providers can
+ *     come on board over time. That is a licensing route, not an
+ *     integration one, and nothing here assumes it.
+ *   - Local payments and BBD only in phase 1.
+ *
+ * The practical consequence for this software: confirmation stays a human
+ * act, and the useful work is making the ask unambiguous and the
+ * confirmation one tap.
+ */
+export const BIMPAY_PHASE_NOTES = {
+  merchantWalletAvailable: false,
+  vendorApiAvailable: false,
+  crossBorder: false,
+  currencies: ['BBD'] as const,
+} as const;
+
 export function availableMethods(): PaymentMethodCapability[] {
   return FOOD_PAYMENT_METHODS.map((key) => PAYMENT_METHOD_CAPABILITIES[key]).filter((method) => !method.notYetIntegrated);
 }
