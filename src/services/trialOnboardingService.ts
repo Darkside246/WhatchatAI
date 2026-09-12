@@ -10,6 +10,7 @@ import { normalizePhoneToE164, InvalidPhoneNumberError } from './phoneNormalizat
 import { fingerprintPhoneNumber } from '../security/phoneFingerprint.js';
 import { getEncryptionService } from '../security/encryption/index.js';
 import { isRegistrationPaused, getTrialDurationHours } from './platform/platformConfigService.js';
+import { sendWelcomeVerificationEmail } from './emailVerificationService.js';
 
 const users = new UserRepository(pool);
 
@@ -293,6 +294,14 @@ export async function registerTrial(input: {
     const user = await users.findById(userId);
     if (!user) throw new Error('Trial user could not be reloaded');
     const session = await createAuthenticatedSession(userId, businessId, input.device, 'trial');
+
+    // Fire and forget, deliberately. The account exists and the session is
+    // real by this point; a mail provider having a bad minute must not undo
+    // a signup that has already succeeded, and the person can ask for the
+    // email again from inside the app.
+    void sendWelcomeVerificationEmail(userId).catch((error: unknown) =>
+      console.error('[trialOnboarding] Welcome email failed:', error instanceof Error ? error.message : error),
+    );
 
     return {
       user: toPublicUser(user),

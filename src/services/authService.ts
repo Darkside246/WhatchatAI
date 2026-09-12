@@ -9,6 +9,7 @@ import { UserPreferenceRepository } from '../repositories/userPreferenceReposito
 import { AuthLoginAttemptRepository } from '../repositories/authLoginAttemptRepository.js';
 import { BusinessRepository, type BusinessRecord } from '../repositories/businessRepository.js';
 import { isRegistrationPaused } from './platform/platformConfigService.js';
+import { sendWelcomeVerificationEmail } from './emailVerificationService.js';
 
 const userRepository = new UserRepository(pool);
 const membershipRepository = new BusinessMembershipRepository(pool);
@@ -59,6 +60,13 @@ export async function register(input: RegisterInput, device: DeviceContext): Pro
   await preferenceRepository.ensureDefault(user.id);
   const membership = await membershipRepository.create(business.id, user.id, 'OWNER');
   const session = await createSession(user.id, business.id, device, 'password');
+  // Same fire-and-forget as the trial path - see its comment. This route is
+  // bootstrap-only (the first user of an installation), but a welcome that
+  // works for one signup shape and not the other would be the kind of
+  // inconsistency nobody notices until it matters.
+  void sendWelcomeVerificationEmail(user.id).catch((error: unknown) =>
+    console.error('[register] Welcome email failed:', error instanceof Error ? error.message : error),
+  );
   return { user: toPublicUser(user), business, membership, token: session.token, session: session.session };
 }
 

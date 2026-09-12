@@ -11,6 +11,7 @@ import { BrandDnaPage } from './pages/BrandDnaPage.js';
 import { ScreenLock } from './components/ScreenLock.js';
 import { LoginPage } from './pages/LoginPage.js';
 import { ResetPasswordPage } from './pages/ResetPasswordPage.js';
+import { VerifyEmailPage } from './pages/VerifyEmailPage.js';
 import { RegisterPage } from './pages/RegisterPage.js';
 import { PublicLandingPage, TrialStartPage } from './pages/PublicLandingPage.js';
 import { TermsPage } from './pages/TermsPage.js';
@@ -74,6 +75,7 @@ export default function App() {
     if (location.pathname === '/trial') return <TrialStartPage />;
     if (location.pathname === '/login') return <LoginPage />;
     if (location.pathname === '/reset-password') return <ResetPasswordPage />;
+    if (location.pathname === '/verify-email') return <VerifyEmailPage />;
     if (location.pathname === '/register') return <RegisterPage />;
     if (location.pathname === '/terms') return <TermsPage />;
     if (location.pathname === '/privacy') return <PrivacyPage />;
@@ -86,6 +88,10 @@ export default function App() {
   // is locked out of elsewhere - and redirecting them into the workspace
   // would strand the link they were sent.
   if (location.pathname === '/reset-password') return <ResetPasswordPage />;
+  // Same reasoning: the confirmation link is often opened on the phone that
+  // is already signed in, and bouncing it to the workspace would leave the
+  // address unverified with no obvious way to retry.
+  if (location.pathname === '/verify-email') return <VerifyEmailPage />;
 
   // Legal and consent pages accessible to everyone, even authenticated users.
   if (location.pathname === '/terms') return <TermsPage />;

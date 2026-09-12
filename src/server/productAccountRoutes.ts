@@ -37,6 +37,16 @@ import { OpenClawSecurityAdvisoryRepository } from '../repositories/openclawSecu
 import { openclawCellService } from '../services/openclawCellService.js';
 import { testGeminiConnection } from '../services/aiEngineStatusService.js';
 import { verifyRecaptcha } from '../services/recaptchaService.js';
+import {
+  loadWelcomeTemplate,
+  saveWelcomeTemplate,
+  resetWelcomeTemplate,
+  renderWelcomeEmailFromStrings,
+  WELCOME_MERGE_FIELDS,
+  DEFAULT_WELCOME_SUBJECT,
+  DEFAULT_WELCOME_BODY,
+} from '../services/welcomeEmailTemplate.js';
+import { isPlatformMailerConfigured } from '../services/platformMailer.js';
 
 const router = Router();
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
@@ -121,6 +131,65 @@ router.post('/developer/accounts/:businessId/assign-vertical', requireAuth, requ
   });
   return res.status(200).json({ ok: true, businessId, productKey: parsed.data.productKey });
 });
+
+/**
+ * The welcome email's wording, edited from the developer console.
+ *
+ * Developer-only because it is the PLATFORM's own email - one set of words
+ * for every signup on the installation, not a per-business setting.
+ */
+const welcomeTemplateSchema = z.object({
+  subject: z.string().trim().min(1).max(200),
+  bodyText: z.string().min(1).max(20_000),
+});
+
+/** Stand-in values for the preview. Obviously fake, so a preview is never mistaken for a real send. */
+const PREVIEW_CONTEXT = {
+  displayName: 'Alex Brathwaite',
+  verifyUrl: 'https://example.com/verify-email?token=EXAMPLE-TOKEN',
+  expiresInHours: 48,
+};
+
+router.get('/platform/developer/welcome-email', requireAuth, requireDeveloper, async (_req, res) => {
+  const stored = await loadWelcomeTemplate();
+  return res.status(200).json({
+    subject: stored?.subject ?? DEFAULT_WELCOME_SUBJECT,
+    bodyText: stored?.bodyText ?? DEFAULT_WELCOME_BODY,
+    isCustomised: stored !== null,
+    mergeFields: WELCOME_MERGE_FIELDS,
+    // Surfaced so the editor can say plainly that nothing will actually be
+    // sent yet - editing wording for an email with no sender behind it is
+    // the kind of work that looks finished and is not.
+    senderConfigured: isPlatformMailerConfigured(),
+  });
+});
+
+router.put('/platform/developer/welcome-email', requireAuth, requireDeveloper, async (req, res) => {
+  const parsed = welcomeTemplateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_TEMPLATE', details: parsed.error.flatten() });
+  const auth = res.locals['auth'] as AuthContext;
+  await saveWelcomeTemplate({ subject: parsed.data.subject, bodyText: parsed.data.bodyText, bodyHtml: null }, auth.userId);
+  return res.status(200).json({ ok: true });
+});
+
+router.delete('/platform/developer/welcome-email', requireAuth, requireDeveloper, async (_req, res) => {
+  await resetWelcomeTemplate();
+  return res.status(200).json({ ok: true });
+});
+
+router.post('/platform/developer/welcome-email/preview', requireAuth, requireDeveloper, async (req, res) => {
+  const parsed = welcomeTemplateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_TEMPLATE', details: parsed.error.flatten() });
+  // Rendered through the same function the mailer uses, including its
+  // "append the link if the template dropped it" rule - a preview that
+  // differs from the send is worse than no preview.
+  const rendered = await renderPreview(parsed.data.subject, parsed.data.bodyText);
+  return res.status(200).json(rendered);
+});
+
+async function renderPreview(subject: string, bodyText: string) {
+  return renderWelcomeEmailFromStrings({ subject, bodyText }, PREVIEW_CONTEXT);
+}
 
 router.get('/developer/control-plane-stats', requireAuth, requireDeveloper, async (_req, res) => {
   const stats = await getControlPlaneStats();

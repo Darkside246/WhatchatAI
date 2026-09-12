@@ -73,6 +73,10 @@ export type SecurityEventType =
   | 'password_reset_requested'
   /** A reset link was spent and a new password set. */
   | 'password_reset_completed'
+  /** A welcome/verification email was sent to a new signup (emailVerificationService.ts). */
+  | 'email_verification_sent'
+  /** Someone proved they can read the address they signed up with. */
+  | 'email_verified'
   | 'ai_output_leak_blocked'
   | 'ai_output_leak_check_unavailable'
   /** A generated reply addressed a team member instead of the customer; the direct address was removed before sending (teamAddressGuard.ts). */

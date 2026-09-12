@@ -4,7 +4,7 @@ import {
   Activity, Bot, CreditCard, Database, Gauge, KeyRound, Radio, ShieldCheck, Users,
   Building2, CookingPot, ShoppingBag, Scissors, Car, Stethoscope, Scale, Hotel,
   HardHat, Package, ChevronDown, ChevronRight, LayoutGrid, Check, HeartPulse, X, Coins,
-  Wallet, Save, PlugZap, Plus, ShieldAlert, Radar,
+  Wallet, Save, PlugZap, Plus, ShieldAlert, Radar, Mail,
 } from 'lucide-react';
 import { api, ApiError, type DeveloperPlan, type PlanEntitlement, type IntegrationHealth, type GovernanceFlagDto, type GovernanceThresholdsDto, type OversightFindingDto, type OversightThresholdsDto } from '../lib/api.js';
 import { ToggleSwitch } from '../components/ToggleSwitch.js';
@@ -577,6 +577,148 @@ function PurgeAccountDialog({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The welcome email's wording, edited here rather than in code.
+ *
+ * NOT A BLOCK BUILDER, deliberately, and the card says why. This is the one
+ * email that absolutely has to arrive - it carries the link that confirms
+ * the address - and the things a MailChimp-shaped designer produces are
+ * exactly the things that cost inbox placement: image-heavy HTML with
+ * little text, tracking pixels, wrapped links. Plain prose with merge
+ * fields is both easier to edit and more likely to be read.
+ */
+function WelcomeEmailEditor() {
+  const [subject, setSubject] = useState('');
+  const [bodyText, setBodyText] = useState('');
+  const [mergeFields, setMergeFields] = useState<{ token: string; description: string }[]>([]);
+  const [isCustomised, setIsCustomised] = useState(false);
+  const [senderConfigured, setSenderConfigured] = useState(true);
+  const [preview, setPreview] = useState<{ subject: string; bodyText: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  function load() {
+    api
+      .getWelcomeEmailTemplate()
+      .then((result) => {
+        setSubject(result.subject);
+        setBodyText(result.bodyText);
+        setMergeFields(result.mergeFields);
+        setIsCustomised(result.isCustomised);
+        setSenderConfigured(result.senderConfigured);
+      })
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Could not load the template.'));
+  }
+
+  useEffect(load, []);
+
+  async function run(action: () => Promise<void>, done: string) {
+    setBusy(true);
+    setError(null);
+    setStatus(null);
+    try {
+      await action();
+      setStatus(done);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'That did not work.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      {!senderConfigured && (
+        <p className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-caption text-warning">
+          No platform email sender is configured, so nothing is being sent yet. Set PLATFORM_EMAIL_FROM and the
+          PLATFORM_SMTP_* settings on the server. Wording saved here will be used once it is.
+        </p>
+      )}
+
+      <p className="text-caption text-fg-muted">
+        Sent automatically when someone signs up. It doubles as the address confirmation, so the link has to stay in it —
+        if you remove it, it is added back at the end rather than left out.
+      </p>
+
+      <label className="block">
+        <span className="mb-1 block text-caption font-medium text-fg-secondary">Subject</span>
+        <input
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          disabled={busy}
+          className="block w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-caption text-fg outline-none focus:border-accent disabled:opacity-50"
+        />
+      </label>
+
+      <label className="block">
+        <span className="mb-1 block text-caption font-medium text-fg-secondary">Body</span>
+        <textarea
+          value={bodyText}
+          onChange={(e) => setBodyText(e.target.value)}
+          disabled={busy}
+          rows={14}
+          className="block w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 font-mono text-caption text-fg outline-none focus:border-accent disabled:opacity-50"
+        />
+      </label>
+
+      <div className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2">
+        <p className="mb-1 text-meta font-semibold text-fg-muted">Merge fields</p>
+        <ul className="space-y-0.5">
+          {mergeFields.map((field) => (
+            <li key={field.token} className="text-meta text-fg-secondary">
+              <code className="rounded bg-surface-3 px-1 py-0.5 font-mono">{field.token}</code> — {field.description}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {error && <p role="alert" className="text-caption text-error">{error}</p>}
+      {status && <p role="status" className="text-caption text-success">{status}</p>}
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void run(async () => { await api.saveWelcomeEmailTemplate({ subject, bodyText }); setIsCustomised(true); }, 'Saved.')}
+          className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white disabled:opacity-50"
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void run(async () => { setPreview(await api.previewWelcomeEmail({ subject, bodyText })); }, 'Preview updated.')}
+          className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
+        >
+          Preview
+        </button>
+        {isCustomised && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(async () => { await api.resetWelcomeEmailTemplate(); load(); setIsCustomised(false); }, 'Restored the default wording.')}
+            className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-muted hover:bg-surface-3 disabled:opacity-50"
+          >
+            Restore default
+          </button>
+        )}
+      </div>
+
+      {preview && (
+        <div className="rounded-lg border border-border-subtle bg-surface-2 p-3">
+          {/* Rendered by the same function the mailer uses, with obviously
+              fake sample values - a preview that differs from the send is
+              worse than none, because it gets trusted. */}
+          <p className="mb-2 text-meta text-fg-muted">Preview, with sample values</p>
+          <p className="mb-2 text-caption font-semibold text-fg">{preview.subject}</p>
+          <pre className="whitespace-pre-wrap break-words text-caption text-fg-secondary">{preview.bodyText}</pre>
+        </div>
+      )}
     </div>
   );
 }
@@ -1601,6 +1743,7 @@ export function DeveloperControlPlanePage() {
   const [healthOpen, setHealthOpen] = useState(true);
   const [aiUsageOpen, setAiUsageOpen] = useState(true);
   const [plansOpen, setPlansOpen] = useState(true);
+  const [welcomeEmailOpen, setWelcomeEmailOpen] = useState(false);
   const [paymentProvidersOpen, setPaymentProvidersOpen] = useState(true);
   const [integrationsOpen, setIntegrationsOpen] = useState(true);
   const [aiProvidersOpen, setAiProvidersOpen] = useState(true);
@@ -1856,6 +1999,26 @@ export function DeveloperControlPlanePage() {
         </section>
 
         {/* ── System health — collapsible hamburger group ── */}
+        <section className="rounded-2xl border border-border-subtle bg-surface-1 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setWelcomeEmailOpen((o) => !o)}
+            className="flex w-full items-center gap-3 px-6 py-4 text-left hover:bg-surface-2 transition-colors"
+          >
+            <Mail size={18} className="shrink-0 text-accent" />
+            <span className="flex-1 text-title font-semibold">Welcome email</span>
+            <span className="text-caption text-fg-muted">Sent on signup · confirms the address</span>
+            {welcomeEmailOpen
+              ? <ChevronDown size={16} className="shrink-0 text-fg-muted" />
+              : <ChevronRight size={16} className="shrink-0 text-fg-muted" />}
+          </button>
+          {welcomeEmailOpen && (
+            <div className="border-t border-border-subtle px-6 pb-6 pt-4">
+              <WelcomeEmailEditor />
+            </div>
+          )}
+        </section>
+
         <section className="rounded-2xl border border-border-subtle bg-surface-1 overflow-hidden">
           <button
             type="button"

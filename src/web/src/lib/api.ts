@@ -2361,6 +2361,31 @@ export const api = {
         planName: string | null;
       }>;
     }>('/billing/developer/accounts'),
+  /** Confirms an email address from the link in the welcome email. Unauthenticated - the link is opened from an inbox. */
+  verifyEmail: (token: string) =>
+    request<{ status: string }>('/auth/email/verify', { method: 'POST', body: JSON.stringify({ token }) }),
+  /** Re-sends the welcome email to the signed-in person. */
+  resendVerificationEmail: () =>
+    request<{ sent: boolean; reason?: string }>('/auth/email/resend-verification', { method: 'POST' }),
+  /** The platform welcome-email template, its merge fields, and whether a sender is configured at all. */
+  getWelcomeEmailTemplate: () =>
+    request<{
+      subject: string;
+      bodyText: string;
+      isCustomised: boolean;
+      mergeFields: { token: string; description: string }[];
+      senderConfigured: boolean;
+    }>('/platform/developer/welcome-email'),
+  saveWelcomeEmailTemplate: (input: { subject: string; bodyText: string }) =>
+    request<{ ok: boolean }>('/platform/developer/welcome-email', { method: 'PUT', body: JSON.stringify(input) }),
+  resetWelcomeEmailTemplate: () =>
+    request<{ ok: boolean }>('/platform/developer/welcome-email', { method: 'DELETE' }),
+  /** Renders the template with sample values, exactly as the mailer would. */
+  previewWelcomeEmail: (input: { subject: string; bodyText: string }) =>
+    request<{ subject: string; bodyText: string }>('/platform/developer/welcome-email/preview', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   /**
    * Asks for a reset link. Always resolves the same way whether or not the
    * address belongs to an account - the server will not say, because saying

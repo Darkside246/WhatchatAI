@@ -181,6 +181,12 @@ import {
 import { changePhoneNumber, PhoneNumberAlreadyInUseError } from '../services/phoneNumberChangeService.js';
 import { changePassword, SamePasswordError } from '../services/passwordChangeService.js';
 import {
+  sendWelcomeVerificationEmail,
+  verifyEmailWithToken,
+  VerificationTokenInvalidError,
+  VerificationRateLimitedError,
+} from '../services/emailVerificationService.js';
+import {
   requestPasswordReset,
   resetPasswordWithToken,
   ResetTokenInvalidError,
@@ -740,6 +746,43 @@ app.post('/api/auth/password/reset', async (req, res) => {
       return res.status(400).json({ error: 'RESET_TOKEN_INVALID', message: error.message });
     }
     if (isWeakPasswordError(error)) return res.status(400).json({ error: 'WEAK_PASSWORD', message: error.message });
+    throw error;
+  }
+});
+
+/**
+ * Confirming an email address. Unauthenticated on purpose - the link is
+ * opened from an inbox, often in a browser with no AURA session at all.
+ */
+const verifyEmailSchema = z.object({ token: z.string().min(1).max(500) });
+
+app.post('/api/auth/email/verify', async (req, res) => {
+  const parsed = verifyEmailSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_VERIFICATION_PAYLOAD' });
+  try {
+    await verifyEmailWithToken(parsed.data.token);
+    return res.status(200).json({ status: 'email_verified' });
+  } catch (error) {
+    if (error instanceof VerificationTokenInvalidError) {
+      return res.status(400).json({ error: 'VERIFICATION_TOKEN_INVALID', message: error.message });
+    }
+    throw error;
+  }
+});
+
+/** Re-sends the welcome email to the signed-in person - for the ordinary "it never arrived" case. */
+app.post('/api/auth/email/resend-verification', requireAuth, async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  try {
+    const result = await sendWelcomeVerificationEmail(auth.userId);
+    // Deliberately reports whether it actually went. This caller is
+    // authenticated and looking at their own account, so there is no
+    // enumeration concern and every reason to tell them the truth.
+    return res.status(200).json(result);
+  } catch (error) {
+    if (error instanceof VerificationRateLimitedError) {
+      return res.status(429).json({ error: 'RATE_LIMITED', message: error.message });
+    }
     throw error;
   }
 });
