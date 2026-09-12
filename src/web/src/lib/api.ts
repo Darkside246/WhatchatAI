@@ -230,6 +230,26 @@ export interface FoodModifierGroupDto {
   options: FoodModifierOptionDto[];
 }
 
+export interface FoodMenuImportRowDto {
+  name: string;
+  category: string | null;
+  priceCents: number;
+  description: string | null;
+  /** Which line of the pasted text it came from, so the preview can point at it. */
+  line: number;
+  action: 'create' | 'update' | 'skip';
+  note: string | null;
+}
+
+export interface FoodMenuImportResultDto {
+  dryRun: boolean;
+  rows: FoodMenuImportRowDto[];
+  newCategories: string[];
+  /** Lines the parser would not guess at. An item imported at the wrong price is worse than one not imported. */
+  unparsed: { line: number; text: string; reason: string }[];
+  counts: { create: number; update: number; skip: number };
+}
+
 export interface FoodMenuItemDto {
   id: string;
   name: string;
@@ -2469,6 +2489,16 @@ export const api = {
     request<{ status: string }>(`/food-operations/menu/${itemId}`, { method: 'DELETE' }),
   reorderFoodMenuItems: (orderedIds: string[]) =>
     request<{ status: string }>('/food-operations/menu/reorder', { method: 'POST', body: JSON.stringify({ orderedIds }) }),
+
+  /**
+   * Preview and commit are the same call with one flag, so what the screen
+   * showed is exactly what gets written.
+   */
+  importFoodMenu: (text: string, options: { dryRun: boolean; updateExisting: boolean }) =>
+    request<{ result: FoodMenuImportResultDto }>('/food-operations/menu/import', {
+      method: 'POST',
+      body: JSON.stringify({ text, ...options }),
+    }),
 
   listFoodMenuCategories: () => request<{ categories: FoodMenuCategoryDto[] }>('/food-operations/menu-categories'),
   createFoodMenuCategory: (name: string) =>

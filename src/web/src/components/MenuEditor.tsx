@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronUp, GripVertical, Plus, Trash2, X } from 'lucide-react';
+import { MenuImport } from './MenuImport.js';
 import {
   api,
   ApiError,
@@ -51,7 +52,7 @@ export function MenuEditor() {
   const [categories, setCategories] = useState<FoodMenuCategoryDto[] | null>(null);
   const [items, setItems] = useState<FoodMenuItemDto[]>([]);
   const [groups, setGroups] = useState<FoodModifierGroupDto[]>([]);
-  const [tab, setTab] = useState<'items' | 'groups'>('items');
+  const [tab, setTab] = useState<'items' | 'groups' | 'import'>('items');
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [openItemId, setOpenItemId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -117,6 +118,9 @@ export function MenuEditor() {
         <TabButton active={tab === 'groups'} onClick={() => setTab('groups')}>
           Option groups{groups.length > 0 && <span className="ml-1.5 text-fg-muted">{groups.length}</span>}
         </TabButton>
+        <TabButton active={tab === 'import'} onClick={() => setTab('import')}>
+          Paste a menu
+        </TabButton>
       </div>
 
       {error && <p className="border-b border-error/30 bg-error/10 px-4 py-2 text-caption text-error">{error}</p>}
@@ -143,8 +147,16 @@ export function MenuEditor() {
             onRun={run}
           />
         </div>
-      ) : (
+      ) : tab === 'groups' ? (
         <ModifierGroups groups={groups} busy={busy} onRun={run} />
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          <div className="max-w-3xl">
+            {/* Straight back to the menu once it has landed, because the
+                next thing anybody wants is to see their dishes. */}
+            <MenuImport onImported={() => { void load(); setTab('items'); }} />
+          </div>
+        </div>
       )}
     </div>
   );

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { pool } from '../db/pool.js';
 import { FoodOperationsRepository, IllegalAssignmentTransitionError, IllegalPaymentTransitionError, IllegalStageTransitionError, KitchenPaymentGateError, OrderAlreadyAssignedError, OrderNotDeliverableError, QcPhotoRequiredError, UnknownMenuCategoryError } from '../repositories/foodOperationsRepository.js';
 import { DRIVER_ASSIGNMENT_STATES } from '../domain/food/driverAssignment.js';
+import { importMenu } from '../services/food/menuImportService.js';
 import { DEFAULT_NOTIFICATION_TEMPLATES, FOOD_NOTIFICATION_EVENTS, NOTIFICATION_MERGE_FIELDS, type FoodNotificationEvent, type NotificationOverrides } from '../services/food/orderNotifications.js';
 import { raisedFindings } from '../domain/food/qcFindings.js';
 import { MAX_QC_PHOTO_BYTES, QC_PHOTO_MIME_TYPES, runQcVisionCheck } from '../services/food/qcVisionCheck.js';
@@ -566,6 +567,41 @@ router.post('/menu/reorder', requirePermission('food.manage'), async (req, res) 
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_ORDER', details: parsed.error.flatten() });
   await repository.reorderMenuItems(auth.businessId, parsed.data.orderedIds);
   return res.status(200).json({ status: 'reordered' });
+});
+
+/**
+ * Importing a menu somebody pasted in.
+ *
+ * One route for the preview and the commit, separated by `dryRun`. A
+ * preview produced by a different code path from the commit is a preview
+ * that can lie, and the entire value of showing somebody forty rows before
+ * writing them is that they can trust what they are looking at.
+ */
+router.post('/menu/import', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = z
+    .object({
+      // Generous, because a real menu pasted out of a PDF carries a lot of
+      // whitespace. Bounded, because this is a text field on the internet.
+      text: z.string().max(100_000),
+      dryRun: z.boolean().default(true),
+      /**
+       * Defaults to false, so the safe reading of a re-paste is "leave
+       * what is already there alone". Re-importing after adding three
+       * dishes is a normal thing to do by accident, and it must not
+       * silently reset thirty prices somebody corrected by hand.
+       */
+      updateExisting: z.boolean().default(false),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_IMPORT', details: parsed.error.flatten() });
+
+  const result = await importMenu(repository, auth.businessId, parsed.data.text, {
+    dryRun: parsed.data.dryRun,
+    updateExisting: parsed.data.updateExisting,
+  });
+
+  return res.status(200).json({ result });
 });
 
 // ── Categories ───────────────────────────────────────────────────────────
