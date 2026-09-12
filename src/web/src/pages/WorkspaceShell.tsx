@@ -214,6 +214,12 @@ export function WorkspaceShell({ connection, sync }: Props) {
         <Route path="/property/operations" element={<PropertyOperationsPage />} />
         <Route path="/food" element={<ProductDashboardPage product="food" />} />
         <Route path="/food/operations" element={<FoodOperationsPage />} />
+        {/* The same page, with a conversation open beside the board.
+            ChatThread reads chatId from the route, so naming the segment
+            the same thing lets it embed here with no change at all to the
+            chat component - which is the piece of this app least worth
+            destabilising. */}
+        <Route path="/food/operations/chat/:chatId" element={<FoodOperationsPage />} />
         <Route path="/retail" element={<ProductDashboardPage product="retail" />} />
         <Route path="/retail/operations" element={<RetailOperationsPage />} />
         <Route path="/beauty" element={<ProductDashboardPage product="beauty" />} />

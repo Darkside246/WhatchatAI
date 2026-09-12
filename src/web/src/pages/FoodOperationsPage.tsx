@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { AlertTriangle, Bike, BookOpen, Camera, ChefHat, ClipboardCheck, Eye, MessageSquare, Navigation, PackageCheck, RotateCcw, Settings2, Store, Undo2, X } from 'lucide-react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { AlertTriangle, Bike, BookOpen, Camera, ChefHat, ChevronLeft, ClipboardCheck, Eye, MessageSquare, Navigation, PackageCheck, RotateCcw, Settings2, Store, Undo2, X } from 'lucide-react';
 import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand } from '../lib/api.js';
 import { QcPhotoButton } from '../components/QcPhotoButton.js';
 import { DeliveryControl } from '../components/DeliveryControl.js';
 import { DriverRoster } from '../components/DriverRoster.js';
 import { CustomerUpdates } from '../components/CustomerUpdates.js';
+import { ChatListPane } from '../components/ChatListPane.js';
+import { ChatThread } from '../components/ChatThread.js';
 import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 import { KitchenSettings } from '../components/KitchenSettings.js';
 import { MenuEditor } from '../components/MenuEditor.js';
@@ -81,6 +83,23 @@ export function FoodOperationsPage() {
    * away from the tickets to fix it is how a menu stays wrong all evening.
    */
   const [menuOpen, setMenuOpen] = useState(false);
+  /** Their own name over their own board. Falls back to 'Kitchen' rather than showing a blank while it loads. */
+  const [businessName, setBusinessName] = useState<string | null>(null);
+
+  /**
+   * The conversation open beside the board.
+   *
+   * Held in the URL rather than in state so a ticket's Chat button, a
+   * refresh and the browser's back button all agree about what is open -
+   * and so ChatThread, which reads the route, needs no change to work
+   * here.
+   */
+  const { chatId } = useParams<{ chatId: string }>();
+  const navigate = useNavigate();
+  const [chatsOpen, setChatsOpen] = useState(false);
+  // Opening a ticket's conversation opens the pane; it does not have to be
+  // opened first.
+  const paneOpen = chatsOpen || Boolean(chatId);
 
   const load = useCallback(async () => {
     try {
@@ -95,6 +114,15 @@ export function FoodOperationsPage() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    api
+      .getBusiness()
+      .then(({ business }) => setBusinessName(business.name))
+      // Their name is decoration on this screen. A board that will not
+      // load because a name would not is a board that fails for no reason.
+      .catch(() => {});
+  }, []);
   // Pauses while nobody is looking at the tab, like every other poll in the app.
   useVisiblePolling(load, 5000);
 
@@ -176,17 +204,34 @@ export function FoodOperationsPage() {
     <div className="flex min-h-0 flex-1 flex-col bg-surface-0">
       <header className="flex flex-wrap items-center gap-3 border-b border-border-subtle px-4 py-3">
         <div className="min-w-0">
-          <h1 className="text-display font-semibold text-fg">Kitchen</h1>
+          <h1 className="text-display font-semibold text-fg">{businessName?.trim() || 'Kitchen'}</h1>
           <p className="text-caption text-fg-muted">
             {orders === null ? 'Loading…' : `${orders.length} order${orders.length === 1 ? '' : 's'} on the board`}
             {late > 0 && <span className="ml-2 font-semibold text-error">{late} late</span>}
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <Link to="/chats" className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2">
+          {/* Opens beside the board rather than navigating away: the
+              orders stay the main thing, which is the whole point of
+              putting a conversation next to them. */}
+          <button
+            type="button"
+            onClick={() => {
+              if (paneOpen) {
+                setChatsOpen(false);
+                if (chatId) navigate('/food/operations');
+                return;
+              }
+              setChatsOpen(true);
+            }}
+            aria-pressed={paneOpen}
+            className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-caption font-medium ${
+              paneOpen ? 'border-accent/60 bg-accent-soft text-accent' : 'border-border-subtle text-fg hover:bg-surface-2'
+            }`}
+          >
             <MessageSquare size={14} aria-hidden />
             Chats
-          </Link>
+          </button>
           <button type="button" onClick={() => void load()} className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2">
             <RotateCcw size={14} aria-hidden />
             Refresh
@@ -275,7 +320,14 @@ export function FoodOperationsPage() {
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-x-auto">
+      {/* Orders and the conversation, side by side.
+          The board keeps the space it had and the chat takes what is left,
+          because the orders are the main thing and a chat pane that
+          squeezes the columns would invert that. On a narrow screen the
+          two cannot share a row, so an open conversation takes the screen
+          and closing it returns to the board. */}
+      <div className="flex min-h-0 flex-1">
+      <div className={`min-h-0 flex-1 overflow-x-auto ${paneOpen ? 'hidden lg:block' : ''}`}>
         <div className="flex h-full min-w-max gap-3 p-3">
           {COLUMNS.map((column) => {
             const columnOrders = byStage.get(column.stage) ?? [];
@@ -310,6 +362,55 @@ export function FoodOperationsPage() {
             );
           })}
         </div>
+      </div>
+
+      {paneOpen && (
+        <aside className="flex min-h-0 w-full shrink-0 flex-col border-l border-border-subtle lg:w-[26rem] xl:w-[30rem]">
+          {chatId ? (
+            <>
+              <div className="flex items-center gap-2 border-b border-border-subtle px-3 py-2">
+                <button
+                  type="button"
+                  onClick={() => navigate('/food/operations')}
+                  className="flex items-center gap-1 text-meta font-medium text-fg-muted hover:text-fg"
+                >
+                  <ChevronLeft size={12} aria-hidden />
+                  All chats
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setChatsOpen(false); navigate('/food/operations'); }}
+                  aria-label="Close the chat pane"
+                  className="ml-auto rounded p-1 text-fg-muted hover:bg-surface-2 hover:text-fg"
+                >
+                  <X size={14} aria-hidden />
+                </button>
+              </div>
+              <div className="flex min-h-0 flex-1">
+                {/* Reads the conversation from the route, exactly as it
+                    does on the Chats page - so it behaves identically
+                    here without a line of its own changing. */}
+                <ChatThread />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-2 border-b border-border-subtle px-3 py-2">
+                <p className="text-caption font-semibold text-fg">Chats</p>
+                <button
+                  type="button"
+                  onClick={() => setChatsOpen(false)}
+                  aria-label="Close the chat pane"
+                  className="ml-auto rounded p-1 text-fg-muted hover:bg-surface-2 hover:text-fg"
+                >
+                  <X size={14} aria-hidden />
+                </button>
+              </div>
+              <ChatListPane className="flex min-h-0 flex-1" />
+            </>
+          )}
+        </aside>
+      )}
       </div>
     </div>
   );
@@ -442,11 +543,14 @@ function OrderCard({
           </a>
         )}
 
+        {/* Opens beside the board, not instead of it. A ticket and the
+            conversation it came from belong next to each other, and
+            navigating away to read one loses the other. */}
         {order.chatId && (
           <Link
-            to={`/chats/${order.chatId}`}
+            to={`/food/operations/chat/${order.chatId}`}
             className="flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-meta font-medium text-fg hover:bg-surface-2"
-            title="Open the conversation this order came from"
+            title="Open the conversation this order came from, beside the board"
           >
             <MessageSquare size={12} aria-hidden />
             Chat

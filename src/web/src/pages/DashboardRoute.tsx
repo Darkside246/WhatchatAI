@@ -364,6 +364,7 @@ function KitchenTile() {
   const navigate = useNavigate();
   const [orders, setOrders] = useState<FoodBoardOrderDto[] | null>(null);
   const [unavailable, setUnavailable] = useState(false);
+  const [businessName, setBusinessName] = useState<string | null>(null);
 
   const load = useCallback(() => {
     api
@@ -376,6 +377,13 @@ function KitchenTile() {
 
   useEffect(() => { load(); }, [load]);
   useVisiblePolling(load, 15_000, !unavailable);
+
+  useEffect(() => {
+    // Fetched once and never polled: a business does not rename itself
+    // during service, and a failure here is silent because the name is
+    // decoration on a tile whose numbers are the point.
+    api.getBusiness().then(({ business }) => setBusinessName(business.name)).catch(() => {});
+  }, []);
 
   if (unavailable || orders === null || orders.length === 0) return null;
 
@@ -395,7 +403,10 @@ function KitchenTile() {
     >
       <p className="mb-1 flex items-center gap-1.5 text-caption font-semibold uppercase tracking-wide text-fg-muted">
         <ChefHat size={13} aria-hidden />
-        Kitchen
+        {/* Their own name on their own tile. "Kitchen" is the fallback,
+            not the label: a restaurant looking at its dashboard should
+            see itself, not a category. */}
+        {businessName?.trim() || 'Kitchen'}
         {late > 0 && <span className="ml-auto rounded-full bg-error px-2 py-0.5 text-meta font-bold text-white">{late} late</span>}
       </p>
       <p className="mb-3 text-meta text-fg-muted">Live orders — tap to open the board</p>
