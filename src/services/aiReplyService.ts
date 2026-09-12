@@ -1398,6 +1398,27 @@ async function executeOneToolCall(
         available: item.available,
         ...(item.description ? { description: item.description } : {}),
         ...(item.allergens.length > 0 ? { allergens: item.allergens } : {}),
+        // What can be added to this dish, and what it costs. Without this
+        // an agent asked "can I get bacon on that?" either refuses
+        // something the kitchen does sell or invents a price for it -
+        // and the resolver will price the real one anyway, so the two
+        // would disagree in front of the customer.
+        ...(item.modifierGroups.length > 0
+          ? {
+              options: item.modifierGroups.map((group) => ({
+                name: group.name,
+                howManyMayBeChosen:
+                  group.minSelect === 0 && group.maxSelect === null
+                    ? 'any number, or none'
+                    : `at least ${group.minSelect}${group.maxSelect === null ? '' : `, at most ${group.maxSelect}`}`,
+                choices: group.options.map((option) => ({
+                  name: option.name,
+                  extraCost: option.priceDeltaCents === 0 ? 'free' : (option.priceDeltaCents / 100).toFixed(2),
+                  available: option.available,
+                })),
+              })),
+            }
+          : {}),
       })),
     };
   }

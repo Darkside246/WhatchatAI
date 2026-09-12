@@ -138,16 +138,46 @@ export interface FoodSettingsDto {
   slaBreachSeconds: number | null;
 }
 
+export interface FoodMenuCategoryDto {
+  id: string;
+  name: string;
+  sortOrder: number;
+  active: boolean;
+}
+
+export interface FoodModifierOptionDto {
+  id: string;
+  groupId: string;
+  name: string;
+  priceDeltaCents: number;
+  available: boolean;
+  sortOrder: number;
+}
+
+export interface FoodModifierGroupDto {
+  id: string;
+  name: string;
+  /** How many of this group's options may be chosen. A null max means no limit. */
+  minSelect: number;
+  maxSelect: number | null;
+  sortOrder: number;
+  options: FoodModifierOptionDto[];
+}
+
 export interface FoodMenuItemDto {
   id: string;
   name: string;
   category: string;
+  categoryId: string | null;
+  sortOrder: number;
+  description: string | null;
   priceCents: number;
   currency: string;
   available: boolean;
   aliases: string[];
   station: string | null;
   allergens: string[];
+  modifierGroups: FoodModifierGroupDto[];
 }
 
 export interface StatusViewerDto {
@@ -2294,6 +2324,68 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ available }),
     }),
+
+  createFoodMenuItem: (input: {
+    name: string;
+    priceCents: number;
+    categoryId?: string | null;
+    description?: string | null;
+    aliases?: string[];
+    station?: string | null;
+    allergens?: string[];
+  }) => request<{ item: FoodMenuItemDto }>('/food-operations/menu', { method: 'POST', body: JSON.stringify(input) }),
+  /** Only the fields that changed - so saving a price cannot overwrite a name somebody else just fixed. */
+  updateFoodMenuItem: (
+    itemId: string,
+    patch: Partial<{
+      name: string;
+      priceCents: number;
+      categoryId: string;
+      sortOrder: number;
+      description: string | null;
+      aliases: string[];
+      station: string | null;
+      allergens: string[];
+    }>,
+  ) => request<{ item: FoodMenuItemDto }>(`/food-operations/menu/${itemId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteFoodMenuItem: (itemId: string) =>
+    request<{ status: string }>(`/food-operations/menu/${itemId}`, { method: 'DELETE' }),
+  reorderFoodMenuItems: (orderedIds: string[]) =>
+    request<{ status: string }>('/food-operations/menu/reorder', { method: 'POST', body: JSON.stringify({ orderedIds }) }),
+
+  listFoodMenuCategories: () => request<{ categories: FoodMenuCategoryDto[] }>('/food-operations/menu-categories'),
+  createFoodMenuCategory: (name: string) =>
+    request<{ category: FoodMenuCategoryDto }>('/food-operations/menu-categories', { method: 'POST', body: JSON.stringify({ name }) }),
+  renameFoodMenuCategory: (categoryId: string, name: string) =>
+    request<{ status: string }>(`/food-operations/menu-categories/${categoryId}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  reorderFoodMenuCategories: (orderedIds: string[]) =>
+    request<{ categories: FoodMenuCategoryDto[] }>('/food-operations/menu-categories/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ orderedIds }),
+    }),
+  /** The items survive, uncategorised - the count comes back so the operator can be told how many. */
+  deleteFoodMenuCategory: (categoryId: string) =>
+    request<{ status: string; uncategorisedItems: number }>(`/food-operations/menu-categories/${categoryId}`, { method: 'DELETE' }),
+
+  listFoodModifierGroups: () => request<{ groups: FoodModifierGroupDto[] }>('/food-operations/modifier-groups'),
+  createFoodModifierGroup: (input: { name: string; minSelect?: number; maxSelect?: number | null }) =>
+    request<{ group: FoodModifierGroupDto }>('/food-operations/modifier-groups', { method: 'POST', body: JSON.stringify(input) }),
+  deleteFoodModifierGroup: (groupId: string) =>
+    request<{ status: string }>(`/food-operations/modifier-groups/${groupId}`, { method: 'DELETE' }),
+  addFoodModifierOption: (groupId: string, input: { name: string; priceDeltaCents?: number }) =>
+    request<{ option: FoodModifierOptionDto }>(`/food-operations/modifier-groups/${groupId}/options`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  setFoodModifierOptionAvailability: (optionId: string, available: boolean) =>
+    request<{ status: string }>(`/food-operations/modifier-options/${optionId}/availability`, {
+      method: 'POST',
+      body: JSON.stringify({ available }),
+    }),
+  attachFoodModifierGroup: (itemId: string, groupId: string) =>
+    request<{ status: string }>(`/food-operations/menu/${itemId}/modifier-groups`, { method: 'POST', body: JSON.stringify({ groupId }) }),
+  detachFoodModifierGroup: (itemId: string, groupId: string) =>
+    request<{ status: string }>(`/food-operations/menu/${itemId}/modifier-groups/${groupId}`, { method: 'DELETE' }),
 
   listFunnels: () => request<{ funnels: FunnelDto[] }>('/workspace/funnels'),
   createFunnel: (name: string, description: string | null) =>

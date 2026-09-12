@@ -138,7 +138,13 @@ interface DeclaredModifier {
 }
 
 /**
- * What a modifier costs, from the item's own declared list.
+ * What a modifier costs, from what the operator actually declared.
+ *
+ * Looks in the item's SHARED modifier groups first, then falls back to the
+ * legacy per-item list. Both are honoured deliberately: groups are how a
+ * menu is built now, and the old blob is still the truth for every menu
+ * written before groups existed. A business must not find its prices stop
+ * working because of a schema change it never asked for.
  *
  * A removal is always free and always allowed - a customer can ask for no
  * onions on anything. An addition the operator has not declared is carried
@@ -155,8 +161,24 @@ function resolveModifier(
     return { priced: { name: modifier.name, action: 'remove', priceDeltaCents: 0 } };
   }
 
+  const wanted = normalise(modifier.name);
+
+  const fromGroup = item.modifierGroups
+    .flatMap((group) => group.options)
+    .find((option) => normalise(option.name) === wanted);
+
+  if (fromGroup) {
+    // An option the kitchen has run out of is not silently priced and
+    // cooked - it is surfaced to the customer as a real problem, the same
+    // way an unavailable item is.
+    if (!fromGroup.available) {
+      return { note: `${modifier.name} (UNAVAILABLE - check with the customer)` };
+    }
+    return { priced: { name: fromGroup.name, action: modifier.action, priceDeltaCents: fromGroup.priceDeltaCents } };
+  }
+
   const declared = (item.modifiers as DeclaredModifier[]).find(
-    (candidate) => typeof candidate?.name === 'string' && normalise(candidate.name) === normalise(modifier.name),
+    (candidate) => typeof candidate?.name === 'string' && normalise(candidate.name) === wanted,
   );
 
   if (!declared) {

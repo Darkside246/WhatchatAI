@@ -60,7 +60,10 @@ describe('what the agent may do with a food order', () => {
 
   /** An agent that cannot see a sold-out item cannot tell a customer it is sold out. */
   it('tells the agent never to invent or over-promise an item', () => {
-    expect(listMenuFunctionDeclaration.description).toContain('Never quote a price or an item that is not in this list');
+    // The extras are named alongside the item on purpose: an agent that
+    // may not invent a burger but may invent bacon on it has the same
+    // problem in a smaller place.
+    expect(listMenuFunctionDeclaration.description).toContain('Never quote a price, an item or an extra that is not in this list');
     expect(listMenuFunctionDeclaration.description).toContain('never tell a customer something is available when this says it is not');
   });
 

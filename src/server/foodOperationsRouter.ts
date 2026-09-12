@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { pool } from '../db/pool.js';
-import { FoodOperationsRepository, IllegalPaymentTransitionError, IllegalStageTransitionError, KitchenPaymentGateError } from '../repositories/foodOperationsRepository.js';
+import { FoodOperationsRepository, IllegalPaymentTransitionError, IllegalStageTransitionError, KitchenPaymentGateError, UnknownMenuCategoryError } from '../repositories/foodOperationsRepository.js';
 import { FOOD_PAYMENT_STATES } from '../domain/food/paymentGate.js';
 import { FOOD_ORDER_STAGES, bumpTarget, elapsedSeconds, slaBand } from '../domain/food/orderLifecycle.js';
 import { checkDelivery, navigationUrl } from '../domain/food/deliveryZone.js';
@@ -378,7 +378,10 @@ router.get('/menu', requirePermission('food.view'), async (req, res) => {
 const menuItemSchema = z.object({
   name: z.string().trim().min(1).max(200),
   priceCents: z.number().int().nonnegative(),
-  category: z.string().trim().min(1).max(80).default('GENERAL'),
+  /** The old way of naming a section. Still accepted, and now creates the row if it is new. */
+  category: z.string().trim().min(1).max(80).optional(),
+  /** The new way, from the menu editor. Takes precedence when both arrive. */
+  categoryId: uuid.nullish(),
   sku: z.string().trim().max(100).nullish(),
   description: z.string().trim().max(2000).nullish(),
   currency: z.string().trim().length(3).toUpperCase().default('USD'),
@@ -392,20 +395,251 @@ router.post('/menu', requirePermission('food.manage'), async (req, res) => {
   const parsed = menuItemSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_MENU_ITEM', details: parsed.error.flatten() });
 
+  try {
+    return res.status(201).json({
+      item: await repository.createMenuItem({
+        businessId: auth.businessId,
+        name: parsed.data.name,
+        priceCents: parsed.data.priceCents,
+        ...(parsed.data.category ? { category: parsed.data.category } : {}),
+        categoryId: parsed.data.categoryId ?? null,
+        sku: parsed.data.sku ?? null,
+        description: parsed.data.description ?? null,
+        currency: parsed.data.currency,
+        aliases: parsed.data.aliases,
+        station: parsed.data.station ?? null,
+        allergens: parsed.data.allergens,
+      }),
+    });
+  } catch (error) {
+    if (error instanceof UnknownMenuCategoryError) return res.status(404).json({ error: 'CATEGORY_NOT_FOUND', message: error.message });
+    throw error;
+  }
+});
+
+/**
+ * Editing an item.
+ *
+ * Every field is optional and only what arrives is written, so the editor
+ * can save a single changed field without having to send back - and risk
+ * stale-overwriting - the rest of the item.
+ */
+const menuItemPatchSchema = z.object({
+  name: z.string().trim().min(1).max(200).optional(),
+  priceCents: z.number().int().nonnegative().optional(),
+  categoryId: uuid.optional(),
+  sortOrder: z.number().int().min(0).max(1_000_000).optional(),
+  description: z.string().trim().max(2000).nullish(),
+  aliases: z.array(z.string().trim().min(1).max(80)).max(30).optional(),
+  station: z.string().trim().max(80).nullish(),
+  allergens: z.array(z.string().trim().min(1).max(80)).max(30).optional(),
+});
+
+router.patch('/menu/:itemId', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const itemId = String(req.params.itemId ?? '');
+  if (!uuid.safeParse(itemId).success) return res.status(400).json({ error: 'INVALID_ITEM_ID' });
+
+  const parsed = menuItemPatchSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_MENU_ITEM', details: parsed.error.flatten() });
+
+  const item = await repository.updateMenuItem(auth.businessId, itemId, {
+    ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+    ...(parsed.data.priceCents !== undefined ? { priceCents: parsed.data.priceCents } : {}),
+    ...(parsed.data.categoryId !== undefined ? { categoryId: parsed.data.categoryId } : {}),
+    ...(parsed.data.sortOrder !== undefined ? { sortOrder: parsed.data.sortOrder } : {}),
+    ...(parsed.data.description !== undefined ? { description: parsed.data.description ?? null } : {}),
+    ...(parsed.data.aliases !== undefined ? { aliases: parsed.data.aliases } : {}),
+    ...(parsed.data.station !== undefined ? { station: parsed.data.station ?? null } : {}),
+    ...(parsed.data.allergens !== undefined ? { allergens: parsed.data.allergens } : {}),
+  });
+  if (!item) return res.status(404).json({ error: 'MENU_ITEM_NOT_FOUND' });
+  return res.status(200).json({ item });
+});
+
+/**
+ * Removing an item from the menu.
+ *
+ * Only the menu entry goes. Orders already taken keep their own copy of
+ * every line - name, price and modifiers as they were when the customer
+ * agreed to them - so deleting a dish can never rewrite what somebody was
+ * charged last week.
+ */
+router.delete('/menu/:itemId', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const itemId = String(req.params.itemId ?? '');
+  if (!uuid.safeParse(itemId).success) return res.status(400).json({ error: 'INVALID_ITEM_ID' });
+  const deleted = await repository.deleteMenuItem(auth.businessId, itemId);
+  if (!deleted) return res.status(404).json({ error: 'MENU_ITEM_NOT_FOUND' });
+  return res.status(200).json({ status: 'deleted' });
+});
+
+router.post('/menu/reorder', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = z.object({ orderedIds: z.array(uuid).max(500) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_ORDER', details: parsed.error.flatten() });
+  await repository.reorderMenuItems(auth.businessId, parsed.data.orderedIds);
+  return res.status(200).json({ status: 'reordered' });
+});
+
+// ── Categories ───────────────────────────────────────────────────────────
+
+router.get('/menu-categories', requirePermission('food.view'), async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  return res.status(200).json({ categories: await repository.listCategories(auth.businessId) });
+});
+
+router.post('/menu-categories', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = z.object({ name: z.string().trim().min(1).max(80) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_CATEGORY', details: parsed.error.flatten() });
+  return res.status(201).json({ category: await repository.createCategory(auth.businessId, parsed.data.name) });
+});
+
+router.patch('/menu-categories/:categoryId', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const categoryId = String(req.params.categoryId ?? '');
+  if (!uuid.safeParse(categoryId).success) return res.status(400).json({ error: 'INVALID_CATEGORY_ID' });
+
+  const parsed = z.object({ name: z.string().trim().min(1).max(80) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_CATEGORY', details: parsed.error.flatten() });
+
+  const renamed = await repository.renameCategory(auth.businessId, categoryId, parsed.data.name);
+  if (!renamed) return res.status(404).json({ error: 'CATEGORY_NOT_FOUND' });
+  return res.status(200).json({ status: 'renamed' });
+});
+
+router.post('/menu-categories/reorder', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = z.object({ orderedIds: z.array(uuid).max(200) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_ORDER', details: parsed.error.flatten() });
+  await repository.reorderCategories(auth.businessId, parsed.data.orderedIds);
+  return res.status(200).json({ categories: await repository.listCategories(auth.businessId) });
+});
+
+/**
+ * Deleting a section. The food in it survives, uncategorised - the answer
+ * says how many items that was, because an operator deleting "Specials"
+ * deserves to be told that eleven dishes just lost their home rather than
+ * discovering it by scrolling.
+ */
+router.delete('/menu-categories/:categoryId', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const categoryId = String(req.params.categoryId ?? '');
+  if (!uuid.safeParse(categoryId).success) return res.status(400).json({ error: 'INVALID_CATEGORY_ID' });
+
+  const menu = await repository.listMenu(auth.businessId);
+  const orphaned = menu.filter((item) => item.categoryId === categoryId).length;
+
+  const deleted = await repository.deleteCategory(auth.businessId, categoryId);
+  if (!deleted) return res.status(404).json({ error: 'CATEGORY_NOT_FOUND' });
+  return res.status(200).json({ status: 'deleted', uncategorisedItems: orphaned });
+});
+
+// ── Modifier groups ──────────────────────────────────────────────────────
+
+router.get('/modifier-groups', requirePermission('food.view'), async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  return res.status(200).json({ groups: await repository.listModifierGroups(auth.businessId) });
+});
+
+const modifierGroupSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80),
+    minSelect: z.number().int().min(0).max(50).default(0),
+    maxSelect: z.number().int().min(1).max(50).nullish(),
+  })
+  .refine((value) => value.maxSelect == null || value.maxSelect >= value.minSelect, {
+    message: 'A group cannot require more choices than it allows.',
+  });
+
+router.post('/modifier-groups', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = modifierGroupSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_MODIFIER_GROUP', details: parsed.error.flatten() });
+
   return res.status(201).json({
-    item: await repository.createMenuItem({
-      businessId: auth.businessId,
+    group: await repository.createModifierGroup(auth.businessId, {
       name: parsed.data.name,
-      priceCents: parsed.data.priceCents,
-      category: parsed.data.category,
-      sku: parsed.data.sku ?? null,
-      description: parsed.data.description ?? null,
-      currency: parsed.data.currency,
-      aliases: parsed.data.aliases,
-      station: parsed.data.station ?? null,
-      allergens: parsed.data.allergens,
+      minSelect: parsed.data.minSelect,
+      maxSelect: parsed.data.maxSelect ?? null,
     }),
   });
+});
+
+router.delete('/modifier-groups/:groupId', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const groupId = String(req.params.groupId ?? '');
+  if (!uuid.safeParse(groupId).success) return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+  const deleted = await repository.deleteModifierGroup(auth.businessId, groupId);
+  if (!deleted) return res.status(404).json({ error: 'MODIFIER_GROUP_NOT_FOUND' });
+  return res.status(200).json({ status: 'deleted' });
+});
+
+router.post('/modifier-groups/:groupId/options', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const groupId = String(req.params.groupId ?? '');
+  if (!uuid.safeParse(groupId).success) return res.status(400).json({ error: 'INVALID_GROUP_ID' });
+
+  const parsed = z
+    .object({
+      name: z.string().trim().min(1).max(80),
+      // Negative on purpose: "no cheese, -50c" is a real thing on a real
+      // menu, and a schema that forbids it forces the operator to lie.
+      priceDeltaCents: z.number().int().min(-1_000_000).max(1_000_000).default(0),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_MODIFIER_OPTION', details: parsed.error.flatten() });
+
+  const option = await repository.addModifierOption(auth.businessId, groupId, parsed.data);
+  if (!option) return res.status(404).json({ error: 'MODIFIER_GROUP_NOT_FOUND' });
+  return res.status(201).json({ option });
+});
+
+/** The "86" toggle for a single option. A kitchen runs out of bacon, not just of burgers. */
+router.post('/modifier-options/:optionId/availability', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const optionId = String(req.params.optionId ?? '');
+  if (!uuid.safeParse(optionId).success) return res.status(400).json({ error: 'INVALID_OPTION_ID' });
+
+  const parsed = z.object({ available: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_AVAILABILITY' });
+
+  const updated = await repository.setModifierOptionAvailability(auth.businessId, optionId, parsed.data.available);
+  if (!updated) return res.status(404).json({ error: 'MODIFIER_OPTION_NOT_FOUND' });
+  return res.status(200).json({ status: 'updated' });
+});
+
+/** Attaching a shared group to an item - the whole point of groups being shared. */
+router.post('/menu/:itemId/modifier-groups', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const itemId = String(req.params.itemId ?? '');
+  if (!uuid.safeParse(itemId).success) return res.status(400).json({ error: 'INVALID_ITEM_ID' });
+
+  const parsed = z.object({ groupId: uuid }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_GROUP_ID', details: parsed.error.flatten() });
+
+  try {
+    await repository.attachModifierGroup(auth.businessId, itemId, parsed.data.groupId);
+  } catch {
+    // The composite foreign keys are what actually enforce that both the
+    // item and the group belong to this business, so a violation here
+    // means one of the two is not ours - which from the caller's side is
+    // simply "not found".
+    return res.status(404).json({ error: 'ITEM_OR_GROUP_NOT_FOUND' });
+  }
+  return res.status(200).json({ status: 'attached' });
+});
+
+router.delete('/menu/:itemId/modifier-groups/:groupId', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const itemId = String(req.params.itemId ?? '');
+  const groupId = String(req.params.groupId ?? '');
+  if (!uuid.safeParse(itemId).success || !uuid.safeParse(groupId).success) return res.status(400).json({ error: 'INVALID_ID' });
+
+  const detached = await repository.detachModifierGroup(auth.businessId, itemId, groupId);
+  if (!detached) return res.status(404).json({ error: 'ATTACHMENT_NOT_FOUND' });
+  return res.status(200).json({ status: 'detached' });
 });
 
 /** The "86" toggle. Its own route rather than a general patch, because it is pressed mid-service and must be one tap. */

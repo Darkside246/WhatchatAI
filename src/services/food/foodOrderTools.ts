@@ -27,9 +27,10 @@ export const CONFIRM_FOOD_ORDER_TOOL_NAME = 'confirm_food_order';
 export const listMenuFunctionDeclaration: FunctionDeclaration = {
   name: LIST_MENU_TOOL_NAME,
   description:
-    "Lists this business's real menu - item names, prices and whether each one is available right now. Use it to " +
-    'answer "what do you have", "how much is X" or "do you still have Y". Never quote a price or an item that is ' +
-    'not in this list, and never tell a customer something is available when this says it is not. Takes no arguments.',
+    "Lists this business's real menu - item names, prices, whether each one is available right now, and what may be " +
+    'added to each dish with what that costs. Use it to answer "what do you have", "how much is X", "do you still ' +
+    'have Y" or "can I get bacon on that". Never quote a price, an item or an extra that is not in this list, and ' +
+    'never tell a customer something is available when this says it is not. Takes no arguments.',
   parameters: { type: Type.OBJECT, properties: {} },
 };
 

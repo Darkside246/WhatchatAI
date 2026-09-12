@@ -5,6 +5,32 @@ import type { FoodPaymentMethod, FoodPaymentState, KitchenRelease } from '../dom
 import { canTransitionPayment, releaseToKitchen } from '../domain/food/paymentGate.js';
 import type { FoodNotificationEvent, NotificationOverrides, NotificationVerbosity } from '../services/food/orderNotifications.js';
 
+export interface FoodMenuCategoryRecord {
+  id: string;
+  name: string;
+  sortOrder: number;
+  active: boolean;
+}
+
+export interface FoodModifierOptionRecord {
+  id: string;
+  groupId: string;
+  name: string;
+  priceDeltaCents: number;
+  available: boolean;
+  sortOrder: number;
+}
+
+export interface FoodModifierGroupRecord {
+  id: string;
+  name: string;
+  /** How many of this group's options may be chosen. Null max means no limit. */
+  minSelect: number;
+  maxSelect: number | null;
+  sortOrder: number;
+  options: FoodModifierOptionRecord[];
+}
+
 export interface FoodMenuItemRecord {
   id: string;
   businessId: string;
@@ -22,6 +48,16 @@ export interface FoodMenuItemRecord {
   modifiers: unknown[];
   station: string | null;
   allergens: string[];
+  /** The category row, once one exists. The legacy `category` string is kept in step with it. */
+  categoryId: string | null;
+  sortOrder: number;
+  /**
+   * Shared modifier groups attached to this item, resolved. Empty for an
+   * item that offers none, and for every item on a menu built before
+   * groups existed - which is why the legacy `modifiers` JSONB above is
+   * still honoured by the pricing resolver.
+   */
+  modifierGroups: FoodModifierGroupRecord[];
   createdAt: string;
   updatedAt: string;
 }
@@ -122,7 +158,8 @@ export interface FoodDeliveryZoneRecord {
 interface MenuItemRow {
   id: string; business_id: string; name: string; sku: string | null; category: string; description: string | null;
   price_cents: string; currency: string; available: boolean; aliases: string[]; variants: unknown[]; modifiers: unknown[];
-  station: string | null; allergens: string[]; created_at: string; updated_at: string;
+  station: string | null; allergens: string[]; category_id: string | null; sort_order: number;
+  created_at: string; updated_at: string;
 }
 
 interface OrderRow {
@@ -152,7 +189,12 @@ function toMenuItem(row: MenuItemRow): FoodMenuItemRecord {
     id: row.id, businessId: row.business_id, name: row.name, sku: row.sku, category: row.category,
     description: row.description, priceCents: Number(row.price_cents), currency: row.currency,
     available: row.available, aliases: row.aliases ?? [], variants: row.variants ?? [], modifiers: row.modifiers ?? [],
-    station: row.station, allergens: row.allergens ?? [], createdAt: row.created_at, updatedAt: row.updated_at,
+    station: row.station, allergens: row.allergens ?? [],
+    categoryId: row.category_id ?? null, sortOrder: row.sort_order ?? 0,
+    // Filled in by listMenu, which loads every group in one pass rather
+    // than a query per item.
+    modifierGroups: [],
+    createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }
 
@@ -218,6 +260,9 @@ export class IllegalPaymentTransitionError extends Error {}
  * waiting for food that is being packed in a bag.
  */
 export class TableServiceDisabledError extends Error {}
+
+/** Naming a category that is not this business's. Its own type so a route can answer 404 rather than 500. */
+export class UnknownMenuCategoryError extends Error {}
 
 /**
  * Raised when an order was sent to the kitchen without payment clearing.
@@ -466,28 +511,331 @@ export class FoodOperationsRepository {
 
   // ── Menu ───────────────────────────────────────────────────────────────
 
+  /**
+   * The whole menu, with every item's shared modifier groups attached.
+   *
+   * Three queries rather than one per item: a menu of forty items with
+   * five groups each would otherwise be two hundred round trips on a path
+   * that runs for every AI reply.
+   *
+   * Ordered the way the operator arranged it - category order first, then
+   * position within it - because a menu read back to a customer in
+   * alphabetical order is not the menu they wrote.
+   */
   async listMenu(businessId: string, options: { availableOnly?: boolean } = {}): Promise<FoodMenuItemRecord[]> {
-    const { rows } = await this.db.query<MenuItemRow>(
-      `SELECT * FROM food_menu_items
-       WHERE business_id = $1 AND ($2::boolean IS NOT TRUE OR available = true)
-       ORDER BY category, name`,
+    const { rows } = await this.db.query<MenuItemRow & { category_sort: number | null }>(
+      `SELECT item.*, category.sort_order AS category_sort
+       FROM food_menu_items item
+       LEFT JOIN food_menu_categories category
+         ON category.business_id = item.business_id AND category.id = item.category_id
+       WHERE item.business_id = $1 AND ($2::boolean IS NOT TRUE OR item.available = true)
+       ORDER BY COALESCE(category.sort_order, 0), item.category, item.sort_order, item.name`,
       [businessId, options.availableOnly ?? false],
     );
-    return rows.map(toMenuItem);
+
+    const items = rows.map(toMenuItem);
+    if (items.length === 0) return items;
+
+    const groups = await this.loadModifierGroups(businessId, options.availableOnly ?? false);
+    const attachments = await this.db.query<{ menu_item_id: string; group_id: string; sort_order: number }>(
+      'SELECT * FROM food_menu_item_modifier_groups WHERE business_id = $1 ORDER BY sort_order',
+      [businessId],
+    );
+
+    const byId = new Map(items.map((item) => [item.id, item]));
+    for (const attachment of attachments.rows) {
+      const group = groups.get(attachment.group_id);
+      const item = byId.get(attachment.menu_item_id);
+      if (group && item) item.modifierGroups.push(group);
+    }
+
+    return items;
   }
 
+  /** Every modifier group with its options, keyed by id. Shared by listMenu and the menu editor. */
+  private async loadModifierGroups(businessId: string, availableOnly: boolean): Promise<Map<string, FoodModifierGroupRecord>> {
+    const [groupRows, optionRows] = await Promise.all([
+      this.db.query<{ id: string; name: string; min_select: number; max_select: number | null; sort_order: number }>(
+        'SELECT * FROM food_modifier_groups WHERE business_id = $1 ORDER BY sort_order, name',
+        [businessId],
+      ),
+      this.db.query<{ id: string; group_id: string; name: string; price_delta_cents: string; available: boolean; sort_order: number }>(
+        `SELECT * FROM food_modifier_options
+         WHERE business_id = $1 AND ($2::boolean IS NOT TRUE OR available = true)
+         ORDER BY sort_order, name`,
+        [businessId, availableOnly],
+      ),
+    ]);
+
+    const groups = new Map<string, FoodModifierGroupRecord>(
+      groupRows.rows.map((row) => [
+        row.id,
+        { id: row.id, name: row.name, minSelect: row.min_select, maxSelect: row.max_select, sortOrder: row.sort_order, options: [] },
+      ]),
+    );
+
+    for (const option of optionRows.rows) {
+      groups.get(option.group_id)?.options.push({
+        id: option.id,
+        groupId: option.group_id,
+        name: option.name,
+        priceDeltaCents: Number(option.price_delta_cents),
+        available: option.available,
+        sortOrder: option.sort_order,
+      });
+    }
+
+    return groups;
+  }
+
+  // ── Categories ─────────────────────────────────────────────────────────
+
+  async listCategories(businessId: string): Promise<FoodMenuCategoryRecord[]> {
+    const { rows } = await this.db.query<{ id: string; name: string; sort_order: number; active: boolean }>(
+      'SELECT * FROM food_menu_categories WHERE business_id = $1 ORDER BY sort_order, name',
+      [businessId],
+    );
+    return rows.map((row) => ({ id: row.id, name: row.name, sortOrder: row.sort_order, active: row.active }));
+  }
+
+  /**
+   * Adds a category, or returns the one that already carries this name.
+   *
+   * Case-insensitive, because "Mains" and "mains" are one section of one
+   * menu and an operator who types the second should not end up with two.
+   */
+  async createCategory(businessId: string, name: string, sortOrder?: number): Promise<FoodMenuCategoryRecord> {
+    const { rows } = await this.db.query<{ id: string; name: string; sort_order: number; active: boolean }>(
+      `INSERT INTO food_menu_categories (business_id, name, sort_order)
+       VALUES ($1, $2, COALESCE($3, (SELECT COALESCE(MAX(sort_order), 0) + 10 FROM food_menu_categories WHERE business_id = $1)))
+       ON CONFLICT (business_id, lower(name)) DO UPDATE SET updated_at = now()
+       RETURNING *`,
+      [businessId, name.trim(), sortOrder ?? null],
+    );
+    const row = rows[0]!;
+    return { id: row.id, name: row.name, sortOrder: row.sort_order, active: row.active };
+  }
+
+  /**
+   * Renames a section, and rewrites the legacy `category` text on its items
+   * in the same breath.
+   *
+   * Renaming without that second write is exactly the orphaning this table
+   * was added to prevent - the section would read "Mains" and every item
+   * in it would still carry the typo.
+   */
+  async renameCategory(businessId: string, id: string, name: string): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      'UPDATE food_menu_categories SET name = $3, updated_at = now() WHERE business_id = $1 AND id = $2',
+      [businessId, id, name.trim()],
+    );
+    if ((rowCount ?? 0) === 0) return false;
+
+    await this.db.query(
+      'UPDATE food_menu_items SET category = $3, updated_at = now() WHERE business_id = $1 AND category_id = $2',
+      [businessId, id, name.trim()],
+    );
+    return true;
+  }
+
+  /** Reorders in one statement, so a drag on the menu screen is one round trip and cannot half-apply. */
+  async reorderCategories(businessId: string, orderedIds: string[]): Promise<void> {
+    if (orderedIds.length === 0) return;
+    await this.db.query(
+      `UPDATE food_menu_categories SET sort_order = position.ordinality * 10, updated_at = now()
+       FROM unnest($2::uuid[]) WITH ORDINALITY AS position(id, ordinality)
+       WHERE food_menu_categories.business_id = $1 AND food_menu_categories.id = position.id`,
+      [businessId, orderedIds],
+    );
+  }
+
+  /**
+   * Deletes a category. Its items survive, uncategorised - the FK is ON
+   * DELETE SET NULL on purpose, because removing a menu section must never
+   * silently delete the food in it.
+   */
+  async deleteCategory(businessId: string, id: string): Promise<boolean> {
+    const { rowCount } = await this.db.query('DELETE FROM food_menu_categories WHERE business_id = $1 AND id = $2', [businessId, id]);
+    return (rowCount ?? 0) > 0;
+  }
+
+  // ── Modifier groups ────────────────────────────────────────────────────
+
+  async listModifierGroups(businessId: string): Promise<FoodModifierGroupRecord[]> {
+    const groups = await this.loadModifierGroups(businessId, false);
+    return [...groups.values()].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+  }
+
+  async createModifierGroup(
+    businessId: string,
+    input: { name: string; minSelect?: number; maxSelect?: number | null },
+  ): Promise<FoodModifierGroupRecord> {
+    const { rows } = await this.db.query<{ id: string; name: string; min_select: number; max_select: number | null; sort_order: number }>(
+      `INSERT INTO food_modifier_groups (business_id, name, min_select, max_select, sort_order)
+       VALUES ($1, $2, $3, $4, (SELECT COALESCE(MAX(sort_order), 0) + 10 FROM food_modifier_groups WHERE business_id = $1))
+       RETURNING *`,
+      [businessId, input.name.trim(), input.minSelect ?? 0, input.maxSelect ?? null],
+    );
+    const row = rows[0]!;
+    return { id: row.id, name: row.name, minSelect: row.min_select, maxSelect: row.max_select, sortOrder: row.sort_order, options: [] };
+  }
+
+  async addModifierOption(
+    businessId: string,
+    groupId: string,
+    input: { name: string; priceDeltaCents?: number },
+  ): Promise<FoodModifierOptionRecord | null> {
+    const { rows } = await this.db.query<{ id: string; group_id: string; name: string; price_delta_cents: string; available: boolean; sort_order: number }>(
+      `INSERT INTO food_modifier_options (business_id, group_id, name, price_delta_cents, sort_order)
+       SELECT $1, $2, $3, $4, (SELECT COALESCE(MAX(sort_order), 0) + 10 FROM food_modifier_options WHERE business_id = $1 AND group_id = $2)
+       WHERE EXISTS (SELECT 1 FROM food_modifier_groups WHERE business_id = $1 AND id = $2)
+       RETURNING *`,
+      [businessId, groupId, input.name.trim(), input.priceDeltaCents ?? 0],
+    );
+    const row = rows[0];
+    return row
+      ? { id: row.id, groupId: row.group_id, name: row.name, priceDeltaCents: Number(row.price_delta_cents), available: row.available, sortOrder: row.sort_order }
+      : null;
+  }
+
+  /** The same one-tap out-of-stock an item has. A kitchen runs out of bacon, not just of burgers. */
+  async setModifierOptionAvailability(businessId: string, optionId: string, available: boolean): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      'UPDATE food_modifier_options SET available = $3, updated_at = now() WHERE business_id = $1 AND id = $2',
+      [businessId, optionId, available],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  async deleteModifierGroup(businessId: string, groupId: string): Promise<boolean> {
+    const { rowCount } = await this.db.query('DELETE FROM food_modifier_groups WHERE business_id = $1 AND id = $2', [businessId, groupId]);
+    return (rowCount ?? 0) > 0;
+  }
+
+  /** Attaches a shared group to an item - the whole point of groups being shared. Idempotent. */
+  async attachModifierGroup(businessId: string, menuItemId: string, groupId: string): Promise<void> {
+    await this.db.query(
+      `INSERT INTO food_menu_item_modifier_groups (business_id, menu_item_id, group_id, sort_order)
+       VALUES ($1, $2, $3, (SELECT COALESCE(MAX(sort_order), 0) + 10 FROM food_menu_item_modifier_groups WHERE business_id = $1 AND menu_item_id = $2))
+       ON CONFLICT (business_id, menu_item_id, group_id) DO NOTHING`,
+      [businessId, menuItemId, groupId],
+    );
+  }
+
+  async detachModifierGroup(businessId: string, menuItemId: string, groupId: string): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      'DELETE FROM food_menu_item_modifier_groups WHERE business_id = $1 AND menu_item_id = $2 AND group_id = $3',
+      [businessId, menuItemId, groupId],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Edits an item in place. Only fields the caller sent are touched, so a
+   * partial save cannot blank a price.
+   *
+   * Moving an item between categories rewrites the legacy `category` text
+   * from the category row in the same statement. The two columns describe
+   * one fact, and a menu where they disagree sorts one way and reads back
+   * another - so they are never allowed to drift apart, not even between
+   * two writes.
+   */
+  async updateMenuItem(
+    businessId: string,
+    id: string,
+    patch: { name?: string; priceCents?: number; description?: string | null; categoryId?: string | null; sortOrder?: number; aliases?: string[]; station?: string | null; allergens?: string[]; variants?: unknown[] },
+  ): Promise<FoodMenuItemRecord | null> {
+    const { rows } = await this.db.query<MenuItemRow>(
+      `UPDATE food_menu_items SET
+         name = COALESCE($3, name),
+         price_cents = COALESCE($4, price_cents),
+         description = COALESCE($5, description),
+         category_id = COALESCE($6, category_id),
+         category = COALESCE(
+           (SELECT name FROM food_menu_categories WHERE business_id = $1 AND id = COALESCE($6, category_id)),
+           category
+         ),
+         aliases = COALESCE($7, aliases),
+         station = COALESCE($8, station),
+         allergens = COALESCE($9, allergens),
+         variants = COALESCE($10, variants),
+         sort_order = COALESCE($11, sort_order),
+         updated_at = now()
+       WHERE business_id = $1 AND id = $2
+       RETURNING *`,
+      [
+        businessId, id, patch.name ?? null, patch.priceCents ?? null, patch.description ?? null,
+        patch.categoryId ?? null, patch.aliases ?? null, patch.station ?? null, patch.allergens ?? null,
+        patch.variants ? JSON.stringify(patch.variants) : null, patch.sortOrder ?? null,
+      ],
+    );
+    return rows[0] ? toMenuItem(rows[0]) : null;
+  }
+
+  /**
+   * Reorders items within a category in one statement, for the same reason
+   * categories reorder in one: a drag that half-applies leaves a menu in a
+   * state the operator did not ask for and cannot see.
+   */
+  async reorderMenuItems(businessId: string, orderedIds: string[]): Promise<void> {
+    if (orderedIds.length === 0) return;
+    await this.db.query(
+      `UPDATE food_menu_items SET sort_order = position.ordinality * 10, updated_at = now()
+       FROM unnest($2::uuid[]) WITH ORDINALITY AS position(id, ordinality)
+       WHERE food_menu_items.business_id = $1 AND food_menu_items.id = position.id`,
+      [businessId, orderedIds],
+    );
+  }
+
+  async deleteMenuItem(businessId: string, id: string): Promise<boolean> {
+    const { rowCount } = await this.db.query('DELETE FROM food_menu_items WHERE business_id = $1 AND id = $2', [businessId, id]);
+    return (rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Adds an item.
+   *
+   * A caller may name the category either way - by row id from the menu
+   * editor, or by the plain string the API has always taken. Whichever
+   * arrives, both columns are written together: a new item created through
+   * the old shape still lands in the right section of the new menu instead
+   * of quietly falling out of it.
+   */
   async createMenuItem(input: {
-    businessId: string; name: string; priceCents: number; category?: string; sku?: string | null;
+    businessId: string; name: string; priceCents: number; category?: string; categoryId?: string | null; sku?: string | null;
     description?: string | null; currency?: string; aliases?: string[]; variants?: unknown[]; modifiers?: unknown[];
     station?: string | null; allergens?: string[];
   }): Promise<FoodMenuItemRecord> {
+    // Resolving the category BEFORE the insert, rather than in a subquery,
+    // so a name that has no row yet gets one - otherwise every item typed
+    // into a section the operator has not formally created would sort
+    // itself to the top of the menu under a null category.
+    let categoryId = input.categoryId ?? null;
+    // 'GENERAL' is the uncategorised section and gets a real row like any
+    // other, so an item added without a category still sorts predictably
+    // instead of floating above the menu on a null.
+    let categoryName = input.category?.trim() || (categoryId ? null : 'GENERAL');
+    if (!categoryId && categoryName) {
+      const category = await this.createCategory(input.businessId, categoryName);
+      categoryId = category.id;
+      categoryName = category.name;
+    } else if (categoryId) {
+      const { rows } = await this.db.query<{ name: string }>(
+        'SELECT name FROM food_menu_categories WHERE business_id = $1 AND id = $2',
+        [input.businessId, categoryId],
+      );
+      if (!rows[0]) throw new UnknownMenuCategoryError('That menu category does not exist.');
+      categoryName = rows[0].name;
+    }
+
     const { rows } = await this.db.query<MenuItemRow>(
       `INSERT INTO food_menu_items
-         (business_id, name, sku, category, description, price_cents, currency, aliases, variants, modifiers, station, allergens)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         (business_id, name, sku, category, category_id, description, price_cents, currency, aliases, variants, modifiers, station, allergens, sort_order)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+         (SELECT COALESCE(MAX(sort_order), 0) + 10 FROM food_menu_items WHERE business_id = $1 AND category_id IS NOT DISTINCT FROM $5))
        RETURNING *`,
       [
-        input.businessId, input.name, input.sku ?? null, input.category ?? 'GENERAL', input.description ?? null,
+        input.businessId, input.name, input.sku ?? null, categoryName ?? 'GENERAL', categoryId, input.description ?? null,
         input.priceCents, input.currency ?? 'USD', input.aliases ?? [], JSON.stringify(input.variants ?? []),
         JSON.stringify(input.modifiers ?? []), input.station ?? null, input.allergens ?? [],
       ],

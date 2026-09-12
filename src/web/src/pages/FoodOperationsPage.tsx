@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertTriangle, Bike, ChefHat, ClipboardCheck, MessageSquare, Navigation, PackageCheck, RotateCcw, Settings2, Store, Undo2, X } from 'lucide-react';
+import { AlertTriangle, Bike, BookOpen, ChefHat, ClipboardCheck, MessageSquare, Navigation, PackageCheck, RotateCcw, Settings2, Store, Undo2, X } from 'lucide-react';
 import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand } from '../lib/api.js';
 import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 import { KitchenSettings } from '../components/KitchenSettings.js';
+import { MenuEditor } from '../components/MenuEditor.js';
 
 /**
  * The kitchen board.
@@ -68,6 +69,14 @@ export function FoodOperationsPage() {
    */
   const [drift, setDrift] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /**
+   * The menu, over the board rather than on another page.
+   *
+   * A dish runs out, or is priced wrong, while service is running - and
+   * the person who notices is looking at the board. Making them navigate
+   * away from the tickets to fix it is how a menu stays wrong all evening.
+   */
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -157,6 +166,14 @@ export function FoodOperationsPage() {
           </button>
           <button
             type="button"
+            onClick={() => setMenuOpen(true)}
+            className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2"
+          >
+            <BookOpen size={14} aria-hidden />
+            Menu
+          </button>
+          <button
+            type="button"
             onClick={() => setSettingsOpen((open) => !open)}
             aria-expanded={settingsOpen}
             className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2"
@@ -168,6 +185,31 @@ export function FoodOperationsPage() {
       </header>
 
       {error && <p className="border-b border-error/30 bg-error/10 px-4 py-2 text-caption text-error">{error}</p>}
+
+      {/* Over the board, not instead of it: the tickets are still behind
+          this, and closing it puts the operator back exactly where they
+          were rather than at the top of a board they had scrolled. */}
+      {menuOpen && (
+        <div className="fixed inset-0 z-40 flex flex-col bg-surface-0">
+          <header className="flex items-center gap-3 border-b border-border-subtle px-4 py-3">
+            <div className="min-w-0">
+              <h2 className="text-body font-semibold text-fg">Menu</h2>
+              <p className="text-meta text-fg-muted">
+                What you sell, what it costs, and what can be added to it. Your agent takes orders from exactly this.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => { setMenuOpen(false); void load(); }}
+              className="ml-auto flex shrink-0 items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2"
+            >
+              <X size={14} aria-hidden />
+              Back to the board
+            </button>
+          </header>
+          <MenuEditor />
+        </div>
+      )}
 
       {/* On the board rather than buried in Settings, because these are the
           decisions an owner changes while looking at their own service -
