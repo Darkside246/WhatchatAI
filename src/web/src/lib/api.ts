@@ -2308,6 +2308,12 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ planKey }),
     }),
+  /** Gives a trialing business more days. Refused for a subscription that is not TRIALING - there is no trial to extend. */
+  extendBusinessTrial: (businessId: string, days: number) =>
+    request<{ subscription: { trialEndsAt: string | null } }>(`/billing/developer/businesses/${businessId}/trial`, {
+      method: 'PATCH',
+      body: JSON.stringify({ days }),
+    }),
 
   // ── Payment providers (developer-only, Section 73-74) ───────────────────────
   listPaymentProviders: () =>

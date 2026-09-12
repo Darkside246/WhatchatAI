@@ -519,14 +519,16 @@ const SUBSCRIPTION_STATUS_STYLE: Record<string, string> = {
 
 /** One row in the Accounts table - phone number as the real identifier, a real trial/plan status, and the manual "change plan" override this feature exists for. */
 function PlatformAccountRow({
-  account, plans, busy, onChangePlan,
+  account, plans, busy, onChangePlan, onExtendTrial,
 }: {
   account: DeveloperAccount;
   plans: DeveloperPlan[];
   busy: boolean;
   onChangePlan: (businessId: string, planKey: string) => Promise<void>;
+  onExtendTrial: (businessId: string, days: number) => Promise<void>;
 }) {
   const [selectedPlanKey, setSelectedPlanKey] = useState(account.planKey ?? '');
+  const [extendDays, setExtendDays] = useState('7');
 
   return (
     <tr className="border-b border-border-subtle last:border-0">
@@ -569,6 +571,35 @@ function PlatformAccountRow({
             >
               {busy ? 'Saving…' : 'Change plan'}
             </button>
+            {/*
+              Only for a subscription that is actually TRIALING. There is no
+              trial to extend on a paid or lapsed one, and the server refuses
+              it - offering the control anyway would be offering something
+              that cannot work.
+            */}
+            {account.subscriptionStatus === 'TRIALING' && (
+              <>
+                <select
+                  value={extendDays}
+                  onChange={(e) => setExtendDays(e.target.value)}
+                  disabled={busy}
+                  aria-label="Days to extend the trial by"
+                  className="rounded-lg border border-border-subtle bg-surface-2 px-2 py-1 text-caption text-fg disabled:opacity-50"
+                >
+                  {['7', '14', '30', '60'].map((days) => (
+                    <option key={days} value={days}>+{days}d</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void onExtendTrial(account.businessId!, Number(extendDays))}
+                  className="rounded-lg border border-border-subtle px-2 py-1 text-caption font-medium text-fg-secondary hover:bg-surface-3 disabled:opacity-50"
+                >
+                  Extend trial
+                </button>
+              </>
+            )}
           </div>
         ) : (
           <span className="text-fg-muted">No business</span>
@@ -1464,6 +1495,7 @@ export function DeveloperControlPlanePage() {
   const [oversightThresholds, setOversightThresholds] = useState<OversightThresholdsDto | null>(null);
   const [platformAccounts, setPlatformAccounts] = useState<DeveloperAccount[]>([]);
   const [changingPlanForBusinessId, setChangingPlanForBusinessId] = useState<string | null>(null);
+  const [planChangeError, setPlanChangeError] = useState<string | null>(null);
   const [catalogOpen, setCatalogOpen] = useState(true);
   const [platformTrials, setPlatformTrials] = useState<Awaited<ReturnType<typeof api.getPlatformTrials>>['trials'] | null>(null);
   const [securityEvents, setSecurityEvents] = useState<Awaited<ReturnType<typeof api.getPlatformSecurityEvents>>['events'] | null>(null);
@@ -1589,10 +1621,31 @@ export function DeveloperControlPlanePage() {
    */
   const handleChangeBusinessPlan = async (businessId: string, planKey: string) => {
     setChangingPlanForBusinessId(businessId);
+    setPlanChangeError(null);
     try {
       await api.setBusinessPlan(businessId, planKey);
       const { accounts } = await api.getDeveloperAccounts();
       setPlatformAccounts(accounts);
+    } catch (error) {
+      // Previously swallowed: the call site void's this promise, so a
+      // rejection went nowhere and the button simply returned to idle with
+      // nothing saved and nothing said. An admin cannot tell a failed
+      // write from a no-op.
+      setPlanChangeError(error instanceof Error ? error.message : 'Could not change the plan.');
+    } finally {
+      setChangingPlanForBusinessId(null);
+    }
+  };
+
+  const handleExtendTrial = async (businessId: string, days: number) => {
+    setChangingPlanForBusinessId(businessId);
+    setPlanChangeError(null);
+    try {
+      await api.extendBusinessTrial(businessId, days);
+      const { accounts } = await api.getDeveloperAccounts();
+      setPlatformAccounts(accounts);
+    } catch (error) {
+      setPlanChangeError(error instanceof Error ? error.message : 'Could not extend the trial.');
     } finally {
       setChangingPlanForBusinessId(null);
     }
@@ -1763,6 +1816,11 @@ export function DeveloperControlPlanePage() {
                 <p className="text-caption text-fg-muted">Loading…</p>
               ) : (
                 <div className="overflow-x-auto">
+                  {planChangeError && (
+                    <p role="alert" className="mb-3 rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-caption text-error">
+                      {planChangeError}
+                    </p>
+                  )}
                   <table className="w-full text-left text-caption">
                     <thead>
                       <tr className="border-b border-border-subtle text-fg-muted">
@@ -1771,7 +1829,7 @@ export function DeveloperControlPlanePage() {
                         <th className="py-2 pr-4 font-medium">Business</th>
                         <th className="py-2 pr-4 font-medium">Status</th>
                         <th className="py-2 pr-4 font-medium">Plan</th>
-                        <th className="py-2 font-medium">Change plan</th>
+                        <th className="py-2 font-medium">Plan &amp; trial</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1782,6 +1840,7 @@ export function DeveloperControlPlanePage() {
                           plans={plans}
                           busy={changingPlanForBusinessId === account.businessId}
                           onChangePlan={handleChangeBusinessPlan}
+                          onExtendTrial={handleExtendTrial}
                         />
                       ))}
                     </tbody>

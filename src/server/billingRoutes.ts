@@ -11,7 +11,13 @@ import { getTopupOffer, createTopupCheckout, verifyTopupPayment, NoTopupOfferErr
 import { getMemoryTopupOffer, createMemoryTopupCheckout, verifyMemoryTopupPayment, NoMemoryTopupOfferError, MemoryTopupVerificationError } from '../services/billing/aiMemoryTopupService.js';
 import { getUpgradeOffer, createUpgradeCheckout, verifyUpgradePayment, NoUpgradeOfferError, UpgradeVerificationError } from '../services/billing/planUpgradeService.js';
 import { PAYMENT_PROVIDER_KINDS, isProviderConfigured, isProviderEnabled, isProviderUsable } from '../services/billing/paymentProviderStatusService.js';
-import { listAllAccounts, manuallyChangeBusinessPlan, BusinessHasNoSubscriptionError } from '../services/platform/developerAccountsService.js';
+import {
+  listAllAccounts,
+  manuallyChangeBusinessPlan,
+  extendBusinessTrial,
+  BusinessHasNoSubscriptionError,
+  NotTrialingError,
+} from '../services/platform/developerAccountsService.js';
 import { pool } from '../db/pool.js';
 
 const router = Router();
@@ -422,6 +428,13 @@ router.get('/developer/accounts', requireAuth, requireDeveloper, async (_req, re
 });
 
 const manualPlanChangeSchema = z.object({ planKey: z.string().trim().min(1).max(100) });
+/**
+ * Bounded at 365 days. An extension is meant to cover a support issue or an
+ * evaluation that ran long, and an unbounded number here would let a typo
+ * hand out a decade of free service with no record that anything unusual
+ * happened.
+ */
+const trialExtensionSchema = z.object({ days: z.number().int().min(1).max(365) });
 
 /**
  * The manual override identified as a real gap: changePlan() previously
@@ -448,6 +461,31 @@ router.patch('/developer/businesses/:businessId/plan', requireAuth, requireDevel
   } catch (error) {
     if (error instanceof BusinessHasNoSubscriptionError) return res.status(409).json({ error: 'NO_ACTIVE_SUBSCRIPTION', message: error.message });
     if (error instanceof Error && error.message.startsWith('Unknown plan key')) return res.status(404).json({ error: 'PLAN_NOT_FOUND' });
+    throw error;
+  }
+});
+
+router.patch('/developer/businesses/:businessId/trial', requireAuth, requireDeveloper, async (req, res) => {
+  const businessId = z.string().uuid().safeParse(req.params.businessId);
+  if (!businessId.success) return res.status(400).json({ error: 'INVALID_BUSINESS_ID' });
+  const parsed = trialExtensionSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_TRIAL_EXTENSION', details: parsed.error.flatten() });
+
+  try {
+    const subscription = await extendBusinessTrial(businessId.data, parsed.data.days);
+    const auth = res.locals.auth as AuthContext;
+    // Audited like the manual plan change beside it: giving away service
+    // time is a real commercial decision and needs to be attributable.
+    await securityAuditLogRepository.record({
+      businessId: businessId.data,
+      eventType: 'subscription_trial_extended',
+      severity: 'warning',
+      rawMetadata: { changedBy: auth.userId, days: parsed.data.days, subscriptionId: subscription.id, trialEndsAt: subscription.trialEndsAt },
+    });
+    return res.status(200).json({ subscription });
+  } catch (error) {
+    if (error instanceof BusinessHasNoSubscriptionError) return res.status(409).json({ error: 'NO_LIVE_SUBSCRIPTION', message: error.message });
+    if (error instanceof NotTrialingError) return res.status(409).json({ error: 'NOT_TRIALING', message: error.message });
     throw error;
   }
 });

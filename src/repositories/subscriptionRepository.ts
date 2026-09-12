@@ -133,6 +133,64 @@ export class SubscriptionRepository {
     );
   }
 
+  /**
+   * Creates an ACTIVE subscription for a business that has none, for a
+   * payment settled outside the automated checkout.
+   *
+   * ACTIVE, not TRIALING like ensureDefault: this records a business that
+   * has actually paid (cash, a transfer, a webhook that never arrived), and
+   * putting them on a trial clock that will expire and lock them out would
+   * misrepresent what happened.
+   *
+   * Same ON CONFLICT guard as ensureDefault against the one-live-per-business
+   * partial index, so two admins clicking at once is a handled outcome
+   * rather than a constraint violation - the loser reads back the winner's
+   * row and the caller's next changePlan() applies to it either way.
+   */
+  async createManualActive(businessId: string, planId: string): Promise<SubscriptionRecord> {
+    const { rows } = await this.db.query<SubscriptionRow>(
+      `INSERT INTO subscriptions
+         (business_id, plan_id, status, current_period_start, current_period_end, trial_ends_at)
+       VALUES ($1, $2, 'ACTIVE', now(), now() + interval '1 month', NULL)
+       ON CONFLICT (business_id) WHERE status = ANY(ARRAY['ACTIVE','TRIALING','PAST_DUE','PAUSED'])
+       DO NOTHING
+       RETURNING *`,
+      [businessId, planId],
+    );
+    const row = rows[0];
+    if (row) return toRecord(row);
+
+    const existing = await this.findLiveByBusiness(businessId);
+    if (!existing) throw new Error('subscriptions insert conflicted but no live subscription was found');
+    return existing;
+  }
+
+  /**
+   * Pushes a trial's end date out by a number of days, for an admin giving
+   * someone more time.
+   *
+   * Extends from whichever is LATER - the existing end date or now - so
+   * "give them 7 more days" means seven days of usable trial in both cases:
+   * adding to an end date that has already passed would grant a trial that
+   * is still expired. Only ever moves the date forward.
+   *
+   * Restricted to a TRIALING subscription. Setting a trial end on an ACTIVE
+   * paid subscription would be meaningless at best and, since expiry sweeps
+   * read trial_ends_at, a way to cancel a paying customer at worst.
+   */
+  async extendTrial(id: string, days: number): Promise<SubscriptionRecord | null> {
+    const { rows } = await this.db.query<SubscriptionRow>(
+      `UPDATE subscriptions
+       SET trial_ends_at = GREATEST(COALESCE(trial_ends_at, now()), now()) + ($2 || ' days')::interval,
+           current_period_end = GREATEST(COALESCE(trial_ends_at, now()), now()) + ($2 || ' days')::interval,
+           updated_at = now()
+       WHERE id = $1 AND status = 'TRIALING'
+       RETURNING *`,
+      [id, days],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
   async updateStatus(id: string, status: SubscriptionStatus): Promise<void> {
     const cancelledAtClause = status === 'CANCELLED' ? ', cancelled_at = now()' : '';
     await this.db.query(`UPDATE subscriptions SET status = $2, updated_at = now()${cancelledAtClause} WHERE id = $1`, [

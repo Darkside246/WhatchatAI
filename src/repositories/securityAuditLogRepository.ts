@@ -75,6 +75,8 @@ export type SecurityEventType =
   | 'vertical_assigned'
   | 'platform_setting_updated'
   | 'subscription_plan_manually_changed'
+  /** An admin gave a business more trial time from the developer control plane. */
+  | 'subscription_trial_extended'
   | 'bi_settings_enabled'
   | 'bi_settings_disabled'
   | 'bi_insight_approved'

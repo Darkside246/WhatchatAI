@@ -106,6 +106,10 @@ export async function listAllAccounts(): Promise<DeveloperAccountSummary[]> {
   });
 }
 
+/**
+ * Retained for callers that still distinguish it, but manuallyChangeBusinessPlan
+ * no longer throws it - see that function's own comment.
+ */
 export class BusinessHasNoSubscriptionError extends Error {}
 
 /**
@@ -119,11 +123,48 @@ export async function manuallyChangeBusinessPlan(businessId: string, planKey: st
   const plan = await planRepository.findByKey(planKey);
   if (!plan) throw new Error(`Unknown plan key: ${planKey}`);
 
-  const subscription = await subscriptionRepository.findLiveByBusiness(businessId);
-  if (!subscription) throw new BusinessHasNoSubscriptionError('This business has no active/trialing subscription to change.');
+  // A business with NO live subscription is not an error here - it is the
+  // main case this feature exists for. Someone who paid out-of-band and was
+  // never put on a plan by the automated checkout has nothing to "change",
+  // and refusing them made the button unusable on precisely the accounts
+  // its own description names ("a payment that never came through the
+  // automated checkout"). Seen in production: every account showing "No
+  // subscription" failed with a 409 the UI did not even display.
+  const subscription =
+    (await subscriptionRepository.findLiveByBusiness(businessId)) ??
+    (await subscriptionRepository.createManualActive(businessId, plan.id));
 
   await subscriptionRepository.changePlan(subscription.id, plan.id);
   const updated = await subscriptionRepository.findById(subscription.id);
   if (!updated) throw new Error('subscription vanished immediately after changePlan()');
   return { subscription: updated, planName: plan.name };
+}
+
+export class NotTrialingError extends Error {}
+
+/**
+ * Gives a business more trial time - an admin decision, not an automated
+ * one, for someone who lost days to a support issue or is mid-evaluation
+ * when the clock runs out.
+ *
+ * TRIALING only. Writing a trial end date onto a paying subscription would
+ * be meaningless at best; at worst the expiry sweep reads trial_ends_at, so
+ * it would be a way to cancel a paying customer by accident. A business
+ * whose trial has already lapsed into another status is a plan change, not
+ * an extension - see manuallyChangeBusinessPlan above.
+ *
+ * The extension is measured from whichever is later, the current end date
+ * or now, so "seven more days" always means seven usable days rather than
+ * seven days added to a date that has already passed.
+ */
+export async function extendBusinessTrial(businessId: string, days: number): Promise<SubscriptionRecord> {
+  const subscription = await subscriptionRepository.findLiveByBusiness(businessId);
+  if (!subscription) throw new BusinessHasNoSubscriptionError('This business has no live subscription.');
+  if (subscription.status !== 'TRIALING') {
+    throw new NotTrialingError(`This subscription is ${subscription.status}, not TRIALING - there is no trial to extend.`);
+  }
+
+  const extended = await subscriptionRepository.extendTrial(subscription.id, days);
+  if (!extended) throw new NotTrialingError('The subscription stopped being TRIALING before the extension was applied.');
+  return extended;
 }
