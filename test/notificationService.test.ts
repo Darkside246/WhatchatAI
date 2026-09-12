@@ -12,7 +12,8 @@ import {
   isNotificationNotFoundError,
 } from '../src/services/notificationService.js';
 import { NotificationRepository } from '../src/repositories/notificationRepository.js';
-import { resetDatabase, createTestBusiness } from './helpers.js';
+import { WhatsAppChatRepository } from '../src/repositories/whatsappChatRepository.js';
+import { resetDatabase, createTestBusiness, createTestAccount } from './helpers.js';
 
 const device = { ipAddress: '127.0.0.1', userAgent: 'vitest-agent' };
 
@@ -144,6 +145,59 @@ describe('notificationService (real, per-user, never a shared broadcast row)', (
       const repo = new NotificationRepository(pool);
       const sinceIso = new Date(Date.now() - 60_000).toISOString();
       expect(await repo.existsForBusinessSince(businessId, 'AI_BUDGET_EXCEEDED', sinceIso)).toBe(false);
+    });
+  });
+
+  /**
+   * "Every time I log in old notifications appear." The list returned every
+   * non-dismissed row ever created, so the same backlog came back on every
+   * sign-in and every refresh - already read, and often about conversations
+   * long since dealt with.
+   */
+  describe('only what is still outstanding', () => {
+    it('does not bring a read notification back', async () => {
+      const read = await notifyUser(ownerId, { businessId, type: 'NEW_LEAD', severity: 'info', title: 'Seen already' });
+      await notifyUser(ownerId, { businessId, type: 'NEW_LEAD', severity: 'info', title: 'Still new' });
+      await markNotificationRead(ownerId, read.id);
+
+      const { notifications } = await listNotifications(businessId, ownerId);
+      expect(notifications.map((n) => n.title)).toEqual(['Still new']);
+    });
+
+    it('drops a chat notification once that chat has no unread messages left', async () => {
+      const accountId = await createTestAccount(businessId);
+      const chatRepository = new WhatsAppChatRepository(pool);
+      const answered = await chatRepository.upsertFromWhatsApp({
+        businessId,
+        whatsappAccountId: accountId,
+        chatJid: '15550001212@s.whatsapp.net',
+        jidKind: 'individual',
+        chatType: 'individual',
+        unreadCount: 0,
+      });
+      const waiting = await chatRepository.upsertFromWhatsApp({
+        businessId,
+        whatsappAccountId: accountId,
+        chatJid: '15550001213@s.whatsapp.net',
+        jidKind: 'individual',
+        chatType: 'individual',
+        unreadCount: 2,
+      });
+
+      await notifyUser(ownerId, { businessId, type: 'HUMAN_HANDOFF', severity: 'warning', title: 'Handled', targetType: 'chat', targetId: answered.id });
+      await notifyUser(ownerId, { businessId, type: 'HUMAN_HANDOFF', severity: 'warning', title: 'Waiting', targetType: 'chat', targetId: waiting.id });
+
+      const { notifications } = await listNotifications(businessId, ownerId);
+      expect(notifications.map((n) => n.title)).toEqual(['Waiting']);
+    });
+
+    it('keeps a notification that does not point at a chat', async () => {
+      // Billing, security and system notices have no chat to check, so the
+      // unread-messages rule must never silently swallow them.
+      await notifyUser(ownerId, { businessId, type: 'SYSTEM', severity: 'info', title: 'Plan renewed' });
+
+      const { notifications } = await listNotifications(businessId, ownerId);
+      expect(notifications.map((n) => n.title)).toEqual(['Plan renewed']);
     });
   });
 });

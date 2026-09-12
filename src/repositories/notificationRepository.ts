@@ -122,11 +122,41 @@ export class NotificationRepository {
     return rows[0]?.exists ?? false;
   }
 
+  /**
+   * What is actually outstanding for this person right now.
+   *
+   * This used to return every non-dismissed notification ever created, so
+   * the same backlog reappeared on every login and every refresh - already
+   * read, and often about conversations long since dealt with. Two rules
+   * now decide what is still live:
+   *
+   *   1. UNREAD. A notification that has been read has done its job.
+   *      Showing it again the next time someone signs in is not history, it
+   *      is noise - and the row survives either way, so nothing is lost.
+   *
+   *   2. STILL UNANSWERED. A notification pointing at a chat with no unread
+   *      messages left is stale by definition: the thing it was raised
+   *      about has been handled. Notifications that do not point at a chat
+   *      (billing, security, system) have nothing to check and always pass.
+   *
+   * Both are read-side filters. Nothing is deleted or marked, so the
+   * underlying rows remain a complete record for anything that wants the
+   * full history.
+   */
   async listForUser(businessId: string, userId: string, limit = 50): Promise<NotificationRecord[]> {
     const { rows } = await this.db.query<NotificationRow>(
-      `SELECT * FROM notifications
-       WHERE business_id = $1 AND user_id = $2 AND dismissed_at IS NULL
-       ORDER BY created_at DESC
+      `SELECT n.* FROM notifications n
+       WHERE n.business_id = $1 AND n.user_id = $2
+         AND n.dismissed_at IS NULL
+         AND n.read_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM whatsapp_chats c
+           WHERE n.target_type = 'chat'
+             AND c.id = n.target_id
+             AND c.business_id = n.business_id
+             AND (c.unread_count = 0 OR c.deleted_at IS NOT NULL)
+         )
+       ORDER BY n.created_at DESC
        LIMIT $3`,
       [businessId, userId, limit],
     );

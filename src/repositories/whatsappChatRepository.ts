@@ -139,6 +139,42 @@ export interface UpsertChatInput {
   isPinned?: boolean;
 }
 
+/**
+ * A chat is in HUMAN_TAKEOVER because a person is ALREADY working it, not
+ * because one is needed.
+ *
+ * pauseAiForManualReply and pauseAiForDashboardReply flip a chat into
+ * HUMAN_TAKEOVER the moment an operator types - on the linked phone or in
+ * AURA's own composer - so the AI does not talk over them. Both are
+ * transient: a trailing-edge timer returns the chat to AI_ACTIVE once the
+ * operator stops (HUMAN_TAKEOVER_RESUME_DELAY_MS, 20s by default).
+ *
+ * But the urgent-handover pill and "What to do next" both read the same
+ * ai_mode column, so the act of replying raised an alert about the very
+ * conversation the operator was in the middle of answering - complete with
+ * a chime. That is the "no sound should play when I type" complaint, and it
+ * is fixed here rather than in the browser: the alert should not exist at
+ * all, not merely be silent.
+ *
+ * BOUNDED BY TIME, on purpose. If the resume job never runs (a worker
+ * restart at the wrong moment), the chat would otherwise stay in this state
+ * and stay hidden forever - a real conversation quietly dropped. After an
+ * hour the exclusion lapses and it surfaces normally, which is the honest
+ * outcome: something did go wrong, and an operator should see it.
+ */
+function selfHandledClause(alias = ''): string {
+  const p = alias ? `${alias}.` : '';
+  // COALESCE, not a bare AND chain: ai_mode_source is nullable, and in SQL
+  // `NOT (NULL AND true)` is NULL rather than true - so every chat that had
+  // never been given a source would have been filtered out of both queues
+  // instead of just the self-handled ones.
+  return `COALESCE(
+             ${p}ai_mode_source = ANY(ARRAY['manual_reply_detected','dashboard_reply_detected'])
+             AND ${p}ai_mode_set_at > now() - interval '1 hour',
+             false
+           )`;
+}
+
 export class WhatsAppChatRepository {
   constructor(private readonly db: Queryable) {}
 
@@ -595,6 +631,7 @@ export class WhatsAppChatRepository {
        WHERE business_id = $1 AND ai_mode = 'HUMAN_TAKEOVER' AND deleted_at IS NULL
          AND unread_count > 0
          AND chat_type <> 'newsletter'
+         AND NOT (${selfHandledClause()})
        ORDER BY updated_at ASC LIMIT $2`,
       [businessId, limit],
     );
@@ -626,6 +663,7 @@ export class WhatsAppChatRepository {
          -- incomingMessagesWorker.ts, which is what stops new ones arriving
          -- in this state at all.
          AND c.chat_type <> 'newsletter'
+         AND NOT (${selfHandledClause('c')})
        ORDER BY c.updated_at DESC`,
       [businessId],
     );

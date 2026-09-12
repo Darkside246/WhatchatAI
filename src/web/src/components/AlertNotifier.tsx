@@ -113,6 +113,22 @@ export function AlertNotifier() {
   const [showIdentity, setShowIdentity] = useState<boolean>(getAlertShowIdentity);
   const [rotationIndex, setRotationIndex] = useState(0);
   const seenChatIds = useRef<Set<string>>(new Set());
+  /**
+   * Whether a poll has completed yet on this mount.
+   *
+   * seenChatIds starts empty, so on the FIRST poll after a page load every
+   * outstanding alert looks new and the chime fired for the whole backlog -
+   * a burst of sound on every login and every refresh, announcing nothing
+   * that had just happened. The first poll seeds the set silently; only
+   * what arrives after that is genuinely news.
+   */
+  const hasPolled = useRef(false);
+  /**
+   * The chat currently open, read inside the poll without making it a
+   * dependency - re-running the poll effect on every navigation would reset
+   * the backoff and re-seed seenChatIds.
+   */
+  const openChatIdRef = useRef<string | null>(null);
 
   // Appearance -> Alerts writes this same key and dispatches this same
   // event (see SettingsRoute.tsx's AlertBannerCard) - the exact pattern
@@ -134,8 +150,14 @@ export function AlertNotifier() {
       try {
         const { alerts: fetched } = await api.listHumanTakeoverAlerts(showIdentity);
         if (cancelled) return;
-        const hasNewAlert = fetched.some((alert) => !seenChatIds.current.has(alert.chatId));
-        if (hasNewAlert) playChime();
+        // Never for a conversation already on screen: the operator is
+        // looking straight at it, and a sound about the thing in front of
+        // you is pure noise. Never on the first poll either - see hasPolled.
+        const hasNewAlert = fetched.some(
+          (alert) => !seenChatIds.current.has(alert.chatId) && alert.chatId !== openChatIdRef.current,
+        );
+        if (hasNewAlert && hasPolled.current) playChime();
+        hasPolled.current = true;
         seenChatIds.current = new Set(fetched.map((alert) => alert.chatId));
         setAlerts(fetched);
       } catch {
@@ -166,6 +188,7 @@ export function AlertNotifier() {
   // every other dismissal here, so a genuinely NEW handoff on the same chat
   // raises the pill again rather than staying permanently silenced.
   const openChatId = /^\/chats\/([^/]+)$/.exec(location.pathname)?.[1] ?? null;
+  openChatIdRef.current = openChatId;
   useEffect(() => {
     if (!openChatId) return;
     const alert = alerts.find((candidate) => candidate.chatId === openChatId);

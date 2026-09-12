@@ -166,6 +166,73 @@ describe('securityAlertService (Zero-Leak Rule: no *customer* message text, cont
     expect(alert?.customerPhoneNumber).toBe('+15550009999');
   });
 
+  /**
+   * "When I the owner type, no notification sound should play." The cause
+   * was not the sound: pauseAiForDashboardReply/pauseAiForManualReply put a
+   * chat into HUMAN_TAKEOVER the moment an operator starts typing, so the
+   * act of replying raised an alert about the very conversation being
+   * answered. Fixed by not having the alert at all - a chat a person is
+   * already working is not a chat waiting for one.
+   */
+  describe('a chat the operator is already handling is not waiting on a human', () => {
+    it('is excluded while the operator is mid-reply', async () => {
+      const chatRepository = new WhatsAppChatRepository(pool);
+      const chat = await chatRepository.upsertFromWhatsApp({
+        businessId,
+        whatsappAccountId: accountId,
+        chatJid: '15550004321@s.whatsapp.net',
+        jidKind: 'individual',
+        chatType: 'individual',
+        unreadCount: 4,
+      });
+      await chatRepository.pauseAiForDashboardReply(chat.id);
+
+      expect(await listHumanTakeoverAlerts(businessId)).toEqual([]);
+      expect(await chatRepository.listNeedingHumanTakeover(businessId)).toEqual([]);
+    });
+
+    /**
+     * The exclusion is bounded. If the auto-resume job never runs, a real
+     * conversation would otherwise stay hidden forever - so after an hour
+     * it surfaces normally, because at that point something genuinely did
+     * go wrong and an operator needs to see it.
+     */
+    it('surfaces again once it has been stuck in that state for an hour', async () => {
+      const chatRepository = new WhatsAppChatRepository(pool);
+      const chat = await chatRepository.upsertFromWhatsApp({
+        businessId,
+        whatsappAccountId: accountId,
+        chatJid: '15550004322@s.whatsapp.net',
+        jidKind: 'individual',
+        chatType: 'individual',
+        unreadCount: 4,
+      });
+      await chatRepository.pauseAiForDashboardReply(chat.id);
+      await pool.query("UPDATE whatsapp_chats SET ai_mode_set_at = now() - interval '2 hours' WHERE id = $1", [chat.id]);
+
+      const alerts = await listHumanTakeoverAlerts(businessId);
+      expect(alerts.map((alert) => alert.chatId)).toContain(chat.id);
+    });
+
+    it('still surfaces a chat escalated for a real reason', async () => {
+      const chatRepository = new WhatsAppChatRepository(pool);
+      const chat = await chatRepository.upsertFromWhatsApp({
+        businessId,
+        whatsappAccountId: accountId,
+        chatJid: '15550004323@s.whatsapp.net',
+        jidKind: 'individual',
+        chatType: 'individual',
+        unreadCount: 4,
+      });
+      // Nobody is working this one - the AI handed it over because it could
+      // not answer.
+      await chatRepository.setAiMode(chat.id, 'HUMAN_TAKEOVER', 'no_agent');
+
+      const alerts = await listHumanTakeoverAlerts(businessId);
+      expect(alerts.map((alert) => alert.chatId)).toContain(chat.id);
+    });
+  });
+
   it('falls back to the ordinal Line N label when the account has neither a name nor a phone number', async () => {
     const accountRepository = new WhatsAppAccountRepository(pool);
     const bareAccount = await accountRepository.upsertConnected({
