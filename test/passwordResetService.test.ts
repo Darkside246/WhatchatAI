@@ -43,9 +43,17 @@ describe('password reset (real Postgres, real Argon2 credentials)', () => {
     vi.restoreAllMocks();
   });
 
-  /** Pulls the token back out of the email, the way a person clicking the link would. */
+  /**
+   * Pulls the token out of the RESET email specifically, the way a person
+   * clicking that link would.
+   *
+   * Matched on the reset path rather than taken from the last message:
+   * signing up also sends a welcome email, fire-and-forget, so the two can
+   * land in either order and "the last one" is sometimes the welcome.
+   */
   function tokenFromLastEmail(): string {
-    const match = /token=([^\s&]+)/.exec(sentBodies[sentBodies.length - 1] ?? '');
+    const resetEmail = [...sentBodies].reverse().find((body) => body.includes('/reset-password?token='));
+    const match = /reset-password\?token=([^\s&]+)/.exec(resetEmail ?? '');
     if (!match) throw new Error('no reset link was sent');
     return decodeURIComponent(match[1]!);
   }
@@ -136,7 +144,10 @@ describe('password reset (real Postgres, real Argon2 credentials)', () => {
     it('answers an unknown address the same way, and sends nothing', async () => {
       const result = await requestPasswordReset('nobody@example.com');
       expect(result.channel).toBeNull();
-      expect(sentBodies).toHaveLength(0);
+      // No RESET email, specifically. The signup in beforeEach sends a
+      // welcome email fire-and-forget, so it can arrive at any point and
+      // "no email at all" would fail for the wrong reason.
+      expect(sentBodies.filter((body) => body.includes('/reset-password?token='))).toHaveLength(0);
       const { rows } = await pool.query('SELECT 1 FROM password_reset_tokens');
       expect(rows).toHaveLength(0);
     });
