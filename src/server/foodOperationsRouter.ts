@@ -1,9 +1,12 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { pool } from '../db/pool.js';
-import { FoodOperationsRepository, IllegalAssignmentTransitionError, IllegalPaymentTransitionError, IllegalStageTransitionError, KitchenPaymentGateError, OrderAlreadyAssignedError, OrderNotDeliverableError, QcPhotoRequiredError, UnknownMenuCategoryError } from '../repositories/foodOperationsRepository.js';
+import { FoodOperationsRepository, PaymentMethodNotAvailableError, IllegalAssignmentTransitionError, IllegalPaymentTransitionError, IllegalStageTransitionError, KitchenPaymentGateError, OrderAlreadyAssignedError, OrderNotDeliverableError, QcPhotoRequiredError, UnknownMenuCategoryError } from '../repositories/foodOperationsRepository.js';
 import { DRIVER_ASSIGNMENT_STATES } from '../domain/food/driverAssignment.js';
 import { importMenu } from '../services/food/menuImportService.js';
+import { FOOD_PAYMENT_METHODS, PAYMENT_ALIAS_KINDS, PAYMENT_METHOD_CAPABILITIES, availableMethods } from '../domain/food/paymentMethods.js';
+import { sendPaymentRequest } from '../services/food/sendPaymentRequest.js';
+import { confirmationGuidance } from '../services/food/paymentRequest.js';
 import { DEFAULT_NOTIFICATION_TEMPLATES, FOOD_NOTIFICATION_EVENTS, NOTIFICATION_MERGE_FIELDS, type FoodNotificationEvent, type NotificationOverrides } from '../services/food/orderNotifications.js';
 import { raisedFindings } from '../domain/food/qcFindings.js';
 import { MAX_QC_PHOTO_BYTES, QC_PHOTO_MIME_TYPES, runQcVisionCheck } from '../services/food/qcVisionCheck.js';
@@ -46,6 +49,7 @@ router.get('/board', requirePermission('food.view'), async (_req, res) => {
   // into double figures of round trips.
   const qcChecks = await repository.latestQcCheckByOrder(auth.businessId, orders.map((order) => order.id));
   const deliveries = await repository.liveDeliveriesByOrder(auth.businessId, orders.map((order) => order.id));
+  const paymentAsks = await repository.latestPaymentRequestByOrder(auth.businessId, orders.map((order) => order.id));
 
   return res.status(200).json({
     serverTime: now.toISOString(),
@@ -65,6 +69,10 @@ router.get('/board', requirePermission('food.view'), async (_req, res) => {
       // Who has the food. Carried on the card so the board can answer the
       // only question anybody asks about an order that has left.
       const delivery = deliveries.get(order.id) ?? null;
+      // The last time we asked for the money, and whether anybody has said
+      // it arrived. On the card because the question "have we been paid"
+      // is asked of a ticket, not of a report.
+      const paymentRequest = paymentAsks.get(order.id) ?? null;
       return {
         ...order,
         elapsedSeconds: elapsed,
@@ -82,6 +90,7 @@ router.get('/board', requirePermission('food.view'), async (_req, res) => {
          */
         qcPhotoOutstanding: settings.qcPhotoRequired && order.stage === 'QUALITY_CHECK' && qc === null,
         delivery,
+        paymentRequest,
         slaBand: slaBand(elapsed, {
           ...(settings.slaWarningSeconds !== null ? { warningSeconds: settings.slaWarningSeconds } : {}),
           ...(settings.slaBreachSeconds !== null ? { breachSeconds: settings.slaBreachSeconds } : {}),
@@ -445,7 +454,32 @@ router.post('/orders/confirm', requirePermission('food.manage'), async (req, res
   // Only on a genuinely new order. A replayed confirmation has already
   // been acknowledged, and the claim would refuse it anyway - this avoids
   // the pointless round trip.
-  if (!result.confirmed.deduplicated) await sendOrderNotification(result.confirmed.order, 'ORDER_RECEIVED');
+  let paymentAsk: Awaited<ReturnType<typeof sendPaymentRequest>> | null = null;
+  if (!result.confirmed.deduplicated) {
+    await sendOrderNotification(result.confirmed.order, 'ORDER_RECEIVED');
+
+    /**
+     * And the ask for the money, in the same breath.
+     *
+     * Only when this business gates the kitchen on payment. A business
+     * that cooks first and takes money at the counter does not want its
+     * customers messaged a bank alias, and sending one anyway would read
+     * as a shop that does not trust them.
+     *
+     * Only on a method the business has starred. Asking for money through
+     * a route they did not choose is worse than not asking - so with
+     * nothing preferred and more than one method on, nothing is sent and
+     * the ticket carries an "Ask for payment" button instead.
+     *
+     * Never allowed to fail the order: sendPaymentRequest returns its
+     * outcome rather than throwing, for the same reason the notifications
+     * do. An order that has been taken has been taken.
+     */
+    const settings = await repository.getSettings(auth.businessId);
+    if (settings.paymentRequiredBeforeKitchen) {
+      paymentAsk = await sendPaymentRequest(result.confirmed.order, { requestedBy: auth.userId });
+    }
+  }
 
   // 200 rather than 201 for a replay, so a caller can tell a new ticket
   // from one it had already created.
@@ -453,6 +487,10 @@ router.post('/orders/confirm', requirePermission('food.manage'), async (req, res
     order: result.confirmed.order,
     notice: result.confirmed.notice,
     deduplicated: result.confirmed.deduplicated,
+    // Reported honestly, including why nothing went out - an operator who
+    // believes a customer was asked for money when they were not will
+    // wait all evening for a payment nobody requested.
+    ...(paymentAsk ? { paymentAsk } : {}),
   });
 });
 
@@ -1059,5 +1097,217 @@ router.post('/deliveries/:deliveryId/state', requirePermission('food.manage'), a
     throw error;
   }
 });
+
+// ── Ways of being paid ───────────────────────────────────────────────────
+
+/**
+ * What this business can be paid by, and what each method can actually do.
+ *
+ * The capabilities are sent alongside the business's own rows, because the
+ * screen has to be able to say "BiMPay lands in your app, not ours" - and
+ * that is a fact about the rail, not a setting somebody chose.
+ */
+router.get('/payment-methods', requirePermission('food.view'), async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  return res.status(200).json({
+    methods: await repository.listPaymentMethods(auth.businessId),
+    available: availableMethods().map((method) => ({ ...method, guidance: confirmationGuidance(method.key) })),
+  });
+});
+
+const paymentMethodSchema = z.object({
+  enabled: z.boolean().optional(),
+  /**
+   * Never a credential. This column exists to be read out to customers, so
+   * a secret must never be put in it - which is also why there is no
+   * "api key" or "password" field anywhere on this route.
+   */
+  alias: z.string().trim().max(200).nullish(),
+  aliasKind: z.enum(PAYMENT_ALIAS_KINDS).nullish(),
+  instructions: z.string().trim().max(1000).nullish(),
+  /** Nullable on purpose: clearing a limit is a real choice, not an omission. */
+  dailyReceiveLimitCents: z.number().int().positive().max(100_000_000).nullable().optional(),
+  monthlyReceiveLimitCents: z.number().int().positive().max(1_000_000_000).nullable().optional(),
+});
+
+/** Turning a way of being paid on or off is a commercial decision, so it sits behind food.approve. */
+router.put('/payment-methods/:method', requirePermission('food.approve'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const method = String(req.params.method ?? '');
+  if (!FOOD_PAYMENT_METHODS.includes(method as (typeof FOOD_PAYMENT_METHODS)[number])) {
+    return res.status(400).json({ error: 'UNKNOWN_PAYMENT_METHOD' });
+  }
+
+  const parsed = paymentMethodSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PAYMENT_METHOD', details: parsed.error.flatten() });
+
+  const key = method as (typeof FOOD_PAYMENT_METHODS)[number];
+  const capability = PAYMENT_METHOD_CAPABILITIES[key];
+
+  // Refused here as well as in the repository: a method switched on with
+  // no alias would send a customer a sentence with a hole in it, or send
+  // nothing at all and leave the order sitting behind the gate.
+  if (parsed.data.enabled === true && capability.needsAlias) {
+    const existing = (await repository.listPaymentMethods(auth.businessId)).find((entry) => entry.method === key);
+    const alias = parsed.data.alias ?? existing?.alias ?? null;
+    if (!alias?.trim()) {
+      return res.status(400).json({
+        error: 'ALIAS_REQUIRED',
+        // The label keeps its own capitalisation: lowercasing turned
+        // "BiMPay" into "bimpay", which reads as a typo.
+        message: `${capability.label} needs ${capability.aliasLabel ?? 'an alias'} before it can be switched on.`,
+      });
+    }
+  }
+
+  try {
+    return res.status(200).json({
+      method: await repository.savePaymentMethod(auth.businessId, key, {
+        ...(parsed.data.enabled !== undefined ? { enabled: parsed.data.enabled } : {}),
+        ...(parsed.data.alias !== undefined ? { alias: parsed.data.alias ?? null } : {}),
+        ...(parsed.data.aliasKind !== undefined ? { aliasKind: parsed.data.aliasKind ?? null } : {}),
+        ...(parsed.data.instructions !== undefined ? { instructions: parsed.data.instructions ?? null } : {}),
+        ...(parsed.data.dailyReceiveLimitCents !== undefined ? { dailyReceiveLimitCents: parsed.data.dailyReceiveLimitCents } : {}),
+        ...(parsed.data.monthlyReceiveLimitCents !== undefined ? { monthlyReceiveLimitCents: parsed.data.monthlyReceiveLimitCents } : {}),
+      }),
+    });
+  } catch (error) {
+    // 422 rather than 400: the request is well formed and the caller did
+    // nothing wrong - we simply have not built that integration yet.
+    if (error instanceof PaymentMethodNotAvailableError) {
+      return res.status(422).json({ error: 'PAYMENT_METHOD_NOT_AVAILABLE', message: error.message });
+    }
+    throw error;
+  }
+});
+
+router.post('/payment-methods/:method/preferred', requirePermission('food.approve'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const method = String(req.params.method ?? '');
+  if (!FOOD_PAYMENT_METHODS.includes(method as (typeof FOOD_PAYMENT_METHODS)[number])) {
+    return res.status(400).json({ error: 'UNKNOWN_PAYMENT_METHOD' });
+  }
+
+  const updated = await repository.setPreferredPaymentMethod(auth.businessId, method as (typeof FOOD_PAYMENT_METHODS)[number]);
+  // Null means it is not switched on. Preferring a method that is off would
+  // silently stop every ask from going out.
+  if (!updated) return res.status(409).json({ error: 'METHOD_NOT_ENABLED', message: 'Switch that method on before making it the one you offer first.' });
+  return res.status(200).json({ method: updated });
+});
+
+// ── Asking to be paid ────────────────────────────────────────────────────
+
+/**
+ * Asking the customer for the money.
+ *
+ * 200 either way, with `sent` saying what happened: the caller is an
+ * operator pressing a button, and an error page for "no method is switched
+ * on yet" tells them less than a sentence does.
+ */
+router.post('/orders/:orderId/payment-request', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const orderId = String(req.params.orderId ?? '');
+  if (!uuid.safeParse(orderId).success) return res.status(400).json({ error: 'INVALID_ORDER_ID' });
+
+  const parsed = z.object({ method: z.enum(FOOD_PAYMENT_METHODS).optional() }).safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_REQUEST', details: parsed.error.flatten() });
+
+  const order = await repository.findOrder(auth.businessId, orderId);
+  if (!order) return res.status(404).json({ error: 'ORDER_NOT_FOUND' });
+
+  const outcome = await sendPaymentRequest(order, {
+    requestedBy: auth.userId,
+    ...(parsed.data.method ? { method: parsed.data.method } : {}),
+  });
+  return res.status(200).json(outcome);
+});
+
+router.get('/orders/:orderId/payment-requests', requirePermission('food.view'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const orderId = String(req.params.orderId ?? '');
+  if (!uuid.safeParse(orderId).success) return res.status(400).json({ error: 'INVALID_ORDER_ID' });
+  return res.status(200).json({ requests: await repository.listPaymentRequests(auth.businessId, orderId) });
+});
+
+/**
+ * Somebody saw the money arrive.
+ *
+ * This is the act that opens the kitchen gate on a manual rail, so it
+ * needs food.approve - the same permission that records a payment by hand,
+ * because it IS recording a payment by hand.
+ *
+ * Both writes happen: the request is marked confirmed, and the ORDER's own
+ * payment state moves through recordPayment, which is where the state
+ * machine and the gate live. Doing the second through the existing path
+ * rather than writing payment state here is what stops an order being paid
+ * on one screen and unpaid on another.
+ */
+router.post('/payment-requests/:requestId/confirm', requirePermission('food.approve'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const requestId = String(req.params.requestId ?? '');
+  if (!uuid.safeParse(requestId).success) return res.status(400).json({ error: 'INVALID_REQUEST_ID' });
+
+  const parsed = z
+    .object({ reference: z.string().trim().max(200).optional(), note: z.string().trim().max(500).optional() })
+    .safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_CONFIRMATION', details: parsed.error.flatten() });
+
+  const confirmed = await repository.confirmPaymentRequest(
+    auth.businessId,
+    requestId,
+    auth.userId,
+    parsed.data.reference ?? null,
+  );
+  if (!confirmed) return res.status(404).json({ error: 'REQUEST_NOT_FOUND_OR_ALREADY_CONFIRMED' });
+
+  try {
+    const order = await repository.recordPayment(auth.businessId, confirmed.orderId, 'PAID', {
+      method: methodToPaymentMethod(confirmed.method),
+      reference: parsed.data.reference ?? null,
+      amountCents: confirmed.amountCents,
+      actorUserId: auth.userId,
+      actorKind: 'user',
+      note: parsed.data.note ?? null,
+      waiverReason: null,
+    });
+    const notified = order ? await sendOrderNotification(order, 'PAYMENT_CONFIRMED') : null;
+    return res.status(200).json({ request: confirmed, order, ...(notified ? { notified } : {}) });
+  } catch (error) {
+    // The request is confirmed either way - somebody genuinely saw the
+    // money. An order already marked paid is not a failure of this call.
+    if (error instanceof IllegalPaymentTransitionError) {
+      const current = await repository.findOrder(auth.businessId, confirmed.orderId);
+      return res.status(200).json({ request: confirmed, order: current, alreadySettled: true });
+    }
+    throw error;
+  }
+});
+
+/**
+ * Maps a way of being paid onto the payment-record's own method column.
+ *
+ * The two vocabularies are deliberately separate: food_orders records HOW
+ * money moved in accounting terms, while a payment method is the route a
+ * business offers. BiMPay and 1stPay are both bank transfers as far as the
+ * books are concerned.
+ */
+function methodToPaymentMethod(method: string): 'CASH' | 'BANK_TRANSFER' | 'CARD' | 'MOBILE' | 'ON_ACCOUNT' | 'OTHER' {
+  switch (method) {
+    case 'CASH':
+      return 'CASH';
+    case 'BIMPAY':
+    case 'ONE_STPAY':
+    case 'BANK_TRANSFER':
+      return 'BANK_TRANSFER';
+    case 'WIPAY':
+    case 'FAC':
+    case 'CARD_IN_PERSON':
+      return 'CARD';
+    case 'ON_ACCOUNT':
+      return 'ON_ACCOUNT';
+    default:
+      return 'OTHER';
+  }
+}
 
 export { router as foodOperationsRouter };

@@ -1,4 +1,5 @@
 import type { Queryable } from './types.js';
+import { withTransaction } from '../db/transaction.js';
 import type { FoodOrderStage, FulfilmentMethod } from '../domain/food/orderLifecycle.js';
 import { canTransition, isOpenStage, OPEN_STAGES } from '../domain/food/orderLifecycle.js';
 import type { FoodPaymentMethod, FoodPaymentState, KitchenRelease } from '../domain/food/paymentGate.js';
@@ -209,6 +210,13 @@ export interface FoodPaymentMethodRecord {
   aliasKind: PaymentAliasKind | null;
   /** The business's own wording, when ours does not suit them. */
   instructions: string | null;
+  /**
+   * What this wallet may RECEIVE. Null means nobody has told us, which is
+   * deliberately not the same as unlimited: a guessed limit produces a
+   * warning that fires wrongly, and those get ignored.
+   */
+  dailyReceiveLimitCents: number | null;
+  monthlyReceiveLimitCents: number | null;
   sortOrder: number;
 }
 
@@ -331,12 +339,15 @@ function toDelivery(row: DeliveryRow): FoodDeliveryRecord {
 interface PaymentMethodRow {
   id: string; method: FoodPaymentMethodKey; enabled: boolean; preferred: boolean;
   alias: string | null; alias_kind: PaymentAliasKind | null; instructions: string | null; sort_order: number;
+  daily_receive_limit_cents: string | null; monthly_receive_limit_cents: string | null;
 }
 
 function toPaymentMethod(row: PaymentMethodRow): FoodPaymentMethodRecord {
   return {
     id: row.id, method: row.method, enabled: row.enabled, preferred: row.preferred,
     alias: row.alias, aliasKind: row.alias_kind, instructions: row.instructions, sortOrder: row.sort_order,
+    dailyReceiveLimitCents: row.daily_receive_limit_cents === null ? null : Number(row.daily_receive_limit_cents),
+    monthlyReceiveLimitCents: row.monthly_receive_limit_cents === null ? null : Number(row.monthly_receive_limit_cents),
   };
 }
 
@@ -445,6 +456,13 @@ export class IllegalAssignmentTransitionError extends Error {}
  * gate waiting for a confirmation that can never arrive.
  */
 export class PaymentMethodNotAvailableError extends Error {}
+
+/**
+ * Internal only: rolls back the clear when the method being preferred
+ * turns out to be switched off. Never escapes the repository - the caller
+ * sees null.
+ */
+class PreferredMethodNotEnabledError extends Error {}
 
 /**
  * Raised when an order was sent to the kitchen without payment clearing.
@@ -1658,24 +1676,33 @@ export class FoodOperationsRepository {
   async savePaymentMethod(
     businessId: string,
     method: FoodPaymentMethodKey,
-    patch: { enabled?: boolean; alias?: string | null; aliasKind?: PaymentAliasKind | null; instructions?: string | null },
+    patch: {
+      enabled?: boolean; alias?: string | null; aliasKind?: PaymentAliasKind | null; instructions?: string | null;
+      dailyReceiveLimitCents?: number | null; monthlyReceiveLimitCents?: number | null;
+    },
   ): Promise<FoodPaymentMethodRecord> {
     if (patch.enabled === true && !canEnable(method)) {
       throw new PaymentMethodNotAvailableError(`${method} is not connected yet, so it cannot be switched on.`);
     }
 
     const { rows } = await this.db.query<PaymentMethodRow>(
-      `INSERT INTO food_payment_methods (business_id, method, enabled, alias, alias_kind, instructions, sort_order)
-       VALUES ($1, $2, COALESCE($3, false), $4, $5, $6,
+      `INSERT INTO food_payment_methods
+         (business_id, method, enabled, alias, alias_kind, instructions, daily_receive_limit_cents, monthly_receive_limit_cents, sort_order)
+       VALUES ($1, $2, COALESCE($3, false), $4, $5, $6, $7, $8,
          (SELECT COALESCE(MAX(sort_order), 0) + 10 FROM food_payment_methods WHERE business_id = $1))
        ON CONFLICT (business_id, method) DO UPDATE SET
          enabled = COALESCE($3, food_payment_methods.enabled),
          alias = COALESCE($4, food_payment_methods.alias),
          alias_kind = COALESCE($5, food_payment_methods.alias_kind),
          instructions = COALESCE($6, food_payment_methods.instructions),
+         daily_receive_limit_cents = COALESCE($7, food_payment_methods.daily_receive_limit_cents),
+         monthly_receive_limit_cents = COALESCE($8, food_payment_methods.monthly_receive_limit_cents),
          updated_at = now()
        RETURNING *`,
-      [businessId, method, patch.enabled ?? null, patch.alias ?? null, patch.aliasKind ?? null, patch.instructions ?? null],
+      [
+        businessId, method, patch.enabled ?? null, patch.alias ?? null, patch.aliasKind ?? null,
+        patch.instructions ?? null, patch.dailyReceiveLimitCents ?? null, patch.monthlyReceiveLimitCents ?? null,
+      ],
     );
     return toPaymentMethod(rows[0]!);
   }
@@ -1683,23 +1710,61 @@ export class FoodOperationsRepository {
   /**
    * The method offered first.
    *
-   * Cleared and set in one statement: two rows claiming to be preferred is
-   * a screen that contradicts itself, and the unique partial index would
-   * refuse the second write anyway - so the clear has to happen in the
-   * same transaction rather than hopefully just before.
+   * Two statements in one transaction, not one statement with a
+   * data-modifying CTE.
+   *
+   * The CTE version looked neater and was wrong: Postgres checks a unique
+   * index as each row's index entry is written, so clearing the old
+   * preferred row and setting the new one inside a single command leaves a
+   * moment where two rows are preferred, and the index refuses it. A
+   * transaction gives the two writes a defined order while still being
+   * all-or-nothing, which is what was actually wanted.
    */
   async setPreferredPaymentMethod(businessId: string, method: FoodPaymentMethodKey): Promise<FoodPaymentMethodRecord | null> {
-    const { rows } = await this.db.query<PaymentMethodRow>(
-      `WITH cleared AS (
-         UPDATE food_payment_methods SET preferred = false, updated_at = now()
-         WHERE business_id = $1 AND preferred = true AND method <> $2
-       )
-       UPDATE food_payment_methods SET preferred = true, updated_at = now()
-       WHERE business_id = $1 AND method = $2 AND enabled = true
-       RETURNING *`,
+    return withTransaction(async (client) => {
+      await client.query(
+        'UPDATE food_payment_methods SET preferred = false, updated_at = now() WHERE business_id = $1 AND preferred = true AND method <> $2',
+        [businessId, method],
+      );
+      const { rows } = await client.query<PaymentMethodRow>(
+        `UPDATE food_payment_methods SET preferred = true, updated_at = now()
+         WHERE business_id = $1 AND method = $2 AND enabled = true
+         RETURNING *`,
+        [businessId, method],
+      );
+      // Null rolls the clear back with it: a business that asked for an
+      // off method to be preferred must not be left with no preference at
+      // all, which would silently stop every ask going out.
+      if (!rows[0]) throw new PreferredMethodNotEnabledError();
+      return toPaymentMethod(rows[0]);
+    }).catch((error) => {
+      if (error instanceof PreferredMethodNotEnabledError) return null;
+      throw error;
+    });
+  }
+
+  /**
+   * What we have seen arrive on this method today and this month.
+   *
+   * Counted from CONFIRMED payment requests, which means it counts what
+   * came through AURA and nothing else - a payment taken at the counter on
+   * the same wallet is invisible to us. So this can only ever undercount,
+   * and every sentence built on it has to say "by our count" rather than
+   * state a total as fact.
+   */
+  async receivedOnMethod(
+    businessId: string,
+    method: FoodPaymentMethodKey,
+  ): Promise<{ todayCents: number; monthCents: number }> {
+    const { rows } = await this.db.query<{ today: string | null; month: string | null }>(
+      `SELECT
+         COALESCE(SUM(amount_cents) FILTER (WHERE confirmed_at >= date_trunc('day', now())), 0) AS today,
+         COALESCE(SUM(amount_cents) FILTER (WHERE confirmed_at >= date_trunc('month', now())), 0) AS month
+       FROM food_payment_requests
+       WHERE business_id = $1 AND method = $2 AND confirmed_at IS NOT NULL`,
       [businessId, method],
     );
-    return rows[0] ? toPaymentMethod(rows[0]) : null;
+    return { todayCents: Number(rows[0]?.today ?? 0), monthCents: Number(rows[0]?.month ?? 0) };
   }
 
   // ── Asking to be paid ──────────────────────────────────────────────────

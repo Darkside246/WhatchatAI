@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, Bike, BookOpen, Camera, ChefHat, ChevronLeft, ClipboardCheck, Eye, MessageSquare, Navigation, PackageCheck, RotateCcw, Settings2, Store, Undo2, X } from 'lucide-react';
+import { AlertTriangle, Bike, BookOpen, Camera, ChefHat, ChevronLeft, ClipboardCheck, Eye, HandCoins, MessageSquare, Navigation, PackageCheck, RotateCcw, Send, Settings2, Store, Undo2, X } from 'lucide-react';
 import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand } from '../lib/api.js';
 import { QcPhotoButton } from '../components/QcPhotoButton.js';
 import { DeliveryControl } from '../components/DeliveryControl.js';
 import { DriverRoster } from '../components/DriverRoster.js';
 import { CustomerUpdates } from '../components/CustomerUpdates.js';
+import { PaymentMethods } from '../components/PaymentMethods.js';
 import { ChatListPane } from '../components/ChatListPane.js';
 import { ChatThread } from '../components/ChatThread.js';
 import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
@@ -191,6 +192,59 @@ export function FoodOperationsPage() {
     }
   }
 
+  /** Asking the customer for the money. The amount comes off the order, never retyped. */
+  async function askForPayment(order: FoodBoardOrderDto) {
+    setBusyId(order.id);
+    setError(null);
+    try {
+      const outcome = await api.sendFoodPaymentRequest(order.id);
+      // A 200 with sent:false is a reason, not a failure - usually "no
+      // method is switched on yet", which is a sentence the operator can
+      // act on rather than an error page.
+      //
+      // A limit warning is shown even when the ask DID go out: a wallet at
+      // its daily cap stops receiving mid-service, and finding that out
+      // from a customer is finding it out too late.
+      if (!outcome.sent) setError(outcome.reason ?? 'Nothing was sent.');
+      else if (outcome.limitWarning) setError(outcome.limitWarning);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not ask for payment.');
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  /**
+   * Somebody saw the money arrive.
+   *
+   * On BiMPay this is the whole confirmation: it lands in the owner's own
+   * app in real time and nothing tells us about it, so a person saying so
+   * is the only truthful signal there is. It opens the kitchen gate.
+   */
+  async function confirmPayment(order: FoodBoardOrderDto) {
+    if (!order.paymentRequest) return;
+    const reference = window.prompt(
+      `Confirm payment for #${order.orderNumber}?\n\nA reference helps you reconcile later — leave it empty if you do not have one.`,
+      '',
+    );
+    // Cancel returns null; an empty string is a deliberate "no reference".
+    if (reference === null) return;
+
+    setBusyId(order.id);
+    setError(null);
+    try {
+      await api.confirmFoodPaymentRequest(order.paymentRequest.id, reference.trim() || undefined);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not record that payment.');
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   const byStage = useMemo(() => {
     const grouped = new Map<FoodOrderStage, FoodBoardOrderDto[]>();
     for (const column of COLUMNS) grouped.set(column.stage, []);
@@ -299,8 +353,9 @@ export function FoodOperationsPage() {
             </button>
           </div>
           <div className="grid gap-6 lg:grid-cols-2">
-            <div className="max-w-xl">
+            <div className="max-w-xl space-y-6">
               <KitchenSettings />
+              <PaymentMethods />
             </div>
             <div className="max-w-xl space-y-6">
               <DriverRoster />
@@ -355,6 +410,8 @@ export function FoodOperationsPage() {
                       onRelease={() => void release(order)}
                       onSendOutWithoutPhoto={() => void sendOutWithoutPhoto(order)}
                       onPhotoTaken={() => void load()}
+                      onAskForPayment={() => void askForPayment(order)}
+                      onConfirmPayment={() => void confirmPayment(order)}
                     />
                   ))}
                 </div>
@@ -430,7 +487,7 @@ const PAYMENT_BADGE: Record<FoodBoardOrderDto['paymentState'], { label: string; 
 };
 
 function OrderCard({
-  order, drift, busy, onBump, onSendBack, onRelease, onSendOutWithoutPhoto, onPhotoTaken,
+  order, drift, busy, onBump, onSendBack, onRelease, onSendOutWithoutPhoto, onPhotoTaken, onAskForPayment, onConfirmPayment,
 }: {
   order: FoodBoardOrderDto;
   drift: number;
@@ -440,6 +497,8 @@ function OrderCard({
   onRelease: () => void;
   onSendOutWithoutPhoto: () => void;
   onPhotoTaken: () => void;
+  onAskForPayment: () => void;
+  onConfirmPayment: () => void;
 }) {
   return (
     <article className={`rounded-lg border-2 p-2.5 ${SLA_STYLE[order.slaBand]}`}>
@@ -461,6 +520,52 @@ function OrderCard({
             <span className="font-normal opacity-80">· {order.paymentWaiverReason}</span>
           )}
         </p>
+      )}
+
+      {/* Asking for the money, and confirming it came.
+          Only while the order is genuinely unpaid - a paid ticket showing
+          a "chase the money" button is a button somebody will eventually
+          press by mistake. */}
+      {(order.paymentState === 'UNPAID' || order.paymentState === 'AWAITING_VERIFICATION') && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          {order.paymentRequest && !order.paymentRequest.confirmedAt ? (
+            <>
+              <span className="text-meta text-fg-muted">
+                Asked {new Date(order.paymentRequest.requestedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+              </span>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={onConfirmPayment}
+                className="flex items-center gap-1 rounded-md bg-success/90 px-2 py-1 text-meta font-semibold text-white hover:bg-success disabled:opacity-50"
+              >
+                <HandCoins size={11} aria-hidden />
+                Payment received
+              </button>
+              {/* A second ask is a chase, which is a normal thing to do
+                  once and an annoying thing to do four times - so it is
+                  quiet rather than prominent. */}
+              <button
+                type="button"
+                disabled={busy}
+                onClick={onAskForPayment}
+                className="text-meta text-fg-muted hover:text-fg disabled:opacity-50"
+              >
+                Ask again
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onAskForPayment}
+              className="flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-meta font-medium text-fg hover:bg-surface-2 disabled:opacity-50"
+            >
+              <Send size={11} aria-hidden />
+              Ask for payment
+            </button>
+          )}
+        </div>
       )}
 
       {order.customerName && <p className="mt-1 truncate text-caption font-medium text-fg">{order.customerName}</p>}

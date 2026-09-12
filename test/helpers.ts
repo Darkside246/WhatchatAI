@@ -63,6 +63,8 @@ const TABLES = [
   'food_payment_events',
   'food_order_deliveries',
   'food_drivers',
+  'food_payment_requests',
+  'food_payment_methods',
   'food_qc_checks',
   'food_order_events',
   'food_orders',

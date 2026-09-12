@@ -143,6 +143,9 @@ export interface FoodBoardOrderDto {
 
   /** Who has the food, once somebody has been put on it. Null when nobody has. */
   delivery: FoodDeliveryDto | null;
+
+  /** The last time the customer was asked to pay, and whether it has been confirmed. */
+  paymentRequest: FoodPaymentRequestDto | null;
 }
 
 export type FoodDeliveryState = 'ASSIGNED' | 'COLLECTED' | 'DELIVERED' | 'FAILED' | 'RETURNED' | 'CANCELLED';
@@ -228,6 +231,58 @@ export interface FoodModifierGroupDto {
   maxSelect: number | null;
   sortOrder: number;
   options: FoodModifierOptionDto[];
+}
+
+export type FoodPaymentMethodKeyDto =
+  | 'CASH' | 'BANK_TRANSFER' | 'BIMPAY' | 'ONE_STPAY' | 'WIPAY' | 'FAC' | 'CARD_IN_PERSON' | 'ON_ACCOUNT' | 'OTHER';
+
+export type FoodPaymentAliasKindDto = 'EMAIL' | 'MOBILE' | 'NICKNAME' | 'ACCOUNT_NUMBER';
+
+export interface FoodPaymentMethodDto {
+  id: string;
+  method: FoodPaymentMethodKeyDto;
+  enabled: boolean;
+  /** The one offered first. At most one per business. */
+  preferred: boolean;
+  /** What the customer pays TO. Never a credential — its whole purpose is to be read out to customers. */
+  alias: string | null;
+  aliasKind: FoodPaymentAliasKindDto | null;
+  instructions: string | null;
+  /** What this wallet may RECEIVE. Null means nobody told us — deliberately not the same as unlimited. */
+  dailyReceiveLimitCents: number | null;
+  monthlyReceiveLimitCents: number | null;
+  sortOrder: number;
+}
+
+/**
+ * What a rail can actually do, sent by the server rather than assumed here.
+ * How confirmation arrives is a fact about the method, not a setting.
+ */
+export interface FoodPaymentCapabilityDto {
+  key: FoodPaymentMethodKeyDto;
+  label: string;
+  description: string;
+  confirmation: 'MANUAL' | 'RETURN_REDIRECT' | 'SERVER_CALLBACK';
+  auraCanRequest: boolean;
+  needsAlias: boolean;
+  aliasLabel: string | null;
+  irrevocable: boolean;
+  aliasKinds: FoodPaymentAliasKindDto[];
+  guidance: string;
+}
+
+export interface FoodPaymentRequestDto {
+  id: string;
+  orderId: string;
+  method: FoodPaymentMethodKeyDto;
+  amountCents: number;
+  currency: string;
+  /** The alias as it was when the customer was told it, not as it is now. */
+  aliasAtRequest: string | null;
+  messageSent: string | null;
+  requestedAt: string;
+  confirmedAt: string | null;
+  confirmationReference: string | null;
 }
 
 export interface FoodMenuImportRowDto {
@@ -2418,6 +2473,38 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(note ? { note } : {}),
     }),
+
+  listFoodPaymentMethods: () =>
+    request<{ methods: FoodPaymentMethodDto[]; available: FoodPaymentCapabilityDto[] }>('/food-operations/payment-methods'),
+  saveFoodPaymentMethod: (
+    method: FoodPaymentMethodKeyDto,
+    patch: Partial<{
+      enabled: boolean;
+      alias: string | null;
+      aliasKind: FoodPaymentAliasKindDto | null;
+      instructions: string | null;
+      dailyReceiveLimitCents: number | null;
+      monthlyReceiveLimitCents: number | null;
+    }>,
+  ) => request<{ method: FoodPaymentMethodDto }>(`/food-operations/payment-methods/${method}`, { method: 'PUT', body: JSON.stringify(patch) }),
+  /** Fails with 409 when the method is not switched on — preferring an off method would silently stop every ask. */
+  setPreferredFoodPaymentMethod: (method: FoodPaymentMethodKeyDto) =>
+    request<{ method: FoodPaymentMethodDto }>(`/food-operations/payment-methods/${method}/preferred`, { method: 'POST' }),
+
+  /** `sent` says what actually happened; a 200 with sent:false is a reason, not a failure. */
+  sendFoodPaymentRequest: (orderId: string, method?: FoodPaymentMethodKeyDto) =>
+    request<{ sent: boolean; reason?: string; request?: FoodPaymentRequestDto; limitWarning?: string }>(
+      `/food-operations/orders/${orderId}/payment-request`,
+      { method: 'POST', body: JSON.stringify(method ? { method } : {}) },
+    ),
+  listFoodPaymentRequests: (orderId: string) =>
+    request<{ requests: FoodPaymentRequestDto[] }>(`/food-operations/orders/${orderId}/payment-requests`),
+  /** The act that opens the kitchen gate on a manual rail. */
+  confirmFoodPaymentRequest: (requestId: string, reference?: string) =>
+    request<{ request: FoodPaymentRequestDto; order: FoodBoardOrderDto | null; alreadySettled?: boolean }>(
+      `/food-operations/payment-requests/${requestId}/confirm`,
+      { method: 'POST', body: JSON.stringify(reference ? { reference } : {}) },
+    ),
 
   listFoodDrivers: (activeOnly = false) =>
     request<{ drivers: FoodDriverDto[] }>(`/food-operations/drivers${activeOnly ? '?activeOnly=true' : ''}`),

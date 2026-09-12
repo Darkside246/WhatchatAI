@@ -61,8 +61,10 @@ export function buildPaymentAsk(
     return {
       message: null,
       // Named precisely, so the fix is obvious without opening a settings
-      // page to hunt for the missing field.
-      reason: `${capability.label} needs ${capability.aliasLabel?.toLowerCase() ?? 'an alias'} before a customer can be asked to pay.`,
+      // page to hunt for the missing field. The label keeps its own
+      // capitalisation - lowercasing it turned "BiMPay" into "bimpay",
+      // which reads as a typo in a message an owner is meant to trust.
+      reason: `${capability.label} needs ${capability.aliasLabel ?? 'an alias'} before a customer can be asked to pay.`,
     };
   }
 

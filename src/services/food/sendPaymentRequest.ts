@@ -3,7 +3,7 @@ import { FoodOperationsRepository, type FoodOrderRecord, type FoodPaymentRequest
 import { WhatsAppChatRepository } from '../../repositories/whatsappChatRepository.js';
 import { whatsappOutboundMessageService } from '../whatsappOutboundMessageService.js';
 import { buildPaymentAsk } from './paymentRequest.js';
-import { PAYMENT_METHOD_CAPABILITIES } from '../../domain/food/paymentMethods.js';
+import { PAYMENT_METHOD_CAPABILITIES, type FoodPaymentMethodKey } from '../../domain/food/paymentMethods.js';
 
 const repository = new FoodOperationsRepository(pool);
 const chatRepository = new WhatsAppChatRepository(pool);
@@ -25,8 +25,50 @@ const chatRepository = new WhatsAppChatRepository(pool);
  */
 
 export type PaymentAskOutcome =
-  | { sent: true; request: FoodPaymentRequestRecord }
-  | { sent: false; reason: string; request?: FoodPaymentRequestRecord };
+  | { sent: true; request: FoodPaymentRequestRecord; limitWarning?: string }
+  | { sent: false; reason: string; request?: FoodPaymentRequestRecord; limitWarning?: string };
+
+/**
+ * Whether this order would take the wallet past what it may receive.
+ *
+ * A basic BiMPay wallet may receive BBD 750 a day. A restaurant passes that
+ * on a quiet Friday lunch, and the failure mode is the worst kind: payments
+ * simply stop arriving, mid-service, with food already cooked. Nothing here
+ * can raise the limit - but saying so before the orders stop is the
+ * difference between ringing the bank on Monday and losing a Friday night.
+ *
+ * Counts only what came through AURA, so it can undercount - which is why
+ * the sentence says "by our count" rather than stating a total as fact.
+ */
+async function limitWarningFor(
+  businessId: string,
+  method: FoodPaymentMethodKey,
+  orderTotalCents: number,
+  limits: { dailyReceiveLimitCents: number | null; monthlyReceiveLimitCents: number | null },
+): Promise<string | null> {
+  if (limits.dailyReceiveLimitCents === null && limits.monthlyReceiveLimitCents === null) return null;
+
+  const received = await repository.receivedOnMethod(businessId, method);
+  const money = (cents: number) => (cents / 100).toFixed(2);
+
+  if (limits.dailyReceiveLimitCents !== null) {
+    const after = received.todayCents + orderTotalCents;
+    if (after > limits.dailyReceiveLimitCents) {
+      return `This would put today past the ${money(limits.dailyReceiveLimitCents)} daily limit on that wallet — by our count you are at ${money(received.todayCents)}. The payment may not arrive.`;
+    }
+    // Ninety per cent: far enough ahead to do something about it, close
+    // enough that it is not crying wolf on every second order.
+    if (after > limits.dailyReceiveLimitCents * 0.9) {
+      return `Close to the ${money(limits.dailyReceiveLimitCents)} daily limit on that wallet — by our count you are at ${money(received.todayCents)}.`;
+    }
+  }
+
+  if (limits.monthlyReceiveLimitCents !== null && received.monthCents + orderTotalCents > limits.monthlyReceiveLimitCents) {
+    return `This would put the month past the ${money(limits.monthlyReceiveLimitCents)} limit on that wallet — by our count you are at ${money(received.monthCents)}.`;
+  }
+
+  return null;
+}
 
 export async function sendPaymentRequest(
   order: FoodOrderRecord,
@@ -107,7 +149,13 @@ export async function sendPaymentRequest(
       requestedBy: options.requestedBy ?? null,
     });
 
-    return { sent: true, request };
+    // Worked out after sending, never before: a wallet limit is the
+    // business's problem to solve with their bank, and refusing to ask a
+    // customer for money because of it would turn a warning into an
+    // outage.
+    const limitWarning = await limitWarningFor(order.businessId, chosen.method, order.totalCents, chosen);
+
+    return { sent: true, request, ...(limitWarning ? { limitWarning } : {}) };
   } catch (error) {
     // Returned, never raised. The order exists either way.
     return { sent: false, reason: error instanceof Error ? error.message : 'The payment request could not be sent.' };

@@ -90,12 +90,16 @@ export interface PaymentMethodCapability {
   /**
    * Whether a completed payment can be pulled back.
    *
-   * BiMPay settles in real time and is IRREVOCABLE - the Central Bank is
-   * explicit that transactions cannot be reversed. That is not a footnote:
-   * it means a refund on this rail is a NEW payment going out, not a
-   * reversal of one that came in, and it means there is no chargeback to
-   * fear once money has arrived. Both facts change what the software
-   * should say and do, so the rail declares it.
+   * BiMPay settles in real time and cannot be reversed AUTOMATICALLY. The
+   * Central Bank describes a "Request-for-Recall" procedure run through
+   * the sender's own institution, but it needs the recipient's agreement -
+   * so from this software's side the money is not coming back on its own.
+   *
+   * Two consequences, both of which change what we should say and do:
+   * a refund here is a NEW payment going out rather than a reversal of one
+   * that came in, and there is no chargeback to fear once money has
+   * arrived. That second one is why a business can safely cook on
+   * confirmation.
    */
   irrevocable: boolean;
   /** Which alias kinds this method accepts, when it uses one. */
@@ -268,6 +272,24 @@ export const BIMPAY_PHASE_NOTES = {
   vendorApiAvailable: false,
   crossBorder: false,
   currencies: ['BBD'] as const,
+} as const;
+
+/**
+ * The published limits on a BASIC (Tier 1) BiMPay wallet, in cents.
+ *
+ * Offered so a business can adopt the real numbers without typing them,
+ * and kept here rather than hardcoded in a screen because they are facts
+ * about the rail. A business that linked an existing bank account has
+ * whatever limit its own bank set - possibly none - which is why these are
+ * a starting point and never a default.
+ *
+ * These are limits on what can be RECEIVED. A restaurant passes the daily
+ * one on a quiet Friday lunch.
+ */
+export const BIMPAY_BASIC_WALLET_LIMITS = {
+  dailyCents: 75_000,
+  monthlyCents: 250_000,
+  annualCents: 3_000_000,
 } as const;
 
 export function availableMethods(): PaymentMethodCapability[] {
