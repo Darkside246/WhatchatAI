@@ -2361,6 +2361,22 @@ export const api = {
         planName: string | null;
       }>;
     }>('/billing/developer/accounts'),
+  /**
+   * Asks for a reset link. Always resolves the same way whether or not the
+   * address belongs to an account - the server will not say, because saying
+   * would turn this into a way to test which addresses use AURA.
+   */
+  requestPasswordReset: (email: string) =>
+    request<{ status: string; channel: 'email' | 'whatsapp' | null }>('/auth/password/forgot', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+  /** Spends a reset token and sets the new password. Every other session is signed out. */
+  resetPassword: (token: string, newPassword: string) =>
+    request<{ status: string }>('/auth/password/reset', {
+      method: 'POST',
+      body: JSON.stringify({ token, newPassword }),
+    }),
   /** Changes the signed-in person's own password. Confirmed with the current one; every other session is signed out on success. */
   changePassword: (currentPassword: string, newPassword: string) =>
     request<{ status: string; otherSessionsRevoked: number }>('/auth/account/password', {

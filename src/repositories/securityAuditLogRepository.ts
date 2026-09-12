@@ -69,6 +69,10 @@ export type SecurityEventType =
   | 'password_changed'
   /** A developer erased another account from the control plane (accountDeletionService.ts). Platform-scoped, since the business it refers to no longer exists. */
   | 'business_purged_by_developer'
+  /** Someone asked for a password reset link (passwordResetService.ts). Platform-scoped: there is no session yet. */
+  | 'password_reset_requested'
+  /** A reset link was spent and a new password set. */
+  | 'password_reset_completed'
   | 'ai_output_leak_blocked'
   | 'ai_output_leak_check_unavailable'
   /** A generated reply addressed a team member instead of the customer; the direct address was removed before sending (teamAddressGuard.ts). */

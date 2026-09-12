@@ -180,6 +180,12 @@ import {
 } from '../services/accountDeletionService.js';
 import { changePhoneNumber, PhoneNumberAlreadyInUseError } from '../services/phoneNumberChangeService.js';
 import { changePassword, SamePasswordError } from '../services/passwordChangeService.js';
+import {
+  requestPasswordReset,
+  resetPasswordWithToken,
+  ResetTokenInvalidError,
+  ResetRateLimitedError,
+} from '../services/passwordResetService.js';
 import { InvalidPhoneNumberError, normalizePhoneToE164 } from '../services/phoneNormalizationService.js';
 import {
   listMembers,
@@ -689,6 +695,51 @@ app.patch('/api/auth/account/phone', requireAuth, async (req, res) => {
     if (isInvalidCredentialsError(error)) return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
     if (error instanceof InvalidPhoneNumberError) return res.status(400).json({ error: 'INVALID_PHONE_NUMBER', message: error.message });
     if (error instanceof PhoneNumberAlreadyInUseError) return res.status(409).json({ error: 'PHONE_ALREADY_IN_USE' });
+    throw error;
+  }
+});
+
+/**
+ * Forgotten-password request and completion. Both are deliberately
+ * UNAUTHENTICATED - the whole point is that the person cannot sign in - so
+ * both sit behind the auth rate limiter rather than a session.
+ */
+const forgotPasswordSchema = z.object({ email: z.string().trim().email() });
+
+app.post('/api/auth/password/forgot', async (req, res) => {
+  const parsed = forgotPasswordSchema.safeParse(req.body);
+  // Even a malformed address gets the same answer. Anything else lets a
+  // caller distinguish "not an account" from "not an email".
+  if (!parsed.success) return res.status(200).json({ status: 'sent', channel: null });
+
+  try {
+    const { channel } = await requestPasswordReset(parsed.data.email);
+    return res.status(200).json({ status: 'sent', channel });
+  } catch (error) {
+    if (error instanceof ResetRateLimitedError) {
+      return res.status(429).json({ error: 'RATE_LIMITED', message: error.message });
+    }
+    throw error;
+  }
+});
+
+const resetPasswordSchema = z.object({
+  token: z.string().min(1).max(500),
+  newPassword: z.string().min(1).max(200),
+});
+
+app.post('/api/auth/password/reset', async (req, res) => {
+  const parsed = resetPasswordSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_RESET_PAYLOAD', details: parsed.error.flatten() });
+
+  try {
+    await resetPasswordWithToken(parsed.data.token, parsed.data.newPassword);
+    return res.status(200).json({ status: 'password_reset' });
+  } catch (error) {
+    if (error instanceof ResetTokenInvalidError) {
+      return res.status(400).json({ error: 'RESET_TOKEN_INVALID', message: error.message });
+    }
+    if (isWeakPasswordError(error)) return res.status(400).json({ error: 'WEAK_PASSWORD', message: error.message });
     throw error;
   }
 });
