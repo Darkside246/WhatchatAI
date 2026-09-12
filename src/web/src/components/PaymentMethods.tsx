@@ -26,6 +26,7 @@ const ALIAS_KIND_LABEL: Record<FoodPaymentAliasKindDto, string> = {
   MOBILE: 'Mobile number',
   EMAIL: 'Email address',
   NICKNAME: 'Nickname',
+  NATIONAL_ID: 'National ID',
   ACCOUNT_NUMBER: 'Account number',
 };
 

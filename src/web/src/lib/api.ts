@@ -236,7 +236,7 @@ export interface FoodModifierGroupDto {
 export type FoodPaymentMethodKeyDto =
   | 'CASH' | 'BANK_TRANSFER' | 'BIMPAY' | 'ONE_STPAY' | 'WIPAY' | 'FAC' | 'CARD_IN_PERSON' | 'ON_ACCOUNT' | 'OTHER';
 
-export type FoodPaymentAliasKindDto = 'EMAIL' | 'MOBILE' | 'NICKNAME' | 'ACCOUNT_NUMBER';
+export type FoodPaymentAliasKindDto = 'EMAIL' | 'MOBILE' | 'NICKNAME' | 'NATIONAL_ID' | 'ACCOUNT_NUMBER';
 
 export interface FoodPaymentMethodDto {
   id: string;

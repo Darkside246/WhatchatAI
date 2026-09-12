@@ -102,6 +102,11 @@ export function buildPaymentAsk(
       ? [
           `That comes to ${amount}.`,
           `You can send it on BiMPay to ${addressed} — put ${reference} as the reference so we can match it.`,
+          // BiMPay shows the sender our name before they confirm, and this
+          // is the only moment a mistyped alias can still be caught: once
+          // sent, the money is with whoever owns that identifier and they
+          // do not have to give it back.
+          'It will show you our name before you confirm — check it matches.',
           'We start cooking as soon as it comes through.',
         ]
       : method === 'ONE_STPAY'

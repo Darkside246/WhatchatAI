@@ -40,13 +40,14 @@ export type FoodPaymentMethodKey = (typeof FOOD_PAYMENT_METHODS)[number];
  * what we tell the customer to type. "Send it to 2460000000" and "send it
  * to pay@shop.bb" are not interchangeable sentences.
  */
-export const PAYMENT_ALIAS_KINDS = ['EMAIL', 'MOBILE', 'NICKNAME', 'ACCOUNT_NUMBER'] as const;
+export const PAYMENT_ALIAS_KINDS = ['EMAIL', 'MOBILE', 'NICKNAME', 'NATIONAL_ID', 'ACCOUNT_NUMBER'] as const;
 export type PaymentAliasKind = (typeof PAYMENT_ALIAS_KINDS)[number];
 
 export const ALIAS_KIND_LABEL: Record<PaymentAliasKind, string> = {
   EMAIL: 'email address',
   MOBILE: 'mobile number',
   NICKNAME: 'nickname',
+  NATIONAL_ID: 'national ID',
   ACCOUNT_NUMBER: 'account number',
 };
 
@@ -145,7 +146,7 @@ export const PAYMENT_METHOD_CAPABILITIES: Record<FoodPaymentMethodKey, PaymentMe
     aliasLabel: 'Your BiMPay alias or number',
     notYetIntegrated: false,
     irrevocable: true,
-    aliasKinds: ['MOBILE', 'EMAIL', 'NICKNAME', 'ACCOUNT_NUMBER'],
+    aliasKinds: ['MOBILE', 'EMAIL', 'NICKNAME', 'NATIONAL_ID', 'ACCOUNT_NUMBER'],
   },
   ONE_STPAY: {
     key: 'ONE_STPAY',
