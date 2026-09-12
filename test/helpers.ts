@@ -59,6 +59,7 @@ const TABLES = [
   'whatsapp_connection_events',
   'whatsapp_statuses',
   'whatsapp_status_views',
+  'food_order_notifications',
   'food_payment_events',
   'food_order_events',
   'food_orders',

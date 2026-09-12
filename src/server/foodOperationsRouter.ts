@@ -7,6 +7,8 @@ import { FOOD_ORDER_STAGES, bumpTarget, elapsedSeconds, slaBand } from '../domai
 import { checkDelivery, navigationUrl } from '../domain/food/deliveryZone.js';
 import { releaseToKitchen } from '../domain/food/paymentGate.js';
 import { confirmProposal, resolveProposal, type DraftOrderProposal } from '../services/food/orderIntake.js';
+import { eventForStage } from '../services/food/orderNotifications.js';
+import { sendOrderNotification } from '../services/food/sendOrderNotification.js';
 import { requireAuth, requirePermission, requireProductAccess, type AuthContext } from './authMiddleware.js';
 import { hasPermission } from '../domain/auth/permissions.js';
 
@@ -119,7 +121,15 @@ router.post('/orders/:orderId/stage', requirePermission('food.manage'), async (r
       ...(parsed.data.overridePaymentReason ? { overridePaymentGate: { reason: parsed.data.overridePaymentReason } } : {}),
     });
     if (!order) return res.status(404).json({ error: 'ORDER_NOT_FOUND' });
-    return res.status(200).json({ order });
+
+    // Awaited, so the response can honestly report whether the customer
+    // was told - but it can never fail the move: the ticket has already
+    // been bumped, and a notification problem must not make a cook think
+    // their press did not register.
+    const event = eventForStage(order.stage);
+    const notified = event ? await sendOrderNotification(order, event) : null;
+
+    return res.status(200).json({ order, ...(notified ? { notified } : {}) });
   } catch (error) {
     // 402: the request is legitimate and the order is real - it simply has
     // not been paid for. customerFacing is returned so the operator can
@@ -179,7 +189,13 @@ router.post('/orders/:orderId/payment', requirePermission('food.manage'), async 
       waiverReason: parsed.data.waiverReason ?? null,
     });
     if (!order) return res.status(404).json({ error: 'ORDER_NOT_FOUND' });
-    return res.status(200).json({ order });
+
+    // Only for money actually arriving. A waiver is not a payment, and
+    // thanking somebody for a payment they have not made would be worse
+    // than saying nothing.
+    const notified = parsed.data.state === 'PAID' ? await sendOrderNotification(order, 'PAYMENT_CONFIRMED') : null;
+
+    return res.status(200).json({ order, ...(notified ? { notified } : {}) });
   } catch (error) {
     if (error instanceof IllegalPaymentTransitionError) {
       const current = await repository.findOrder(auth.businessId, orderId);
@@ -338,6 +354,11 @@ router.post('/orders/confirm', requirePermission('food.manage'), async (req, res
   });
 
   if (!result.ok) return res.status(422).json({ error: 'CANNOT_PRICE_ORDER', problems: result.problems });
+
+  // Only on a genuinely new order. A replayed confirmation has already
+  // been acknowledged, and the claim would refuse it anyway - this avoids
+  // the pointless round trip.
+  if (!result.confirmed.deduplicated) await sendOrderNotification(result.confirmed.order, 'ORDER_RECEIVED');
 
   // 200 rather than 201 for a replay, so a caller can tell a new ticket
   // from one it had already created.

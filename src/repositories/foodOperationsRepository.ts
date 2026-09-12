@@ -3,6 +3,7 @@ import type { FoodOrderStage, FulfilmentMethod } from '../domain/food/orderLifec
 import { canTransition, isOpenStage, OPEN_STAGES } from '../domain/food/orderLifecycle.js';
 import type { FoodPaymentMethod, FoodPaymentState, KitchenRelease } from '../domain/food/paymentGate.js';
 import { canTransitionPayment, releaseToKitchen } from '../domain/food/paymentGate.js';
+import type { FoodNotificationEvent, NotificationOverrides, NotificationVerbosity } from '../services/food/orderNotifications.js';
 
 export interface FoodMenuItemRecord {
   id: string;
@@ -42,6 +43,10 @@ export interface FoodSettingsRecord {
   paymentRequiredNotice: string | null;
   slaWarningSeconds: number | null;
   slaBreachSeconds: number | null;
+  /** How much this business tells its customers as an order moves. See services/food/orderNotifications.ts. */
+  notificationVerbosity: NotificationVerbosity;
+  /** Per-event switches and wording, only consulted under CUSTOM. */
+  notificationOverrides: NotificationOverrides;
 }
 
 export interface FoodCustomerTermsRecord {
@@ -246,6 +251,7 @@ export class FoodOperationsRepository {
     const { rows } = await this.db.query<{
       payment_required_before_kitchen: boolean; table_service_enabled: boolean;
       payment_required_notice: string | null; sla_warning_seconds: number | null; sla_breach_seconds: number | null;
+      notification_verbosity: NotificationVerbosity; notification_overrides: NotificationOverrides;
     }>('SELECT * FROM food_settings WHERE business_id = $1', [businessId]);
 
     const row = rows[0];
@@ -258,6 +264,10 @@ export class FoodOperationsRepository {
       paymentRequiredNotice: row?.payment_required_notice ?? null,
       slaWarningSeconds: row?.sla_warning_seconds ?? null,
       slaBreachSeconds: row?.sla_breach_seconds ?? null,
+      // STANDARD by default: the milestones a customer genuinely wants,
+      // and none of the ones that only produce noise.
+      notificationVerbosity: row?.notification_verbosity ?? 'STANDARD',
+      notificationOverrides: row?.notification_overrides ?? {},
     };
   }
 
@@ -275,17 +285,24 @@ export class FoodOperationsRepository {
     }
     await this.db.query(
       `INSERT INTO food_settings
-         (business_id, payment_required_before_kitchen, table_service_enabled, payment_required_notice, sla_warning_seconds, sla_breach_seconds, updated_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+         (business_id, payment_required_before_kitchen, table_service_enabled, payment_required_notice,
+          sla_warning_seconds, sla_breach_seconds, notification_verbosity, notification_overrides, updated_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (business_id) DO UPDATE
          SET payment_required_before_kitchen = EXCLUDED.payment_required_before_kitchen,
              table_service_enabled = EXCLUDED.table_service_enabled,
              payment_required_notice = EXCLUDED.payment_required_notice,
              sla_warning_seconds = EXCLUDED.sla_warning_seconds,
              sla_breach_seconds = EXCLUDED.sla_breach_seconds,
+             notification_verbosity = EXCLUDED.notification_verbosity,
+             notification_overrides = EXCLUDED.notification_overrides,
              updated_by = EXCLUDED.updated_by,
              updated_at = now()`,
-      [businessId, next.paymentRequiredBeforeKitchen, next.tableServiceEnabled, next.paymentRequiredNotice, next.slaWarningSeconds, next.slaBreachSeconds, updatedBy],
+      [
+        businessId, next.paymentRequiredBeforeKitchen, next.tableServiceEnabled, next.paymentRequiredNotice,
+        next.slaWarningSeconds, next.slaBreachSeconds, next.notificationVerbosity,
+        JSON.stringify(next.notificationOverrides), updatedBy,
+      ],
     );
     return next;
   }
@@ -721,6 +738,48 @@ export class FoodOperationsRepository {
       id: row.id, orderId: row.order_id, fromStage: row.from_stage, toStage: row.to_stage,
       actorUserId: row.actor_user_id, actorKind: row.actor_kind, note: row.note, createdAt: row.created_at,
     }));
+  }
+
+  // ── Customer notifications ─────────────────────────────────────────────
+
+  /**
+   * Claims the right to tell a customer about one event, exactly once.
+   *
+   * Returns false when this order has already been told, which is the
+   * normal case rather than an error: a kitchen sends a ticket back to the
+   * line and bumps it again all the time, and the customer must not hear
+   * that cooking has started twice.
+   *
+   * The insert IS the lock. Checking first and then sending would still
+   * race two workers bumping the same ticket, and the unique index is the
+   * only thing that cannot.
+   */
+  async claimNotification(businessId: string, orderId: string, event: FoodNotificationEvent, body: string): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      `INSERT INTO food_order_notifications (business_id, order_id, event, body)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (business_id, order_id, event) DO NOTHING`,
+      [businessId, orderId, event, body],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  /** Records which outbound message a claimed notification became. Best-effort: a null here means the send failed, and the attempt is still on record. */
+  async attachNotificationOutbound(businessId: string, orderId: string, event: FoodNotificationEvent, outboundMessageId: string): Promise<void> {
+    await this.db.query(
+      `UPDATE food_order_notifications SET outbound_message_id = $4
+       WHERE business_id = $1 AND order_id = $2 AND event = $3`,
+      [businessId, orderId, event, outboundMessageId],
+    );
+  }
+
+  /** What this customer has already been told, and when - the answer when somebody says they heard nothing. */
+  async listNotifications(businessId: string, orderId: string): Promise<{ event: string; body: string; outboundMessageId: string | null; createdAt: string }[]> {
+    const { rows } = await this.db.query<{ event: string; body: string; outbound_message_id: string | null; created_at: string }>(
+      'SELECT * FROM food_order_notifications WHERE business_id = $1 AND order_id = $2 ORDER BY created_at ASC',
+      [businessId, orderId],
+    );
+    return rows.map((row) => ({ event: row.event, body: row.body, outboundMessageId: row.outbound_message_id, createdAt: row.created_at }));
   }
 
   // ── Delivery zones ─────────────────────────────────────────────────────
