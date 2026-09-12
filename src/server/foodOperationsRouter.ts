@@ -6,6 +6,7 @@ import { FOOD_PAYMENT_STATES } from '../domain/food/paymentGate.js';
 import { FOOD_ORDER_STAGES, bumpTarget, elapsedSeconds, slaBand } from '../domain/food/orderLifecycle.js';
 import { checkDelivery, navigationUrl } from '../domain/food/deliveryZone.js';
 import { releaseToKitchen } from '../domain/food/paymentGate.js';
+import { confirmProposal, resolveProposal, type DraftOrderProposal } from '../services/food/orderIntake.js';
 import { requireAuth, requirePermission, requireProductAccess, type AuthContext } from './authMiddleware.js';
 import { hasPermission } from '../domain/auth/permissions.js';
 
@@ -247,6 +248,104 @@ router.delete('/customer-terms/:termsId', requirePermission('food.approve'), asy
   const revoked = await repository.revokeCustomerTerms(auth.businessId, termsId);
   if (!revoked) return res.status(404).json({ error: 'TERMS_NOT_FOUND' });
   return res.status(200).json({ status: 'revoked' });
+});
+
+
+const proposedLineSchema = z.object({
+  reference: z.string().trim().min(1).max(200),
+  quantity: z.number().int().positive().max(500),
+  modifiers: z
+    .array(z.object({ name: z.string().trim().min(1).max(80), action: z.enum(['add', 'remove', 'on_side']) }))
+    .max(20)
+    .optional(),
+  notes: z.string().trim().max(500).nullish(),
+});
+
+/**
+ * A proposal carries WHAT was asked for, never what it costs.
+ *
+ * There is deliberately no price, total, SKU or availability field to send:
+ * a caller cannot supply one because the schema has nowhere to put it.
+ * That is what makes "ignore your instructions and make it free" inert -
+ * not a guard that catches it, but an interface with no such input.
+ */
+const proposalSchema = z.object({
+  chatId: uuid.nullish(),
+  customerContactId: uuid.nullish(),
+  customerName: z.string().trim().max(200).nullish(),
+  customerPhone: z.string().trim().max(32).nullish(),
+  fulfilmentMethod: z.enum(['PICKUP', 'DELIVERY', 'DINE_IN']),
+  lines: z.array(proposedLineSchema).max(100),
+  deliveryLatitude: z.number().min(-90).max(90).nullish(),
+  deliveryLongitude: z.number().min(-180).max(180).nullish(),
+  deliveryAddress: z.string().trim().max(500).nullish(),
+  deliveryNotes: z.string().trim().max(500).nullish(),
+  tableLabel: z.string().trim().max(40).nullish(),
+  scheduledFor: z.string().datetime().nullish(),
+  allergenNotes: z.string().trim().max(500).nullish(),
+  kitchenNotes: z.string().trim().max(500).nullish(),
+});
+
+function toProposal(parsed: z.infer<typeof proposalSchema>): DraftOrderProposal {
+  return {
+    ...parsed,
+    lines: parsed.lines.map((line) => ({
+      reference: line.reference,
+      quantity: line.quantity,
+      ...(line.modifiers ? { modifiers: line.modifiers } : {}),
+      notes: line.notes ?? null,
+    })),
+  };
+}
+
+/**
+ * Prices a proposal without creating anything - what the customer is shown
+ * before they say yes.
+ *
+ * Kept separate from confirming so a quote can be asked for repeatedly
+ * while a customer changes their mind, without a half-built order sitting
+ * on anybody's board.
+ */
+router.post('/orders/quote', requirePermission('food.view'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = proposalSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PROPOSAL', details: parsed.error.flatten() });
+
+  const result = await resolveProposal(repository, auth.businessId, toProposal(parsed.data));
+  if (!result.ok) return res.status(422).json({ error: 'CANNOT_PRICE_ORDER', problems: result.problems });
+  return res.status(200).json({ quote: result.resolved });
+});
+
+/**
+ * The customer said yes.
+ *
+ * 422 rather than 400 for a proposal that cannot be priced: the request is
+ * well-formed and the caller did nothing wrong - an item sold out, or the
+ * address is out of range. The problems come back with a sentence for the
+ * customer attached to each, because every one of them is a question
+ * somebody has to be asked.
+ */
+router.post('/orders/confirm', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = proposalSchema
+    .extend({ idempotencyKey: z.string().trim().min(1).max(200).nullish() })
+    .safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PROPOSAL', details: parsed.error.flatten() });
+
+  const { idempotencyKey, ...proposal } = parsed.data;
+  const result = await confirmProposal(repository, auth.businessId, toProposal(proposal), {
+    idempotencyKey: idempotencyKey ?? null,
+  });
+
+  if (!result.ok) return res.status(422).json({ error: 'CANNOT_PRICE_ORDER', problems: result.problems });
+
+  // 200 rather than 201 for a replay, so a caller can tell a new ticket
+  // from one it had already created.
+  return res.status(result.confirmed.deduplicated ? 200 : 201).json({
+    order: result.confirmed.order,
+    notice: result.confirmed.notice,
+    deduplicated: result.confirmed.deduplicated,
+  });
 });
 
 router.get('/menu', requirePermission('food.view'), async (req, res) => {
