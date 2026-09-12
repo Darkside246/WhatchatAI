@@ -6,7 +6,13 @@ import {
   listConnectedAccounts,
   disconnectAccount,
 } from '../services/emailOAuthService.js';
-import { syncAccount, getFolders, getFolderMessages, deleteOAuthMessage } from '../services/emailSyncService.js';
+import {
+  syncAccount,
+  getFolders,
+  getFolderMessages,
+  deleteOAuthMessage,
+  getOAuthMessageForBusiness,
+} from '../services/emailSyncService.js';
 import type { OAuthProvider } from '../repositories/emailOAuthRepository.js';
 
 const router = Router();
@@ -114,6 +120,65 @@ router.get('/messages/:accountId', async (req, res) => {
   const folderId = typeof req.query['folderId'] === 'string' ? req.query['folderId'] : undefined;
   const messages = await getFolderMessages(req.params['accountId']!, auth.businessId, { limit, unreadOnly, ...(folderId ? { folderId } : {}) });
   res.json({ messages });
+});
+
+/**
+ * Serves one email's HTML body as its own document, with its own
+ * Content-Security-Policy.
+ *
+ * WHY THIS ROUTE EXISTS AT ALL. The viewer rendered the body with srcDoc,
+ * and a srcdoc iframe inherits the embedding page's CSP. This app's CSP has
+ * `img-src 'self' blob: data:` - correct for the app, and it silently broke
+ * every remote image in every email, which is what the broken-image boxes
+ * in a marketing email were. A document loaded from a real URL gets the CSP
+ * of ITS OWN response instead, so the email can be given a policy that
+ * suits an email without loosening the app's.
+ *
+ * WHY IMAGES ARE STILL OFF BY DEFAULT. The obvious fix - adding https: to
+ * the app's img-src - would have worked and been wrong. A remote image in
+ * an email is routinely a tracking pixel: fetching it tells the sender the
+ * message was opened, when, how often, and from which IP address. Loading
+ * them automatically would turn every operator's inbox into a read-receipt
+ * feed for every marketer who mails them, silently. Every serious email
+ * client blocks remote images until asked, and so does this: ?images=1 is
+ * that request, made per message, by the person reading it.
+ *
+ * The policy is otherwise as closed as it can be. No scripts, no plugins,
+ * no nested frames, no form submissions - an email body is arbitrary HTML
+ * from a stranger, and the only thing it is allowed to do here is describe
+ * how it looks.
+ */
+router.get('/messages/single/:id/body', async (req, res) => {
+  const auth = res.locals['auth'] as AuthContext;
+  const message = await getOAuthMessageForBusiness(req.params['id']!, auth.businessId);
+  if (!message) return res.status(404).type('text/plain').send('Not found');
+
+  const showImages = req.query['images'] === '1';
+  const imgSrc = showImages ? "img-src https: data:" : "img-src 'none'";
+
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'none'",
+      "style-src 'unsafe-inline'",
+      imgSrc,
+      "font-src 'none'",
+      "script-src 'none'",
+      "object-src 'none'",
+      "frame-src 'none'",
+      "form-action 'none'",
+      "base-uri 'none'",
+    ].join('; '),
+  );
+  // Belt and braces against a body that tries to be treated as anything
+  // other than the HTML it claims to be.
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  // Never cached: the same URL returns different content depending on
+  // ?images, and it is one person's private mail.
+  res.setHeader('Cache-Control', 'no-store');
+
+  return res.type('text/html').send(message.bodyHtml ?? '');
 });
 
 /** Trashes the real message in the person's actual mailbox (Gmail trash / Outlook Deleted Items - reversible, never a permanent delete), then removes AURA's own local copy. */

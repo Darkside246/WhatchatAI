@@ -346,6 +346,12 @@ export async function getFolderMessages(accountId: string, businessId: string, o
   return repo.listMessages(accountId, opts);
 }
 
+/** One message, tenant-scoped - used by the body route, which needs its HTML and nothing else. */
+export async function getOAuthMessageForBusiness(messageId: string, businessId: string) {
+  const repo = new EmailOAuthRepository(queryAsTenant(businessId));
+  return repo.getMessageByIdForBusiness(messageId, businessId);
+}
+
 export async function getDistinctSenders(accountId: string, businessId: string, limit?: number) {
   const repo = new EmailOAuthRepository(queryAsTenant(businessId));
   const account = await repo.getByIdForBusiness(accountId, businessId);

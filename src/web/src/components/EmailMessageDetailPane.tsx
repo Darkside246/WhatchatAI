@@ -38,6 +38,11 @@ export function EmailMessageDetailPane({
   const [agentId, setAgentId] = useState('');
   const [instruction, setInstruction] = useState('Write a brief, polite reply addressing the sender\'s message.');
   const [showReplyForm, setShowReplyForm] = useState(false);
+  /**
+   * Per MESSAGE, and reset whenever a different one is opened - agreeing to
+   * load one sender's images is not agreement to load the next sender's.
+   */
+  const [showImages, setShowImages] = useState(false);
   const [drafting, setDrafting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -48,6 +53,11 @@ export function EmailMessageDetailPane({
       if (res.agents.length === 1 && res.agents[0]) setAgentId(res.agents[0].id);
     }).catch(() => undefined);
   }, []);
+
+  // Opening a different message starts from images-off again.
+  useEffect(() => {
+    setShowImages(false);
+  }, [message.id]);
 
   async function handleDraftReply() {
     if (!agentId || !instruction.trim()) return;
@@ -84,18 +94,43 @@ export function EmailMessageDetailPane({
 
         <div className="mt-4 border-t border-border-subtle pt-4">
           {message.bodyHtml ? (
-            // A real email's HTML body is untrusted content from an
-            // arbitrary external sender - never injected via
-            // dangerouslySetInnerHTML into this app's own DOM (that would
-            // let an embedded <script> run with this page's own session).
-            // A sandboxed iframe with no allow-scripts renders it inertly,
-            // the same isolation every real email client uses.
-            <iframe
-              title="Email body"
-              srcDoc={message.bodyHtml}
-              sandbox="allow-same-origin"
-              className="h-96 w-full rounded-lg border border-border-subtle bg-white"
-            />
+            <>
+              {!showImages && (
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-subtle bg-surface-2 px-3 py-2">
+                  <p className="text-caption text-fg-secondary">
+                    Images in this message aren&rsquo;t shown. Loading them tells the sender you opened it.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowImages(true)}
+                    className="shrink-0 rounded-lg border border-border-subtle px-2.5 py-1 text-caption font-medium text-accent hover:bg-surface-3"
+                  >
+                    Show images
+                  </button>
+                </div>
+              )}
+              {/*
+                Loaded from a real URL rather than srcDoc. A srcdoc iframe
+                inherits the embedding page's CSP, and this app's img-src is
+                'self' blob: data: - correct for the app, and the reason
+                every remote image in every email silently failed to load. A
+                document fetched from its own URL gets its own policy, which
+                the route sets to suit an email without loosening the app's.
+
+                Still sandboxed, and still no allow-scripts: an email body is
+                arbitrary HTML from a stranger. allow-same-origin is gone too
+                - it was never needed for rendering, and without it the frame
+                cannot reach this page at all.
+              */}
+              <iframe
+                key={showImages ? 'images-on' : 'images-off'}
+                title="Email body"
+                src={`/api/email-oauth/messages/single/${message.id}/body${showImages ? '?images=1' : ''}`}
+                sandbox=""
+                referrerPolicy="no-referrer"
+                className="h-96 w-full rounded-lg border border-border-subtle bg-white"
+              />
+            </>
           ) : (
             <p className="whitespace-pre-wrap text-body text-fg-secondary">{message.bodyText || message.snippet}</p>
           )}
