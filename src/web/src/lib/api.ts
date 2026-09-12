@@ -101,7 +101,7 @@ export interface FoodBoardOrderDto {
   orderNumber: number;
   chatId: string | null;
   stage: FoodOrderStage;
-  fulfilmentMethod: 'PICKUP' | 'DELIVERY';
+  fulfilmentMethod: 'PICKUP' | 'DELIVERY' | 'DINE_IN';
   customerName: string | null;
   customerPhone: string | null;
   items: FoodOrderLineDto[];
@@ -118,8 +118,24 @@ export interface FoodBoardOrderDto {
   elapsedSeconds: number;
   slaBand: FoodSlaBand;
   nextStage: FoodOrderStage | null;
+  paymentState: 'NOT_REQUIRED' | 'UNPAID' | 'AWAITING_VERIFICATION' | 'PAID' | 'WAIVED' | 'REFUNDED' | 'FAILED';
+  paymentWaiverReason: string | null;
+  tableLabel: string | null;
+  /**
+   * Why this ticket cannot start yet - worked out on the server so the
+   * board never offers a button that will be refused. Null when it can.
+   */
+  blockedReason: string | null;
   /** Built from the pin the customer dropped, never from a typed address. Null for collection. */
   navigationUrl: string | null;
+}
+
+export interface FoodSettingsDto {
+  paymentRequiredBeforeKitchen: boolean;
+  tableServiceEnabled: boolean;
+  paymentRequiredNotice: string | null;
+  slaWarningSeconds: number | null;
+  slaBreachSeconds: number | null;
 }
 
 export interface FoodMenuItemDto {
@@ -2256,7 +2272,14 @@ export const api = {
   listStatusReplies: (id: string) => request<{ replies: StatusReplyDto[] }>(`/workspace/scheduled-statuses/${id}/replies`),
   listStatusViewers: (id: string) => request<{ viewers: StatusViewerDto[] }>(`/workspace/scheduled-statuses/${id}/viewers`),
 
-  getFoodBoard: () => request<{ serverTime: string; orders: FoodBoardOrderDto[] }>('/food-operations/board'),
+  getFoodBoard: () => request<{ serverTime: string; settings: FoodSettingsDto; orders: FoodBoardOrderDto[] }>('/food-operations/board'),
+  recordFoodPayment: (orderId: string, body: { state: string; method?: string; reference?: string; waiverReason?: string }) =>
+    request<{ order: FoodBoardOrderDto }>(`/food-operations/orders/${orderId}/payment`, { method: 'POST', body: JSON.stringify(body) }),
+  releaseFoodOrderUnpaid: (orderId: string, reason: string) =>
+    request<{ order: FoodBoardOrderDto }>(`/food-operations/orders/${orderId}/stage`, {
+      method: 'POST',
+      body: JSON.stringify({ stage: 'IN_KITCHEN', overridePaymentReason: reason }),
+    }),
   moveFoodOrder: (orderId: string, stage: FoodOrderStage, note?: string) =>
     request<{ order: FoodBoardOrderDto }>(`/food-operations/orders/${orderId}/stage`, {
       method: 'POST',

@@ -104,6 +104,27 @@ export function FoodOperationsPage() {
     }
   }
 
+  /**
+   * Cooking an unpaid order on purpose. A reason is required because an
+   * unattributable exemption is indistinguishable from a mistake - and
+   * this one gives away food.
+   */
+  async function release(order: FoodBoardOrderDto) {
+    const reason = window.prompt(`Release #${order.orderNumber} to the kitchen without payment?\n\nSay why — it is recorded against the order.`);
+    if (!reason?.trim()) return;
+
+    setBusyId(order.id);
+    try {
+      await api.releaseFoodOrderUnpaid(order.id, reason.trim());
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not release that order.');
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   const byStage = useMemo(() => {
     const grouped = new Map<FoodOrderStage, FoodBoardOrderDto[]>();
     for (const column of COLUMNS) grouped.set(column.stage, []);
@@ -172,6 +193,7 @@ export function FoodOperationsPage() {
                       busy={busyId === order.id}
                       onBump={() => order.nextStage && void move(order, order.nextStage)}
                       onSendBack={() => void move(order, 'IN_KITCHEN', 'sent back from the pass')}
+                      onRelease={() => void release(order)}
                     />
                   ))}
                 </div>
@@ -184,14 +206,28 @@ export function FoodOperationsPage() {
   );
 }
 
+const PAYMENT_BADGE: Record<FoodBoardOrderDto['paymentState'], { label: string; className: string } | null> = {
+  // Nothing shown for a business that does not gate on payment, and
+  // nothing for a paid order - a badge on every ticket is a badge nobody
+  // reads. Only the states somebody has to act on appear.
+  NOT_REQUIRED: null,
+  PAID: null,
+  UNPAID: { label: 'Unpaid', className: 'bg-error/20 text-error' },
+  AWAITING_VERIFICATION: { label: 'Payment unverified', className: 'bg-warning/20 text-warning' },
+  WAIVED: { label: 'Paying later', className: 'bg-accent-soft text-accent' },
+  REFUNDED: { label: 'Refunded', className: 'bg-error/20 text-error' },
+  FAILED: { label: 'Payment failed', className: 'bg-error/20 text-error' },
+};
+
 function OrderCard({
-  order, drift, busy, onBump, onSendBack,
+  order, drift, busy, onBump, onSendBack, onRelease,
 }: {
   order: FoodBoardOrderDto;
   drift: number;
   busy: boolean;
   onBump: () => void;
   onSendBack: () => void;
+  onRelease: () => void;
 }) {
   return (
     <article className={`rounded-lg border-2 p-2.5 ${SLA_STYLE[order.slaBand]}`}>
@@ -199,9 +235,21 @@ function OrderCard({
         <span className="text-body font-bold text-fg">#{order.orderNumber}</span>
         <span className={`font-mono text-body tabular-nums ${SLA_TIMER[order.slaBand]}`}>{clock(order.elapsedSeconds + drift)}</span>
         <span className="ml-auto rounded-full bg-surface-2 px-2 py-0.5 text-meta font-medium text-fg-secondary">
-          {order.fulfilmentMethod === 'DELIVERY' ? 'Delivery' : 'Collection'}
+          {order.fulfilmentMethod === 'DELIVERY' ? 'Delivery' : order.fulfilmentMethod === 'DINE_IN' ? (order.tableLabel ?? 'Table') : 'Collection'}
         </span>
       </div>
+
+      {/* The money, stated on the ticket. An unpaid order on a line is the
+          one mistake this board exists to prevent, so it is never a detail
+          somebody has to open the order to find. */}
+      {PAYMENT_BADGE[order.paymentState] && (
+        <p className={`mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-meta font-semibold ${PAYMENT_BADGE[order.paymentState]!.className}`}>
+          {PAYMENT_BADGE[order.paymentState]!.label}
+          {order.paymentState === 'WAIVED' && order.paymentWaiverReason && (
+            <span className="font-normal opacity-80">· {order.paymentWaiverReason}</span>
+          )}
+        </p>
+      )}
 
       {order.customerName && <p className="mt-1 truncate text-caption font-medium text-fg">{order.customerName}</p>}
 
@@ -281,7 +329,7 @@ function OrderCard({
           </button>
         )}
 
-        {order.nextStage && (
+        {order.nextStage && !order.blockedReason && (
           <button
             type="button"
             disabled={busy}
@@ -291,7 +339,25 @@ function OrderCard({
             {busy ? '…' : STAGE_LABEL[order.nextStage]}
           </button>
         )}
+
+        {/* A bump that silently does nothing is the worst behaviour on a
+            screen somebody is working at speed, so a blocked ticket says
+            so plainly and offers the only action that is actually
+            available: releasing it on somebody's authority. */}
+        {order.blockedReason && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onRelease}
+            title={order.blockedReason}
+            className="ml-auto rounded-md border border-warning/60 bg-warning/15 px-2.5 py-1 text-meta font-semibold text-warning disabled:opacity-50"
+          >
+            {busy ? '…' : 'Release unpaid'}
+          </button>
+        )}
       </div>
+
+      {order.blockedReason && <p className="mt-1.5 text-meta text-warning">{order.blockedReason}</p>}
     </article>
   );
 }

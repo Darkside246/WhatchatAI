@@ -12,6 +12,13 @@ describe('food operations (real Postgres)', () => {
     await resetDatabase();
     businessId = await createTestBusiness('Aura Food');
     repo = new FoodOperationsRepository(pool);
+    /**
+     * These tests are about how a ticket moves through the kitchen, so the
+     * payment gate is switched off here to keep them about one thing. The
+     * gate itself - including that it is ON by default, which is why this
+     * line is needed - is covered in foodPaymentGate.test.ts.
+     */
+    await repo.saveSettings(businessId, { paymentRequiredBeforeKitchen: false }, null);
   });
 
   async function anOrder(overrides: Partial<Parameters<FoodOperationsRepository['createOrder']>[0]> = {}) {

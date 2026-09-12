@@ -30,7 +30,15 @@ export const FOOD_ORDER_STAGES = [
 
 export type FoodOrderStage = (typeof FOOD_ORDER_STAGES)[number];
 
-export type FulfilmentMethod = 'PICKUP' | 'DELIVERY';
+/**
+ * How the customer gets their food.
+ *
+ * DINE_IN is built and shipped switched off (food_settings.table_service_enabled).
+ * Most food businesses taking WhatsApp orders are takeaway and delivery,
+ * and a table field on a food truck's screen is clutter - but a cafe that
+ * wants it should not have to wait for a release.
+ */
+export type FulfilmentMethod = 'PICKUP' | 'DELIVERY' | 'DINE_IN';
 
 /**
  * Which stages an order may move to next.
@@ -83,6 +91,10 @@ export function allowedNextStages(from: FoodOrderStage): readonly FoodOrderStage
  * said they wanted it - never by whoever happens to be on the pass.
  */
 export function stageAfterQualityCheck(fulfilment: FulfilmentMethod): FoodOrderStage {
+  // Dine-in joins collection: the food goes to a pass and waits to be
+  // carried, and the only difference is who carries it. It is deliberately
+  // not a fourth stage - a board column that behaved identically to
+  // another would just be a column nobody reads.
   return fulfilment === 'DELIVERY' ? 'OUT_FOR_DELIVERY' : 'READY_FOR_PICKUP';
 }
 

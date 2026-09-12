@@ -1,10 +1,13 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { pool } from '../db/pool.js';
-import { FoodOperationsRepository, IllegalStageTransitionError } from '../repositories/foodOperationsRepository.js';
+import { FoodOperationsRepository, IllegalPaymentTransitionError, IllegalStageTransitionError, KitchenPaymentGateError } from '../repositories/foodOperationsRepository.js';
+import { FOOD_PAYMENT_STATES } from '../domain/food/paymentGate.js';
 import { FOOD_ORDER_STAGES, bumpTarget, elapsedSeconds, slaBand } from '../domain/food/orderLifecycle.js';
 import { checkDelivery, navigationUrl } from '../domain/food/deliveryZone.js';
+import { releaseToKitchen } from '../domain/food/paymentGate.js';
 import { requireAuth, requirePermission, requireProductAccess, type AuthContext } from './authMiddleware.js';
+import { hasPermission } from '../domain/auth/permissions.js';
 
 const router = Router();
 const repository = new FoodOperationsRepository(pool);
@@ -26,17 +29,32 @@ const uuid = z.string().uuid();
 router.get('/board', requirePermission('food.view'), async (_req, res) => {
   const auth = res.locals.auth as AuthContext;
   const orders = await repository.listBoard(auth.businessId);
+  const settings = await repository.getSettings(auth.businessId);
   const now = new Date();
 
   return res.status(200).json({
     serverTime: now.toISOString(),
+    settings,
     orders: orders.map((order) => {
       const elapsed = elapsedSeconds(order, now);
+      const next = bumpTarget(order.stage, order.fulfilmentMethod);
+      // Worked out here so the board can show WHY a ticket cannot start
+      // rather than offering a button that will be refused. A bump that
+      // silently does nothing is the worst behaviour on a screen somebody
+      // is working at speed.
+      const gate =
+        next === 'IN_KITCHEN'
+          ? releaseToKitchen({ paymentState: order.paymentState, paymentRequiredBeforeKitchen: settings.paymentRequiredBeforeKitchen })
+          : null;
       return {
         ...order,
         elapsedSeconds: elapsed,
-        slaBand: slaBand(elapsed),
-        nextStage: bumpTarget(order.stage, order.fulfilmentMethod),
+        slaBand: slaBand(elapsed, {
+          ...(settings.slaWarningSeconds !== null ? { warningSeconds: settings.slaWarningSeconds } : {}),
+          ...(settings.slaBreachSeconds !== null ? { breachSeconds: settings.slaBreachSeconds } : {}),
+        }),
+        nextStage: next,
+        blockedReason: gate && !gate.released ? gate.reason : null,
         navigationUrl:
           order.fulfilmentMethod === 'DELIVERY' && order.deliveryLatitude !== null && order.deliveryLongitude !== null
             ? navigationUrl({ latitude: order.deliveryLatitude, longitude: order.deliveryLongitude })
@@ -60,6 +78,12 @@ router.get('/orders/:orderId', requirePermission('food.view'), async (req, res) 
 const stageSchema = z.object({
   stage: z.enum(FOOD_ORDER_STAGES),
   note: z.string().trim().max(500).optional(),
+  /**
+   * Cooking an unpaid order on purpose. A reason is required, not
+   * optional: an unattributable exemption is indistinguishable from a
+   * mistake, and this one gives away food.
+   */
+  overridePaymentReason: z.string().trim().min(3).max(500).optional(),
 });
 
 /**
@@ -80,21 +104,149 @@ router.post('/orders/:orderId/stage', requirePermission('food.manage'), async (r
   const parsed = stageSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_STAGE', details: parsed.error.flatten() });
 
+  // Overriding the payment gate is a commercial decision about giving away
+  // food, so it needs more than the permission that moves a ticket.
+  if (parsed.data.overridePaymentReason && !hasPermission(auth.role, 'food.approve')) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Releasing an unpaid order to the kitchen needs food.approve.' });
+  }
+
   try {
     const order = await repository.moveToStage(auth.businessId, orderId, parsed.data.stage, {
       userId: auth.userId,
       kind: 'user',
       note: parsed.data.note ?? null,
+      ...(parsed.data.overridePaymentReason ? { overridePaymentGate: { reason: parsed.data.overridePaymentReason } } : {}),
     });
     if (!order) return res.status(404).json({ error: 'ORDER_NOT_FOUND' });
     return res.status(200).json({ order });
   } catch (error) {
+    // 402: the request is legitimate and the order is real - it simply has
+    // not been paid for. customerFacing is returned so the operator can
+    // tell the person waiting, in a sentence already written for them.
+    if (error instanceof KitchenPaymentGateError) {
+      return res.status(402).json({ error: 'PAYMENT_REQUIRED', message: error.message, customerFacing: error.customerFacing });
+    }
     if (error instanceof IllegalStageTransitionError) {
       const current = await repository.findOrder(auth.businessId, orderId);
       return res.status(409).json({ error: 'ILLEGAL_STAGE_TRANSITION', message: error.message, currentStage: current?.stage ?? null });
     }
     throw error;
   }
+});
+
+const paymentSchema = z.object({
+  state: z.enum(FOOD_PAYMENT_STATES),
+  method: z.enum(['CASH', 'BANK_TRANSFER', 'CARD', 'MOBILE', 'ON_ACCOUNT', 'OTHER']).optional(),
+  reference: z.string().trim().max(200).optional(),
+  amountCents: z.number().int().nonnegative().optional(),
+  note: z.string().trim().max(500).optional(),
+  waiverReason: z.string().trim().min(3).max(500).optional(),
+});
+
+/**
+ * Recording what happened with the money.
+ *
+ * Marking an order PAID or WAIVED is a financial act, so it needs
+ * food.approve rather than the food.manage that moves a ticket. A line
+ * cook can send food to the pass; only somebody trusted with the till can
+ * say it was paid for.
+ */
+router.post('/orders/:orderId/payment', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const orderId = String(req.params.orderId ?? '');
+  if (!uuid.safeParse(orderId).success) return res.status(400).json({ error: 'INVALID_ORDER_ID' });
+
+  const parsed = paymentSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PAYMENT', details: parsed.error.flatten() });
+
+  const settlesMoney = parsed.data.state === 'PAID' || parsed.data.state === 'WAIVED' || parsed.data.state === 'REFUNDED';
+  if (settlesMoney && !hasPermission(auth.role, 'food.approve')) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: `Recording an order as ${parsed.data.state} needs food.approve.` });
+  }
+  if (parsed.data.state === 'WAIVED' && !parsed.data.waiverReason) {
+    return res.status(400).json({ error: 'WAIVER_REASON_REQUIRED', message: 'Say why this order is being released without payment.' });
+  }
+
+  try {
+    const order = await repository.recordPayment(auth.businessId, orderId, parsed.data.state, {
+      method: parsed.data.method ?? null,
+      reference: parsed.data.reference ?? null,
+      amountCents: parsed.data.amountCents ?? null,
+      actorUserId: auth.userId,
+      actorKind: 'user',
+      note: parsed.data.note ?? null,
+      waiverReason: parsed.data.waiverReason ?? null,
+    });
+    if (!order) return res.status(404).json({ error: 'ORDER_NOT_FOUND' });
+    return res.status(200).json({ order });
+  } catch (error) {
+    if (error instanceof IllegalPaymentTransitionError) {
+      const current = await repository.findOrder(auth.businessId, orderId);
+      return res.status(409).json({ error: 'ILLEGAL_PAYMENT_TRANSITION', message: error.message, currentState: current?.paymentState ?? null });
+    }
+    throw error;
+  }
+});
+
+router.get('/settings', requirePermission('food.view'), async (_req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  return res.status(200).json({ settings: await repository.getSettings(auth.businessId) });
+});
+
+const settingsSchema = z.object({
+  paymentRequiredBeforeKitchen: z.boolean().optional(),
+  tableServiceEnabled: z.boolean().optional(),
+  paymentRequiredNotice: z.string().trim().max(2000).nullish(),
+  slaWarningSeconds: z.number().int().min(60).max(86_400).nullish(),
+  slaBreachSeconds: z.number().int().min(60).max(86_400).nullish(),
+});
+
+/** Turning the payment gate off is a commercial decision, so it sits behind food.approve. */
+router.patch('/settings', requirePermission('food.approve'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = settingsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_SETTINGS', details: parsed.error.flatten() });
+
+  const { slaWarningSeconds, slaBreachSeconds } = parsed.data;
+  if (slaWarningSeconds != null && slaBreachSeconds != null && slaWarningSeconds >= slaBreachSeconds) {
+    return res.status(400).json({ error: 'INVALID_SLA', message: 'The warning time has to come before the breach time.' });
+  }
+
+  return res.status(200).json({ settings: await repository.saveSettings(auth.businessId, parsed.data, auth.userId) });
+});
+
+const termsSchema = z
+  .object({
+    contactId: uuid.optional(),
+    phoneNumber: z.string().trim().min(5).max(32).optional(),
+    note: z.string().trim().max(500).optional(),
+  })
+  .refine((value) => value.contactId || value.phoneNumber, { message: 'Name the customer by contact or phone number.' });
+
+/** Standing pay-on-delivery terms - the known face, the office that settles weekly. */
+router.post('/customer-terms', requirePermission('food.approve'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = termsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_TERMS', details: parsed.error.flatten() });
+
+  return res.status(201).json({
+    terms: await repository.grantCustomerTerms({
+      businessId: auth.businessId,
+      contactId: parsed.data.contactId ?? null,
+      phoneNumber: parsed.data.phoneNumber ?? null,
+      note: parsed.data.note ?? null,
+      grantedBy: auth.userId,
+    }),
+  });
+});
+
+router.delete('/customer-terms/:termsId', requirePermission('food.approve'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const termsId = String(req.params.termsId ?? '');
+  if (!uuid.safeParse(termsId).success) return res.status(400).json({ error: 'INVALID_TERMS_ID' });
+  const revoked = await repository.revokeCustomerTerms(auth.businessId, termsId);
+  if (!revoked) return res.status(404).json({ error: 'TERMS_NOT_FOUND' });
+  return res.status(200).json({ status: 'revoked' });
 });
 
 router.get('/menu', requirePermission('food.view'), async (req, res) => {
