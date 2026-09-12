@@ -1,4 +1,4 @@
-import { PAYMENT_METHOD_CAPABILITIES, type FoodPaymentMethodKey } from '../../domain/food/paymentMethods.js';
+import { ALIAS_KIND_LABEL, PAYMENT_METHOD_CAPABILITIES, type FoodPaymentMethodKey, type PaymentAliasKind } from '../../domain/food/paymentMethods.js';
 import type { FoodOrderRecord } from '../../repositories/foodOperationsRepository.js';
 
 /**
@@ -39,7 +39,7 @@ export interface PaymentAsk {
 export function buildPaymentAsk(
   order: FoodOrderRecord,
   method: FoodPaymentMethodKey,
-  options: { alias?: string | null; instructions?: string | null } = {},
+  options: { alias?: string | null; aliasKind?: PaymentAliasKind | null; instructions?: string | null } = {},
 ): PaymentAsk {
   const capability = PAYMENT_METHOD_CAPABILITIES[method];
 
@@ -85,23 +85,33 @@ export function buildPaymentAsk(
 
   const alias = options.alias!.trim();
 
+  /**
+   * Naming the KIND of alias, not just the value.
+   *
+   * "Send it to 2460000000" leaves a customer guessing whether that is a
+   * phone number or an account, and a payment sent to the wrong kind of
+   * identifier on an irrevocable rail cannot be pulled back. So the
+   * sentence says which it is whenever the business has told us.
+   */
+  const addressed = options.aliasKind ? `${ALIAS_KIND_LABEL[options.aliasKind]} ${alias}` : alias;
+
   const lines: string[] =
     method === 'BIMPAY'
       ? [
           `That comes to ${amount}.`,
-          `You can send it on BiMPay to ${alias} — put ${reference} as the reference so we can match it.`,
+          `You can send it on BiMPay to ${addressed} — put ${reference} as the reference so we can match it.`,
           'We start cooking as soon as it comes through.',
         ]
       : method === 'ONE_STPAY'
         ? [
             `That comes to ${amount}.`,
-            `You can send it by 1stPay to ${alias} — put ${reference} as the reference.`,
+            `You can send it by 1stPay to ${addressed} — put ${reference} as the reference.`,
             'We start cooking as soon as it comes through.',
           ]
         : method === 'BANK_TRANSFER'
           ? [
               `That comes to ${amount}.`,
-              `Transfer to ${alias}, with ${reference} as the reference.`,
+              `Transfer to ${addressed}, with ${reference} as the reference.`,
               'We start cooking once it clears.',
             ]
           : [`That comes to ${amount}. Reference ${reference}.`];

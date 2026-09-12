@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS food_payment_methods (
      account details. Never a credential: nothing secret goes in this
      column, because its whole purpose is to be read out to customers. */
   alias TEXT,
+  /* Which kind of alias it is. BiMPay supports an email, a mobile number
+     and a nickname alongside the account number, and which one a business
+     registered changes the sentence we send: "send it to 2460000000" and
+     "send it to pay@shop.bb" are not interchangeable. */
+  alias_kind TEXT
+    CHECK (alias_kind IS NULL OR alias_kind IN ('EMAIL', 'MOBILE', 'NICKNAME', 'ACCOUNT_NUMBER')),
   /* The business's own wording, if our sentence does not suit them. */
   instructions TEXT,
 
@@ -64,6 +70,7 @@ CREATE TABLE IF NOT EXISTS food_payment_requests (
      a business that changes its BiMPay alias next month must not rewrite
      what a customer was told last week. */
   alias_at_request TEXT,
+  alias_kind_at_request TEXT,
   /* Exactly what the customer was sent, for the same reason. */
   message_sent TEXT,
   /* The outbound WhatsApp message, when one went out. */

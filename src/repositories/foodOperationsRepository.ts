@@ -6,6 +6,7 @@ import { canTransitionPayment, releaseToKitchen } from '../domain/food/paymentGa
 import type { FoodNotificationEvent, NotificationOverrides, NotificationVerbosity } from '../services/food/orderNotifications.js';
 import { raisedFindings, type QcFinding } from '../domain/food/qcFindings.js';
 import { canTransitionAssignment, isFinalAssignmentState, whyNotAssignable, type DriverAssignmentState } from '../domain/food/driverAssignment.js';
+import { canEnable, type FoodPaymentMethodKey, type PaymentAliasKind } from '../domain/food/paymentMethods.js';
 
 export interface FoodMenuCategoryRecord {
   id: string;
@@ -197,6 +198,37 @@ export interface FoodDeliveryRecord {
   note: string | null;
 }
 
+export interface FoodPaymentMethodRecord {
+  id: string;
+  method: FoodPaymentMethodKey;
+  enabled: boolean;
+  /** The one offered first. At most one per business, enforced by a unique partial index. */
+  preferred: boolean;
+  /** What the customer pays TO. Never a credential - its whole purpose is to be read out to customers. */
+  alias: string | null;
+  aliasKind: PaymentAliasKind | null;
+  /** The business's own wording, when ours does not suit them. */
+  instructions: string | null;
+  sortOrder: number;
+}
+
+export interface FoodPaymentRequestRecord {
+  id: string;
+  orderId: string;
+  method: FoodPaymentMethodKey;
+  amountCents: number;
+  currency: string;
+  /** The alias as it was when the customer was told it, not as it is now. */
+  aliasAtRequest: string | null;
+  messageSent: string | null;
+  outboundMessageId: string | null;
+  requestedAt: string;
+  requestedBy: string | null;
+  confirmedAt: string | null;
+  confirmedBy: string | null;
+  confirmationReference: string | null;
+}
+
 export interface FoodDeliveryZoneRecord {
   id: string;
   businessId: string;
@@ -296,6 +328,34 @@ function toDelivery(row: DeliveryRow): FoodDeliveryRecord {
   };
 }
 
+interface PaymentMethodRow {
+  id: string; method: FoodPaymentMethodKey; enabled: boolean; preferred: boolean;
+  alias: string | null; alias_kind: PaymentAliasKind | null; instructions: string | null; sort_order: number;
+}
+
+function toPaymentMethod(row: PaymentMethodRow): FoodPaymentMethodRecord {
+  return {
+    id: row.id, method: row.method, enabled: row.enabled, preferred: row.preferred,
+    alias: row.alias, aliasKind: row.alias_kind, instructions: row.instructions, sortOrder: row.sort_order,
+  };
+}
+
+interface PaymentRequestRow {
+  id: string; order_id: string; method: FoodPaymentMethodKey; amount_cents: string; currency: string;
+  alias_at_request: string | null; message_sent: string | null; outbound_message_id: string | null;
+  requested_at: string; requested_by: string | null; confirmed_at: string | null;
+  confirmed_by: string | null; confirmation_reference: string | null;
+}
+
+function toPaymentRequest(row: PaymentRequestRow): FoodPaymentRequestRecord {
+  return {
+    id: row.id, orderId: row.order_id, method: row.method, amountCents: Number(row.amount_cents),
+    currency: row.currency, aliasAtRequest: row.alias_at_request, messageSent: row.message_sent,
+    outboundMessageId: row.outbound_message_id, requestedAt: row.requested_at, requestedBy: row.requested_by,
+    confirmedAt: row.confirmed_at, confirmedBy: row.confirmed_by, confirmationReference: row.confirmation_reference,
+  };
+}
+
 function toOrder(row: OrderRow): FoodOrderRecord {
   return {
     id: row.id, businessId: row.business_id, orderNumber: Number(row.order_number), chatId: row.chat_id,
@@ -376,6 +436,15 @@ export class OrderAlreadyAssignedError extends Error {}
 export class OrderNotDeliverableError extends Error {}
 
 export class IllegalAssignmentTransitionError extends Error {}
+
+/**
+ * Switching on a payment method whose integration does not exist yet.
+ *
+ * Refused at the repository rather than only on the screen, because a
+ * method enabled here would leave real orders stranded behind the kitchen
+ * gate waiting for a confirmation that can never arrive.
+ */
+export class PaymentMethodNotAvailableError extends Error {}
 
 /**
  * Raised when an order was sent to the kitchen without payment clearing.
@@ -1566,6 +1635,150 @@ export class FoodOperationsRepository {
       [businessId, id, to, isFinalAssignmentState(to), actor.failureReason ?? null, actor.note ?? null],
     );
     return rows[0] ? toDelivery(rows[0]) : null;
+  }
+
+  // ── Payment methods ────────────────────────────────────────────────────
+
+  async listPaymentMethods(businessId: string): Promise<FoodPaymentMethodRecord[]> {
+    const { rows } = await this.db.query<PaymentMethodRow>(
+      'SELECT * FROM food_payment_methods WHERE business_id = $1 ORDER BY preferred DESC, sort_order, method',
+      [businessId],
+    );
+    return rows.map(toPaymentMethod);
+  }
+
+  /**
+   * Turning a way of being paid on or off, and setting its alias.
+   *
+   * An integration that does not exist cannot be enabled. Checked here and
+   * not only on the screen, because a method switched on through the API
+   * would leave real orders stranded behind the kitchen gate waiting for a
+   * confirmation that can never arrive.
+   */
+  async savePaymentMethod(
+    businessId: string,
+    method: FoodPaymentMethodKey,
+    patch: { enabled?: boolean; alias?: string | null; aliasKind?: PaymentAliasKind | null; instructions?: string | null },
+  ): Promise<FoodPaymentMethodRecord> {
+    if (patch.enabled === true && !canEnable(method)) {
+      throw new PaymentMethodNotAvailableError(`${method} is not connected yet, so it cannot be switched on.`);
+    }
+
+    const { rows } = await this.db.query<PaymentMethodRow>(
+      `INSERT INTO food_payment_methods (business_id, method, enabled, alias, alias_kind, instructions, sort_order)
+       VALUES ($1, $2, COALESCE($3, false), $4, $5, $6,
+         (SELECT COALESCE(MAX(sort_order), 0) + 10 FROM food_payment_methods WHERE business_id = $1))
+       ON CONFLICT (business_id, method) DO UPDATE SET
+         enabled = COALESCE($3, food_payment_methods.enabled),
+         alias = COALESCE($4, food_payment_methods.alias),
+         alias_kind = COALESCE($5, food_payment_methods.alias_kind),
+         instructions = COALESCE($6, food_payment_methods.instructions),
+         updated_at = now()
+       RETURNING *`,
+      [businessId, method, patch.enabled ?? null, patch.alias ?? null, patch.aliasKind ?? null, patch.instructions ?? null],
+    );
+    return toPaymentMethod(rows[0]!);
+  }
+
+  /**
+   * The method offered first.
+   *
+   * Cleared and set in one statement: two rows claiming to be preferred is
+   * a screen that contradicts itself, and the unique partial index would
+   * refuse the second write anyway - so the clear has to happen in the
+   * same transaction rather than hopefully just before.
+   */
+  async setPreferredPaymentMethod(businessId: string, method: FoodPaymentMethodKey): Promise<FoodPaymentMethodRecord | null> {
+    const { rows } = await this.db.query<PaymentMethodRow>(
+      `WITH cleared AS (
+         UPDATE food_payment_methods SET preferred = false, updated_at = now()
+         WHERE business_id = $1 AND preferred = true AND method <> $2
+       )
+       UPDATE food_payment_methods SET preferred = true, updated_at = now()
+       WHERE business_id = $1 AND method = $2 AND enabled = true
+       RETURNING *`,
+      [businessId, method],
+    );
+    return rows[0] ? toPaymentMethod(rows[0]) : null;
+  }
+
+  // ── Asking to be paid ──────────────────────────────────────────────────
+
+  /**
+   * Records that a customer was asked to pay, and exactly what they were
+   * told.
+   *
+   * The alias and the message are COPIED rather than joined: a business
+   * that changes its BiMPay alias next month must not rewrite what a
+   * customer was told last week.
+   */
+  async recordPaymentRequest(input: {
+    businessId: string;
+    orderId: string;
+    method: FoodPaymentMethodKey;
+    amountCents: number;
+    currency: string;
+    aliasAtRequest?: string | null;
+    messageSent?: string | null;
+    outboundMessageId?: string | null;
+    requestedBy?: string | null;
+  }): Promise<FoodPaymentRequestRecord> {
+    const { rows } = await this.db.query<PaymentRequestRow>(
+      `INSERT INTO food_payment_requests
+         (business_id, order_id, method, amount_cents, currency, alias_at_request, message_sent, outbound_message_id, requested_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING *`,
+      [
+        input.businessId, input.orderId, input.method, input.amountCents, input.currency,
+        input.aliasAtRequest ?? null, input.messageSent ?? null, input.outboundMessageId ?? null,
+        input.requestedBy ?? null,
+      ],
+    );
+    return toPaymentRequest(rows[0]!);
+  }
+
+  async listPaymentRequests(businessId: string, orderId: string): Promise<FoodPaymentRequestRecord[]> {
+    const { rows } = await this.db.query<PaymentRequestRow>(
+      'SELECT * FROM food_payment_requests WHERE business_id = $1 AND order_id = $2 ORDER BY requested_at DESC',
+      [businessId, orderId],
+    );
+    return rows.map(toPaymentRequest);
+  }
+
+  /** The most recent ask for each order, for the board. One query, not one per card. */
+  async latestPaymentRequestByOrder(businessId: string, orderIds: string[]): Promise<Map<string, FoodPaymentRequestRecord>> {
+    if (orderIds.length === 0) return new Map();
+    const { rows } = await this.db.query<PaymentRequestRow>(
+      `SELECT DISTINCT ON (order_id) * FROM food_payment_requests
+       WHERE business_id = $1 AND order_id = ANY($2::uuid[])
+       ORDER BY order_id, requested_at DESC`,
+      [businessId, orderIds],
+    );
+    return new Map(rows.map((row) => [row.order_id, toPaymentRequest(row)]));
+  }
+
+  /**
+   * Somebody saw the money arrive.
+   *
+   * Only marks the REQUEST as confirmed - moving the order's own payment
+   * state stays with recordPayment, which is where the state machine and
+   * the kitchen gate live. Two places writing payment state is how an
+   * order ends up paid on one screen and unpaid on another.
+   */
+  async confirmPaymentRequest(
+    businessId: string,
+    id: string,
+    by: string | null,
+    reference: string | null,
+  ): Promise<FoodPaymentRequestRecord | null> {
+    const { rows } = await this.db.query<PaymentRequestRow>(
+      `UPDATE food_payment_requests
+         SET confirmed_at = now(), confirmed_by = $3, confirmation_reference = COALESCE($4, confirmation_reference)
+       WHERE business_id = $1 AND id = $2 AND confirmed_at IS NULL
+       RETURNING *`,
+      [businessId, id, by, reference],
+    );
+    return rows[0] ? toPaymentRequest(rows[0]) : null;
   }
 
   async listZones(businessId: string): Promise<FoodDeliveryZoneRecord[]> {
