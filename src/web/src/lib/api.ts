@@ -79,10 +79,21 @@ export interface WorkspaceReaction {
 }
 
 /** "Status comments" feature - a real WhatsApp reply to one published status. Never a public comment (WhatsApp Status has no such thing) - this is the private reply the poster's own business received, associated back to which status it replied to. */
+/** Someone who actually watched a status, from WhatsApp's own read receipts - never inferred or estimated. */
+export interface StatusViewerDto {
+  viewerJid: string;
+  displayName: string;
+  phoneNumber: string | null;
+  viewedAt: string;
+}
+
 export interface StatusReplyDto {
   id: string;
   chatId: string;
   senderJid: string;
+  /** Who replied, resolved the same way the inbox and notifications resolve them - a real name when one is known, otherwise their real number. */
+  senderName: string;
+  senderPhoneNumber: string | null;
   messageType: string;
   textContent: string | null;
   caption: string | null;
@@ -2189,6 +2200,7 @@ export const api = {
   cancelScheduledStatus: (id: string) => request<{ status: ScheduledStatusDto }>(`/workspace/scheduled-statuses/${id}/cancel`, { method: 'POST' }),
   deleteScheduledStatus: (id: string) => request<{ ok: boolean }>(`/workspace/scheduled-statuses/${id}`, { method: 'DELETE' }),
   listStatusReplies: (id: string) => request<{ replies: StatusReplyDto[] }>(`/workspace/scheduled-statuses/${id}/replies`),
+  listStatusViewers: (id: string) => request<{ viewers: StatusViewerDto[] }>(`/workspace/scheduled-statuses/${id}/viewers`),
 
   listFunnels: () => request<{ funnels: FunnelDto[] }>('/workspace/funnels'),
   createFunnel: (name: string, description: string | null) =>

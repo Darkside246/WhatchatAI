@@ -75,6 +75,20 @@ export interface StatusUpdateJobData {
   ingested: IngestedWhatsAppMessage;
 }
 
+/**
+ * Somebody watched a Status this account posted. WhatsApp delivers it as an
+ * ordinary read receipt on status@broadcast naming the viewer - see the
+ * message-receipt.update listener in whatsappTenantConnection.ts.
+ */
+export interface StatusViewJobData {
+  businessId: string;
+  whatsappAccountId: string;
+  /** WhatsApp's own id for the status that was watched. */
+  statusWhatsappId: string;
+  viewerJid: string;
+  viewedAt: string;
+}
+
 export interface MediaDownloadJobData {
   businessId: string;
   whatsappAccountId: string;
@@ -222,6 +236,10 @@ export async function enqueueManualMediaRetry(mediaId: string): Promise<ManualMe
     backoff: { type: 'exponential', delay: MEDIA_DOWNLOAD_BACKOFF_DELAY_MS },
   });
   return 'enqueued';
+}
+
+export function enqueueStatusView(data: StatusViewJobData): Promise<unknown> {
+  return realtimeEventsQueue.add('status-view', data);
 }
 
 export function enqueueMessageReaction(data: MessageReactionJobData): Promise<unknown> {

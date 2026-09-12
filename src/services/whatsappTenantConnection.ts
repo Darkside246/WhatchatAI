@@ -17,6 +17,7 @@ import {
   enqueueStatusUpdate,
   enqueueMessageReaction,
   enqueuePresenceUpdate,
+  enqueueStatusView,
 } from '../queue/queues/realtimeEventsQueue.js';
 
 import { mapBaileysMessageStatus } from '../domain/whatsapp/messageStatus.js';
@@ -954,6 +955,44 @@ export class WhatsAppTenantConnection {
               console.error('[WhatsApp] Failed to enqueue message status update', key.id, error);
             },
           );
+        }
+      });
+    });
+
+    /**
+     * Who watched a Status this account posted.
+     *
+     * WhatsApp has no "status viewed" event: a view arrives as an ordinary
+     * read receipt on status@broadcast for one of our own posts, naming the
+     * viewer. Nothing was listening for it, so the only engagement signal a
+     * broadcast produces was arriving on every reconnect and being dropped.
+     *
+     * Narrow on purpose. Only receipts for status@broadcast, only for posts
+     * that are ours (fromMe), and only ones carrying a real read timestamp -
+     * a delivery receipt is not somebody watching. Everything else on this
+     * event is ordinary message read state, which messages.update already
+     * covers.
+     */
+    socket.ev.on('message-receipt.update', (receipts) => {
+      this.withSyncContext((businessId, accountId) => {
+        for (const { key, receipt } of receipts) {
+          if (key.remoteJid !== STATUS_BROADCAST_JID || !key.fromMe || !key.id) continue;
+          const viewerJid = receipt.userJid;
+          if (!viewerJid) continue;
+          const readAt = receipt.readTimestamp ?? receipt.playedTimestamp;
+          if (!readAt) continue;
+
+          enqueueStatusView({
+            businessId,
+            whatsappAccountId: accountId,
+            statusWhatsappId: key.id,
+            viewerJid,
+            // WhatsApp's own seconds-since-epoch for when they actually
+            // watched it, not when we heard about it.
+            viewedAt: new Date(Number(readAt) * 1000).toISOString(),
+          }).catch((error) => {
+            console.error('[WhatsApp] Failed to enqueue status view', key.id, error);
+          });
         }
       });
     });

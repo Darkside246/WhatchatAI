@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type MouseEvent } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Megaphone, Send, Check, X, Users, CalendarClock, Image as ImageIcon, Sparkles, Trash2, Ban, Paperclip } from 'lucide-react';
 import {
   api,
@@ -9,6 +9,7 @@ import {
   type EligibleRecipientDto,
   type ScheduledStatusDto,
   type StatusReplyDto,
+  type StatusViewerDto,
 } from '../lib/api.js';
 
 /**
@@ -816,7 +817,9 @@ function NewStatusForm({ onCreated, onCancel }: { onCreated: () => void; onCance
  * thing; these are the private replies the business itself received.
  */
 function StatusRepliesPanel({ statusId }: { statusId: string }) {
+  const navigate = useNavigate();
   const [replies, setReplies] = useState<StatusReplyDto[] | null>(null);
+  const [viewers, setViewers] = useState<StatusViewerDto[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -825,21 +828,66 @@ function StatusRepliesPanel({ statusId }: { statusId: string }) {
       .listStatusReplies(statusId)
       .then((result) => { if (!cancelled) setReplies(result.replies); })
       .catch((err) => { if (!cancelled) setError(err instanceof ApiError ? err.message : 'Could not load replies.'); });
+    // Separate request, and a failure here never blanks the replies: who
+    // watched is the newer half of this panel and the older half must not
+    // start depending on it.
+    api
+      .listStatusViewers(statusId)
+      .then((result) => { if (!cancelled) setViewers(result.viewers); })
+      .catch(() => { if (!cancelled) setViewers([]); });
     return () => { cancelled = true; };
   }, [statusId]);
 
+  const audience = viewers && viewers.length > 0 && (
+    <div className="mt-2 border-t border-border-subtle pt-2">
+      <p className="text-meta font-semibold uppercase tracking-wide text-fg-muted">
+        Seen by {viewers.length}
+      </p>
+      <div className="mt-1 space-y-0.5">
+        {viewers.map((viewer) => (
+          <p key={viewer.viewerJid} className="text-caption text-fg-secondary">
+            {viewer.displayName}
+            <span className="ml-1.5 text-meta text-fg-muted">{formatDate(viewer.viewedAt)}</span>
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+
   if (error) return <p className="mt-2 text-caption text-error">{error}</p>;
   if (replies === null) return <p className="mt-2 text-caption text-fg-muted">Loading replies…</p>;
-  if (replies.length === 0) return <p className="mt-2 text-caption text-fg-muted">No replies yet.</p>;
+  if (replies.length === 0) {
+    return (
+      <>
+        <p className="mt-2 text-caption text-fg-muted">No replies yet.</p>
+        {audience}
+      </>
+    );
+  }
 
   return (
     <div className="mt-2 space-y-1.5 border-t border-border-subtle pt-2">
       {replies.map((reply) => (
-        <div key={reply.id} className="rounded-lg bg-surface-1 px-3 py-2 text-caption">
-          <p className="text-fg">{reply.textContent ?? reply.caption ?? `[${reply.messageType}]`}</p>
+        /* Opens the conversation it came from. A reply to a status is a
+           private message, so answering it means going to that chat - and
+           the person is the point of the panel, not the wording. */
+        <button
+          key={reply.id}
+          type="button"
+          onClick={() => navigate(`/chats/${reply.chatId}?message=${reply.id}`)}
+          className="block w-full rounded-lg bg-surface-1 px-3 py-2 text-left text-caption hover:bg-surface-2"
+        >
+          <p className="font-semibold text-fg">
+            {reply.senderName}
+            {reply.senderPhoneNumber && reply.senderPhoneNumber !== reply.senderName && (
+              <span className="ml-1.5 font-normal text-fg-muted">{reply.senderPhoneNumber}</span>
+            )}
+          </p>
+          <p className="mt-0.5 text-fg-secondary">{reply.textContent ?? reply.caption ?? `[${reply.messageType}]`}</p>
           <p className="mt-0.5 text-meta text-fg-muted">{formatDate(reply.timestamp)}</p>
-        </div>
+        </button>
       ))}
+      {audience}
     </div>
   );
 }
@@ -891,7 +939,7 @@ function StatusRow({
       </div>
       {status.status === 'PUBLISHED' && (
         <button type="button" onClick={() => setShowReplies((v) => !v)} className="mt-2 text-caption font-medium text-accent hover:text-accent-dim">
-          {showReplies ? 'Hide replies' : 'View replies'}
+          {showReplies ? 'Hide replies' : 'Replies and who saw it'}
         </button>
       )}
       {showReplies && <StatusRepliesPanel statusId={status.id} />}

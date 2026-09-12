@@ -245,6 +245,7 @@ import {
   listScheduledStatuses,
   getScheduledStatus,
   listStatusReplies,
+  listStatusViewers,
   scheduleStatus,
   publishStatusNow,
   cancelScheduledStatus,
@@ -1646,6 +1647,18 @@ app.post('/api/workspace/scheduled-statuses/:id/publish-now', requireWorkspaceCo
   } catch (error) {
     if (isScheduledStatusNotFoundError(error)) return res.status(404).json({ error: 'SCHEDULED_STATUS_NOT_FOUND' });
     if (isInvalidScheduledStatusError(error)) return res.status(409).json({ error: 'INVALID_STATUS_STATE', message: (error as Error).message });
+    throw error;
+  }
+});
+
+/** "Status viewers" - who actually watched this status, from WhatsApp's own read receipts. See scheduledStatusService.ts's listStatusViewers. */
+app.get('/api/workspace/scheduled-statuses/:id/viewers', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    const viewers = await listStatusViewers(businessId, String(req.params.id ?? ''));
+    return res.status(200).json({ viewers });
+  } catch (error) {
+    if (isScheduledStatusNotFoundError(error)) return res.status(404).json({ error: 'SCHEDULED_STATUS_NOT_FOUND' });
     throw error;
   }
 });

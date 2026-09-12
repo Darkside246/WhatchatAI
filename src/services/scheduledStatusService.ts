@@ -2,12 +2,20 @@ import { createHash } from 'node:crypto';
 import { pool } from '../db/pool.js';
 import { ScheduledStatusRepository, type ScheduledStatusRecord, type ScheduledStatusType } from '../repositories/scheduledStatusRepository.js';
 import { WhatsAppMessageRepository, type WhatsAppMessageRecord } from '../repositories/whatsappMessageRepository.js';
+import { WhatsAppChatRepository } from '../repositories/whatsappChatRepository.js';
+import { WhatsAppStatusViewRepository } from '../repositories/whatsappStatusViewRepository.js';
+import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
+import { resolveDisplayName } from '../domain/whatsapp/displayName.js';
+import { resolveChatIdentity } from './chatIdentityService.js';
 import { enqueueScheduledStatus } from '../queue/queues/scheduledStatusesQueue.js';
 import { enqueueWithTimeout } from '../queue/enqueueWithTimeout.js';
 import { storeMedia } from '../media/mediaStorage.js';
 
 const scheduledStatusRepository = new ScheduledStatusRepository(pool);
 const messageRepository = new WhatsAppMessageRepository(pool);
+const chatRepository = new WhatsAppChatRepository(pool);
+const statusViewRepository = new WhatsAppStatusViewRepository(pool);
+const contactRepository = new WhatsAppContactRepository(pool);
 
 export class ScheduledStatusNotFoundError extends Error {}
 export class InvalidScheduledStatusError extends Error {}
@@ -84,9 +92,53 @@ export async function getScheduledStatus(businessId: string, id: string): Promis
  * (unpublished ones have no publishedWhatsappMessageId for a reply to
  * reference in the first place).
  */
-export async function listStatusReplies(businessId: string, id: string): Promise<WhatsAppMessageRecord[]> {
+export interface StatusReply extends WhatsAppMessageRecord {
+  /** What a human should see for whoever replied - a real name when one is known, otherwise their real number. Never fabricated. */
+  senderName: string;
+  /** Their own number when genuinely known, else null. */
+  senderPhoneNumber: string | null;
+}
+
+export async function listStatusReplies(businessId: string, id: string): Promise<StatusReply[]> {
   await requireOwn(businessId, id);
-  return messageRepository.listRepliesToStatus(businessId, id);
+  const replies = await messageRepository.listRepliesToStatus(businessId, id);
+
+  // A reply carried only a raw sender JID, which is not an answer to "who
+  // replied to this" - the panel showed the words and nothing about the
+  // person, which is the half that matters for deciding what to post next.
+  //
+  // Resolved per CHAT rather than per JID, and through the same resolver
+  // the inbox and notifications use, so one person is named the same way
+  // everywhere. Cached per chat because several replies to one status
+  // usually come from a handful of people.
+  const identityByChatId = new Map<string, { displayName: string; phoneNumber: string | null }>();
+  for (const reply of replies) {
+    if (identityByChatId.has(reply.chatId)) continue;
+    const chat = await chatRepository.findByIdForBusiness(reply.chatId, businessId);
+    if (!chat) continue;
+    identityByChatId.set(
+      reply.chatId,
+      await resolveChatIdentity(businessId, chat.whatsappAccountId, {
+        chatJid: chat.chatJid,
+        jidKind: chat.jidKind,
+        name: chat.name,
+        phoneNumber: chat.phoneNumber,
+        contactId: chat.contactId,
+      }),
+    );
+  }
+
+  return replies.map((reply) => {
+    const identity = identityByChatId.get(reply.chatId);
+    return {
+      ...reply,
+      // Falls back to the sender's real JID rather than to "Unknown": the
+      // chat row being missing is a data gap, not a reason to stop saying
+      // who this was.
+      senderName: identity?.displayName ?? reply.senderJid,
+      senderPhoneNumber: identity?.phoneNumber ?? null,
+    };
+  });
 }
 
 /** DRAFT -> SCHEDULED, and the real BullMQ delayed job that will actually fire the publish. */
@@ -155,4 +207,57 @@ export function isScheduledStatusNotFoundError(error: unknown): error is Schedul
 }
 export function isInvalidScheduledStatusError(error: unknown): error is InvalidScheduledStatusError {
   return error instanceof InvalidScheduledStatusError;
+}
+
+
+export interface StatusViewer {
+  viewerJid: string;
+  /** What a human should see - a real name when their contact card has one, otherwise their real number. Never fabricated. */
+  displayName: string;
+  phoneNumber: string | null;
+  viewedAt: string;
+}
+
+/**
+ * Who actually watched this status.
+ *
+ * The counterpart to listStatusReplies, and the more useful half: most
+ * people who see a post never reply to it, so the reply list is the tip of
+ * an audience this answers for directly. Collected from WhatsApp's own read
+ * receipts - see the message-receipt.update listener in
+ * whatsappTenantConnection.ts - never inferred or estimated.
+ *
+ * Empty for a status that has not published (no WhatsApp id for a receipt
+ * to name), and for one published before this existed: receipts are
+ * delivered around the time of the view and are not backfilled, so an older
+ * post's audience is genuinely not recoverable rather than merely unread.
+ */
+export async function listStatusViewers(businessId: string, id: string): Promise<StatusViewer[]> {
+  const record = await requireOwn(businessId, id);
+  if (!record.publishedWhatsappMessageId) return [];
+
+  const views = await statusViewRepository.listForStatus(businessId, record.publishedWhatsappMessageId);
+
+  return Promise.all(
+    views.map(async (view) => {
+      // Resolved at read time rather than stored with the view, so a viewer
+      // recorded before their contact card synced is still named correctly
+      // afterwards.
+      const contact = await contactRepository.findByJid(businessId, record.whatsappAccountId, view.viewerJid).catch(() => null);
+      return {
+        viewerJid: view.viewerJid,
+        displayName: resolveDisplayName({
+          verifiedName: contact?.verifiedName ?? null,
+          businessName: contact?.businessName ?? null,
+          displayName: contact?.displayName ?? null,
+          username: contact?.username ?? null,
+          pushName: contact?.pushName ?? null,
+          phoneNumber: contact?.phoneNumber ?? null,
+          whatsappJid: view.viewerJid,
+        }),
+        phoneNumber: contact?.phoneNumber ?? null,
+        viewedAt: view.viewedAt,
+      };
+    }),
+  );
 }

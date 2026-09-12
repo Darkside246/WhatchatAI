@@ -13,6 +13,7 @@ import {
   type MessageStatusJobData,
   type CallEventJobData,
   type StatusUpdateJobData,
+  type StatusViewJobData,
   type MediaDownloadJobData,
   type MessageReactionJobData,
   type PresenceUpdateJobData,
@@ -39,6 +40,7 @@ import { pool } from '../../db/pool.js';
 import { WhatsAppMessageRepository } from '../../repositories/whatsappMessageRepository.js';
 import { WhatsAppCallRepository } from '../../repositories/whatsappCallRepository.js';
 import { WhatsAppMediaRepository } from '../../repositories/whatsappMediaRepository.js';
+import { WhatsAppStatusViewRepository } from '../../repositories/whatsappStatusViewRepository.js';
 import { WhatsAppMessageReactionRepository } from '../../repositories/whatsappMessageReactionRepository.js';
 import { WhatsAppPresenceRepository } from '../../repositories/whatsappPresenceRepository.js';
 import { WhatsAppSyncJobRepository } from '../../repositories/whatsappSyncJobRepository.js';
@@ -783,6 +785,7 @@ const callRepository = new WhatsAppCallRepository(pool);
 const syncJobRepository = new WhatsAppSyncJobRepository(pool);
 const accountRepository = new WhatsAppAccountRepository(pool);
 const mediaRepository = new WhatsAppMediaRepository(pool);
+const statusViewRepository = new WhatsAppStatusViewRepository(pool);
 const reactionRepository = new WhatsAppMessageReactionRepository(pool);
 const presenceRepository = new WhatsAppPresenceRepository(pool);
 const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
@@ -1030,6 +1033,30 @@ async function processMediaDownload(data: MediaDownloadJobData): Promise<void> {
   // real outcome; this is a thin signal on top of it, not a separate
   // judgment, and it is the ONLY throw in this function.
   throw new Error(`Retryable media download failure (${outcome.category}): ${outcome.message}`);
+}
+
+/**
+ * Somebody watched a Status this account posted.
+ *
+ * Recorded rather than counted: whatsapp_statuses.view_count already held
+ * WhatsApp's own number, which answers "how many" and nothing else. Which
+ * customers actually watched a post is the one real piece of engagement
+ * data a WhatsApp-first business gets back from a broadcast, and it was
+ * arriving on every reconnect and being dropped.
+ *
+ * Only the JID is stored. The name is resolved at read time through the
+ * same resolver the inbox uses, so a viewer recorded before their contact
+ * card synced is still named correctly later, and a name that changes is
+ * not frozen here in a second copy.
+ */
+async function processStatusView(data: StatusViewJobData): Promise<void> {
+  await statusViewRepository.record({
+    businessId: data.businessId,
+    whatsappAccountId: data.whatsappAccountId,
+    statusWhatsappId: data.statusWhatsappId,
+    viewerJid: data.viewerJid,
+    viewedAt: data.viewedAt,
+  });
 }
 
 /**
@@ -1653,6 +1680,7 @@ async function processRealtimeEventJob(
     | MediaDownloadJobData
     | MessageReactionJobData
     | PresenceUpdateJobData
+    | StatusViewJobData
     | AiDebounceJobData
     | HumanTakeoverResumeJobData
     | OperatorAiResumeJobData
@@ -1664,6 +1692,8 @@ async function processRealtimeEventJob(
     await processCallEvent(job.data as CallEventJobData);
   } else if (job.name === 'status-update') {
     await processStatusUpdate(job.data as StatusUpdateJobData);
+  } else if (job.name === 'status-view') {
+    await processStatusView(job.data as StatusViewJobData);
   } else if (job.name === 'call-timeout-sweep') {
     await sweepStaleRingingCalls();
   } else if (job.name === 'sync-job-timeout-sweep') {

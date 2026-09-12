@@ -58,6 +58,7 @@ const TABLES = [
   'whatsapp_sync_jobs',
   'whatsapp_connection_events',
   'whatsapp_statuses',
+  'whatsapp_status_views',
   'whatsapp_calls',
   'whatsapp_presence',
   'whatsapp_message_reactions',
