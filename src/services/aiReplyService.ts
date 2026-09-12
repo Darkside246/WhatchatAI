@@ -44,6 +44,7 @@ import { mediaFallbackText, type InlineMediaPart } from './ai/mediaContext.js';
 import { classifyAiError } from './ai/aiErrorClassification.js';
 import { notifyBusiness } from './notificationService.js';
 import { classifyMessage } from './ai/conversationIntentClassifier.js';
+import { buildStanding, describeStanding } from './ai/conversationStanding.js';
 import { resolveNameEvidence, shouldUseName, replyUsesName, customerAskedToUseName } from './ai/identityEngine.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
 import { EntitlementService } from './entitlementService.js';
@@ -301,6 +302,17 @@ async function recordGatewayUsage(
 
 export type AiReplyResult =
   | { status: 'generated'; text: string }
+  /**
+   * The model read the conversation and concluded nothing more is needed -
+   * the customer's last message closed an exchange rather than opening one.
+   *
+   * A real outcome, not a failure: the honest answer to a bare "ok" at the
+   * end of a conversation is the one a person would give, which is to send
+   * nothing. Distinct from 'unavailable' precisely so the caller does not
+   * treat it as something gone wrong - no hand-off, no notification, no
+   * takeover.
+   */
+  | { status: 'no_reply_needed'; reason: string }
   /**
    * `skipEscalation` (Phase 3B): true when the failure reason is
    * agent-independent - no API key, circuit open, a capacity/auth/
@@ -716,13 +728,42 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
    * this exists to prevent.
    */
   lines.push(
-    'Who you are speaking to: the customer, and only the customer. Some turns below are marked as typed by a real ' +
-      'team member on your own side - they are your colleagues, working the same conversation. Never answer them, ' +
-      'never greet or thank them, and never address them by name; your reply is delivered to the customer, so a ' +
-      "reply aimed at a colleague reaches the wrong person. Do read what they said and build on it: honour their " +
-      'promises, do not contradict them, and do not repeat an instruction or question they have already given. If ' +
-      "the customer's own latest message is short or says little, reply to that - do not reach past it for a " +
-      'colleague\'s line to answer instead.',
+    'YOUR SIDE HAS TWO TYPISTS AND ONE VOICE. Some turns below are marked as typed by a real person on your own ' +
+      'side rather than by you. The customer cannot tell the difference and does not know you exist - to them, ' +
+      'every one of those turns came from the same business you are speaking as. So treat everything your side has ' +
+      'said as something YOU have said: never repeat it, never ask again what it already asked, never contradict ' +
+      'it, and honour anything it promised. The single thing you must never do is address or answer the person who ' +
+      'typed it, and never address them by name - your reply goes to the customer, so a line aimed at your own ' +
+      'colleague reaches the wrong person entirely.',
+  );
+
+  /**
+   * The read-back done for the model rather than left to it - real turns,
+   * real timestamps, computed from the transcript. The rule about what to
+   * do with these facts is stated once, below; stating it again inside the
+   * facts is how a prompt turns into noise.
+   */
+  const standingBrief = describeStanding(
+    buildStanding({ history: context.conversationHistory, aiGeneratedMessageIds: context.aiGeneratedMessageIds }),
+  );
+  if (standingBrief) lines.push(standingBrief);
+
+  lines.push(
+    'READ BACK BEFORE YOU REPLY. Work out, in this order: what your side last said, what the customer has said ' +
+      'since, and whether anything is actually still open. Then reply to the real state of the conversation, not ' +
+      'simply to the last line on the screen. If the customer has asked something or raised something, answer it. ' +
+      'If they are only acknowledging or closing off something your side already said - "ok", "thanks", a greeting ' +
+      'returned to the one you sent - then the exchange is finished: do not restart it, do not greet them again, ' +
+      'and do not manufacture a new question just to have something to send. Adding one genuinely useful next step ' +
+      'is fine; filling silence is not.',
+  );
+
+  lines.push(
+    `SAYING NOTHING IS A VALID REPLY. When the exchange is genuinely finished and you have nothing real to add, ` +
+      `reply with exactly ${NO_REPLY_SENTINEL} and nothing else. It is not sent to the customer - it means "no reply needed", ` +
+      'and it is the right answer to a bare "ok" or "thanks" at the end of a conversation, exactly as a person ' +
+      'would simply not send anything. Never use it to avoid a question you find difficult, and never put it ' +
+      'alongside other words.',
   );
 
   lines.push(
@@ -882,9 +923,44 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
  * customer, and a reply that contradicts or repeats them is just as wrong as
  * one that answers them.
  */
+/**
+ * How the model says "nothing more is needed here".
+ *
+ * A sentinel rather than a tool call, because it has to work identically on
+ * every provider this app can fall back to, and because the check that
+ * honours it has to be exact: only a reply that is ENTIRELY this token is
+ * treated as silence. A sentinel that appeared mid-sentence would otherwise
+ * be a way to send the customer a piece of our own scaffolding.
+ *
+ * Square brackets and underscores so it cannot be produced by accident, and
+ * so it is obvious in a log.
+ */
+export const NO_REPLY_SENTINEL = '[NO_REPLY_NEEDED]';
+
+/** True when the model asked to stay silent - the WHOLE reply must be the sentinel, never merely contain it. */
+export function isNoReplyRequest(text: string): boolean {
+  return text.trim() === NO_REPLY_SENTINEL;
+}
+
+/**
+ * Marks a turn a real person on our side typed, rather than the agent.
+ *
+ * WORDED AS "YOUR OWN SIDE ALREADY SAID THIS", not as "a colleague said
+ * this". An earlier version told the model to never acknowledge these turns
+ * at all, and it took that literally: it discounted them, and then greeted
+ * a customer the owner had greeted thirty seconds earlier and who had
+ * already greeted back. To the customer there is one business here, not a
+ * pair of colleagues - so what the operator typed has been said, as
+ * surely as if the agent had written it.
+ *
+ * The one thing that does stay forbidden is ADDRESSING them, because every
+ * reply is delivered to the customer: a line aimed at the operator reaches
+ * the wrong person entirely.
+ */
 const HUMAN_REPLY_PREFIX =
-  '[A real team member on your own side typed this, not you and not the customer. Never reply to it, never ' +
-  "acknowledge it, and never address them. Use it as context for what your side has already said]: ";
+  '[YOUR OWN SIDE said this to the customer - a real person on your team typed it rather than you, and the ' +
+  'customer has already read it. Treat it as something you have said: never repeat it, never contradict it, ' +
+  'honour anything it promised. Never address or answer the person who typed it]: ';
 
 /**
  * Marks a turn WhatsApp itself flagged as forwarded (contextInfo.isForwarded
@@ -1637,6 +1713,13 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
     if (!text) {
       console.warn(`[aiReplyService] Gemini returned an empty response for chat ${context.chatId}; falling back to Goose.`);
       return tryFallbackProviders('Reply model returned an empty response', agent, context, contents, false, replyTools);
+    }
+
+    // Checked before anything else reads the text: a sentinel reply is an
+    // instruction to this process, never a message, and must not be
+    // recorded as a commitment or as having used the customer's name.
+    if (isNoReplyRequest(text)) {
+      return { status: 'no_reply_needed', reason: 'The agent judged the exchange closed and chose to say nothing' };
     }
 
     const finalText = text.slice(0, MAX_REPLY_CHARS);

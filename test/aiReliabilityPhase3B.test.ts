@@ -300,7 +300,8 @@ describe('generateAiReply - sender attribution (a real reported bug: a team memb
     // from the business side), but is explicitly labeled as NOT the AI's
     // own words - the actual fix, since role alone can't distinguish them.
     expect(humanSentTurn?.role).toBe('model');
-    expect(humanSentTurn?.parts[0]?.text).toContain('A real team member on your own side typed this');
+    expect(humanSentTurn?.parts[0]?.text).toContain('YOUR OWN SIDE said this to the customer');
+    expect(humanSentTurn?.parts[0]?.text).toContain('a real person on your team typed it rather than you');
     expect(humanSentTurn?.parts[0]?.text).toContain('my father will give me a piece of his chicken');
   });
 
@@ -334,18 +335,37 @@ describe('generateAiReply - sender attribution (a real reported bug: a team memb
     const operatorSent = contents.find((c) => c.parts[0]?.text.includes('ok give me a min'));
 
     // The prohibition, on the turn itself and as a standing rule.
-    expect(operatorSent?.parts[0]?.text).toContain('Never reply to it');
-    expect(systemInstruction).toContain('Never answer them');
+    expect(operatorSent?.parts[0]?.text).toContain('Never address or answer the person who typed it');
+    expect(systemInstruction).toContain('never do is address or answer the person who typed it');
+
+    // And the other half of the same rule, added after the agent greeted a
+    // customer the operator had greeted seconds earlier: the turn is not
+    // merely off-limits to answer, it is something OUR SIDE HAS SAID, so
+    // repeating it is as wrong as answering it.
+    expect(operatorSent?.parts[0]?.text).toContain('Treat it as something you have said: never repeat it');
+    expect(systemInstruction).toContain('YOUR SIDE HAS TWO TYPISTS AND ONE VOICE');
     expect(systemInstruction).toContain('never address them by name');
 
     // And the other half - the operator is an extension of the business, so
     // what they said has to remain usable, not just ignored.
-    expect(operatorSent?.parts[0]?.text).toContain('Use it as context');
-    expect(systemInstruction).toContain('honour their promises');
+    expect(operatorSent?.parts[0]?.text).toContain('honour anything it promised');
+    expect(systemInstruction).toContain('honour anything it promised');
 
-    // The specific failure shape: a short customer turn must not send the
-    // model looking for the colleague's line to answer instead.
-    expect(systemInstruction).toContain('do not reach past it');
+    /**
+     * The specific failure shape this test was written for - a short
+     * customer turn sending the model looking for the colleague's line to
+     * answer instead - used to be covered by an instruction reading "do not
+     * reach past it". That clause was removed, because it turned out to
+     * cause a failure of its own: told to answer a short customer message
+     * in isolation, the agent greeted a customer the operator had greeted
+     * seconds earlier and who had already greeted back.
+     *
+     * What replaces it is stronger, not weaker: read the whole standing of
+     * the conversation and reply to that, rather than to whichever line is
+     * last on the screen.
+     */
+    expect(systemInstruction).toContain('READ BACK BEFORE YOU REPLY');
+    expect(systemInstruction).toContain('not simply to the last line on the screen');
   });
 
   it('labels each group participant\'s own turn with their real, verified name - never lets one participant\'s remark blend into another\'s', async () => {

@@ -9,6 +9,8 @@ import { BusinessMembershipRepository } from '../../repositories/businessMembers
 import { EntitlementService } from '../entitlementService.js';
 import { pool } from '../../db/pool.js';
 import type { AiAgentRecord } from '../../repositories/aiAgentRepository.js';
+import { removeRepetition } from './repetitionGuard.js';
+import { buildStanding } from './conversationStanding.js';
 import type { AiHandoffContext } from '../aiContextGathererService.js';
 
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
@@ -28,6 +30,17 @@ export type OrchestratedAiOutcome =
   | { kind: 'no_agent'; reason: string }
   | { kind: 'escalate_to_human'; reason: string; matchedKeyword: string }
   | { kind: 'reply'; agent: AiAgentRecord; text: string }
+  /**
+   * The agent read the conversation and judged that nothing more is needed.
+   *
+   * A real outcome, never a failure. The customer's last message closed an
+   * exchange rather than opening one - a bare "ok", a thanks, a greeting
+   * returned to the one our side already sent - and the honest answer is
+   * the one a person gives, which is to send nothing at all. Kept distinct
+   * from 'unavailable' so the worker does not hand the conversation to a
+   * human or raise an alert over a conversation that ended normally.
+   */
+  | { kind: 'no_reply_needed'; agent: AiAgentRecord; reason: string }
   /**
    * code is a real, machine-readable discriminator for the handful of
    * 'unavailable' causes a caller needs to react to differently:
@@ -63,6 +76,20 @@ export type OrchestratedAiOutcome =
    */
   | { kind: 'blocked_leak'; agent: AiAgentRecord; reason: string };
 
+
+/**
+ * The repetition guard's inputs, read from the same transcript the prompt
+ * was built from - so what the model was told our side had already said and
+ * what the guard checks against can never disagree.
+ */
+function standingFor(context: AiHandoffContext): { alreadySaid: string[]; alreadyGreeted: boolean } {
+  const standing = buildStanding({
+    history: context.conversationHistory,
+    aiGeneratedMessageIds: context.aiGeneratedMessageIds,
+  });
+  return { alreadySaid: standing.alreadySaid, alreadyGreeted: standing.greetingExchanged };
+}
+
 /**
  * Runs every generated reply through the Outbound Leak Guard before it is
  * trusted - the one place this check happens, so it can never be bypassed
@@ -76,8 +103,15 @@ export async function guardGeneratedText(
   agent: AiAgentRecord,
   text: string,
   customerNameSources?: AiHandoffContext['contactNameSources'],
+  /**
+   * What our side has already said, and whether a greeting has passed - see
+   * repetitionGuard.ts. Optional so the direct-testing callers of this seam
+   * stay simple; omitted means no repetition check, never a wrong one.
+   */
+  standing?: { alreadySaid: string[]; alreadyGreeted: boolean },
 ): Promise<{ kind: 'reply'; agent: AiAgentRecord; text: string } | { kind: 'blocked_leak'; agent: AiAgentRecord; reason: string }> {
-  const guarded = await removeTeamAddress(businessId, text, customerNameSources ?? null);
+  const deduped = standing ? removeRepetition(text, standing) : text;
+  const guarded = await removeTeamAddress(businessId, deduped, customerNameSources ?? null);
   const verdict = await runOutboundLeakGuard(guarded, agent.protectedFacts);
 
   if (!verdict.allowed) {
@@ -257,7 +291,14 @@ export async function orchestrateAiReply(input: OrchestrateAiReplyInput): Promis
   const reply = await generateAiReply(agent, context);
 
   if (reply.status === 'generated') {
-    return guardGeneratedText(input.businessId, agent, reply.text, context.contactNameSources);
+    return guardGeneratedText(input.businessId, agent, reply.text, context.contactNameSources, standingFor(context));
+  }
+
+  // Deliberate silence, so there is nothing to escalate: a second agent
+  // would be asked the same closed conversation and should reach the same
+  // conclusion. Handled before the escalation hop for that reason.
+  if (reply.status === 'no_reply_needed') {
+    return { kind: 'no_reply_needed', agent, reason: reply.reason };
   }
 
   // A real escalation hop: if the selected agent could not produce a
@@ -275,7 +316,10 @@ export async function orchestrateAiReply(input: OrchestrateAiReplyInput): Promis
     if (escalationAgent) {
       const escalatedReply = await generateAiReply(escalationAgent, context);
       if (escalatedReply.status === 'generated') {
-        return guardGeneratedText(input.businessId, escalationAgent, escalatedReply.text, context.contactNameSources);
+        return guardGeneratedText(input.businessId, escalationAgent, escalatedReply.text, context.contactNameSources, standingFor(context));
+      }
+      if (escalatedReply.status === 'no_reply_needed') {
+        return { kind: 'no_reply_needed', agent: escalationAgent, reason: escalatedReply.reason };
       }
       return {
         kind: 'unavailable',

@@ -695,6 +695,20 @@ async function runAiHandoff(params: {
     return;
   }
 
+  // A deliberate silence, and a normal end to a conversation - not a
+  // failure. The customer's last message closed an exchange rather than
+  // opening one, and the honest answer is the one a person gives: nothing.
+  //
+  // So, unlike every other non-reply outcome above, this raises no
+  // notification, records no hand-off and never touches ai_mode. The chat
+  // simply stays as it is, with the AI still on it, ready for whatever the
+  // customer says next. Logged so a silence is never invisible when
+  // somebody asks why nothing was sent.
+  if (outcome.kind === 'no_reply_needed') {
+    console.log(`[IncomingMessagesWorker] No reply needed for chat ${chatId} (agent ${outcome.agent.id}): ${outcome.reason}`);
+    return;
+  }
+
   const agent = outcome.agent;
 
   // Idempotency key derived from the inbound message's own id: if this job
