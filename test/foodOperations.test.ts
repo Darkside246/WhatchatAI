@@ -197,3 +197,31 @@ describe('delivery zones', () => {
     );
   });
 });
+
+describe('who can work the board', () => {
+  /**
+   * A real product decision, not an oversight: property and retail give an
+   * AGENT view-only, but the person bumping a ticket from the line to the
+   * pass is a cook, and a cook is an AGENT. A kitchen where the most junior
+   * role cannot move a ticket goes back to shouting, which is the problem
+   * the board exists to solve.
+   */
+  it('lets a line cook move tickets, not just look at them', async () => {
+    const { hasPermission } = await import('../src/domain/auth/permissions.js');
+    expect(hasPermission('AGENT', 'food.manage')).toBe(true);
+    expect(hasPermission('AGENT', 'food.view')).toBe(true);
+  });
+
+  it('keeps a viewer to looking', async () => {
+    const { hasPermission } = await import('../src/domain/auth/permissions.js');
+    expect(hasPermission('VIEWER', 'food.view')).toBe(true);
+    expect(hasPermission('VIEWER', 'food.manage')).toBe(false);
+  });
+
+  it('gives a manager the whole surface', async () => {
+    const { hasPermission } = await import('../src/domain/auth/permissions.js');
+    for (const permission of ['food.view', 'food.manage', 'food.approve'] as const) {
+      expect(hasPermission('MANAGER', permission)).toBe(true);
+    }
+  });
+});

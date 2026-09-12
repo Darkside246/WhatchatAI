@@ -1,93 +1,297 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CheckCircle2, Clock3, CookingPot, MapPin, PackageCheck, Phone, Plus, Search, Truck, Eye } from 'lucide-react';
+import { AlertTriangle, Bike, ChefHat, ClipboardCheck, MessageSquare, Navigation, PackageCheck, RotateCcw, Store, Undo2 } from 'lucide-react';
+import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand } from '../lib/api.js';
+import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 
-type OrderStatus = 'New' | 'Preparing' | 'Ready' | 'Out for delivery';
+/**
+ * The kitchen board.
+ *
+ * One screen per station would be the obvious design and is the wrong one
+ * for a small kitchen: the whole point is that the person on the fryer can
+ * see the pass backing up. So every stage is a column on one board, and a
+ * ticket moves right as it is worked.
+ *
+ * This replaces a mock built on hardcoded customers and invented totals.
+ * Everything here is a real order.
+ */
 
-const initialOrders = [
-  { id: '#1048', customer: 'Alicia Green', items: '2 Chicken Roti, 1 Macaroni Pie', fulfilment: 'Pickup', status: 'New' as OrderStatus, total: '$30.00', time: '2 min ago' },
-  { id: '#1047', customer: 'Jason Clarke', items: '1 Fish Cutter, 2 Banks', fulfilment: 'Delivery', status: 'Preparing' as OrderStatus, total: '$22.00', time: '7 min ago' },
-  { id: '#1046', customer: 'Naomi King', items: '2 Beef Burgers, 1 Fries', fulfilment: 'Pickup', status: 'Ready' as OrderStatus, total: '$34.00', time: '12 min ago' },
-  { id: '#1045', customer: 'David Lewis', items: '3 Chicken Rotis', fulfilment: 'Delivery', status: 'Out for delivery' as OrderStatus, total: '$36.00', time: '18 min ago' },
+const COLUMNS: { stage: FoodOrderStage; label: string; hint: string; icon: typeof ChefHat }[] = [
+  { stage: 'NEW', label: 'New', hint: 'Taken, not yet accepted', icon: ClipboardCheck },
+  { stage: 'IN_KITCHEN', label: 'Kitchen', hint: 'On the line', icon: ChefHat },
+  { stage: 'QUALITY_CHECK', label: 'Quality check', hint: 'Checked before it leaves the pass', icon: PackageCheck },
+  { stage: 'READY_FOR_PICKUP', label: 'Waiting on collection', hint: 'On the counter', icon: Store },
+  { stage: 'OUT_FOR_DELIVERY', label: 'Out for delivery', hint: 'With a driver', icon: Bike },
 ];
 
-const menuItems = [
-  { name: 'Chicken Roti', price: '$12.00', available: true },
-  { name: 'Macaroni Pie', price: '$6.00', available: true },
-  { name: 'Fish Cutter', price: '$10.00', available: true },
-  { name: 'Fresh Juice', price: '$8.00', available: false },
-];
-
-const statusClass: Record<OrderStatus, string> = {
-  New: 'bg-accent-soft text-accent',
-  Preparing: 'bg-warning/15 text-warning',
-  Ready: 'bg-success/15 text-success',
-  'Out for delivery': 'bg-info/15 text-info',
+const STAGE_LABEL: Record<FoodOrderStage, string> = {
+  NEW: 'New', IN_KITCHEN: 'Kitchen', QUALITY_CHECK: 'Quality check',
+  READY_FOR_PICKUP: 'Waiting on collection', OUT_FOR_DELIVERY: 'Out for delivery',
+  COMPLETED: 'Done', CANCELLED: 'Cancelled',
 };
 
+/**
+ * The bands a kitchen screen has always used. Deliberately loud at the top
+ * end - a ticket past fifteen minutes is meant to be impossible to miss
+ * from across a room.
+ */
+const SLA_STYLE: Record<FoodSlaBand, string> = {
+  ON_TIME: 'border-success/40 bg-success/5',
+  WARNING: 'border-warning/60 bg-warning/10',
+  BREACHED: 'border-error/70 bg-error/15',
+};
+const SLA_TIMER: Record<FoodSlaBand, string> = {
+  ON_TIME: 'text-success',
+  WARNING: 'text-warning',
+  BREACHED: 'text-error font-bold',
+};
+
+function clock(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  return `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+function money(cents: number, currency: string): string {
+  return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(cents / 100);
+}
+
 export function FoodOperationsPage() {
-  const [orders, setOrders] = useState(initialOrders);
-  const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<OrderStatus | 'All'>('All');
+  const [orders, setOrders] = useState<FoodBoardOrderDto[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  /**
+   * Seconds since the last poll, added to each server-computed age so the
+   * timers tick smoothly between refreshes. The BAND still comes from the
+   * server - two tablets disagreeing about whether a ticket is late is
+   * worse than neither showing a timer at all.
+   */
+  const [drift, setDrift] = useState(0);
 
-  const visibleOrders = useMemo(() => orders.filter((order) => {
-    const matchesFilter = filter === 'All' || order.status === filter;
-    const haystack = `${order.id} ${order.customer} ${order.items}`.toLowerCase();
-    return matchesFilter && haystack.includes(query.toLowerCase());
-  }), [filter, orders, query]);
+  const load = useCallback(async () => {
+    try {
+      const result = await api.getFoodBoard();
+      setOrders(result.orders);
+      setDrift(0);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not load the board.');
+      setOrders((current) => current ?? []);
+    }
+  }, []);
 
-  function advanceOrder(id: string) {
-    setOrders((current) => current.map((order) => {
-      if (order.id !== id) return order;
-      const next: Record<OrderStatus, OrderStatus> = { New: 'Preparing', Preparing: 'Ready', Ready: 'Out for delivery', 'Out for delivery': 'Out for delivery' };
-      return { ...order, status: next[order.status] };
-    }));
+  useEffect(() => { void load(); }, [load]);
+  // Pauses while nobody is looking at the tab, like every other poll in the app.
+  useVisiblePolling(load, 5000);
+
+  useEffect(() => {
+    const timer = setInterval(() => setDrift((value) => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  async function move(order: FoodBoardOrderDto, stage: FoodOrderStage, note?: string) {
+    setBusyId(order.id);
+    try {
+      await api.moveFoodOrder(order.id, stage, note);
+      await load();
+    } catch (err) {
+      // A 409 means somebody at another station bumped it first, which
+      // during a rush is normal rather than exceptional - so reload and
+      // show where the ticket actually is instead of an alarming error.
+      setError(err instanceof ApiError ? err.message : 'Could not move that ticket.');
+      await load();
+    } finally {
+      setBusyId(null);
+    }
   }
 
-  const counts = Object.fromEntries((['New', 'Preparing', 'Ready', 'Out for delivery'] as OrderStatus[]).map((status) => [status, orders.filter((order) => order.status === status).length]));
+  const byStage = useMemo(() => {
+    const grouped = new Map<FoodOrderStage, FoodBoardOrderDto[]>();
+    for (const column of COLUMNS) grouped.set(column.stage, []);
+    for (const order of orders ?? []) grouped.get(order.stage)?.push(order);
+    return grouped;
+  }, [orders]);
+
+  const late = (orders ?? []).filter((order) => order.slaBand === 'BREACHED').length;
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto bg-surface-0 p-5 sm:p-8">
-      <div className="mx-auto max-w-7xl space-y-6">
-        {/*
-          Real gap, not yet a real feature: this whole page is local React
-          state (initialOrders/menuItems above) with no api.* call anywhere
-          - "Advance" mutates the mock order in memory, nothing is
-          persisted, and no real WhatsApp order ever reaches it. Shown as a
-          convincing, fully-styled UI without this banner, it reads as a
-          working feature to anyone previewing the food vertical (a real
-          risk flagged directly: showing this in a live demo would be
-          actively misleading). Every other unbuilt vertical already says
-          so honestly via PlaceholderPage's "Not built yet" badge; Food
-          just never got the same treatment because it looks real instead
-          of blank.
-        */}
-        <div className="flex items-start gap-3 rounded-xl border border-warning/30 bg-warning/10 px-4 py-3 text-caption text-fg-secondary">
-          <Eye size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden />
-          <p><span className="font-semibold text-fg">Preview only.</span> Orders and menu items below are sample data for illustration - this page isn't yet connected to real WhatsApp orders. Not built yet, same as the other in-progress verticals.</p>
+    <div className="flex min-h-0 flex-1 flex-col bg-surface-0">
+      <header className="flex flex-wrap items-center gap-3 border-b border-border-subtle px-4 py-3">
+        <div className="min-w-0">
+          <h1 className="text-display font-semibold text-fg">Kitchen</h1>
+          <p className="text-caption text-fg-muted">
+            {orders === null ? 'Loading…' : `${orders.length} order${orders.length === 1 ? '' : 's'} on the board`}
+            {late > 0 && <span className="ml-2 font-semibold text-error">{late} late</span>}
+          </p>
         </div>
+        <div className="ml-auto flex items-center gap-2">
+          <Link to="/chats" className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2">
+            <MessageSquare size={14} aria-hidden />
+            Chats
+          </Link>
+          <button type="button" onClick={() => void load()} className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2">
+            <RotateCcw size={14} aria-hidden />
+            Refresh
+          </button>
+        </div>
+      </header>
 
-        <section className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div><p className="text-meta font-semibold tracking-widest text-accent">FOOD OPERATIONS</p><h1 className="mt-1 text-3xl font-semibold tracking-tight">Run the day from WhatsApp</h1><p className="mt-2 text-body text-fg-secondary">Orders, kitchen progress, menu availability and fulfilment in one workspace.</p></div>
-          <div className="flex flex-wrap gap-2"><Link to="/chats" className="rounded-lg border border-border-subtle px-4 py-2 text-body font-medium hover:bg-surface-2">Open conversations</Link><button type="button" onClick={() => setFilter('New')} className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-body font-semibold text-white hover:bg-accent-dim"><Plus size={17} /> New order</button></div>
-        </section>
+      {error && <p className="border-b border-error/30 bg-error/10 px-4 py-2 text-caption text-error">{error}</p>}
 
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {([['New', Clock3], ['Preparing', CookingPot], ['Ready', PackageCheck], ['Out for delivery', Truck]] as const).map(([status, Icon]) => <button key={status} type="button" onClick={() => setFilter(status)} className="rounded-xl border border-border-subtle bg-surface-1 p-5 text-left hover:bg-surface-2"><div className="flex items-center justify-between"><span className="text-caption text-fg-muted">{status}</span><Icon size={19} className="text-accent" /></div><strong className="mt-3 block text-3xl">{counts[status]}</strong><span className="mt-2 block text-meta text-fg-muted">Active order{counts[status] === 1 ? '' : 's'}</span></button>)}
-        </section>
+      {orders !== null && orders.length === 0 && !error && (
+        <div className="flex flex-1 flex-col items-center justify-center px-6 py-16 text-center text-fg-muted">
+          <ChefHat size={32} strokeWidth={1.25} className="mb-3 opacity-40" aria-hidden />
+          <p className="text-body font-medium text-fg">Nothing on the board</p>
+          <p className="mt-1 max-w-sm text-caption">
+            Orders appear here the moment one is taken — from a WhatsApp conversation or keyed in at the counter.
+          </p>
+        </div>
+      )}
 
-        <section className="grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,0.85fr)]">
-          <div className="rounded-2xl border border-border-subtle bg-surface-1">
-            <div className="flex flex-col gap-3 border-b border-border-subtle p-5 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="text-title font-semibold">Live orders</h2><p className="mt-1 text-caption text-fg-muted">Advance the operation without losing the customer context.</p></div><div className="relative"><Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-muted" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search orders" className="w-full rounded-lg border border-border-subtle bg-surface-2 py-2 pl-9 pr-3 text-caption outline-none focus:border-accent sm:w-56" /></div></div>
-            <div className="divide-y divide-border-subtle">{visibleOrders.map((order) => <article key={order.id} className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center"><div className="min-w-0 flex-1"><div className="flex items-center gap-3"><strong>{order.id}</strong><span className={`rounded-full px-2.5 py-1 text-meta font-medium ${statusClass[order.status]}`}>{order.status}</span></div><p className="mt-2 text-body font-medium">{order.customer}</p><p className="mt-1 text-caption text-fg-secondary">{order.items}</p><div className="mt-3 flex flex-wrap gap-3 text-meta text-fg-muted"><span>{order.fulfilment === 'Delivery' ? <Truck size={13} className="mr-1 inline" /> : <MapPin size={13} className="mr-1 inline" />}{order.fulfilment}</span><span>{order.time}</span><span className="font-semibold text-fg">{order.total}</span></div></div><div className="flex shrink-0 gap-2">{order.status !== 'Out for delivery' && <button type="button" onClick={() => advanceOrder(order.id)} className="rounded-lg bg-accent px-3 py-2 text-caption font-semibold text-white hover:bg-accent-dim">Advance</button>}<Link to="/chats" className="rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium hover:bg-surface-2">Chat</Link></div></article>)}{visibleOrders.length === 0 && <div className="p-10 text-center text-body text-fg-muted">No orders match this view.</div>}</div>
-          </div>
+      <div className="min-h-0 flex-1 overflow-x-auto">
+        <div className="flex h-full min-w-max gap-3 p-3">
+          {COLUMNS.map((column) => {
+            const columnOrders = byStage.get(column.stage) ?? [];
+            const Icon = column.icon;
+            return (
+              <section key={column.stage} className="flex w-[19rem] shrink-0 flex-col rounded-xl border border-border-subtle bg-surface-1">
+                <div className="border-b border-border-subtle px-3 py-2.5">
+                  <p className="flex items-center gap-1.5 text-caption font-semibold text-fg">
+                    <Icon size={14} aria-hidden />
+                    {column.label}
+                    <span className="ml-auto rounded-full bg-surface-2 px-2 py-0.5 text-meta text-fg-muted">{columnOrders.length}</span>
+                  </p>
+                  <p className="mt-0.5 text-meta text-fg-muted">{column.hint}</p>
+                </div>
 
-          <aside className="space-y-6">
-            <div className="rounded-2xl border border-border-subtle bg-surface-1 p-5"><div className="flex items-center justify-between"><div><h2 className="text-title font-semibold">Menu availability</h2><p className="mt-1 text-caption text-fg-muted">What the Food Agent should offer now.</p></div><button type="button" className="rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium hover:bg-surface-2">Manage menu</button></div><div className="mt-5 space-y-3">{menuItems.map((item) => <div key={item.name} className="flex items-center justify-between rounded-xl bg-surface-2 px-3 py-3"><div><p className="text-caption font-medium">{item.name}</p><p className="text-meta text-fg-muted">{item.price}</p></div><span className={`rounded-full px-2.5 py-1 text-meta ${item.available ? 'bg-success/15 text-success' : 'bg-surface-3 text-fg-muted'}`}>{item.available ? 'Available' : 'Paused'}</span></div>)}</div></div>
-            <div className="rounded-2xl border border-border-subtle bg-surface-1 p-5"><h2 className="text-title font-semibold">Customer handoff</h2><p className="mt-2 text-caption leading-6 text-fg-secondary">Your AI agent stays behind the conversation. Your team only sees the order, customer context and next action.</p><div className="mt-4 grid gap-2 text-caption"><button type="button" className="flex items-center gap-2 rounded-lg border border-border-subtle px-3 py-2 text-left hover:bg-surface-2"><Phone size={15} className="text-accent" /> Review customer contact</button><button type="button" className="flex items-center gap-2 rounded-lg border border-border-subtle px-3 py-2 text-left hover:bg-surface-2"><CheckCircle2 size={15} className="text-success" /> Escalate to human</button></div></div>
-          </aside>
-        </section>
+                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
+                  {columnOrders.map((order) => (
+                    <OrderCard
+                      key={order.id}
+                      order={order}
+                      drift={drift}
+                      busy={busyId === order.id}
+                      onBump={() => order.nextStage && void move(order, order.nextStage)}
+                      onSendBack={() => void move(order, 'IN_KITCHEN', 'sent back from the pass')}
+                    />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+        </div>
       </div>
     </div>
+  );
+}
+
+function OrderCard({
+  order, drift, busy, onBump, onSendBack,
+}: {
+  order: FoodBoardOrderDto;
+  drift: number;
+  busy: boolean;
+  onBump: () => void;
+  onSendBack: () => void;
+}) {
+  return (
+    <article className={`rounded-lg border-2 p-2.5 ${SLA_STYLE[order.slaBand]}`}>
+      <div className="flex items-baseline gap-2">
+        <span className="text-body font-bold text-fg">#{order.orderNumber}</span>
+        <span className={`font-mono text-body tabular-nums ${SLA_TIMER[order.slaBand]}`}>{clock(order.elapsedSeconds + drift)}</span>
+        <span className="ml-auto rounded-full bg-surface-2 px-2 py-0.5 text-meta font-medium text-fg-secondary">
+          {order.fulfilmentMethod === 'DELIVERY' ? 'Delivery' : 'Collection'}
+        </span>
+      </div>
+
+      {order.customerName && <p className="mt-1 truncate text-caption font-medium text-fg">{order.customerName}</p>}
+
+      {/* The allergen banner is full width and loud on purpose - it is the
+          one thing on this card that can hurt somebody. */}
+      {order.allergenNotes && (
+        <p className="mt-1.5 flex items-start gap-1.5 rounded-md bg-error/20 px-2 py-1 text-caption font-semibold text-error">
+          <AlertTriangle size={13} className="mt-0.5 shrink-0" aria-hidden />
+          {order.allergenNotes}
+        </p>
+      )}
+
+      <ul className="mt-2 space-y-1">
+        {order.items.map((item, index) => (
+          <li key={`${item.name}-${index}`} className="text-caption text-fg">
+            <span className="font-semibold">{item.quantity}×</span> {item.name}
+            {item.variant && <span className="text-fg-secondary"> · {item.variant}</span>}
+            {item.modifiers.length > 0 && (
+              <span className="mt-0.5 flex flex-wrap gap-1">
+                {item.modifiers.map((modifier, modifierIndex) => (
+                  <span
+                    key={`${modifier.name}-${modifierIndex}`}
+                    className={`rounded px-1.5 py-0.5 text-meta font-medium ${
+                      modifier.action === 'remove' ? 'bg-error/15 text-error' : 'bg-accent-soft text-accent'
+                    }`}
+                  >
+                    {modifier.action === 'remove' ? 'no ' : modifier.action === 'on_side' ? 'side: ' : '+ '}
+                    {modifier.name}
+                  </span>
+                ))}
+              </span>
+            )}
+            {item.notes && <span className="block text-meta italic text-fg-muted">{item.notes}</span>}
+          </li>
+        ))}
+      </ul>
+
+      {order.kitchenNotes && <p className="mt-1.5 text-meta italic text-fg-secondary">{order.kitchenNotes}</p>}
+
+      <div className="mt-2 flex items-center gap-2 border-t border-border-subtle pt-2">
+        <span className="text-caption font-medium text-fg-secondary">{money(order.totalCents, order.currency)}</span>
+
+        {/* The pin the customer dropped, not a typed address - it cannot be
+            misspelled or missing a postcode. */}
+        {order.navigationUrl && (
+          <a
+            href={order.navigationUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-meta font-medium text-fg hover:bg-surface-2"
+          >
+            <Navigation size={12} aria-hidden />
+            Route
+          </a>
+        )}
+
+        {order.chatId && (
+          <Link
+            to={`/chats/${order.chatId}`}
+            className="flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-meta font-medium text-fg hover:bg-surface-2"
+            title="Open the conversation this order came from"
+          >
+            <MessageSquare size={12} aria-hidden />
+            Chat
+          </Link>
+        )}
+
+        {order.stage === 'QUALITY_CHECK' && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onSendBack}
+            title="Send back to the line"
+            className="rounded-md border border-border-subtle px-2 py-1 text-meta font-medium text-fg-muted hover:text-fg disabled:opacity-50"
+          >
+            <Undo2 size={12} aria-hidden />
+          </button>
+        )}
+
+        {order.nextStage && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onBump}
+            className="ml-auto rounded-md bg-accent px-2.5 py-1 text-meta font-semibold text-white transition hover:bg-accent-dim disabled:opacity-50"
+          >
+            {busy ? '…' : STAGE_LABEL[order.nextStage]}
+          </button>
+        )}
+      </div>
+    </article>
   );
 }

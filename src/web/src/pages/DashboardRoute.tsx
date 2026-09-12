@@ -1,8 +1,8 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   MessageCircle, Users, Phone, Bot, AlertTriangle, ArrowRight, Clock,
-  Bell, ShieldCheck, Zap, Activity, TrendingUp, CheckCircle, X, MessageSquareText,
+  Bell, ShieldCheck, Zap, Activity, TrendingUp, CheckCircle, X, MessageSquareText, ChefHat,
 } from 'lucide-react';
 import {
   api,
@@ -14,7 +14,9 @@ import {
   type NextBestAction,
   type MorningBriefing,
   type RelayedMessageDto,
+  type FoodBoardOrderDto,
 } from '../lib/api.js';
+import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 import { AiEngineStrip } from '../components/AiEngineStrip.js';
 import { TimeSyncStrip } from '../components/TimeSyncStrip.js';
 
@@ -342,6 +344,78 @@ function MessageBoardCard() {
         );
       })}
     </div>
+  );
+}
+
+
+/**
+ * The kitchen, on the main dashboard.
+ *
+ * A tile rather than a nav item because during service the question "how
+ * many are late" has to be answerable without navigating anywhere. Opens
+ * the full board, which keeps the chats one click away - a ticket and the
+ * conversation it came from belong beside each other.
+ *
+ * Renders nothing at all when this business has no orders and no menu:
+ * a restaurant tile on a plumber's dashboard is clutter, and the honest
+ * signal for "this business does food" is that it has food in it.
+ */
+function KitchenTile() {
+  const navigate = useNavigate();
+  const [orders, setOrders] = useState<FoodBoardOrderDto[] | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+
+  const load = useCallback(() => {
+    api
+      .getFoodBoard()
+      .then((result) => setOrders(result.orders))
+      // A 403 means this business does not have the food product - not an
+      // error worth showing, just a tile that does not apply to them.
+      .catch(() => setUnavailable(true));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+  useVisiblePolling(load, 15_000, !unavailable);
+
+  if (unavailable || orders === null || orders.length === 0) return null;
+
+  const late = orders.filter((order) => order.slaBand === 'BREACHED').length;
+  const warning = orders.filter((order) => order.slaBand === 'WARNING').length;
+  const cooking = orders.filter((order) => order.stage === 'IN_KITCHEN').length;
+  const onThePass = orders.filter((order) => order.stage === 'QUALITY_CHECK').length;
+  const waiting = orders.filter((order) => order.stage === 'READY_FOR_PICKUP' || order.stage === 'OUT_FOR_DELIVERY').length;
+
+  return (
+    <button
+      type="button"
+      onClick={() => navigate('/food/operations')}
+      className={`mt-3 w-full rounded-xl border p-4 text-left transition hover:bg-surface-3 ${
+        late > 0 ? 'border-error/60 bg-error/10' : 'border-border-subtle bg-surface-2'
+      }`}
+    >
+      <p className="mb-1 flex items-center gap-1.5 text-caption font-semibold uppercase tracking-wide text-fg-muted">
+        <ChefHat size={13} aria-hidden />
+        Kitchen
+        {late > 0 && <span className="ml-auto rounded-full bg-error px-2 py-0.5 text-meta font-bold text-white">{late} late</span>}
+      </p>
+      <p className="mb-3 text-meta text-fg-muted">Live orders — tap to open the board</p>
+      <div className="grid grid-cols-4 gap-2">
+        {[
+          { label: 'On the board', value: orders.length },
+          { label: 'Cooking', value: cooking },
+          { label: 'On the pass', value: onThePass },
+          { label: 'Waiting', value: waiting },
+        ].map((cell) => (
+          <div key={cell.label} className="rounded-lg bg-surface-3 px-2 py-2">
+            <p className="text-display font-semibold text-fg">{cell.value}</p>
+            <p className="text-meta text-fg-muted">{cell.label}</p>
+          </div>
+        ))}
+      </div>
+      {warning > 0 && late === 0 && (
+        <p className="mt-2 text-caption text-warning">{warning} approaching the time limit.</p>
+      )}
+    </button>
   );
 }
 
@@ -776,6 +850,8 @@ export function DashboardRoute() {
             )}
           </div>
         </div>
+
+        <KitchenTile />
 
         {/* ── Message volume trend (Section 68) + Message board (take-a-message) ── */}
         <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">

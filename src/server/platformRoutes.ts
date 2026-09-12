@@ -1,6 +1,7 @@
 import type { Express } from 'express';
 import { propertyOperationsRouter } from './propertyOperationsRouter.js';
 import { retailOperationsRouter } from './retailOperationsRouter.js';
+import { foodOperationsRouter } from './foodOperationsRouter.js';
 import { platformApprovalRouter } from './platformApprovalRouter.js';
 import { propertyConversationBindingRouter } from './propertyConversationBindingRouter.js';
 import { productAccountRouter } from './productAccountRoutes.js';
@@ -25,6 +26,7 @@ export function mountPlatformRoutes(app: Express): void {
   app.use('/api/property-operations', propertyOperationsRouter);
   app.use('/api/property-operations/conversations', propertyConversationBindingRouter);
   app.use('/api/retail-operations', retailOperationsRouter);
+  app.use('/api/food-operations', foodOperationsRouter);
   app.use('/api/platform/approvals', platformApprovalRouter);
   app.use('/api/platform', productAccountRouter);
   app.use('/api/billing', billingRouter);

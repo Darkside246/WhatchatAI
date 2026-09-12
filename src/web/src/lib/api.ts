@@ -80,6 +80,60 @@ export interface WorkspaceReaction {
 
 /** "Status comments" feature - a real WhatsApp reply to one published status. Never a public comment (WhatsApp Status has no such thing) - this is the private reply the poster's own business received, associated back to which status it replied to. */
 /** Someone who actually watched a status, from WhatsApp's own read receipts - never inferred or estimated. */
+
+// ── Food operations ──────────────────────────────────────────────────────
+
+export type FoodOrderStage = 'NEW' | 'IN_KITCHEN' | 'QUALITY_CHECK' | 'READY_FOR_PICKUP' | 'OUT_FOR_DELIVERY' | 'COMPLETED' | 'CANCELLED';
+export type FoodSlaBand = 'ON_TIME' | 'WARNING' | 'BREACHED';
+
+export interface FoodOrderLineDto {
+  menuItemId: string | null;
+  name: string;
+  variant: string | null;
+  quantity: number;
+  unitPriceCents: number;
+  modifiers: { name: string; action: 'add' | 'remove' | 'on_side'; priceDeltaCents: number }[];
+  notes: string | null;
+}
+
+export interface FoodBoardOrderDto {
+  id: string;
+  orderNumber: number;
+  chatId: string | null;
+  stage: FoodOrderStage;
+  fulfilmentMethod: 'PICKUP' | 'DELIVERY';
+  customerName: string | null;
+  customerPhone: string | null;
+  items: FoodOrderLineDto[];
+  subtotalCents: number;
+  deliveryFeeCents: number;
+  totalCents: number;
+  currency: string;
+  deliveryAddress: string | null;
+  deliveryNotes: string | null;
+  allergenNotes: string | null;
+  kitchenNotes: string | null;
+  placedAt: string;
+  /** Worked out on the server so every screen in the kitchen agrees about whether a ticket is late. */
+  elapsedSeconds: number;
+  slaBand: FoodSlaBand;
+  nextStage: FoodOrderStage | null;
+  /** Built from the pin the customer dropped, never from a typed address. Null for collection. */
+  navigationUrl: string | null;
+}
+
+export interface FoodMenuItemDto {
+  id: string;
+  name: string;
+  category: string;
+  priceCents: number;
+  currency: string;
+  available: boolean;
+  aliases: string[];
+  station: string | null;
+  allergens: string[];
+}
+
 export interface StatusViewerDto {
   viewerJid: string;
   displayName: string;
@@ -2201,6 +2255,19 @@ export const api = {
   deleteScheduledStatus: (id: string) => request<{ ok: boolean }>(`/workspace/scheduled-statuses/${id}`, { method: 'DELETE' }),
   listStatusReplies: (id: string) => request<{ replies: StatusReplyDto[] }>(`/workspace/scheduled-statuses/${id}/replies`),
   listStatusViewers: (id: string) => request<{ viewers: StatusViewerDto[] }>(`/workspace/scheduled-statuses/${id}/viewers`),
+
+  getFoodBoard: () => request<{ serverTime: string; orders: FoodBoardOrderDto[] }>('/food-operations/board'),
+  moveFoodOrder: (orderId: string, stage: FoodOrderStage, note?: string) =>
+    request<{ order: FoodBoardOrderDto }>(`/food-operations/orders/${orderId}/stage`, {
+      method: 'POST',
+      body: JSON.stringify(note ? { stage, note } : { stage }),
+    }),
+  getFoodMenu: () => request<{ items: FoodMenuItemDto[] }>('/food-operations/menu'),
+  setFoodMenuAvailability: (itemId: string, available: boolean) =>
+    request<{ item: FoodMenuItemDto }>(`/food-operations/menu/${itemId}/availability`, {
+      method: 'POST',
+      body: JSON.stringify({ available }),
+    }),
 
   listFunnels: () => request<{ funnels: FunnelDto[] }>('/workspace/funnels'),
   createFunnel: (name: string, description: string | null) =>
