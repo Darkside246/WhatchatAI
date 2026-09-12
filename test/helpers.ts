@@ -61,6 +61,7 @@ const TABLES = [
   'whatsapp_status_views',
   'food_order_notifications',
   'food_payment_events',
+  'food_qc_checks',
   'food_order_events',
   'food_orders',
   'food_order_numbers',

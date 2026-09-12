@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { pool } from '../src/db/pool.js';
+import { FoodOperationsRepository, QcPhotoRequiredError } from '../src/repositories/foodOperationsRepository.js';
+import { createTestBusiness, resetDatabase } from './helpers.js';
 import { classifyQcObservation, needsASecondLook, raisedFindings } from '../src/domain/food/qcFindings.js';
 import { buildQcPrompt, parseObservation } from '../src/services/food/qcVisionCheck.js';
 import type { FoodOrderLine } from '../src/repositories/foodOperationsRepository.js';
@@ -168,5 +171,118 @@ describe('reading a photo of an order at the pass', () => {
         portionsInFrame: null,
       });
     });
+  });
+});
+
+describe('the photo gate at the pass (real Postgres)', () => {
+  let businessId: string;
+  let repo: FoodOperationsRepository;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness('Aura Food');
+    repo = new FoodOperationsRepository(pool);
+    // Off, so these tests are about the photo gate and nothing else.
+    await repo.saveSettings(businessId, { paymentRequiredBeforeKitchen: false }, null);
+  });
+
+  async function anOrderAtThePass() {
+    const order = await repo.createOrder({
+      businessId,
+      fulfilmentMethod: 'PICKUP',
+      items: [line({ name: 'Chicken roti', quantity: 2, unitPriceCents: 1200 })],
+      subtotalCents: 2400,
+      totalCents: 2400,
+    });
+    await repo.moveToStage(businessId, order.id, 'IN_KITCHEN');
+    await repo.moveToStage(businessId, order.id, 'QUALITY_CHECK');
+    return order;
+  }
+
+  /** Help a business opts into, never a step imposed on a kitchen that never asked for one. */
+  it('is off until a business turns it on', async () => {
+    const settings = await repo.getSettings(businessId);
+    expect(settings.qcPhotoRequired).toBe(false);
+    expect(settings.qcVisionEnabled).toBe(false);
+
+    const order = await anOrderAtThePass();
+    expect((await repo.moveToStage(businessId, order.id, 'READY_FOR_PICKUP'))?.stage).toBe('READY_FOR_PICKUP');
+  });
+
+  it('holds an order at the pass until it has been photographed', async () => {
+    await repo.saveSettings(businessId, { qcPhotoRequired: true }, null);
+    const order = await anOrderAtThePass();
+
+    await expect(repo.moveToStage(businessId, order.id, 'READY_FOR_PICKUP')).rejects.toBeInstanceOf(QcPhotoRequiredError);
+
+    await repo.recordQcCheck({ businessId, orderId: order.id, observation: { visible: [], portionsInFrame: null }, findings: [] });
+    expect((await repo.moveToStage(businessId, order.id, 'READY_FOR_PICKUP'))?.stage).toBe('READY_FOR_PICKUP');
+  });
+
+  /**
+   * The gate is on the way OUT of the pass only. A ticket must always be
+   * able to REACH the pass, or the board backs up behind a camera.
+   */
+  it('never stops a ticket reaching the pass', async () => {
+    await repo.saveSettings(businessId, { qcPhotoRequired: true }, null);
+    const order = await repo.createOrder({
+      businessId,
+      fulfilmentMethod: 'PICKUP',
+      items: [line()],
+      subtotalCents: 1800,
+      totalCents: 1800,
+    });
+
+    await repo.moveToStage(businessId, order.id, 'IN_KITCHEN');
+    expect((await repo.moveToStage(businessId, order.id, 'QUALITY_CHECK'))?.stage).toBe('QUALITY_CHECK');
+  });
+
+  /** A broken camera or a queue out of the door. Attributable, so it stays the exception. */
+  it('can be overridden with a reason, and the reason is recorded on the move', async () => {
+    await repo.saveSettings(businessId, { qcPhotoRequired: true }, null);
+    const order = await anOrderAtThePass();
+
+    const moved = await repo.moveToStage(businessId, order.id, 'READY_FOR_PICKUP', {
+      overrideQcPhoto: { reason: 'camera is broken' },
+    });
+    expect(moved?.stage).toBe('READY_FOR_PICKUP');
+
+    const events = await repo.listEvents(businessId, order.id);
+    expect(events.some((event) => event.note?.includes('camera is broken'))).toBe(true);
+  });
+
+  /** A finding nobody saw and a finding somebody looked at and dismissed are different facts. */
+  it('records what a photo found, and what somebody did about it', async () => {
+    const order = await anOrderAtThePass();
+    const check = await repo.recordQcCheck({
+      businessId,
+      orderId: order.id,
+      observation: { visible: ['ketchup'], portionsInFrame: 1 },
+      findings: [
+        { kind: 'CONTRADICTION', line: 'Burger', message: 'Burger was ordered without ketchup, but ketchup is visible.' },
+        { kind: 'UNVERIFIABLE', line: 'Burger', message: 'Could not confirm the bacon.' },
+      ],
+    });
+
+    // Both stored; only one of them counts as something a person was shown.
+    expect(check.findings).toHaveLength(2);
+    expect(check.raisedCount).toBe(1);
+
+    expect(await repo.acknowledgeQcCheck(businessId, check.id, null, 'wiped it off')).toBe(true);
+    // Acknowledging twice is not a second decision.
+    expect(await repo.acknowledgeQcCheck(businessId, check.id, null, null)).toBe(false);
+
+    const [stored] = await repo.listQcChecks(businessId, order.id);
+    expect(stored?.acknowledgedAt).not.toBeNull();
+    expect(stored?.acknowledgementNote).toBe('wiped it off');
+  });
+
+  it('does not show one business another\'s checks', async () => {
+    const order = await anOrderAtThePass();
+    await repo.recordQcCheck({ businessId, orderId: order.id, observation: {}, findings: [] });
+
+    const otherBusinessId = await createTestBusiness('Someone Else');
+    expect(await repo.listQcChecks(otherBusinessId, order.id)).toHaveLength(0);
+    expect(await repo.hasQcCheck(otherBusinessId, order.id)).toBe(false);
   });
 });

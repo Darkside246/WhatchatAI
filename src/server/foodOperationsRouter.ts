@@ -1,7 +1,11 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { pool } from '../db/pool.js';
-import { FoodOperationsRepository, IllegalPaymentTransitionError, IllegalStageTransitionError, KitchenPaymentGateError, UnknownMenuCategoryError } from '../repositories/foodOperationsRepository.js';
+import { FoodOperationsRepository, IllegalPaymentTransitionError, IllegalStageTransitionError, KitchenPaymentGateError, QcPhotoRequiredError, UnknownMenuCategoryError } from '../repositories/foodOperationsRepository.js';
+import { raisedFindings } from '../domain/food/qcFindings.js';
+import { MAX_QC_PHOTO_BYTES, QC_PHOTO_MIME_TYPES, runQcVisionCheck } from '../services/food/qcVisionCheck.js';
+import { buildStorageReference, storeMedia } from '../media/mediaStorage.js';
+import { createHash } from 'node:crypto';
 import { FOOD_PAYMENT_STATES } from '../domain/food/paymentGate.js';
 import { FOOD_ORDER_STAGES, bumpTarget, elapsedSeconds, slaBand } from '../domain/food/orderLifecycle.js';
 import { checkDelivery, navigationUrl } from '../domain/food/deliveryZone.js';
@@ -34,6 +38,10 @@ router.get('/board', requirePermission('food.view'), async (_req, res) => {
   const orders = await repository.listBoard(auth.businessId);
   const settings = await repository.getSettings(auth.businessId);
   const now = new Date();
+  // One query for the whole board rather than one per card: the kitchen
+  // screen polls every five seconds and a query per ticket would put that
+  // into double figures of round trips.
+  const qcChecks = await repository.latestQcCheckByOrder(auth.businessId, orders.map((order) => order.id));
 
   return res.status(200).json({
     serverTime: now.toISOString(),
@@ -49,9 +57,23 @@ router.get('/board', requirePermission('food.view'), async (_req, res) => {
         next === 'IN_KITCHEN'
           ? releaseToKitchen({ paymentState: order.paymentState, paymentRequiredBeforeKitchen: settings.paymentRequiredBeforeKitchen })
           : null;
+      const qc = qcChecks.get(order.id) ?? null;
       return {
         ...order,
         elapsedSeconds: elapsed,
+        // Only ever the findings a person should see - the unverifiable
+        // ones stay in the record and off the screen.
+        qcFindings: qc ? raisedFindings(qc.findings) : [],
+        qcCheckId: qc?.id ?? null,
+        qcCheckedAt: qc?.createdAt ?? null,
+        qcAcknowledgedAt: qc?.acknowledgedAt ?? null,
+        /**
+         * Whether this ticket still owes a photo before it can leave.
+         * Worked out here for the same reason the payment gate is: a
+         * button that is offered and then refused is the worst behaviour
+         * on a screen somebody is working at speed.
+         */
+        qcPhotoOutstanding: settings.qcPhotoRequired && order.stage === 'QUALITY_CHECK' && qc === null,
         slaBand: slaBand(elapsed, {
           ...(settings.slaWarningSeconds !== null ? { warningSeconds: settings.slaWarningSeconds } : {}),
           ...(settings.slaBreachSeconds !== null ? { breachSeconds: settings.slaBreachSeconds } : {}),
@@ -87,6 +109,13 @@ const stageSchema = z.object({
    * mistake, and this one gives away food.
    */
   overridePaymentReason: z.string().trim().min(3).max(500).optional(),
+  /**
+   * Sending an order out without the photo this business asked for. A
+   * reason is required for the same reason the payment override needs
+   * one: an escape hatch nobody has to account for stops being an escape
+   * hatch and becomes the normal route.
+   */
+  overrideQcPhotoReason: z.string().trim().min(3).max(500).optional(),
 });
 
 /**
@@ -119,6 +148,7 @@ router.post('/orders/:orderId/stage', requirePermission('food.manage'), async (r
       kind: 'user',
       note: parsed.data.note ?? null,
       ...(parsed.data.overridePaymentReason ? { overridePaymentGate: { reason: parsed.data.overridePaymentReason } } : {}),
+      ...(parsed.data.overrideQcPhotoReason ? { overrideQcPhoto: { reason: parsed.data.overrideQcPhotoReason } } : {}),
     });
     if (!order) return res.status(404).json({ error: 'ORDER_NOT_FOUND' });
 
@@ -136,6 +166,12 @@ router.post('/orders/:orderId/stage', requirePermission('food.manage'), async (r
     // tell the person waiting, in a sentence already written for them.
     if (error instanceof KitchenPaymentGateError) {
       return res.status(402).json({ error: 'PAYMENT_REQUIRED', message: error.message, customerFacing: error.customerFacing });
+    }
+    // 428: the request is legitimate and the move is legal - a step this
+    // business asked for simply has not happened yet. Distinct from the
+    // 409 that means somebody else already bumped it.
+    if (error instanceof QcPhotoRequiredError) {
+      return res.status(428).json({ error: 'QC_PHOTO_REQUIRED', message: error.message });
     }
     if (error instanceof IllegalStageTransitionError) {
       const current = await repository.findOrder(auth.businessId, orderId);
@@ -213,6 +249,8 @@ router.get('/settings', requirePermission('food.view'), async (_req, res) => {
 const settingsSchema = z.object({
   paymentRequiredBeforeKitchen: z.boolean().optional(),
   tableServiceEnabled: z.boolean().optional(),
+  qcPhotoRequired: z.boolean().optional(),
+  qcVisionEnabled: z.boolean().optional(),
   paymentRequiredNotice: z.string().trim().max(2000).nullish(),
   slaWarningSeconds: z.number().int().min(60).max(86_400).nullish(),
   slaBreachSeconds: z.number().int().min(60).max(86_400).nullish(),
@@ -679,6 +717,119 @@ router.post('/zones/check', requirePermission('food.view'), async (req, res) => 
     check: checkDelivery(destination, parsed.data.subtotalCents, zones),
     navigationUrl: navigationUrl(destination),
   });
+});
+
+// ── Quality check ────────────────────────────────────────────────────────
+
+/**
+ * A photo of an order at the pass, on its way out.
+ *
+ * The photo is stored either way. The reading is what the toggle controls,
+ * because a business may want the picture purely as its own record of what
+ * went out - a disputed order next week is exactly when somebody wants it.
+ *
+ * A failure to read the photo is not a failure of the request: the check
+ * is help, and an AI provider having a bad minute must never stop food
+ * leaving a kitchen. The response says honestly whether it was read.
+ */
+router.post('/orders/:orderId/qc-photo', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const orderId = String(req.params.orderId ?? '');
+  if (!uuid.safeParse(orderId).success) return res.status(400).json({ error: 'INVALID_ORDER_ID' });
+
+  const parsed = z
+    .object({
+      photoBase64: z.string().min(1),
+      mimeType: z.enum(QC_PHOTO_MIME_TYPES),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_PHOTO', details: parsed.error.flatten() });
+
+  const order = await repository.findOrder(auth.businessId, orderId);
+  if (!order) return res.status(404).json({ error: 'ORDER_NOT_FOUND' });
+
+  let photo: Buffer;
+  try {
+    photo = Buffer.from(parsed.data.photoBase64, 'base64');
+  } catch {
+    return res.status(400).json({ error: 'INVALID_PHOTO', message: 'That photo could not be read.' });
+  }
+  if (photo.byteLength === 0) return res.status(400).json({ error: 'INVALID_PHOTO', message: 'That photo was empty.' });
+  if (photo.byteLength > MAX_QC_PHOTO_BYTES) {
+    return res.status(413).json({ error: 'PHOTO_TOO_LARGE', message: 'That photo is too large. Take it at a lower resolution.' });
+  }
+
+  // Through the same encrypted-at-rest store as every other piece of media
+  // in the app, keyed by content hash - two photos of the same plate cost
+  // one file.
+  const sha256 = createHash('sha256').update(photo).digest('hex');
+  const photoReference = await storeMedia(auth.businessId, sha256, photo).catch(() => buildStorageReference(auth.businessId, sha256));
+
+  const settings = await repository.getSettings(auth.businessId);
+
+  let read: Awaited<ReturnType<typeof runQcVisionCheck>> | null = null;
+  let readFailed = false;
+  if (settings.qcVisionEnabled) {
+    try {
+      read = await runQcVisionCheck({
+        businessId: auth.businessId,
+        // The ORDER LINES and nothing else. There is no customer name,
+        // number or address anywhere in what reaches the provider,
+        // because the prompt builder is never handed one.
+        lines: order.items,
+        photoBase64: parsed.data.photoBase64,
+        mimeType: parsed.data.mimeType,
+      });
+    } catch {
+      // Recorded as a photo with no reading rather than failing the
+      // request. Food must be able to leave a kitchen when a provider is
+      // having a bad minute.
+      readFailed = true;
+    }
+  }
+
+  const check = await repository.recordQcCheck({
+    businessId: auth.businessId,
+    orderId,
+    observation: read?.observation ?? {},
+    findings: read?.findings ?? [],
+    photoReference,
+    photoSha256: sha256,
+    photoMimeType: parsed.data.mimeType,
+    provider: read?.provider ?? null,
+    model: read?.model ?? null,
+    checkedBy: auth.userId,
+  });
+
+  return res.status(201).json({
+    check: { ...check, findings: raisedFindings(check.findings) },
+    read: read !== null,
+    readFailed,
+  });
+});
+
+router.get('/orders/:orderId/qc-checks', requirePermission('food.view'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const orderId = String(req.params.orderId ?? '');
+  if (!uuid.safeParse(orderId).success) return res.status(400).json({ error: 'INVALID_ORDER_ID' });
+
+  const checks = await repository.listQcChecks(auth.businessId, orderId);
+  // Unverifiable findings stay in the record and never reach a screen.
+  return res.status(200).json({ checks: checks.map((check) => ({ ...check, findings: raisedFindings(check.findings) })) });
+});
+
+/** Somebody looked at a warning and decided. Recorded, because that is a different fact from nobody looking. */
+router.post('/qc-checks/:checkId/acknowledge', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const checkId = String(req.params.checkId ?? '');
+  if (!uuid.safeParse(checkId).success) return res.status(400).json({ error: 'INVALID_CHECK_ID' });
+
+  const parsed = z.object({ note: z.string().trim().max(500).optional() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_NOTE', details: parsed.error.flatten() });
+
+  const acknowledged = await repository.acknowledgeQcCheck(auth.businessId, checkId, auth.userId, parsed.data.note ?? null);
+  if (!acknowledged) return res.status(404).json({ error: 'CHECK_NOT_FOUND_OR_ALREADY_ACKNOWLEDGED' });
+  return res.status(200).json({ status: 'acknowledged' });
 });
 
 export { router as foodOperationsRouter };

@@ -95,6 +95,26 @@ export function KitchenSettings() {
         onChange={(tableServiceEnabled) => void save({ tableServiceEnabled })}
       />
 
+      {/* A third eye at the pass. Off by default: this is help a business
+          opts into, not a step imposed on a kitchen that never asked for
+          one - and a kitchen made to photograph every order will find a
+          way not to. */}
+      <Toggle
+        label="Check orders against a photo before they leave"
+        hint="Your agent reads a photo of the packed order and tells you if it can SEE something the order said to leave out — ketchup on a burger ordered without it. It can never tell you something is missing, and it never says it can: food hides under buns and lids. Photograph from the side, not from above."
+        checked={settings.qcVisionEnabled}
+        disabled={saving}
+        onChange={(qcVisionEnabled) => void save({ qcVisionEnabled })}
+      />
+
+      <Toggle
+        label="Require a photo before an order leaves the pass"
+        hint="An order cannot be sent out until somebody photographs it. Anybody can still send one out without a photo — they just have to say why, and it is recorded against the order."
+        checked={settings.qcPhotoRequired}
+        disabled={saving}
+        onChange={(qcPhotoRequired) => void save({ qcPhotoRequired })}
+      />
+
       {settings.paymentRequiredBeforeKitchen && (
         <div>
           <label htmlFor="payment-notice" className="block text-caption font-medium text-fg">

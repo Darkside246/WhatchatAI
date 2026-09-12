@@ -188,6 +188,28 @@ export const AGENT_REGISTRY: readonly RegisteredAgent[] = [
     reachesCustomer: false,
     implementation: 'src/services/openclawToolGateway.ts',
   },
+  {
+    id: 'qc_photo_check',
+    displayName: 'Quality check photo reader',
+    configuredBy: 'platform',
+    surface: 'operator_console',
+    purpose:
+      'Reads a photograph of a packed food order at the pass and reports only what it can SEE, so a contradiction ' +
+      "with the order - ketchup on a burger ordered without it - is put in front of the person packing it. Off " +
+      'until a business turns it on.',
+    // No tools at all: it is handed an image and a list of dishes and
+    // answers in JSON. It cannot call anything, which is why this surface
+    // can be given a photograph without widening what an AI can reach.
+    tools: [],
+    neverDoes: [
+      'Report that something is missing - a photograph cannot establish absence, so it is never asked and has no field to answer in',
+      'Stop an order leaving the pass - a person still bumps the ticket; this only decides whether they see a warning first',
+      "Receive any customer detail - the prompt builder is handed order lines alone, so there is no name, number, address or order number to send",
+      'Send anything to a customer',
+    ],
+    reachesCustomer: false,
+    implementation: 'src/services/food/qcVisionCheck.ts',
+  },
 ];
 
 export function findAgent(id: string): RegisteredAgent | null {

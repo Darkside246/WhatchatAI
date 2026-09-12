@@ -128,11 +128,34 @@ export interface FoodBoardOrderDto {
   blockedReason: string | null;
   /** Built from the pin the customer dropped, never from a typed address. Null for collection. */
   navigationUrl: string | null;
+
+  /**
+   * What the photo found that a person should look at. Never includes the
+   * things the photo simply could not confirm - those stay in the record
+   * and off the screen.
+   */
+  qcFindings: FoodQcFindingDto[];
+  qcCheckId: string | null;
+  qcCheckedAt: string | null;
+  qcAcknowledgedAt: string | null;
+  /** This ticket still owes a photo before it can leave the pass. */
+  qcPhotoOutstanding: boolean;
+}
+
+export interface FoodQcFindingDto {
+  /** CONTRADICTION: something visible the order excluded. COUNT: the number in frame does not match. */
+  kind: 'CONTRADICTION' | 'COUNT' | 'UNVERIFIABLE';
+  line: string;
+  message: string;
 }
 
 export interface FoodSettingsDto {
   paymentRequiredBeforeKitchen: boolean;
   tableServiceEnabled: boolean;
+  /** Must a photo be taken before an order leaves the pass. */
+  qcPhotoRequired: boolean;
+  /** Is that photo read against the order. Separate from requiring one. */
+  qcVisionEnabled: boolean;
   paymentRequiredNotice: string | null;
   slaWarningSeconds: number | null;
   slaBreachSeconds: number | null;
@@ -2314,6 +2337,23 @@ export const api = {
     request<{ order: FoodBoardOrderDto }>(`/food-operations/orders/${orderId}/stage`, {
       method: 'POST',
       body: JSON.stringify(note ? { stage, note } : { stage }),
+    }),
+  /** Sending an order out without the photo this business asked for. The reason is recorded against the move. */
+  sendOutWithoutQcPhoto: (orderId: string, stage: FoodOrderStage, reason: string) =>
+    request<{ order: FoodBoardOrderDto }>(`/food-operations/orders/${orderId}/stage`, {
+      method: 'POST',
+      body: JSON.stringify({ stage, overrideQcPhotoReason: reason }),
+    }),
+  /** `read` says whether the photo was actually looked at; `readFailed` that it was meant to be and could not. */
+  uploadFoodQcPhoto: (orderId: string, photoBase64: string, mimeType: string) =>
+    request<{ check: { id: string; findings: FoodQcFindingDto[] }; read: boolean; readFailed: boolean }>(
+      `/food-operations/orders/${orderId}/qc-photo`,
+      { method: 'POST', body: JSON.stringify({ photoBase64, mimeType }) },
+    ),
+  acknowledgeFoodQcCheck: (checkId: string, note?: string) =>
+    request<{ status: string }>(`/food-operations/qc-checks/${checkId}/acknowledge`, {
+      method: 'POST',
+      body: JSON.stringify(note ? { note } : {}),
     }),
   getFoodMenu: () => request<{ items: FoodMenuItemDto[] }>('/food-operations/menu'),
   getFoodSettings: () => request<{ settings: FoodSettingsDto }>('/food-operations/settings'),

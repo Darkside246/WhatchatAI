@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertTriangle, Bike, BookOpen, ChefHat, ClipboardCheck, MessageSquare, Navigation, PackageCheck, RotateCcw, Settings2, Store, Undo2, X } from 'lucide-react';
+import { AlertTriangle, Bike, BookOpen, Camera, ChefHat, ClipboardCheck, Eye, MessageSquare, Navigation, PackageCheck, RotateCcw, Settings2, Store, Undo2, X } from 'lucide-react';
 import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand } from '../lib/api.js';
+import { QcPhotoButton } from '../components/QcPhotoButton.js';
 import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 import { KitchenSettings } from '../components/KitchenSettings.js';
 import { MenuEditor } from '../components/MenuEditor.js';
@@ -130,6 +131,29 @@ export function FoodOperationsPage() {
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not release that order.');
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  /**
+   * Sending an order out without the photo this business asked for - a
+   * broken camera, a queue out of the door. A reason is required because
+   * an escape hatch nobody has to account for stops being an escape hatch
+   * and becomes the normal route.
+   */
+  async function sendOutWithoutPhoto(order: FoodBoardOrderDto) {
+    if (!order.nextStage) return;
+    const reason = window.prompt(`Send #${order.orderNumber} out without a photo?\n\nSay why — it is recorded against the order.`);
+    if (!reason?.trim()) return;
+
+    setBusyId(order.id);
+    try {
+      await api.sendOutWithoutQcPhoto(order.id, order.nextStage, reason.trim());
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not send that order out.');
       await load();
     } finally {
       setBusyId(null);
@@ -268,6 +292,8 @@ export function FoodOperationsPage() {
                       onBump={() => order.nextStage && void move(order, order.nextStage)}
                       onSendBack={() => void move(order, 'IN_KITCHEN', 'sent back from the pass')}
                       onRelease={() => void release(order)}
+                      onSendOutWithoutPhoto={() => void sendOutWithoutPhoto(order)}
+                      onPhotoTaken={() => void load()}
                     />
                   ))}
                 </div>
@@ -294,7 +320,7 @@ const PAYMENT_BADGE: Record<FoodBoardOrderDto['paymentState'], { label: string; 
 };
 
 function OrderCard({
-  order, drift, busy, onBump, onSendBack, onRelease,
+  order, drift, busy, onBump, onSendBack, onRelease, onSendOutWithoutPhoto, onPhotoTaken,
 }: {
   order: FoodBoardOrderDto;
   drift: number;
@@ -302,6 +328,8 @@ function OrderCard({
   onBump: () => void;
   onSendBack: () => void;
   onRelease: () => void;
+  onSendOutWithoutPhoto: () => void;
+  onPhotoTaken: () => void;
 }) {
   return (
     <article className={`rounded-lg border-2 p-2.5 ${SLA_STYLE[order.slaBand]}`}>
@@ -363,6 +391,24 @@ function OrderCard({
 
       {order.kitchenNotes && <p className="mt-1.5 text-meta italic text-fg-secondary">{order.kitchenNotes}</p>}
 
+      {/* What the photo found. Only ever things that were SEEN - the photo
+          can never establish that something is missing, so nothing here
+          ever claims it does. A person decides; this only makes them
+          look. */}
+      {order.qcFindings.length > 0 && (
+        <div className={`mt-1.5 rounded-md px-2 py-1.5 ${order.qcAcknowledgedAt ? 'bg-surface-2' : 'bg-warning/15'}`}>
+          <p className={`flex items-center gap-1.5 text-meta font-semibold ${order.qcAcknowledgedAt ? 'text-fg-muted' : 'text-warning'}`}>
+            <Eye size={12} aria-hidden />
+            {order.qcAcknowledgedAt ? 'Checked and cleared' : 'Worth a second look'}
+          </p>
+          <ul className={`mt-0.5 space-y-0.5 text-meta ${order.qcAcknowledgedAt ? 'text-fg-muted' : 'text-warning'}`}>
+            {order.qcFindings.map((finding, index) => (
+              <li key={`${finding.line}-${index}`}>{finding.message}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="mt-2 flex items-center gap-2 border-t border-border-subtle pt-2">
         <span className="text-caption font-medium text-fg-secondary">{money(order.totalCents, order.currency)}</span>
 
@@ -403,7 +449,12 @@ function OrderCard({
           </button>
         )}
 
-        {order.nextStage && !order.blockedReason && (
+        {/* Offered at the pass whether or not a photo is required - a
+            kitchen that wants the picture on one awkward order should not
+            have to turn a setting on to take it. */}
+        {order.stage === 'QUALITY_CHECK' && <QcPhotoButton orderId={order.id} taken={order.qcCheckedAt !== null} onDone={onPhotoTaken} />}
+
+        {order.nextStage && !order.blockedReason && !order.qcPhotoOutstanding && (
           <button
             type="button"
             disabled={busy}
@@ -411,6 +462,21 @@ function OrderCard({
             className="ml-auto rounded-md bg-accent px-2.5 py-1 text-meta font-semibold text-white transition hover:bg-accent-dim disabled:opacity-50"
           >
             {busy ? '…' : STAGE_LABEL[order.nextStage]}
+          </button>
+        )}
+
+        {/* The same reasoning as the payment gate: never offer a bump that
+            will be refused. The only action actually available is going
+            out without the photo, on somebody's say-so. */}
+        {order.qcPhotoOutstanding && !order.blockedReason && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onSendOutWithoutPhoto}
+            title="This order needs a photo before it leaves the pass"
+            className="ml-auto rounded-md border border-warning/60 bg-warning/15 px-2.5 py-1 text-meta font-semibold text-warning disabled:opacity-50"
+          >
+            {busy ? '…' : 'Send out anyway'}
           </button>
         )}
 
@@ -432,6 +498,9 @@ function OrderCard({
       </div>
 
       {order.blockedReason && <p className="mt-1.5 text-meta text-warning">{order.blockedReason}</p>}
+      {order.qcPhotoOutstanding && !order.blockedReason && (
+        <p className="mt-1.5 text-meta text-warning">Needs a photo before it leaves the pass.</p>
+      )}
     </article>
   );
 }

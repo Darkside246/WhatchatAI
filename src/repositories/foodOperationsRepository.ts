@@ -4,6 +4,7 @@ import { canTransition, isOpenStage, OPEN_STAGES } from '../domain/food/orderLif
 import type { FoodPaymentMethod, FoodPaymentState, KitchenRelease } from '../domain/food/paymentGate.js';
 import { canTransitionPayment, releaseToKitchen } from '../domain/food/paymentGate.js';
 import type { FoodNotificationEvent, NotificationOverrides, NotificationVerbosity } from '../services/food/orderNotifications.js';
+import { raisedFindings, type QcFinding } from '../domain/food/qcFindings.js';
 
 export interface FoodMenuCategoryRecord {
   id: string;
@@ -76,6 +77,10 @@ export interface FoodSettingsRecord {
   businessId: string;
   paymentRequiredBeforeKitchen: boolean;
   tableServiceEnabled: boolean;
+  /** Must a photo be taken before an order may leave the pass. */
+  qcPhotoRequired: boolean;
+  /** Is that photo actually read against the order. Genuinely separate from requiring one. */
+  qcVisionEnabled: boolean;
   paymentRequiredNotice: string | null;
   slaWarningSeconds: number | null;
   slaBreachSeconds: number | null;
@@ -143,6 +148,23 @@ export interface FoodOrderEventRecord {
   createdAt: string;
 }
 
+export interface FoodQcCheckRecord {
+  id: string;
+  orderId: string;
+  photoReference: string | null;
+  photoMimeType: string | null;
+  observation: unknown;
+  findings: QcFinding[];
+  /** How many findings were actually put in front of a person - unverifiable ones are not. */
+  raisedCount: number;
+  provider: string | null;
+  model: string | null;
+  checkedBy: string | null;
+  acknowledgedAt: string | null;
+  acknowledgementNote: string | null;
+  createdAt: string;
+}
+
 export interface FoodDeliveryZoneRecord {
   id: string;
   businessId: string;
@@ -195,6 +217,22 @@ function toMenuItem(row: MenuItemRow): FoodMenuItemRecord {
     // than a query per item.
     modifierGroups: [],
     createdAt: row.created_at, updatedAt: row.updated_at,
+  };
+}
+
+interface QcCheckRow {
+  id: string; order_id: string; photo_reference: string | null; photo_mime_type: string | null;
+  observation: unknown; findings: QcFinding[] | null; raised_count: number;
+  provider: string | null; model: string | null; checked_by: string | null;
+  acknowledged_at: string | null; acknowledgement_note: string | null; created_at: string;
+}
+
+function toQcCheck(row: QcCheckRow): FoodQcCheckRecord {
+  return {
+    id: row.id, orderId: row.order_id, photoReference: row.photo_reference, photoMimeType: row.photo_mime_type,
+    observation: row.observation ?? {}, findings: row.findings ?? [], raisedCount: Number(row.raised_count),
+    provider: row.provider, model: row.model, checkedBy: row.checked_by,
+    acknowledgedAt: row.acknowledged_at, acknowledgementNote: row.acknowledgement_note, createdAt: row.created_at,
   };
 }
 
@@ -265,6 +303,13 @@ export class TableServiceDisabledError extends Error {}
 export class UnknownMenuCategoryError extends Error {}
 
 /**
+ * Trying to send an order out of the pass without the photo this business
+ * asked for. Its own type so the board can say what is wanted rather than
+ * failing with something generic.
+ */
+export class QcPhotoRequiredError extends Error {}
+
+/**
  * Raised when an order was sent to the kitchen without payment clearing.
  *
  * Carries the sentence meant for the CUSTOMER as well as the operational
@@ -297,6 +342,7 @@ export class FoodOperationsRepository {
       payment_required_before_kitchen: boolean; table_service_enabled: boolean;
       payment_required_notice: string | null; sla_warning_seconds: number | null; sla_breach_seconds: number | null;
       notification_verbosity: NotificationVerbosity; notification_overrides: NotificationOverrides;
+      qc_photo_required: boolean; qc_vision_enabled: boolean;
     }>('SELECT * FROM food_settings WHERE business_id = $1', [businessId]);
 
     const row = rows[0];
@@ -306,6 +352,11 @@ export class FoodOperationsRepository {
       // this yet: wait for money, and do not show a table field.
       paymentRequiredBeforeKitchen: row?.payment_required_before_kitchen ?? true,
       tableServiceEnabled: row?.table_service_enabled ?? false,
+      // Both off: this is help a business opts into, not a step imposed
+      // on a kitchen that never asked for one - and a kitchen made to
+      // photograph every order will find a way not to.
+      qcPhotoRequired: row?.qc_photo_required ?? false,
+      qcVisionEnabled: row?.qc_vision_enabled ?? false,
       paymentRequiredNotice: row?.payment_required_notice ?? null,
       slaWarningSeconds: row?.sla_warning_seconds ?? null,
       slaBreachSeconds: row?.sla_breach_seconds ?? null,
@@ -331,8 +382,9 @@ export class FoodOperationsRepository {
     await this.db.query(
       `INSERT INTO food_settings
          (business_id, payment_required_before_kitchen, table_service_enabled, payment_required_notice,
-          sla_warning_seconds, sla_breach_seconds, notification_verbosity, notification_overrides, updated_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          sla_warning_seconds, sla_breach_seconds, notification_verbosity, notification_overrides, updated_by,
+          qc_photo_required, qc_vision_enabled)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT (business_id) DO UPDATE
          SET payment_required_before_kitchen = EXCLUDED.payment_required_before_kitchen,
              table_service_enabled = EXCLUDED.table_service_enabled,
@@ -342,11 +394,14 @@ export class FoodOperationsRepository {
              notification_verbosity = EXCLUDED.notification_verbosity,
              notification_overrides = EXCLUDED.notification_overrides,
              updated_by = EXCLUDED.updated_by,
+             qc_photo_required = EXCLUDED.qc_photo_required,
+             qc_vision_enabled = EXCLUDED.qc_vision_enabled,
              updated_at = now()`,
       [
         businessId, next.paymentRequiredBeforeKitchen, next.tableServiceEnabled, next.paymentRequiredNotice,
         next.slaWarningSeconds, next.slaBreachSeconds, next.notificationVerbosity,
         JSON.stringify(next.notificationOverrides), updatedBy,
+        next.qcPhotoRequired, next.qcVisionEnabled,
       ],
     );
     return next;
@@ -997,6 +1052,13 @@ export class FoodOperationsRepository {
        * payment record as a waiver, never left only in a log.
        */
       overridePaymentGate?: { reason: string } | undefined;
+      /**
+       * Sending an order out without the photo this business asked for -
+       * a broken camera, a queue out of the door. A reason is required
+       * because an escape hatch nobody has to account for stops being an
+       * escape hatch and becomes the normal route.
+       */
+      overrideQcPhoto?: { reason: string } | undefined;
     } = {},
   ): Promise<FoodOrderRecord | null> {
     const existing = await this.findOrder(businessId, id);
@@ -1041,6 +1103,25 @@ export class FoodOperationsRepository {
       }
     }
 
+    /**
+     * THE QUALITY CHECK GATE.
+     *
+     * Only on the way OUT of the pass, because that is the last moment
+     * anybody can look in the bag. Never on the way in - a ticket must
+     * always be able to reach the pass, or the board backs up behind a
+     * camera.
+     *
+     * Nothing here is about what the photo SHOWED. A warning is for a
+     * person to weigh; only the absence of a photo this business asked
+     * for stops anything.
+     */
+    if (existing.stage === 'QUALITY_CHECK' && (to === 'READY_FOR_PICKUP' || to === 'OUT_FOR_DELIVERY')) {
+      const settings = await this.getSettings(businessId);
+      if (settings.qcPhotoRequired && !actor.overrideQcPhoto && !(await this.hasQcCheck(businessId, id))) {
+        throw new QcPhotoRequiredError('This order needs a photo before it leaves the pass.');
+      }
+    }
+
     const { rows } = await this.db.query<OrderRow>(
       `UPDATE food_orders
          SET stage = $3,
@@ -1059,7 +1140,11 @@ export class FoodOperationsRepository {
       toStage: to,
       actorUserId: actor.userId ?? null,
       actorKind: actor.kind ?? 'user',
-      note: actor.note ?? null,
+      // Appended rather than replacing the operator's own note: both are
+      // things somebody chose to say about this move.
+      note: actor.overrideQcPhoto
+        ? [actor.note, `Sent out without a photo: ${actor.overrideQcPhoto.reason}`].filter(Boolean).join(' — ')
+        : actor.note ?? null,
     });
 
     return rows[0] ? toOrder(rows[0]) : null;
@@ -1131,6 +1216,95 @@ export class FoodOperationsRepository {
   }
 
   // ── Delivery zones ─────────────────────────────────────────────────────
+
+  // ── Quality check ──────────────────────────────────────────────────────
+
+  /**
+   * Stores what a photo showed.
+   *
+   * Every finding is kept, unverifiable ones included, so the check has an
+   * honest account of itself - the SCREEN filters those out, the record
+   * does not. raisedCount is denormalised alongside because "which orders
+   * were flagged" should be an index lookup, not a scan through JSONB.
+   */
+  async recordQcCheck(input: {
+    businessId: string;
+    orderId: string;
+    observation: unknown;
+    findings: QcFinding[];
+    photoReference?: string | null;
+    photoSha256?: string | null;
+    photoMimeType?: string | null;
+    provider?: string | null;
+    model?: string | null;
+    checkedBy?: string | null;
+  }): Promise<FoodQcCheckRecord> {
+    const { rows } = await this.db.query<QcCheckRow>(
+      `INSERT INTO food_qc_checks
+         (business_id, order_id, photo_reference, photo_sha256, photo_mime_type,
+          observation, findings, raised_count, provider, model, checked_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING *`,
+      [
+        input.businessId, input.orderId, input.photoReference ?? null, input.photoSha256 ?? null,
+        input.photoMimeType ?? null, JSON.stringify(input.observation ?? {}), JSON.stringify(input.findings),
+        raisedFindings(input.findings).length, input.provider ?? null, input.model ?? null, input.checkedBy ?? null,
+      ],
+    );
+    return toQcCheck(rows[0]!);
+  }
+
+  /**
+   * The most recent check for each of these orders, in one query.
+   *
+   * The board needs this for every ticket at the pass at once; a query per
+   * card would put the kitchen screen's poll into double figures of round
+   * trips every five seconds.
+   */
+  async latestQcCheckByOrder(businessId: string, orderIds: string[]): Promise<Map<string, FoodQcCheckRecord>> {
+    if (orderIds.length === 0) return new Map();
+    const { rows } = await this.db.query<QcCheckRow>(
+      `SELECT DISTINCT ON (order_id) *
+       FROM food_qc_checks
+       WHERE business_id = $1 AND order_id = ANY($2::uuid[])
+       ORDER BY order_id, created_at DESC`,
+      [businessId, orderIds],
+    );
+    return new Map(rows.map((row) => [row.order_id, toQcCheck(row)]));
+  }
+
+  async listQcChecks(businessId: string, orderId: string): Promise<FoodQcCheckRecord[]> {
+    const { rows } = await this.db.query<QcCheckRow>(
+      'SELECT * FROM food_qc_checks WHERE business_id = $1 AND order_id = $2 ORDER BY created_at DESC',
+      [businessId, orderId],
+    );
+    return rows.map(toQcCheck);
+  }
+
+  /** Has this order been photographed at all. What the gate below turns on. */
+  async hasQcCheck(businessId: string, orderId: string): Promise<boolean> {
+    const { rows } = await this.db.query<{ exists: boolean }>(
+      'SELECT EXISTS (SELECT 1 FROM food_qc_checks WHERE business_id = $1 AND order_id = $2) AS exists',
+      [businessId, orderId],
+    );
+    return rows[0]?.exists ?? false;
+  }
+
+  /**
+   * Somebody looked at a warning and decided.
+   *
+   * Recorded because a finding nobody acted on and a finding somebody
+   * looked at and dismissed are different facts, and only one of them is a
+   * problem with the kitchen.
+   */
+  async acknowledgeQcCheck(businessId: string, id: string, by: string | null, note: string | null): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      `UPDATE food_qc_checks SET acknowledged_at = now(), acknowledged_by = $3, acknowledgement_note = $4
+       WHERE business_id = $1 AND id = $2 AND acknowledged_at IS NULL`,
+      [businessId, id, by, note],
+    );
+    return (rowCount ?? 0) > 0;
+  }
 
   async listZones(businessId: string): Promise<FoodDeliveryZoneRecord[]> {
     const { rows } = await this.db.query<ZoneRow>(
