@@ -1052,7 +1052,7 @@ export class FoodOperationsRepository {
   async updateModifierOption(
     businessId: string,
     optionId: string,
-    input: { name?: string; priceDeltaCents?: number; freeQuantity?: number },
+    input: { name?: string | undefined; priceDeltaCents?: number | undefined; freeQuantity?: number | undefined },
   ): Promise<FoodModifierOptionRecord | null> {
     const { rows } = await this.db.query<{ id: string; group_id: string; name: string; price_delta_cents: string; free_quantity: number; available: boolean; sort_order: number }>(
       `UPDATE food_modifier_options

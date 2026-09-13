@@ -41,7 +41,14 @@ interface BasketLine {
   key: string;
   item: FoodMenuItemDto;
   quantity: number;
-  modifiers: { name: string; action: 'add' | 'remove' | 'on_side' }[];
+  /**
+   * `quantity` is how many of that extra - "two extra sauces" is 2. It is
+   * part of the line's identity for the same reason the modifier itself is:
+   * one sauce and three sauces are different orders and different money.
+   * Absent means one, so every basket built before this existed is
+   * unchanged.
+   */
+  modifiers: { name: string; action: 'add' | 'remove' | 'on_side'; quantity?: number }[];
 }
 
 
@@ -443,15 +450,41 @@ function ModifierPicker({
 }: {
   item: FoodMenuItemDto;
   onCancel: () => void;
-  onDone: (modifiers: { name: string; action: 'add' | 'remove' | 'on_side' }[]) => void;
+  onDone: (modifiers: { name: string; action: 'add' | 'remove' | 'on_side'; quantity?: number }[]) => void;
 }) {
-  const [chosen, setChosen] = useState<Set<string>>(new Set());
+  /**
+   * Name to how many, rather than a set of names.
+   *
+   * A set could only say yes or no, which was fine while every extra cost
+   * the same whether you had one or three. Now that an option can come with
+   * the dish and be charged past that, "how many" is the question the till
+   * has to be able to answer - and a cashier who cannot ring the third pot
+   * of sauce will either give it away or argue with the customer.
+   *
+   * The money is NOT worked out here. The server prices the basket against
+   * the live catalogue and its own free allowance (see orderIntake.ts), and
+   * the quote comes back; a till that did its own arithmetic would be a
+   * second opinion about somebody's bill.
+   */
+  const [chosen, setChosen] = useState<Map<string, number>>(new Map());
 
   function toggle(name: string) {
     setChosen((current) => {
-      const next = new Set(current);
+      const next = new Map(current);
       if (next.has(name)) next.delete(name);
-      else next.add(name);
+      else next.set(name, 1);
+      return next;
+    });
+  }
+
+  function step(name: string, delta: number) {
+    setChosen((current) => {
+      const next = new Map(current);
+      const wanted = (next.get(name) ?? 0) + delta;
+      // Stepping the last one off is the same as unticking it, which is
+      // what a cashier expects from a minus button reaching zero.
+      if (wanted <= 0) next.delete(name);
+      else next.set(name, Math.min(wanted, 99));
       return next;
     });
   }
@@ -477,24 +510,62 @@ function ModifierPicker({
                 {group.options
                   .filter((option) => option.available)
                   .map((option) => (
-                    <button
+                    <div
                       key={option.id}
-                      type="button"
-                      onClick={() => toggle(option.name)}
                       className={`flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-caption ${
                         chosen.has(option.name)
                           ? 'border-accent bg-accent-soft text-accent'
-                          : 'border-border-subtle text-fg hover:bg-surface-2'
+                          : 'border-border-subtle text-fg'
                       }`}
                     >
-                      <span className="min-w-0 flex-1 truncate">{option.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => toggle(option.name)}
+                        className="min-w-0 flex-1 truncate text-left"
+                      >
+                        {option.name}
+                      </button>
+
+                      {/* What comes with the dish, said plainly. Without it
+                          a cashier has no way to know why the second one
+                          cost and the first did not. */}
+                      {option.freeQuantity > 0 && (
+                        <span className="shrink-0 text-meta text-fg-muted">
+                          {option.freeQuantity} free
+                        </span>
+                      )}
+
                       {option.priceDeltaCents !== 0 && (
                         <span className="shrink-0 tabular-nums text-fg-muted">
                           {option.priceDeltaCents > 0 ? '+' : ''}
                           {money(option.priceDeltaCents, item.currency)}
                         </span>
                       )}
-                    </button>
+
+                      {/* Only once it has been chosen: a stepper beside
+                          every option on the board is noise at a counter. */}
+                      {chosen.has(option.name) && (
+                        <span className="flex shrink-0 items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => step(option.name, -1)}
+                            aria-label={`One fewer ${option.name}`}
+                            className="min-h-8 min-w-8 rounded border border-border-subtle text-body leading-none text-fg"
+                          >
+                            −
+                          </button>
+                          <span className="w-5 text-center tabular-nums">{chosen.get(option.name)}</span>
+                          <button
+                            type="button"
+                            onClick={() => step(option.name, 1)}
+                            aria-label={`One more ${option.name}`}
+                            className="min-h-8 min-w-8 rounded border border-border-subtle text-body leading-none text-fg"
+                          >
+                            +
+                          </button>
+                        </span>
+                      )}
+                    </div>
                   ))}
               </div>
             </div>
@@ -504,7 +575,9 @@ function ModifierPicker({
         <div className="shrink-0 border-t border-border-subtle p-3">
           <button
             type="button"
-            onClick={() => onDone([...chosen].map((name) => ({ name, action: 'add' as const })))}
+            onClick={() =>
+              onDone([...chosen].map(([name, quantity]) => ({ name, action: 'add' as const, quantity })))
+            }
             className="min-h-12 w-full rounded-lg bg-accent text-body font-semibold text-white"
           >
             Add to sale

@@ -666,6 +666,8 @@ function GroupCard({
 }) {
   const [optionName, setOptionName] = useState('');
   const [delta, setDelta] = useState('');
+  /** How many come with the dish. Empty means none - the ordinary paid add-on. */
+  const [freeWithIt, setFreeWithIt] = useState('');
 
   function addOption(event: React.FormEvent) {
     event.preventDefault();
@@ -675,9 +677,12 @@ function GroupCard({
     // costs nothing, and neither does picking a sauce.
     const priceDeltaCents = delta.trim() ? toCents(delta) : 0;
     if (priceDeltaCents === null) return;
+    const freeQuantity = freeWithIt.trim() ? Number(freeWithIt) : 0;
+    if (!Number.isInteger(freeQuantity) || freeQuantity < 0 || freeQuantity > 99) return;
     setOptionName('');
     setDelta('');
-    void onRun(() => api.addFoodModifierOption(group.id, { name: trimmed, priceDeltaCents }));
+    setFreeWithIt('');
+    void onRun(() => api.addFoodModifierOption(group.id, { name: trimmed, priceDeltaCents, freeQuantity }));
   }
 
   return (
@@ -711,9 +716,40 @@ function GroupCard({
               <span className={`min-w-0 flex-1 truncate ${option.available ? 'text-fg-secondary' : 'text-fg-muted line-through'}`}>
                 {option.name}
               </span>
+              {/* Deliberately the two FIELDS, not the sentence.
+                  describeModifierPrice turns these into "first one free,
+                  then $1.50 each" for the customer, and that lives on the
+                  server where the agent also reads it - one implementation,
+                  so the menu and the chat cannot word one price two ways.
+                  Here the owner is setting the numbers, and seeing the
+                  numbers they set is clearer than seeing a sentence
+                  assembled from them. */}
               <span className="shrink-0 tabular-nums text-fg-muted">
-                {option.priceDeltaCents === 0 ? 'free' : `${option.priceDeltaCents > 0 ? '+' : '−'}${toAmount(Math.abs(option.priceDeltaCents))}`}
+                {option.priceDeltaCents === 0
+                  ? 'free'
+                  : `${option.priceDeltaCents > 0 ? '+' : '−'}${toAmount(Math.abs(option.priceDeltaCents))}`}
               </span>
+              <label className="flex shrink-0 items-center gap-1 text-meta text-fg-muted">
+                <span title="How many come with the dish at no charge. Anything past this is charged.">free with it</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={99}
+                  defaultValue={option.freeQuantity}
+                  disabled={busy}
+                  aria-label={`How many ${option.name} come free`}
+                  onBlur={(event) => {
+                    const next = Number(event.target.value);
+                    // Out of range is left alone rather than clamped:
+                    // silently turning a typo into a number the owner did
+                    // not choose is how a menu ends up giving food away.
+                    if (!Number.isInteger(next) || next < 0 || next > 99) return;
+                    if (next === option.freeQuantity) return;
+                    void onRun(() => api.updateFoodModifierOption(option.id, { freeQuantity: next }));
+                  }}
+                  className="w-11 rounded border border-border-subtle bg-surface-0 px-1 py-0.5 text-center text-meta tabular-nums text-fg"
+                />
+              </label>
               <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-meta text-fg-muted">
                 <input
                   type="checkbox"

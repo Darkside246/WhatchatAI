@@ -64,6 +64,12 @@ const orderLinesParameter: Schema = {
               type: Type.STRING,
               description: '"add" to put it on, "remove" to leave it off, "on_side" to serve it separately.',
             },
+            quantity: {
+              type: Type.NUMBER,
+              description:
+                'How many of this extra. 1 unless they asked for more - "two extra sauces" is 2. Matters where the ' +
+                'first one or two come free and the rest are charged; never guess higher than they asked for.',
+            },
           },
           required: ['name', 'action'],
         },
@@ -130,7 +136,7 @@ export const confirmFoodOrderFunctionDeclaration: FunctionDeclaration = {
 export interface FoodOrderToolLine {
   item?: string;
   quantity?: number;
-  modifiers?: { name?: string; action?: string }[];
+  modifiers?: { name?: string; action?: string; quantity?: number }[];
   notes?: string;
 }
 

@@ -38,6 +38,7 @@ import {
 } from './food/foodOrderTools.js';
 import { FoodOperationsRepository, type FoodAiOrderTaking } from '../repositories/foodOperationsRepository.js';
 import { confirmProposal, resolveProposal, type DraftOrderProposal, type ProposedLine } from './food/orderIntake.js';
+import { describeModifierPrice } from '../domain/food/modifierPricing.js';
 import { describeEpisodeBoundary, splitEpisode } from '../domain/conversation/conversationClosure.js';
 import { RelayedMessageRepository } from '../repositories/relayedMessageRepository.js';
 import { RetailOperationsRepository } from '../repositories/retailOperationsRepository.js';
@@ -92,6 +93,10 @@ function toFoodProposal(args: ConfirmFoodOrderToolArgs | QuoteFoodOrderToolArgs,
         .map((modifier) => ({
           name: String(modifier.name).trim(),
           action: modifier.action === 'remove' || modifier.action === 'on_side' ? modifier.action : ('add' as const),
+          // Carried through, never inferred. The resolver clamps it and
+          // prices it against the catalogue's own free allowance; this
+          // only has to avoid losing what the customer actually said.
+          quantity: typeof modifier.quantity === 'number' ? modifier.quantity : 1,
         })),
       notes: typeof line.notes === 'string' && line.notes.trim() ? line.notes.trim() : null,
     }));
@@ -1532,7 +1537,16 @@ async function executeOneToolCall(
                     : `at least ${group.minSelect}${group.maxSelect === null ? '' : `, at most ${group.maxSelect}`}`,
                 choices: group.options.map((option) => ({
                   name: option.name,
-                  extraCost: option.priceDeltaCents === 0 ? 'free' : (option.priceDeltaCents / 100).toFixed(2),
+                  /* One sentence, in the business's own pricing, from the
+                     same function the menu screen prints. An agent left to
+                     phrase "two come with it, the third is $1.50" itself
+                     will eventually phrase it wrongly, and the resolver
+                     will charge the real thing either way - so the two
+                     would disagree in front of the customer. */
+                  extraCost: describeModifierPrice(option.freeQuantity, option.priceDeltaCents, (cents) =>
+                    `${item.currency} ${(cents / 100).toFixed(2)}`,
+                  ),
+                  ...(option.freeQuantity > 0 ? { comesWithTheDish: option.freeQuantity } : {}),
                   available: option.available,
                 })),
               })),

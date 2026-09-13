@@ -434,7 +434,17 @@ const proposedLineSchema = z.object({
   reference: z.string().trim().min(1).max(200),
   quantity: z.number().int().positive().max(500),
   modifiers: z
-    .array(z.object({ name: z.string().trim().min(1).max(80), action: z.enum(['add', 'remove', 'on_side']) }))
+    .array(
+      z.object({
+        name: z.string().trim().min(1).max(80),
+        action: z.enum(['add', 'remove', 'on_side']),
+        // How many of the extra. Still no price field anywhere - the
+        // resolver reads the cost AND the free allowance off the catalogue
+        // row, so a caller can say how many they want and never what it
+        // costs. See resolveProposal.
+        quantity: z.number().int().positive().max(99).optional(),
+      }),
+    )
     .max(20)
     .optional(),
   notes: z.string().trim().max(500).nullish(),
@@ -814,6 +824,10 @@ router.post('/modifier-groups/:groupId/options', requirePermission('food.manage'
       // Negative on purpose: "no cheese, -50c" is a real thing on a real
       // menu, and a schema that forbids it forces the operator to lie.
       priceDeltaCents: z.number().int().min(-1_000_000).max(1_000_000).default(0),
+      // How many come with the dish at no charge. A count, not a flag:
+      // "two sauces included, the third costs" is a real menu. See
+      // migration 1045.
+      freeQuantity: z.number().int().min(0).max(99).default(0),
     })
     .safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_MODIFIER_OPTION', details: parsed.error.flatten() });
@@ -821,6 +835,33 @@ router.post('/modifier-groups/:groupId/options', requirePermission('food.manage'
   const option = await repository.addModifierOption(auth.businessId, groupId, parsed.data);
   if (!option) return res.status(404).json({ error: 'MODIFIER_GROUP_NOT_FOUND' });
   return res.status(201).json({ option });
+});
+
+/**
+ * Changing an option that already exists.
+ *
+ * The repository has been able to do this since groups were built; there
+ * was simply no route, so the only way to correct a price or an included
+ * count was to delete the option and add it again - which loses it from
+ * every item the group is attached to in the meantime.
+ */
+router.patch('/modifier-options/:optionId', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const optionId = String(req.params.optionId ?? '');
+  if (!uuid.safeParse(optionId).success) return res.status(400).json({ error: 'INVALID_OPTION_ID' });
+
+  const parsed = z
+    .object({
+      name: z.string().trim().min(1).max(80).optional(),
+      priceDeltaCents: z.number().int().min(-1_000_000).max(1_000_000).optional(),
+      freeQuantity: z.number().int().min(0).max(99).optional(),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_MODIFIER_OPTION', details: parsed.error.flatten() });
+
+  const option = await repository.updateModifierOption(auth.businessId, optionId, parsed.data);
+  if (!option) return res.status(404).json({ error: 'MODIFIER_OPTION_NOT_FOUND' });
+  return res.status(200).json({ option });
 });
 
 /** The "86" toggle for a single option. A kitchen runs out of bacon, not just of burgers. */

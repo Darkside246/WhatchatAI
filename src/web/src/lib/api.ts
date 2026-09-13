@@ -374,6 +374,12 @@ export interface FoodModifierOptionDto {
   groupId: string;
   name: string;
   priceDeltaCents: number;
+  /**
+   * How many come with the dish at no charge; everything past it is
+   * charged at priceDeltaCents. 0 is the ordinary paid add-on and is what
+   * every option had before migration 1045.
+   */
+  freeQuantity: number;
   available: boolean;
   sortOrder: number;
 }
@@ -465,7 +471,7 @@ export interface FoodProposedLineDto {
   /** The item, by name or alias. The server resolves it; the browser never picks a price. */
   reference: string;
   quantity: number;
-  modifiers?: { name: string; action: 'add' | 'remove' | 'on_side' }[];
+  modifiers?: { name: string; action: 'add' | 'remove' | 'on_side'; quantity?: number }[];
   notes?: string | null;
 }
 
@@ -2978,9 +2984,17 @@ export const api = {
     request<{ group: FoodModifierGroupDto }>('/food-operations/modifier-groups', { method: 'POST', body: JSON.stringify(input) }),
   deleteFoodModifierGroup: (groupId: string) =>
     request<{ status: string }>(`/food-operations/modifier-groups/${groupId}`, { method: 'DELETE' }),
-  addFoodModifierOption: (groupId: string, input: { name: string; priceDeltaCents?: number }) =>
+  addFoodModifierOption: (groupId: string, input: { name: string; priceDeltaCents?: number; freeQuantity?: number }) =>
     request<{ option: FoodModifierOptionDto }>(`/food-operations/modifier-groups/${groupId}/options`, {
       method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  updateFoodModifierOption: (
+    optionId: string,
+    input: { name?: string; priceDeltaCents?: number; freeQuantity?: number },
+  ) =>
+    request<{ option: FoodModifierOptionDto }>(`/food-operations/modifier-options/${optionId}`, {
+      method: 'PATCH',
       body: JSON.stringify(input),
     }),
   setFoodModifierOptionAvailability: (optionId: string, available: boolean) =>

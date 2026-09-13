@@ -1,5 +1,6 @@
 import type { FulfilmentMethod } from '../../domain/food/orderLifecycle.js';
 import { checkDelivery } from '../../domain/food/deliveryZone.js';
+import { modifierCharge } from '../../domain/food/modifierPricing.js';
 import type { FoodMenuItemRecord, FoodOrderLine, FoodOperationsRepository } from '../../repositories/foodOperationsRepository.js';
 
 /**
@@ -28,6 +29,15 @@ import type { FoodMenuItemRecord, FoodOrderLine, FoodOperationsRepository } from
 export interface ProposedModifier {
   name: string;
   action: 'add' | 'remove' | 'on_side';
+  /**
+   * How many of it. "Extra ketchup" is one; "three ketchup" is three.
+   *
+   * Optional because it did not exist before and every existing caller
+   * means one. It only starts to matter once an option comes partly free:
+   * with no free allowance, one at $1.50 and one at $1.50 price the same
+   * however this is counted.
+   */
+  quantity?: number | undefined;
 }
 
 export interface ProposedLine {
@@ -135,6 +145,8 @@ export function matchMenuItem(reference: string, menu: readonly FoodMenuItemReco
 interface DeclaredModifier {
   name?: unknown;
   priceDeltaCents?: unknown;
+  /** The legacy per-item blob never had this; absent means nothing is included. */
+  freeQuantity?: unknown;
 }
 
 /**
@@ -156,9 +168,23 @@ interface DeclaredModifier {
 function resolveModifier(
   modifier: ProposedModifier,
   item: FoodMenuItemRecord,
-): { priced: { name: string; action: ProposedModifier['action']; priceDeltaCents: number } } | { note: string } {
+):
+  | {
+      priced: {
+        name: string;
+        action: ProposedModifier['action'];
+        priceDeltaCents: number;
+        quantity: number;
+        freeQuantity: number;
+      };
+    }
+  | { note: string } {
+  // At least one, and whole. Somebody asking for "0.5 ketchup" is asking
+  // for ketchup.
+  const quantity = Math.max(1, Math.trunc(Number.isFinite(modifier.quantity ?? 1) ? (modifier.quantity ?? 1) : 1));
+
   if (modifier.action === 'remove') {
-    return { priced: { name: modifier.name, action: 'remove', priceDeltaCents: 0 } };
+    return { priced: { name: modifier.name, action: 'remove', priceDeltaCents: 0, quantity, freeQuantity: quantity } };
   }
 
   const wanted = normalise(modifier.name);
@@ -174,7 +200,18 @@ function resolveModifier(
     if (!fromGroup.available) {
       return { note: `${modifier.name} (UNAVAILABLE - check with the customer)` };
     }
-    return { priced: { name: fromGroup.name, action: modifier.action, priceDeltaCents: fromGroup.priceDeltaCents } };
+    /* freeQuantity comes from the catalogue row read a moment ago, for
+       exactly the same reason the price does: a proposal carrying either
+       is carrying a guess. */
+    return {
+      priced: {
+        name: fromGroup.name,
+        action: modifier.action,
+        priceDeltaCents: fromGroup.priceDeltaCents,
+        quantity,
+        freeQuantity: fromGroup.freeQuantity,
+      },
+    };
   }
 
   const declared = (item.modifiers as DeclaredModifier[]).find(
@@ -186,7 +223,8 @@ function resolveModifier(
   }
 
   const delta = typeof declared.priceDeltaCents === 'number' ? declared.priceDeltaCents : 0;
-  return { priced: { name: modifier.name, action: modifier.action, priceDeltaCents: delta } };
+  const free = typeof declared.freeQuantity === 'number' ? declared.freeQuantity : 0;
+  return { priced: { name: modifier.name, action: modifier.action, priceDeltaCents: delta, quantity, freeQuantity: free } };
 }
 
 /**
@@ -274,8 +312,28 @@ export async function resolveProposal(
   }
 
   const currency = currencies.values().next().value ?? 'USD';
+  /**
+   * What the modifiers on one unit of a line actually cost.
+   *
+   * Through modifierCharge rather than summing priceDeltaCents, so an
+   * option that comes partly free is charged for what is past the
+   * allowance and not a cent more. With freeQuantity 0 - every option on
+   * every menu written before migration 1045 - this is arithmetically
+   * identical to the sum it replaces, so no existing price moves.
+   *
+   * Per unit, matching how modifiers have always been charged here: two
+   * burgers with bacon pay for bacon twice, and "first sauce free" is per
+   * burger, because that is what a kitchen means by it.
+   */
+  const modifiersPerUnit = (line: FoodOrderLine): number =>
+    line.modifiers.reduce(
+      (total, modifier) =>
+        total + modifierCharge(modifier.quantity ?? 1, modifier.freeQuantity ?? 0, modifier.priceDeltaCents).totalCents,
+      0,
+    );
+
   const subtotalCents = lines.reduce(
-    (sum, line) => sum + line.quantity * (line.unitPriceCents + line.modifiers.reduce((delta, modifier) => delta + modifier.priceDeltaCents, 0)),
+    (sum, line) => sum + line.quantity * (line.unitPriceCents + modifiersPerUnit(line)),
     0,
   );
 
