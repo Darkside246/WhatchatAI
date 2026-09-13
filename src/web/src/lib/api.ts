@@ -104,6 +104,60 @@ export interface FoodOrderLineDto {
   station: string | null;
 }
 
+/**
+ * The closing-time numbers, for the business's own service day.
+ *
+ * Mirrors FoodServiceSummary on the server. Every "can undercount" note
+ * there is repeated here, because a figure whose limits are only documented
+ * on the server is a figure somebody reads off a screen and treats as exact.
+ */
+export interface FoodServiceSummaryDto {
+  orders: { taken: number; completed: number; cancelled: number };
+  money: {
+    /** Everything billed on orders taken in the window, cancelled ones excluded. */
+    soldCents: number;
+    /** Confirmed through AURA only - a payment taken at the counter never passed through us, so this can undercount. */
+    collectedCents: number;
+    outstandingCents: number;
+    currency: string;
+    byMethod: { method: string; cents: number; orders: number }[];
+  };
+  service: {
+    lateOrders: number;
+    /** Order to leaving the pass. Null when nothing finished in the window. */
+    medianMinutesToLeave: number | null;
+    slowestMinutesToLeave: number | null;
+  };
+  delivery: { runs: number; delivered: number; failed: number };
+  qc: { flagged: number; unacknowledged: number };
+}
+
+/** One order still owed for. Deliberately not bounded by the day - an unpaid Tuesday is still unpaid on Friday. */
+export interface FoodOutstandingPaymentDto {
+  orderId: string;
+  orderNumber: number;
+  customerName: string | null;
+  customerPhone: string | null;
+  chatId: string | null;
+  totalCents: number;
+  currency: string;
+  paymentState: FoodBoardOrderDto['paymentState'];
+  method: string | null;
+  askedAt: string | null;
+  placedAt: string;
+  stage: FoodOrderStage;
+}
+
+export interface FoodServiceSummaryResponse {
+  day: string;
+  timezone: string;
+  rolloverHour: number;
+  from: string;
+  to: string;
+  summary: FoodServiceSummaryDto;
+  outstanding: FoodOutstandingPaymentDto[];
+}
+
 /** One stop on a driver's own run. Never reaches the workspace - this is what /api/driver returns to the driver's phone. */
 export interface DriverRunStop {
   deliveryId: string;
@@ -2593,6 +2647,20 @@ export const api = {
       `/food-operations/drivers/${driverId}/sign-in-link`,
       { method: 'POST' },
     ),
+  /**
+   * The closing-time summary for one service day.
+   *
+   * `day` and `rolloverHour` are the business's own, not UTC - a kitchen
+   * that closes at 1am has one service, and cutting it at midnight splits a
+   * Friday night across two reports that agree with neither.
+   */
+  getFoodServiceSummary: (options: { day?: string; rolloverHour?: number } = {}) => {
+    const search = new URLSearchParams();
+    if (options.day) search.set('day', options.day);
+    if (options.rolloverHour !== undefined) search.set('rolloverHour', String(options.rolloverHour));
+    const suffix = search.toString();
+    return request<FoodServiceSummaryResponse>(`/food-operations/summary${suffix ? `?${suffix}` : ''}`);
+  },
   getFoodBoard: () =>
     request<{ serverTime: string; settings: FoodSettingsDto; stations: string[]; orders: FoodBoardOrderDto[] }>(
       '/food-operations/board',

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, Bike, BookOpen, Camera, ChefHat, ChevronLeft, ClipboardCheck, Columns3, Eye, HandCoins, History, LayoutGrid, MessageSquare, Navigation, PackageCheck, RotateCcw, Send, Settings2, Store, Undo2, UtensilsCrossed, X } from 'lucide-react';
+import { AlertTriangle, Bike, BookOpen, Camera, ChefHat, ChevronLeft, ClipboardCheck, ClipboardList, Columns3, Eye, HandCoins, History, LayoutGrid, MessageSquare, Navigation, PackageCheck, RotateCcw, Send, Settings2, Store, Undo2, UtensilsCrossed, X } from 'lucide-react';
 import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand } from '../lib/api.js';
 import { QcPhotoButton } from '../components/QcPhotoButton.js';
 import { DeliveryControl } from '../components/DeliveryControl.js';
@@ -21,6 +21,7 @@ import {
 import { KitchenSettings } from '../components/KitchenSettings.js';
 import { MenuEditor } from '../components/MenuEditor.js';
 import { OrderHistory } from '../components/OrderHistory.js';
+import { ServiceSummary } from '../components/ServiceSummary.js';
 
 /**
  * The kitchen board.
@@ -168,6 +169,8 @@ export function FoodOperationsPage() {
    * them to another page loses the tickets they were watching.
    */
   const [historyOpen, setHistoryOpen] = useState(false);
+  /** Closing time. Over the board like the menu and the archive - the person asking is standing at this screen. */
+  const [summaryOpen, setSummaryOpen] = useState(false);
   /** Their own name over their own board. Falls back to 'Kitchen' rather than showing a blank while it loads. */
   const [businessName, setBusinessName] = useState<string | null>(null);
 
@@ -507,6 +510,14 @@ export function FoodOperationsPage() {
           </button>
           <button
             type="button"
+            onClick={() => setSummaryOpen(true)}
+            className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2"
+          >
+            <ClipboardList size={14} aria-hidden />
+            Today
+          </button>
+          <button
+            type="button"
             onClick={() => setSettingsOpen((open) => !open)}
             aria-expanded={settingsOpen}
             className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2"
@@ -536,6 +547,28 @@ export function FoodOperationsPage() {
       {/* Over the board, not instead of it: the tickets are still behind
           this, and closing it puts the operator back exactly where they
           were rather than at the top of a board they had scrolled. */}
+      {summaryOpen && (
+        <div data-print-sheet className="fixed inset-0 z-40 flex flex-col bg-surface-0">
+          <header className="flex items-center gap-3 border-b border-border-subtle px-4 py-3 print:hidden">
+            <div className="min-w-0">
+              <h2 className="text-body font-semibold text-fg">Today</h2>
+              <p className="text-meta text-fg-muted">
+                What happened this service, on your own day and your own clock — and what is still owed.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSummaryOpen(false)}
+              className="ml-auto flex shrink-0 items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2"
+            >
+              <X size={14} aria-hidden />
+              Back to the board
+            </button>
+          </header>
+          <ServiceSummary />
+        </div>
+      )}
+
       {historyOpen && (
         <div data-print-sheet className="fixed inset-0 z-40 flex flex-col bg-surface-0">
           <header className="flex items-center gap-3 border-b border-border-subtle px-4 py-3 print:hidden">
