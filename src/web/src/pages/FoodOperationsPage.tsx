@@ -1039,11 +1039,20 @@ function OrderCard({
           room - who it is for, and how long it has been - and nothing else.
           Its colour is the SLA, which is why it is the whole width rather
           than a tint on a border. */}
-      <div className={`px-2.5 py-1.5 text-kds-band-fg ${SLA_BAND[order.slaBand]}`}>
+      <div
+        className={`px-2.5 py-1.5 text-kds-band-fg ${
+          /* A ticket waiting on the customer's money gets its own colour and
+             its own words. It is not ON_TIME - its clock has not started -
+             and it is certainly not late. Showing green would say the
+             kitchen is fine when the kitchen has not been given the job;
+             showing red would blame it for somebody else's delay. */
+          order.waitingForPayment ? 'bg-kds-waiting' : SLA_BAND[order.slaBand]
+        }`}
+      >
         <div className="flex items-baseline gap-2">
           <span className="truncate text-body font-bold">{title}</span>
           <span className="ml-auto shrink-0 font-mono text-body font-bold tabular-nums">
-            {clock(order.elapsedSeconds + drift)}
+            {order.waitingForPayment ? 'WAITING' : clock(order.elapsedSeconds + drift)}
           </span>
         </div>
         <div className="flex items-baseline gap-2 text-meta font-medium opacity-70">
@@ -1052,7 +1061,9 @@ function OrderCard({
           {/* The stage, on the ticket, because the wall has no columns to
               say it - and on the stage board it costs one line to stay
               right rather than two components to keep in step. */}
-          <span className="ml-auto truncate">{STAGE_LABEL[order.stage]}</span>
+          <span className="ml-auto truncate">
+            {order.waitingForPayment ? 'Waiting on payment' : STAGE_LABEL[order.stage]}
+          </span>
         </div>
       </div>
 

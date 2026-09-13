@@ -266,6 +266,14 @@ export interface FoodBoardOrderDto {
   placedAt: string;
   /** Worked out on the server so every screen in the kitchen agrees about whether a ticket is late. */
   elapsedSeconds: number;
+  /**
+   * True when this ticket is waiting on the customer's money, not on the
+   * kitchen. Its clock has not started, so the timer reads nothing and the
+   * band must not claim a state it is not in - see orderLifecycle.slaClock.
+   */
+  waitingForPayment: boolean;
+  /** When the clock started, or null while it is still waiting. */
+  slaClockStartedAt: string | null;
   slaBand: FoodSlaBand;
   nextStage: FoodOrderStage | null;
   paymentState: 'NOT_REQUIRED' | 'UNPAID' | 'AWAITING_VERIFICATION' | 'PAID' | 'WAIVED' | 'REFUNDED' | 'FAILED';

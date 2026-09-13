@@ -62,6 +62,11 @@
   --color-kds-ontime: #86efac;
   --color-kds-warning: #fcd34d;
   --color-kds-late: #fca5a5;
+  /* A ticket waiting on the customer's money. Deliberately outside the
+     three SLA colours, because it is not a point on that scale: its clock
+     has not started. Slate reads as "parked" against green/amber/red and
+     clears the same contrast against the band foreground. */
+  --color-kds-waiting: #cbd5e1;
   --color-kds-band-fg: #0b1220;
 
   /*

@@ -17,7 +17,7 @@ import { MAX_QC_PHOTO_BYTES, QC_PHOTO_MIME_TYPES, runQcVisionCheck } from '../se
 import { buildStorageReference, storeMedia } from '../media/mediaStorage.js';
 import { createHash } from 'node:crypto';
 import { FOOD_PAYMENT_STATES } from '../domain/food/paymentGate.js';
-import { FOOD_ORDER_STAGES, bumpTarget, elapsedSeconds, slaBand } from '../domain/food/orderLifecycle.js';
+import { FOOD_ORDER_STAGES, bumpTarget, elapsedSeconds, slaBand, slaClock } from '../domain/food/orderLifecycle.js';
 import { checkDelivery, navigationUrl } from '../domain/food/deliveryZone.js';
 import { releaseToKitchen } from '../domain/food/paymentGate.js';
 import { confirmProposal, resolveProposal, type DraftOrderProposal } from '../services/food/orderIntake.js';
@@ -70,6 +70,11 @@ router.get('/board', requirePermission('food.view'), async (_req, res) => {
     stations: await repository.listStations(auth.businessId),
     orders: orders.map((order) => {
       const elapsed = elapsedSeconds(order, now);
+      /* Whether this ticket is waiting on the customer's money rather than
+         on the kitchen. Without it the board cannot tell the difference
+         between a ticket nobody has started and one nobody CAN start, and
+         a slow payer looks exactly like a slow cook. */
+      const clock = slaClock(order);
       const next = bumpTarget(order.stage, order.fulfilmentMethod);
       // Worked out here so the board can show WHY a ticket cannot start
       // rather than offering a button that will be refused. A bump that
@@ -117,6 +122,12 @@ router.get('/board', requirePermission('food.view'), async (_req, res) => {
         qcPhotoOutstanding: settings.qcPhotoRequired && order.stage === 'QUALITY_CHECK' && qc === null,
         delivery,
         paymentRequest,
+        /* Reported as its own state rather than folded into the band: a
+           ticket waiting on payment is not ON_TIME (it is not running) and
+           it is certainly not BREACHED. Saying either would be a lie about
+           whose delay it is. */
+        waitingForPayment: clock.waitingForPayment,
+        slaClockStartedAt: clock.startedAt,
         slaBand: slaBand(elapsed, {
           ...(settings.slaWarningSeconds !== null ? { warningSeconds: settings.slaWarningSeconds } : {}),
           ...(settings.slaBreachSeconds !== null ? { breachSeconds: settings.slaBreachSeconds } : {}),

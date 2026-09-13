@@ -149,20 +149,83 @@ export function slaBand(elapsedSeconds: number, thresholds: SlaThresholds = {}):
   return 'ON_TIME';
 }
 
+/** What the SLA clock is doing on one order. */
+export interface SlaClock {
+  /** ISO time the clock started, or null when it has not started yet. */
+  startedAt: string | null;
+  /**
+   * True when this ticket is waiting on the customer's money rather than on
+   * the kitchen. The board shows it as waiting, not as late.
+   */
+  waitingForPayment: boolean;
+}
+
 /**
- * Seconds an order has been live.
+ * When this order's clock starts.
  *
  * Measured from when the order was PLACED, not from when the kitchen got
  * round to accepting it. A ticket that sat unnoticed for eight minutes is
  * already eight minutes late to the customer, and a clock that started at
  * acceptance would hide exactly the delay worth seeing.
  *
- * Stops at completion or cancellation, so a finished order does not go on
- * turning redder in a history view.
+ * With ONE exception, and it is the whole reason this function exists: a
+ * business that takes payment before the kitchen starts has orders that sit
+ * waiting on the customer, not on the shop. Running the clock through that
+ * wait turns every slow payer into a red ticket and a breached SLA - the
+ * kitchen is blamed for time it was never given, and the one number on the
+ * board that is supposed to mean "we are behind" stops meaning anything.
+ *
+ * So where payment gates the kitchen, the clock starts when the money
+ * arrives. Before that it has not started at all, which is a different
+ * thing from zero: the ticket is WAITING, and the board says so.
+ *
+ * Where payment does not gate the kitchen - the gate is off, or this
+ * customer has terms - nothing changes and the clock runs from placement
+ * exactly as it always has.
  */
-export function elapsedSeconds(order: { placedAt: string; stage: FoodOrderStage; closedAt: string | null }, now: Date = new Date()): number {
-  const placed = new Date(order.placedAt).getTime();
-  if (Number.isNaN(placed)) return 0;
+export function slaClock(order: {
+  placedAt: string;
+  paymentState: string;
+  paidAt?: string | null;
+}): SlaClock {
+  // These two mean the kitchen may start now: either the business does not
+  // wait for money, or this customer has been granted terms.
+  if (order.paymentState === 'NOT_REQUIRED' || order.paymentState === 'WAIVED') {
+    return { startedAt: order.placedAt, waitingForPayment: false };
+  }
+
+  if (order.paymentState === 'PAID' || order.paidAt) {
+    // Whichever is later: an order paid before it was placed (a prepayment
+    // reconciled afterwards) must not start its clock in the past.
+    const paid = order.paidAt ?? order.placedAt;
+    const later = new Date(paid).getTime() > new Date(order.placedAt).getTime() ? paid : order.placedAt;
+    return { startedAt: later, waitingForPayment: false };
+  }
+
+  return { startedAt: null, waitingForPayment: true };
+}
+
+/**
+ * Seconds an order has been live.
+ *
+ * Zero while the clock has not started - see slaClock. Stops at completion
+ * or cancellation, so a finished order does not go on turning redder in a
+ * history view.
+ */
+export function elapsedSeconds(
+  order: { placedAt: string; stage: FoodOrderStage; closedAt: string | null; paymentState?: string; paidAt?: string | null },
+  now: Date = new Date(),
+): number {
+  /* paymentState absent means an older caller that predates the payment
+     gate having any say in this, and it keeps the behaviour it had: the
+     clock runs from placement. */
+  const start = order.paymentState === undefined
+    ? order.placedAt
+    : slaClock({ placedAt: order.placedAt, paymentState: order.paymentState, paidAt: order.paidAt ?? null }).startedAt;
+  if (start === null) return 0;
+
+  const began = new Date(start).getTime();
+  if (Number.isNaN(began)) return 0;
   const end = isOpenStage(order.stage) || !order.closedAt ? now.getTime() : new Date(order.closedAt).getTime();
-  return Math.max(0, Math.floor((end - placed) / 1000));
+  return Math.max(0, Math.floor((end - began) / 1000));
 }
