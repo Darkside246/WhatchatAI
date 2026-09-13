@@ -8,7 +8,7 @@ import { CrmContactRepository } from '../repositories/crmContactRepository.js';
 import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
 import { resolveDisplayName } from '../domain/whatsapp/displayName.js';
 import type { RenderableCustomer, RenderableBusiness } from '../services/invoice/invoiceTemplates.js';
-import { requireAuth, requireActiveSubscription, type AuthContext } from './authMiddleware.js';
+import { requireAuth, requireActiveSubscription, requirePermission, type AuthContext } from './authMiddleware.js';
 import { invoiceCustomizationSchema, DEFAULT_INVOICE_CUSTOMIZATION, type InvoiceCustomization } from '../services/invoice/invoiceTemplates.js';
 
 const router = Router();
@@ -16,6 +16,26 @@ const svc = new InvoiceService(pool);
 const businessRepository = new BusinessRepository(pool);
 router.use(requireAuth);
 router.use(requireActiveSubscription);
+
+/**
+ * Who may change an invoice, as opposed to look at one.
+ *
+ * Found in a security review: every route in this file was behind
+ * requireAuth and nothing else, so ANY member of the business could
+ * approve, send, mark paid, void or delete an invoice - a VIEWER, whose
+ * whole role is the nine *.view permissions and no others, included. Being
+ * signed in is not the same as being allowed, and an invoice is money.
+ *
+ * Reading is deliberately left to any member: the previous behaviour, and
+ * a colleague looking at a document their business issued is not the
+ * problem. Only the routes that CHANGE one are gated.
+ *
+ * billing.manage is held by OWNER and ADMIN. If a business wants its
+ * MANAGERs raising invoices too, that is one line in
+ * domain/auth/permissions.ts - a policy decision, made deliberately, rather
+ * than the absence of a check.
+ */
+const requireInvoiceChange = requirePermission('billing.manage');
 
 const LineItemSchema = z.object({
   description: z.string().min(1).max(500),
@@ -65,7 +85,7 @@ router.get('/', async (req, res) => {
 });
 
 // POST /api/invoices
-router.post('/', async (req, res) => {
+router.post('/', requireInvoiceChange, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
   const parsed = CreateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY', detail: parsed.error.flatten() });
@@ -155,7 +175,7 @@ async function renderableCustomer(businessId: string, contactId: string | null):
 // GET /api/invoices/:id
 router.get('/:id', async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
-  const result = await svc.get(auth.businessId, req.params['id']!);
+  const result = await svc.get(auth.businessId, String(req.params['id'] ?? ''));
   if (!result) return res.status(404).json({ error: 'NOT_FOUND' });
   return res.json(result);
 });
@@ -163,7 +183,7 @@ router.get('/:id', async (req, res) => {
 // GET /api/invoices/:id/html — server-rendered HTML for PDF generation
 router.get('/:id/html', async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
-  const result = await svc.get(auth.businessId, req.params['id']!);
+  const result = await svc.get(auth.businessId, String(req.params['id'] ?? ''));
   if (!result) return res.status(404).json({ error: 'NOT_FOUND' });
   const business = await businessRepository.findById(auth.businessId);
   const storedCustomization = invoiceCustomizationSchema.safeParse(business?.invoiceCustomization);
@@ -210,7 +230,7 @@ const PreviewSchema = z.object({
  * invoiceRepository.ts - the exact same math a real save performs - so a
  * preview's numbers never drift from what actually gets saved.
  */
-router.post('/preview', async (req, res) => {
+router.post('/preview', requireInvoiceChange, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
   const parsed = PreviewSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY', detail: parsed.error.flatten() });
@@ -268,7 +288,7 @@ router.post('/preview', async (req, res) => {
 });
 
 // PATCH /api/invoices/:id — update editable fields (DRAFT or PENDING_APPROVAL only)
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', requireInvoiceChange, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
   const parsed = PatchSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY', detail: parsed.error.flatten() });
@@ -280,63 +300,63 @@ router.patch('/:id', async (req, res) => {
   if (p.dueDate !== undefined) patch.dueDate = p.dueDate;
   if (p.taxBasisPoints !== undefined) patch.taxBasisPoints = p.taxBasisPoints;
   if (p.currencyCode !== undefined) patch.currencyCode = p.currencyCode;
-  const result = await svc.updateDetails(auth.businessId, req.params['id']!, patch);
+  const result = await svc.updateDetails(auth.businessId, String(req.params['id'] ?? ''), patch);
   if (!result) return res.status(404).json({ error: 'NOT_FOUND_OR_IMMUTABLE' });
   return res.json({ invoice: result });
 });
 
 // POST /api/invoices/:id/submit — DRAFT → PENDING_APPROVAL
-router.post('/:id/submit', async (req, res) => {
+router.post('/:id/submit', requireInvoiceChange, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
-  const result = await svc.submitForApproval(auth.businessId, req.params['id']!);
+  const result = await svc.submitForApproval(auth.businessId, String(req.params['id'] ?? ''));
   if (!result) return res.status(404).json({ error: 'NOT_FOUND_OR_WRONG_STATE' });
   return res.json({ invoice: result });
 });
 
 // POST /api/invoices/:id/approve — PENDING_APPROVAL → APPROVED
-router.post('/:id/approve', async (req, res) => {
+router.post('/:id/approve', requireInvoiceChange, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
-  const result = await svc.approve(auth.businessId, req.params['id']!);
+  const result = await svc.approve(auth.businessId, String(req.params['id'] ?? ''));
   if (!result) return res.status(404).json({ error: 'NOT_FOUND_OR_WRONG_STATE' });
   return res.json({ invoice: result });
 });
 
 // POST /api/invoices/:id/send — APPROVED → SENT
-router.post('/:id/send', async (req, res) => {
+router.post('/:id/send', requireInvoiceChange, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
-  const result = await svc.markSent(auth.businessId, req.params['id']!);
+  const result = await svc.markSent(auth.businessId, String(req.params['id'] ?? ''));
   if (!result) return res.status(404).json({ error: 'NOT_FOUND_OR_WRONG_STATE' });
   return res.json({ invoice: result });
 });
 
 // POST /api/invoices/:id/pay — → PAID
-router.post('/:id/pay', async (req, res) => {
+router.post('/:id/pay', requireInvoiceChange, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
-  const result = await svc.markPaid(auth.businessId, req.params['id']!);
+  const result = await svc.markPaid(auth.businessId, String(req.params['id'] ?? ''));
   if (!result) return res.status(404).json({ error: 'NOT_FOUND' });
   return res.json({ invoice: result });
 });
 
 // POST /api/invoices/:id/cancel — DRAFT/PENDING_APPROVAL/APPROVED -> CANCELLED (pre-send only)
-router.post('/:id/cancel', async (req, res) => {
+router.post('/:id/cancel', requireInvoiceChange, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
-  const result = await svc.cancel(auth.businessId, req.params['id']!);
+  const result = await svc.cancel(auth.businessId, String(req.params['id'] ?? ''));
   if (!result) return res.status(404).json({ error: 'NOT_FOUND_OR_IMMUTABLE' });
   return res.json({ invoice: result });
 });
 
 // POST /api/invoices/:id/void — SENT/OVERDUE -> VOID (already reached the customer, never deleted)
-router.post('/:id/void', async (req, res) => {
+router.post('/:id/void', requireInvoiceChange, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
-  const result = await svc.voidInvoice(auth.businessId, req.params['id']!);
+  const result = await svc.voidInvoice(auth.businessId, String(req.params['id'] ?? ''));
   if (!result) return res.status(404).json({ error: 'NOT_FOUND_OR_IMMUTABLE' });
   return res.json({ invoice: result });
 });
 
 // DELETE /api/invoices/:id — real, permanent deletion, DRAFT only
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requireInvoiceChange, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
-  const deleted = await svc.remove(auth.businessId, req.params['id']!);
+  const deleted = await svc.remove(auth.businessId, String(req.params['id'] ?? ''));
   if (!deleted) return res.status(404).json({ error: 'NOT_FOUND_OR_IMMUTABLE' });
   return res.status(204).send();
 });

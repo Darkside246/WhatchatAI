@@ -5,10 +5,33 @@ import { OperatorModeRepository } from '../repositories/operatorModeRepository.j
 import { WhatsAppChatRepository } from '../repositories/whatsappChatRepository.js';
 import { WhatsAppOutboundMessageService } from '../services/whatsappOutboundMessageService.js';
 import { generatePinSalt, generateSetupToken, hashPin, OPERATOR_SETUP_CONFIRMATION } from '../services/operator/operatorCommandService.js';
-import { requireAuth, type AuthContext } from './authMiddleware.js';
+import { requireAuth, requirePermission, type AuthContext } from './authMiddleware.js';
 
 const router = Router();
 router.use(requireAuth);
+
+/**
+ * Who may point operator mode at a phone.
+ *
+ * The sharpest finding of a security review of this app. Operator mode is
+ * the WhatsApp-side control channel: whoever holds the configured number
+ * and PIN can read the business's takings, change an invoice's status, log
+ * incidents and switch the AI off - from their own phone, outside the app
+ * entirely.
+ *
+ * Every route here was behind requireAuth and nothing else. That let ANY
+ * member of the business - including a VIEWER, a role that holds only the
+ * nine *.view permissions - POST their own number and a PIN of their
+ * choosing to /settings and take that channel over. Being signed in was
+ * the whole check standing between the lowest-privileged role and control
+ * of the business's WhatsApp.
+ *
+ * settings.manage is held by OWNER and ADMIN, which is the right bar for
+ * handing somebody a key that works from outside the building. Reading
+ * whether operator mode is configured stays open to any member; only
+ * configuring it is gated.
+ */
+const requireOperatorModeAdmin = requirePermission('settings.manage');
 const repo = new OperatorModeRepository(pool);
 const chatRepo = new WhatsAppChatRepository(pool);
 const outboundSvc = new WhatsAppOutboundMessageService();
@@ -34,7 +57,7 @@ router.get('/settings', async (req, res) => {
 });
 
 // POST /api/operator-mode/settings — create or update (PIN required to change)
-router.post('/settings', async (req, res) => {
+router.post('/settings', requireOperatorModeAdmin, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
   const parsed = SetupSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY', detail: parsed.error.flatten() });
@@ -93,7 +116,7 @@ router.post('/settings', async (req, res) => {
 });
 
 // PATCH /api/operator-mode/settings/enabled
-router.patch('/settings/enabled', async (req, res) => {
+router.patch('/settings/enabled', requireOperatorModeAdmin, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
   const parsed = z.object({ enabled: z.boolean() }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' });
@@ -102,7 +125,7 @@ router.patch('/settings/enabled', async (req, res) => {
 });
 
 // DELETE /api/operator-mode/session — force-kill any active session
-router.delete('/session', async (req, res) => {
+router.delete('/session', requireOperatorModeAdmin, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
   await repo.deleteSession(auth.businessId);
   return res.json({ ok: true });
@@ -110,7 +133,7 @@ router.delete('/session', async (req, res) => {
 
 // POST /api/operator-mode/setup-token — generate a new one-time WhatsApp setup code.
 // Returns the plain-text code ONCE. It is stored only as a scrypt hash.
-router.post('/setup-token', async (req, res) => {
+router.post('/setup-token', requireOperatorModeAdmin, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
   const plain = generateSetupToken();
   const salt = generatePinSalt();
@@ -127,7 +150,7 @@ router.get('/setup-token', async (req, res) => {
 });
 
 // DELETE /api/operator-mode/setup-token — revoke the active setup token
-router.delete('/setup-token', async (req, res) => {
+router.delete('/setup-token', requireOperatorModeAdmin, async (req, res) => {
   const auth = res.locals['auth'] as AuthContext;
   await repo.deleteSetupToken(auth.businessId);
   return res.json({ ok: true });
