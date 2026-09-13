@@ -1457,6 +1457,49 @@ export class FoodOperationsRepository {
    * card would put the kitchen screen's poll into double figures of round
    * trips every five seconds.
    */
+  /**
+   * Which station each menu item is made at.
+   *
+   * Read at board time rather than captured onto the order line, so an
+   * owner who spots that fries are routed to the grill can fix it in the
+   * menu and have the next poll put them right - including for tickets
+   * already on the board. The alternative, stamping the station onto the
+   * line when the order is taken, would leave every live ticket routed the
+   * wrong way until service ended.
+   *
+   * Only items that actually have a station. An item with none is not in
+   * this map, and its lines are unassigned - which the board treats as a
+   * real state to be shown, never as a reason to hide a line.
+   */
+  async stationByMenuItem(businessId: string): Promise<Map<string, string>> {
+    const { rows } = await this.db.query<{ id: string; station: string }>(
+      `SELECT id, station FROM food_menu_items
+       WHERE business_id = $1 AND station IS NOT NULL AND btrim(station) <> ''`,
+      [businessId],
+    );
+    return new Map(rows.map((row) => [row.id, row.station.trim()]));
+  }
+
+  /**
+   * Every station this business actually uses, so the board can offer a
+   * picker without the operator typing a name that matches nothing.
+   *
+   * Taken from the whole menu rather than from what happens to be on the
+   * board, so the list does not change shape during service as tickets come
+   * and go. Case-folded for grouping but returned in the spelling the menu
+   * uses - "Grill" and "grill" are one station, named the way it was typed.
+   */
+  async listStations(businessId: string): Promise<string[]> {
+    const { rows } = await this.db.query<{ station: string }>(
+      `SELECT DISTINCT ON (lower(btrim(station))) btrim(station) AS station
+       FROM food_menu_items
+       WHERE business_id = $1 AND station IS NOT NULL AND btrim(station) <> ''
+       ORDER BY lower(btrim(station)), btrim(station)`,
+      [businessId],
+    );
+    return rows.map((row) => row.station);
+  }
+
   async latestQcCheckByOrder(businessId: string, orderIds: string[]): Promise<Map<string, FoodQcCheckRecord>> {
     if (orderIds.length === 0) return new Map();
     const { rows } = await this.db.query<QcCheckRow>(

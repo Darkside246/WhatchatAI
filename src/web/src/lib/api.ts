@@ -94,6 +94,12 @@ export interface FoodOrderLineDto {
   unitPriceCents: number;
   modifiers: { name: string; action: 'add' | 'remove' | 'on_side'; priceDeltaCents: number }[];
   notes: string | null;
+  /**
+   * Where this line is made, from its menu item's station. Null when the
+   * item has no station, or when the line never matched a menu item at all
+   * - a real state the board shows rather than hides.
+   */
+  station: string | null;
 }
 
 export interface FoodBoardOrderDto {
@@ -2463,7 +2469,10 @@ export const api = {
   listStatusReplies: (id: string) => request<{ replies: StatusReplyDto[] }>(`/workspace/scheduled-statuses/${id}/replies`),
   listStatusViewers: (id: string) => request<{ viewers: StatusViewerDto[] }>(`/workspace/scheduled-statuses/${id}/viewers`),
 
-  getFoodBoard: () => request<{ serverTime: string; settings: FoodSettingsDto; orders: FoodBoardOrderDto[] }>('/food-operations/board'),
+  getFoodBoard: () =>
+    request<{ serverTime: string; settings: FoodSettingsDto; stations: string[]; orders: FoodBoardOrderDto[] }>(
+      '/food-operations/board',
+    ),
   recordFoodPayment: (orderId: string, body: { state: string; method?: string; reference?: string; waiverReason?: string }) =>
     request<{ order: FoodBoardOrderDto }>(`/food-operations/orders/${orderId}/payment`, { method: 'POST', body: JSON.stringify(body) }),
   releaseFoodOrderUnpaid: (orderId: string, reason: string) =>

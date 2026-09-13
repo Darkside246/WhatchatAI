@@ -53,10 +53,19 @@ router.get('/board', requirePermission('food.view'), async (_req, res) => {
   const qcChecks = await repository.latestQcCheckByOrder(auth.businessId, orders.map((order) => order.id));
   const deliveries = await repository.liveDeliveriesByOrder(auth.businessId, orders.map((order) => order.id));
   const paymentAsks = await repository.latestPaymentRequestByOrder(auth.businessId, orders.map((order) => order.id));
+  // Where each item is made. One lookup for the board, not one per line.
+  const stationByItem = await repository.stationByMenuItem(auth.businessId);
 
   return res.status(200).json({
     serverTime: now.toISOString(),
     settings,
+    /**
+     * The stations this business uses, from the menu rather than from what
+     * is on the board - so the picker keeps its shape as tickets come and
+     * go during service. Empty for a kitchen that has not assigned any,
+     * which is how the board knows not to offer the control at all.
+     */
+    stations: await repository.listStations(auth.businessId),
     orders: orders.map((order) => {
       const elapsed = elapsedSeconds(order, now);
       const next = bumpTarget(order.stage, order.fulfilmentMethod);
@@ -78,6 +87,18 @@ router.get('/board', requirePermission('food.view'), async (_req, res) => {
       const paymentRequest = paymentAsks.get(order.id) ?? null;
       return {
         ...order,
+        /**
+         * Each line stamped with where it is made.
+         *
+         * Null for a line whose item has no station, and for a line that
+         * never matched a menu item at all (a hand-keyed or AI-captured
+         * one). That is a real state the board shows rather than hides: a
+         * line nobody can see is a line nobody makes.
+         */
+        items: order.items.map((line) => ({
+          ...line,
+          station: (line.menuItemId ? stationByItem.get(line.menuItemId) : undefined) ?? null,
+        })),
         elapsedSeconds: elapsed,
         // Only ever the findings a person should see - the unverifiable
         // ones stay in the record and off the screen.

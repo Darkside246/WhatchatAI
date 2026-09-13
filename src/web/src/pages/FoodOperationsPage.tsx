@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, Bike, BookOpen, Camera, ChefHat, ChevronLeft, ClipboardCheck, Columns3, Eye, HandCoins, LayoutGrid, MessageSquare, Navigation, PackageCheck, RotateCcw, Send, Settings2, Store, Undo2, X } from 'lucide-react';
+import { AlertTriangle, Bike, BookOpen, Camera, ChefHat, ChevronLeft, ClipboardCheck, Columns3, Eye, HandCoins, LayoutGrid, MessageSquare, Navigation, PackageCheck, RotateCcw, Send, Settings2, Store, Undo2, UtensilsCrossed, X } from 'lucide-react';
 import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand } from '../lib/api.js';
 import { QcPhotoButton } from '../components/QcPhotoButton.js';
 import { DeliveryControl } from '../components/DeliveryControl.js';
@@ -10,6 +10,14 @@ import { PaymentMethods } from '../components/PaymentMethods.js';
 import { ChatListPane } from '../components/ChatListPane.js';
 import { ChatThread } from '../components/ChatThread.js';
 import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
+import {
+  UNASSIGNED_STATION,
+  lineIsForStation,
+  stationOptions,
+  ticketIsForStation,
+  ticketsWithUnassignedWork,
+  type StationSelection,
+} from '../lib/stationView.js';
 import { KitchenSettings } from '../components/KitchenSettings.js';
 import { MenuEditor } from '../components/MenuEditor.js';
 
@@ -64,6 +72,7 @@ const FULFILMENT_CHIP: Record<FoodBoardOrderDto['fulfilmentMethod'], { label: st
 
 type BoardView = 'wall' | 'stages';
 const BOARD_VIEW_KEY = 'aura.food.boardView';
+const BOARD_STATION_KEY = 'aura.food.boardStation';
 
 function clock(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
@@ -76,6 +85,32 @@ function money(cents: number, currency: string): string {
 
 export function FoodOperationsPage() {
   const [orders, setOrders] = useState<FoodBoardOrderDto[] | null>(null);
+  /** The stations the menu defines. Empty for a kitchen that has not assigned any, which is how the picker knows to stay hidden. */
+  const [stations, setStations] = useState<string[]>([]);
+  /**
+   * Which station this screen is for. Null is the whole board.
+   *
+   * Remembered alongside the layout, and for the same reason: the screen by
+   * the fryer is the fryer's screen every service, and making somebody pick
+   * it again each morning is how they stop using it.
+   */
+  const [station, setStation] = useState<StationSelection>(() => {
+    try {
+      const stored = localStorage.getItem(BOARD_STATION_KEY);
+      return stored ? (stored as StationSelection) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      if (station === null) localStorage.removeItem(BOARD_STATION_KEY);
+      else localStorage.setItem(BOARD_STATION_KEY, station);
+    } catch {
+      // The view still works, it just will not be remembered.
+    }
+  }, [station]);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   /**
@@ -148,6 +183,7 @@ export function FoodOperationsPage() {
     try {
       const result = await api.getFoodBoard();
       setOrders(result.orders);
+      setStations(result.stations);
       setDrift(0);
       setError(null);
     } catch (err) {
@@ -287,12 +323,26 @@ export function FoodOperationsPage() {
     }
   }
 
+  /**
+   * The tickets this screen is responsible for.
+   *
+   * Narrowed to the chosen station, never emptied by it: a ticket with any
+   * work for this station is shown whole, so a cook can see it also needs
+   * fries even though making them is not their job. Everything below counts
+   * and lays out from this rather than from the raw board, so the station's
+   * own totals - including how many are late - are about its own work.
+   */
+  const stationOrders = useMemo(
+    () => (orders ?? []).filter((order) => ticketIsForStation(order, station)),
+    [orders, station],
+  );
+
   const byStage = useMemo(() => {
     const grouped = new Map<FoodOrderStage, FoodBoardOrderDto[]>();
     for (const column of COLUMNS) grouped.set(column.stage, []);
-    for (const order of orders ?? []) grouped.get(order.stage)?.push(order);
+    for (const order of stationOrders) grouped.get(order.stage)?.push(order);
     return grouped;
-  }, [orders]);
+  }, [stationOrders]);
 
   /**
    * Oldest first, always.
@@ -302,11 +352,22 @@ export function FoodOperationsPage() {
    * late is the one nearest the top, wherever it is in the process.
    */
   const wallOrders = useMemo(
-    () => [...(orders ?? [])].sort((left, right) => right.elapsedSeconds - left.elapsedSeconds),
-    [orders],
+    () => [...stationOrders].sort((left, right) => right.elapsedSeconds - left.elapsedSeconds),
+    [stationOrders],
   );
 
-  const late = (orders ?? []).filter((order) => order.slaBand === 'BREACHED').length;
+  /** Offered only when the menu actually defines stations - a picker with one entry is a control that teaches nothing. */
+  const availableStations = useMemo(() => stationOptions(stations, orders ?? []), [stations, orders]);
+  /**
+   * Work nobody has routed anywhere.
+   *
+   * Said out loud rather than left to be discovered: an item with no station
+   * is invisible to every station view by name, and the way that failure
+   * surfaces otherwise is a customer asking where their food is.
+   */
+  const unroutedTickets = useMemo(() => ticketsWithUnassignedWork(orders ?? []), [orders]);
+
+  const late = stationOrders.filter((order) => order.slaBand === 'BREACHED').length;
 
   /**
    * One ticket, wired once.
@@ -319,6 +380,7 @@ export function FoodOperationsPage() {
     <OrderCard
       key={order.id}
       order={order}
+      station={station}
       drift={drift}
       busy={busyId === order.id}
       onBump={() => order.nextStage && void move(order, order.nextStage)}
@@ -337,7 +399,9 @@ export function FoodOperationsPage() {
         <div className="min-w-0">
           <h1 className="text-display font-semibold text-fg">{businessName?.trim() || 'Kitchen'}</h1>
           <p className="text-caption text-fg-muted">
-            {orders === null ? 'Loading…' : `${orders.length} order${orders.length === 1 ? '' : 's'} on the board`}
+            {orders === null
+              ? 'Loading…'
+              : `${stationOrders.length} order${stationOrders.length === 1 ? '' : 's'}${station === null ? ' on the board' : ' here'}`}
             {late > 0 && <span className="ml-2 font-semibold text-error">{late} late</span>}
           </p>
         </div>
@@ -345,6 +409,27 @@ export function FoodOperationsPage() {
           {/* Two real layouts rather than a setting buried somewhere: which
               one is right depends on the screen this is running on, and the
               person standing at that screen is the one who knows. */}
+          {/* Only for a kitchen that has actually assigned stations in the
+              menu. Offering the control to one that has not would be a
+              filter whose every option is the same board. */}
+          {stations.length > 0 && (
+            <label className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-2.5 py-1.5 text-caption font-medium text-fg">
+              <UtensilsCrossed size={14} className="text-fg-muted" aria-hidden />
+              <span className="sr-only">Station</span>
+              <select
+                value={station ?? ''}
+                onChange={(event) => setStation(event.target.value === '' ? null : event.target.value)}
+                className="bg-transparent text-caption font-medium text-fg focus:outline-none"
+              >
+                {availableStations.map((option) => (
+                  <option key={option ?? 'all'} value={option ?? ''}>
+                    {option === null ? 'All stations' : option === UNASSIGNED_STATION ? 'No station set' : option}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           <div className="flex items-center rounded-lg border border-border-subtle p-0.5" role="group" aria-label="Board layout">
             <button
               type="button"
@@ -418,6 +503,20 @@ export function FoodOperationsPage() {
       </header>
 
       {error && <p className="border-b border-error/30 bg-error/10 px-4 py-2 text-caption text-error">{error}</p>}
+
+      {/* Only where stations are in use: without them every item is
+          unrouted and saying so would be noise on every board in the
+          product. */}
+      {stations.length > 0 && unroutedTickets > 0 && (
+        <p className="flex flex-wrap items-center gap-2 border-b border-warning/30 bg-warning/10 px-4 py-2 text-caption text-warning">
+          <AlertTriangle size={14} className="shrink-0" aria-hidden />
+          {unroutedTickets} order{unroutedTickets === 1 ? ' has an item' : 's have items'} with no station set — they only
+          appear under “No station set”.
+          <button type="button" onClick={() => setMenuOpen(true)} className="font-semibold underline underline-offset-2">
+            Set them in the menu
+          </button>
+        </p>
+      )}
 
       {/* Over the board, not instead of it: the tickets are still behind
           this, and closing it puts the operator back exactly where they
@@ -596,9 +695,11 @@ const PAYMENT_BADGE: Record<FoodBoardOrderDto['paymentState'], { label: string; 
 };
 
 function OrderCard({
-  order, drift, busy, onBump, onSendBack, onRelease, onSendOutWithoutPhoto, onPhotoTaken, onAskForPayment, onConfirmPayment,
+  order, station, drift, busy, onBump, onSendBack, onRelease, onSendOutWithoutPhoto, onPhotoTaken, onAskForPayment, onConfirmPayment,
 }: {
   order: FoodBoardOrderDto;
+  /** Which station this screen is for, so a line can say whether it is this cook's job. Null on the whole board, where every line is. */
+  station: StationSelection;
   drift: number;
   busy: boolean;
   onBump: () => void;
@@ -730,18 +831,33 @@ function OrderCard({
       )}
 
       <ul className="space-y-1.5">
-        {order.items.map((item, index) => (
-          <li key={`${item.name}-${index}`} className="flex gap-2">
+        {order.items.map((item, index) => {
+          // Someone else's job on a ticket this station is also on. Dimmed
+          // rather than removed: a cook should be able to see the whole
+          // order they are contributing to, and a hidden line is a line
+          // somebody assumes is already handled.
+          const mine = lineIsForStation(item, station);
+          return (
+          <li key={`${item.name}-${index}`} className={`flex gap-2 ${mine ? '' : 'opacity-45'}`}>
             {/* The count in a solid block rather than "2×" inline: on a
                 ticket read at speed the number of things to make is the
                 one figure that must not be skimmed past. */}
-            <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-fg text-meta font-bold tabular-nums text-surface-1">
+            <span
+              className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-meta font-bold tabular-nums ${
+                mine ? 'bg-fg text-surface-1' : 'border border-border-subtle text-fg-muted'
+              }`}
+            >
               {item.quantity}
             </span>
             <div className="min-w-0 flex-1">
               <p className="text-caption font-semibold leading-tight text-fg">
                 {item.name}
                 {item.variant && <span className="font-normal text-fg-secondary"> · {item.variant}</span>}
+                {/* Whose job it is, said only where that is a live question -
+                    never on the whole board, where it would be on every line. */}
+                {!mine && item.station && (
+                  <span className="ml-1 font-normal text-meta text-fg-muted">({item.station})</span>
+                )}
               </p>
               {/* Modifiers indented under their item, one per line, the way
                   a kitchen screen has always shown them - a wrapped row of
@@ -763,7 +879,8 @@ function OrderCard({
               {item.notes && <p className="text-meta italic leading-tight text-fg-muted">{item.notes}</p>}
             </div>
           </li>
-        ))}
+          );
+        })}
       </ul>
 
       {order.kitchenNotes && <p className="mt-1.5 text-meta italic text-fg-secondary">{order.kitchenNotes}</p>}
