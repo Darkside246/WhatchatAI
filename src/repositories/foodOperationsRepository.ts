@@ -120,6 +120,18 @@ export interface FoodSettingsRecord {
   /** Who takes the order - see FoodAiOrderTaking. */
   aiOrderTaking: FoodAiOrderTaking;
   /**
+   * The tax rate in basis points - 17.5% is 1750. Null means the business
+   * has not said, and no tax line is shown anywhere. Basis points rather
+   * than a percent so a rate cannot drift by a cent across a thousand
+   * orders. See migration 1051.
+   */
+  taxRateBasisPoints: number | null;
+  /**
+   * True when the prices on the menu already contain the tax - which is
+   * what every price already stored means, and why it is the default.
+   */
+  taxInclusive: boolean;
+  /**
    * The owner's own house rules for taking an order, in their own words,
    * passed to the agent verbatim. Free text on purpose: the ways kitchens
    * differ cannot be enumerated in advance. Null when never set.
@@ -156,6 +168,10 @@ export interface FoodOrderRecord {
   subtotalCents: number;
   deliveryFeeCents: number;
   taxCents: number;
+  /** What was taken off this order. 0 on every order taken before migration 1051. */
+  discountCents: number;
+  /** Why, in the operator's own words. Shown in the books, never on the kitchen ticket. */
+  discountReason: string | null;
   totalCents: number;
   currency: string;
   deliveryLatitude: number | null;
@@ -341,6 +357,10 @@ interface OrderRow {
   id: string; business_id: string; order_number: string; chat_id: string | null; customer_contact_id: string | null;
   stage: FoodOrderStage; fulfilment_method: FulfilmentMethod; customer_name: string | null; customer_phone: string | null;
   items: FoodOrderLine[]; subtotal_cents: string; delivery_fee_cents: string; tax_cents: string; total_cents: string;
+  /* Migration 1051. Optional on the type because some SELECTs in this
+     file project a narrower row shape than the whole table. */
+  discount_cents?: string | number | null;
+  discount_reason?: string | null;
   currency: string; delivery_latitude: number | null; delivery_longitude: number | null; delivery_address: string | null;
   delivery_notes: string | null; allergen_notes: string | null; kitchen_notes: string | null; scheduled_for: string | null;
   payment_state: FoodPaymentState; payment_method: FoodPaymentMethod | null; payment_reference: string | null;
@@ -485,7 +505,9 @@ function toOrder(row: OrderRow): FoodOrderRecord {
     customerContactId: row.customer_contact_id, stage: row.stage, fulfilmentMethod: row.fulfilment_method,
     customerName: row.customer_name, customerPhone: row.customer_phone, items: row.items ?? [],
     subtotalCents: Number(row.subtotal_cents), deliveryFeeCents: Number(row.delivery_fee_cents),
-    taxCents: Number(row.tax_cents), totalCents: Number(row.total_cents), currency: row.currency,
+    taxCents: Number(row.tax_cents), discountCents: Number(row.discount_cents ?? 0),
+    discountReason: row.discount_reason ?? null,
+    totalCents: Number(row.total_cents), currency: row.currency,
     deliveryLatitude: row.delivery_latitude, deliveryLongitude: row.delivery_longitude,
     deliveryAddress: row.delivery_address, deliveryNotes: row.delivery_notes, allergenNotes: row.allergen_notes,
     kitchenNotes: row.kitchen_notes, scheduledFor: row.scheduled_for,
@@ -516,6 +538,9 @@ export interface CreateFoodOrderInput {
   deliveryFeeCents?: number;
   taxCents?: number;
   totalCents: number;
+  /** Money off the food, decided by a person. Never reachable from the ordering agent. */
+  discountCents?: number;
+  discountReason?: string | null;
   currency?: string;
   deliveryLatitude?: number | null;
   deliveryLongitude?: number | null;
@@ -612,6 +637,7 @@ export class FoodOperationsRepository {
       qc_photo_required: boolean; qc_vision_enabled: boolean;
       ai_order_taking: FoodAiOrderTaking | null;
       order_taking_instructions: string | null; typical_prep_minutes: number | null;
+      tax_rate_basis_points: number | null; tax_inclusive: boolean;
     }>('SELECT * FROM food_settings WHERE business_id = $1', [businessId]);
 
     const row = rows[0];
@@ -643,6 +669,13 @@ export class FoodOperationsRepository {
       // never gave is not a promise it can keep.
       orderTakingInstructions: row?.order_taking_instructions ?? null,
       typicalPrepMinutes: row?.typical_prep_minutes ?? null,
+      // Null, not zero: a business that has said nothing about tax gets a
+      // receipt with no tax line, exactly as it does today.
+      taxRateBasisPoints: row?.tax_rate_basis_points ?? null,
+      // True, because that is what every price already in the system
+      // means. Defaulting the other way would silently add tax on top of
+      // every menu that exists.
+      taxInclusive: row?.tax_inclusive ?? true,
     };
   }
 
@@ -663,8 +696,8 @@ export class FoodOperationsRepository {
          (business_id, payment_required_before_kitchen, table_service_enabled, payment_required_notice,
           sla_warning_seconds, sla_breach_seconds, notification_verbosity, notification_overrides, updated_by,
           qc_photo_required, qc_vision_enabled, ai_order_taking,
-          order_taking_instructions, typical_prep_minutes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          order_taking_instructions, typical_prep_minutes, tax_rate_basis_points, tax_inclusive)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
        ON CONFLICT (business_id) DO UPDATE
          SET payment_required_before_kitchen = EXCLUDED.payment_required_before_kitchen,
              table_service_enabled = EXCLUDED.table_service_enabled,
@@ -679,6 +712,8 @@ export class FoodOperationsRepository {
              ai_order_taking = EXCLUDED.ai_order_taking,
              order_taking_instructions = EXCLUDED.order_taking_instructions,
              typical_prep_minutes = EXCLUDED.typical_prep_minutes,
+             tax_rate_basis_points = EXCLUDED.tax_rate_basis_points,
+             tax_inclusive = EXCLUDED.tax_inclusive,
              updated_at = now()`,
       [
         businessId, next.paymentRequiredBeforeKitchen, next.tableServiceEnabled, next.paymentRequiredNotice,
@@ -686,6 +721,7 @@ export class FoodOperationsRepository {
         JSON.stringify(next.notificationOverrides), updatedBy,
         next.qcPhotoRequired, next.qcVisionEnabled, next.aiOrderTaking,
         next.orderTakingInstructions, next.typicalPrepMinutes,
+        next.taxRateBasisPoints, next.taxInclusive,
       ],
     );
     return next;
@@ -1298,8 +1334,9 @@ export class FoodOperationsRepository {
           items, subtotal_cents, delivery_fee_cents, tax_cents, total_cents, currency,
           delivery_latitude, delivery_longitude, delivery_address, delivery_notes,
           allergen_notes, kitchen_notes, scheduled_for,
-          payment_state, payment_waiver_kind, payment_waiver_reason, table_label, idempotency_key)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+          payment_state, payment_waiver_kind, payment_waiver_reason, table_label, idempotency_key,
+          discount_cents, discount_reason)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
        RETURNING *`,
       [
         input.businessId, orderNumber, input.chatId ?? null, input.customerContactId ?? null, input.fulfilmentMethod,
@@ -1312,6 +1349,12 @@ export class FoodOperationsRepository {
         paymentState === 'WAIVED' ? (terms?.note ?? 'Standing pay-on-delivery terms') : null,
         input.tableLabel ?? null,
         input.idempotencyKey ?? null,
+        // What was taken off, and why. Stored beside the gross rather than
+        // folded into it, so the books can show both - a discount inside a
+        // line price is revenue that vanished with no record of who gave
+        // it away.
+        Math.max(0, Math.trunc(input.discountCents ?? 0)),
+        input.discountReason?.trim() || null,
       ],
     );
     const order = toOrder(rows[0]!);

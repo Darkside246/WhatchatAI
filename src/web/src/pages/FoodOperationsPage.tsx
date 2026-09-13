@@ -650,14 +650,21 @@ export function FoodOperationsPage() {
           </button>
           {/* First of the three, because taking an order is the thing done
               most often at a counter - the menu and the archive are things
-              you go and look at. */}
+              you go and look at.
+
+              Called "Register", not "New order". It was the latter, and the
+              person who commissioned this screen could not find the till on
+              it - which is the only evidence a label ever needs. "New order"
+              names the OUTCOME; somebody looking for a till looks for a
+              till, the same word Square and every counter before it uses. */}
           <button
             type="button"
             onClick={() => setRegisterOpen(true)}
+            title="Take an order at the counter"
             className="flex items-center gap-1.5 rounded-lg border border-accent/60 bg-accent-soft px-3 py-2 text-caption font-semibold text-accent"
           >
             <Calculator size={14} aria-hidden />
-            New order
+            Register
           </button>
           <button
             type="button"
@@ -727,7 +734,7 @@ export function FoodOperationsPage() {
         <div className="fixed inset-0 z-40 flex flex-col bg-surface-0">
           <header className="flex items-center gap-3 border-b border-border-subtle px-4 py-3">
             <div className="min-w-0">
-              <h2 className="text-body font-semibold text-fg">New order</h2>
+              <h2 className="text-body font-semibold text-fg">Register</h2>
               <p className="text-meta text-fg-muted">
                 Keyed in at the counter. It lands on the board exactly like one taken over WhatsApp.
               </p>
@@ -871,6 +878,17 @@ export function FoodOperationsPage() {
             <p className="mt-1 max-w-sm text-caption">
               Orders appear here the moment one is taken — from a WhatsApp conversation or keyed in at the counter.
             </p>
+            {/* An empty board is exactly where somebody is asking "so how do
+                I start one?", and the answer was a button in a row of nine
+                along the top. Put it where the question is asked. */}
+            <button
+              type="button"
+              onClick={() => setRegisterOpen(true)}
+              className="mt-4 flex items-center gap-1.5 rounded-lg border border-accent/60 bg-accent-soft px-4 py-2.5 text-caption font-semibold text-accent"
+            >
+              <Calculator size={14} aria-hidden />
+              Open the register
+            </button>
           </div>
         ) : view === 'wall' ? (
           /**

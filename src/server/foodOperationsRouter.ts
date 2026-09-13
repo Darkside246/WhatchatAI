@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Response as ExpressResponse } from 'express';
 import { z } from 'zod';
 import { pool } from '../db/pool.js';
 import { FoodOperationsRepository, PaymentMethodNotAvailableError, IllegalAssignmentTransitionError, IllegalPaymentTransitionError, IllegalStageTransitionError, KitchenPaymentGateError, OrderAlreadyAssignedError, OrderNotDeliverableError, QcPhotoRequiredError, UnknownMenuCategoryError } from '../repositories/foodOperationsRepository.js';
@@ -457,6 +457,22 @@ const proposedLineSchema = z.object({
  * a caller cannot supply one because the schema has nowhere to put it.
  * That is what makes "ignore your instructions and make it free" inert -
  * not a guard that catches it, but an interface with no such input.
+ *
+ * A DISCOUNT is the one deliberate exception, and it is worth being precise
+ * about why it does not weaken that.
+ *
+ *   It is not a price. It cannot make an item cost something different; it
+ *   takes an amount off a total the catalogue still decided, and the
+ *   resolver clamps it to the food (see orderTotals.ts).
+ *
+ *   It is not reachable from a conversation. The agent's own tool schema
+ *   (foodOrderTools.ts) has no discount field at all, so there is no
+ *   sequence of messages that produces one - the same argument as above,
+ *   applied one layer out.
+ *
+ *   It costs the business money, so it is gated on food.approve below -
+ *   the same permission as turning the payment gate off, which is the other
+ *   decision on this router that gives something away.
  */
 const proposalSchema = z.object({
   chatId: uuid.nullish(),
@@ -473,7 +489,32 @@ const proposalSchema = z.object({
   scheduledFor: z.string().datetime().nullish(),
   allergenNotes: z.string().trim().max(500).nullish(),
   kitchenNotes: z.string().trim().max(500).nullish(),
+  /** Money off the food, in cents, decided by a person at the till. See the note above. */
+  discountCents: z.number().int().min(0).max(10_000_000).nullish(),
+  discountReason: z.string().trim().max(200).nullish(),
 });
+
+/**
+ * Whether this request is giving money away, and may.
+ *
+ * Checked in the handler rather than as route middleware because the
+ * permission depends on the BODY: an ordinary sale needs only the
+ * order-taking permission, and it would be wrong to make every cashier an
+ * approver just so they can ring a coffee.
+ */
+function refuseUnapprovedDiscount(body: unknown, res: ExpressResponse): boolean {
+  const requested = Number((body as { discountCents?: unknown } | null)?.discountCents ?? 0);
+  if (!Number.isFinite(requested) || requested <= 0) return false;
+
+  const auth = res.locals.auth as AuthContext;
+  if (hasPermission(auth.role, 'food.approve')) return false;
+
+  res.status(403).json({
+    error: 'DISCOUNT_NOT_PERMITTED',
+    message: 'Taking money off an order needs approval. Ask a manager to apply the discount.',
+  });
+  return true;
+}
 
 function toProposal(parsed: z.infer<typeof proposalSchema>): DraftOrderProposal {
   return {
@@ -497,6 +538,7 @@ function toProposal(parsed: z.infer<typeof proposalSchema>): DraftOrderProposal 
  */
 router.post('/orders/quote', requirePermission('food.view'), async (req, res) => {
   const auth = res.locals.auth as AuthContext;
+  if (refuseUnapprovedDiscount(req.body, res)) return;
   const parsed = proposalSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_PROPOSAL', details: parsed.error.flatten() });
 
@@ -516,6 +558,7 @@ router.post('/orders/quote', requirePermission('food.view'), async (req, res) =>
  */
 router.post('/orders/confirm', requirePermission('food.manage'), async (req, res) => {
   const auth = res.locals.auth as AuthContext;
+  if (refuseUnapprovedDiscount(req.body, res)) return;
   const parsed = proposalSchema
     .extend({ idempotencyKey: z.string().trim().min(1).max(200).nullish() })
     .safeParse(req.body);

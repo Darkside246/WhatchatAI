@@ -1,6 +1,7 @@
 import type { FulfilmentMethod } from '../../domain/food/orderLifecycle.js';
 import { checkDelivery } from '../../domain/food/deliveryZone.js';
 import { modifierCharge } from '../../domain/food/modifierPricing.js';
+import { computeOrderTotals } from '../../domain/food/orderTotals.js';
 import type { FoodMenuItemRecord, FoodOrderLine, FoodOperationsRepository } from '../../repositories/foodOperationsRepository.js';
 
 /**
@@ -63,6 +64,17 @@ export interface DraftOrderProposal {
   scheduledFor?: string | null | undefined;
   allergenNotes?: string | null | undefined;
   kitchenNotes?: string | null | undefined;
+  /**
+   * Money off, in cents, decided by a person at the till.
+   *
+   * Deliberately NOT reachable from the ordering agent: the tool schema has
+   * no field for it, so no conversation can talk its way into a discount.
+   * A discount is a commercial decision and this app does not let a model
+   * make one.
+   */
+  discountCents?: number | null | undefined;
+  /** Why, in the operator's own words. Shown in the books, never on the kitchen ticket. */
+  discountReason?: string | null | undefined;
 }
 
 /**
@@ -85,8 +97,17 @@ export type OrderProblem =
 
 export interface ResolvedOrder {
   lines: FoodOrderLine[];
+  /** The food, before anything is taken off or added on. Unchanged in meaning. */
   subtotalCents: number;
+  /** What was taken off the food. 0 unless somebody asked for one. */
+  discountCents: number;
   deliveryFeeCents: number;
+  /**
+   * The tax in (inclusive) or on (exclusive) this order. 0 when the
+   * business has set no rate - never a guess. Frozen onto the order at
+   * confirmation, so a rate changed in April cannot rewrite March.
+   */
+  taxCents: number;
   totalCents: number;
   currency: string;
 }
@@ -377,9 +398,27 @@ export async function resolveProposal(
 
   if (problems.length > 0) return { ok: false, problems };
 
+  /* One place works out what an order comes to - see orderTotals.ts for the
+     order of operations and why it is that one. The settings were already
+     read at the top of this function. */
+  const totals = computeOrderTotals({
+    itemsSubtotalCents: subtotalCents,
+    deliveryFeeCents,
+    requestedDiscountCents: proposal.discountCents ?? 0,
+    tax: { rateBasisPoints: settings.taxRateBasisPoints, inclusive: settings.taxInclusive },
+  });
+
   return {
     ok: true,
-    resolved: { lines, subtotalCents, deliveryFeeCents, totalCents: subtotalCents + deliveryFeeCents, currency },
+    resolved: {
+      lines,
+      subtotalCents: totals.itemsSubtotalCents,
+      discountCents: totals.discountCents,
+      deliveryFeeCents: totals.deliveryFeeCents,
+      taxCents: totals.taxCents,
+      totalCents: totals.totalCents,
+      currency,
+    },
   };
 }
 
@@ -438,6 +477,12 @@ export async function confirmProposal(
     items: resolution.resolved.lines,
     subtotalCents: resolution.resolved.subtotalCents,
     deliveryFeeCents: resolution.resolved.deliveryFeeCents,
+    // Frozen onto the order from THIS resolution, not read back from
+    // settings later: a rate changed in April must not rewrite March, and a
+    // discount is a decision somebody made at a moment.
+    taxCents: resolution.resolved.taxCents,
+    discountCents: resolution.resolved.discountCents,
+    discountReason: proposal.discountReason?.trim() || null,
     totalCents: resolution.resolved.totalCents,
     currency: resolution.resolved.currency,
     deliveryLatitude: proposal.deliveryLatitude ?? null,

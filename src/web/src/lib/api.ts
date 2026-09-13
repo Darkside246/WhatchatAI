@@ -228,7 +228,10 @@ export interface FoodHistoryOrderDto {
   tableLabel: string | null;
   items: FoodOrderLineDto[];
   subtotalCents: number;
+  discountCents: number;
+  discountReason: string | null;
   deliveryFeeCents: number;
+  taxCents: number;
   totalCents: number;
   currency: string;
   deliveryAddress: string | null;
@@ -250,7 +253,10 @@ export interface FoodBoardOrderDto {
   customerPhone: string | null;
   items: FoodOrderLineDto[];
   subtotalCents: number;
+  discountCents: number;
+  discountReason: string | null;
   deliveryFeeCents: number;
+  taxCents: number;
   totalCents: number;
   currency: string;
   deliveryAddress: string | null;
@@ -478,6 +484,14 @@ export interface FoodProposedLineDto {
 export interface FoodOrderProposalDto {
   fulfilmentMethod: 'PICKUP' | 'DELIVERY' | 'DINE_IN';
   lines: FoodProposedLineDto[];
+  /**
+   * Money off the food, in cents, applied by a person at the till. Needs
+   * food.approve - the server refuses it otherwise, with a message saying
+   * to ask a manager. Never reachable from a conversation: the agent's own
+   * tool schema has no such field.
+   */
+  discountCents?: number;
+  discountReason?: string | null;
   customerName?: string | null;
   customerPhone?: string | null;
   tableLabel?: string | null;
@@ -489,8 +503,17 @@ export interface FoodOrderProposalDto {
 /** What the server says the order actually costs. The only figures a till may display. */
 export interface FoodQuoteDto {
   lines: FoodOrderLineDto[];
+  /** The food, before anything is taken off or added on. */
   subtotalCents: number;
+  /** What a person took off the food. 0 unless somebody applied one. */
+  discountCents: number;
   deliveryFeeCents: number;
+  /**
+   * The tax in (inclusive prices) or on (exclusive prices) this order.
+   * 0 when the business has set no rate, and then no tax line is shown -
+   * never a zero presented as a fact.
+   */
+  taxCents: number;
   totalCents: number;
   currency: string;
 }
