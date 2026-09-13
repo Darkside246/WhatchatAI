@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, Bike, BookOpen, Camera, ChefHat, ChevronLeft, ClipboardCheck, Eye, HandCoins, MessageSquare, Navigation, PackageCheck, RotateCcw, Send, Settings2, Store, Undo2, X } from 'lucide-react';
+import { AlertTriangle, Bike, BookOpen, Camera, ChefHat, ChevronLeft, ClipboardCheck, Columns3, Eye, HandCoins, LayoutGrid, MessageSquare, Navigation, PackageCheck, RotateCcw, Send, Settings2, Store, Undo2, X } from 'lucide-react';
 import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand } from '../lib/api.js';
 import { QcPhotoButton } from '../components/QcPhotoButton.js';
 import { DeliveryControl } from '../components/DeliveryControl.js';
@@ -44,16 +44,26 @@ const STAGE_LABEL: Record<FoodOrderStage, string> = {
  * end - a ticket past fifteen minutes is meant to be impossible to miss
  * from across a room.
  */
-const SLA_STYLE: Record<FoodSlaBand, string> = {
-  ON_TIME: 'border-success/40 bg-success/5',
-  WARNING: 'border-warning/60 bg-warning/10',
-  BREACHED: 'border-error/70 bg-error/15',
+const SLA_BAND: Record<FoodSlaBand, string> = {
+  ON_TIME: 'bg-kds-ontime',
+  WARNING: 'bg-kds-warning',
+  BREACHED: 'bg-kds-late',
 };
-const SLA_TIMER: Record<FoodSlaBand, string> = {
-  ON_TIME: 'text-success',
-  WARNING: 'text-warning',
-  BREACHED: 'text-error font-bold',
+
+/**
+ * How the order was promised, said the way the person carrying it would say
+ * it. Colour-separated because at a glance the question is never "what is
+ * this order" but "where is it going" - a collection ticket and a delivery
+ * ticket get handled by different people.
+ */
+const FULFILMENT_CHIP: Record<FoodBoardOrderDto['fulfilmentMethod'], { label: string; className: string }> = {
+  DINE_IN: { label: 'For here', className: 'bg-violet-500 text-white' },
+  PICKUP: { label: 'Collection', className: 'bg-cyan-500 text-white' },
+  DELIVERY: { label: 'Delivery', className: 'bg-amber-500 text-white' },
 };
+
+type BoardView = 'wall' | 'stages';
+const BOARD_VIEW_KEY = 'aura.food.boardView';
 
 function clock(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
@@ -76,6 +86,38 @@ export function FoodOperationsPage() {
    */
   const [drift, setDrift] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /**
+   * Which way the board is laid out.
+   *
+   * The wall is every live ticket in one flowing grid, which is what a
+   * kitchen screen normally looks like and what fits a tablet. The stage
+   * board is five columns, and its value is real but only on a wide screen:
+   * the whole reason this board exists on one page is so the person on the
+   * fryer can see the pass backing up, and a column is how you see that.
+   *
+   * Remembered per browser, because a given screen in a given kitchen is
+   * mounted where it is mounted - the person at the pass should not have to
+   * pick their view again every service.
+   */
+  const [view, setView] = useState<BoardView>(() => {
+    try {
+      const stored = localStorage.getItem(BOARD_VIEW_KEY);
+      return stored === 'stages' || stored === 'wall' ? stored : 'wall';
+    } catch {
+      // Private windows and blocked site data throw on access rather than
+      // returning null. A board that will not render because a preference
+      // would not read is a board that fails for no reason.
+      return 'wall';
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(BOARD_VIEW_KEY, view);
+    } catch {
+      // Same reasoning: the view still works, it just will not be remembered.
+    }
+  }, [view]);
   /**
    * The menu, over the board rather than on another page.
    *
@@ -252,7 +294,42 @@ export function FoodOperationsPage() {
     return grouped;
   }, [orders]);
 
+  /**
+   * Oldest first, always.
+   *
+   * With no columns to carry the stage, the only ordering that helps is the
+   * one that answers "what is going cold" - so the ticket nearest to being
+   * late is the one nearest the top, wherever it is in the process.
+   */
+  const wallOrders = useMemo(
+    () => [...(orders ?? [])].sort((left, right) => right.elapsedSeconds - left.elapsedSeconds),
+    [orders],
+  );
+
   const late = (orders ?? []).filter((order) => order.slaBand === 'BREACHED').length;
+
+  /**
+   * One ticket, wired once.
+   *
+   * Both layouts render the same card with the same eleven props, and a
+   * second copy of that wiring is how one view quietly ends up offering an
+   * action the other does not.
+   */
+  const ticket = (order: FoodBoardOrderDto) => (
+    <OrderCard
+      key={order.id}
+      order={order}
+      drift={drift}
+      busy={busyId === order.id}
+      onBump={() => order.nextStage && void move(order, order.nextStage)}
+      onSendBack={() => void move(order, 'IN_KITCHEN', 'sent back from the pass')}
+      onRelease={() => void release(order)}
+      onSendOutWithoutPhoto={() => void sendOutWithoutPhoto(order)}
+      onPhotoTaken={() => void load()}
+      onAskForPayment={() => void askForPayment(order)}
+      onConfirmPayment={() => void confirmPayment(order)}
+    />
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-surface-0">
@@ -264,7 +341,37 @@ export function FoodOperationsPage() {
             {late > 0 && <span className="ml-2 font-semibold text-error">{late} late</span>}
           </p>
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {/* Two real layouts rather than a setting buried somewhere: which
+              one is right depends on the screen this is running on, and the
+              person standing at that screen is the one who knows. */}
+          <div className="flex items-center rounded-lg border border-border-subtle p-0.5" role="group" aria-label="Board layout">
+            <button
+              type="button"
+              onClick={() => setView('wall')}
+              aria-pressed={view === 'wall'}
+              title="Every ticket on one wall, oldest first"
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-caption font-medium ${
+                view === 'wall' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:text-fg'
+              }`}
+            >
+              <LayoutGrid size={14} aria-hidden />
+              Wall
+            </button>
+            <button
+              type="button"
+              onClick={() => setView('stages')}
+              aria-pressed={view === 'stages'}
+              title="A column per stage, so you can see the pass backing up"
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-caption font-medium ${
+                view === 'stages' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:text-fg'
+              }`}
+            >
+              <Columns3 size={14} aria-hidden />
+              Stages
+            </button>
+          </div>
+
           {/* Opens beside the board rather than navigating away: the
               orders stay the main thing, which is the whole point of
               putting a conversation next to them. */}
@@ -382,13 +489,28 @@ export function FoodOperationsPage() {
           two cannot share a row, so an open conversation takes the screen
           and closing it returns to the board. */}
       <div className="flex min-h-0 flex-1">
-      <div className={`min-h-0 flex-1 overflow-x-auto ${paneOpen ? 'hidden lg:block' : ''}`}>
-        <div className="flex h-full min-w-max gap-3 p-3">
+      <div className={`min-h-0 flex-1 ${view === 'wall' ? 'overflow-y-auto' : 'overflow-x-auto'} ${paneOpen ? 'hidden lg:block' : ''}`}>
+        {view === 'wall' ? (
+          /**
+           * Every live ticket on one wall, oldest first.
+           *
+           * auto-fill with a minimum rather than a fixed column count, so the
+           * board genuinely fits whatever it is opened on: one ticket wide on
+           * a phone, two on a tablet held upright, six on the screen over the
+           * pass. The stage board below can only ever be five fixed columns
+           * wide - about 1500px - which is why it used to run off the side of
+           * anything smaller and cut tickets in half.
+           */
+          <div className="grid gap-3 p-3 [grid-template-columns:repeat(auto-fill,minmax(14rem,1fr))]">
+            {wallOrders.map(ticket)}
+          </div>
+        ) : (
+        <div className="flex h-full gap-3 p-3">
           {COLUMNS.map((column) => {
             const columnOrders = byStage.get(column.stage) ?? [];
             const Icon = column.icon;
             return (
-              <section key={column.stage} className="flex w-[19rem] shrink-0 flex-col rounded-xl border border-border-subtle bg-surface-1">
+              <section key={column.stage} className="flex w-[17rem] shrink-0 grow basis-[17rem] flex-col rounded-xl border border-border-subtle bg-surface-1">
                 <div className="border-b border-border-subtle px-3 py-2.5">
                   <p className="flex items-center gap-1.5 text-caption font-semibold text-fg">
                     <Icon size={14} aria-hidden />
@@ -399,26 +521,13 @@ export function FoodOperationsPage() {
                 </div>
 
                 <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
-                  {columnOrders.map((order) => (
-                    <OrderCard
-                      key={order.id}
-                      order={order}
-                      drift={drift}
-                      busy={busyId === order.id}
-                      onBump={() => order.nextStage && void move(order, order.nextStage)}
-                      onSendBack={() => void move(order, 'IN_KITCHEN', 'sent back from the pass')}
-                      onRelease={() => void release(order)}
-                      onSendOutWithoutPhoto={() => void sendOutWithoutPhoto(order)}
-                      onPhotoTaken={() => void load()}
-                      onAskForPayment={() => void askForPayment(order)}
-                      onConfirmPayment={() => void confirmPayment(order)}
-                    />
-                  ))}
+                  {columnOrders.map(ticket)}
                 </div>
               </section>
             );
           })}
         </div>
+        )}
       </div>
 
       {paneOpen && (
@@ -500,15 +609,58 @@ function OrderCard({
   onAskForPayment: () => void;
   onConfirmPayment: () => void;
 }) {
+  /**
+   * What the ticket is called.
+   *
+   * A dine-in order is the table - that is how it is called out and how it
+   * is carried. Everything else is the person, because a collection ticket
+   * is handed to somebody by name. The order number is the fallback and
+   * never a guess at either: an order taken without a name really has no
+   * name, and inventing one on a kitchen screen would be a lie somebody
+   * shouts across a room.
+   */
+  const title =
+    (order.fulfilmentMethod === 'DINE_IN' ? order.tableLabel?.trim() : null) ||
+    order.customerName?.trim() ||
+    `Order #${order.orderNumber}`;
+  /** Who it is for, when the band is showing their table instead of their name. */
+  const subtitle = order.customerName?.trim() && order.customerName.trim() !== title ? order.customerName.trim() : null;
+  const placedTime = new Date(order.placedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
   return (
-    <article className={`rounded-lg border-2 p-2.5 ${SLA_STYLE[order.slaBand]}`}>
-      <div className="flex items-baseline gap-2">
-        <span className="text-body font-bold text-fg">#{order.orderNumber}</span>
-        <span className={`font-mono text-body tabular-nums ${SLA_TIMER[order.slaBand]}`}>{clock(order.elapsedSeconds + drift)}</span>
-        <span className="ml-auto rounded-full bg-surface-2 px-2 py-0.5 text-meta font-medium text-fg-secondary">
-          {order.fulfilmentMethod === 'DELIVERY' ? 'Delivery' : order.fulfilmentMethod === 'DINE_IN' ? (order.tableLabel ?? 'Table') : 'Collection'}
-        </span>
+    <article className="flex flex-col overflow-hidden rounded-lg border border-border-subtle bg-surface-1">
+      {/* The band carries the two things somebody reads from across the
+          room - who it is for, and how long it has been - and nothing else.
+          Its colour is the SLA, which is why it is the whole width rather
+          than a tint on a border. */}
+      <div className={`px-2.5 py-1.5 text-kds-band-fg ${SLA_BAND[order.slaBand]}`}>
+        <div className="flex items-baseline gap-2">
+          <span className="truncate text-body font-bold">{title}</span>
+          <span className="ml-auto shrink-0 font-mono text-body font-bold tabular-nums">
+            {clock(order.elapsedSeconds + drift)}
+          </span>
+        </div>
+        <div className="flex items-baseline gap-2 text-meta font-medium opacity-70">
+          <span>#{order.orderNumber}</span>
+          <span>{placedTime}</span>
+          {/* The stage, on the ticket, because the wall has no columns to
+              say it - and on the stage board it costs one line to stay
+              right rather than two components to keep in step. */}
+          <span className="ml-auto truncate">{STAGE_LABEL[order.stage]}</span>
+        </div>
       </div>
+
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-border-subtle px-2.5 py-1.5">
+        <span className={`rounded px-2 py-0.5 text-meta font-bold uppercase tracking-wide ${FULFILMENT_CHIP[order.fulfilmentMethod].className}`}>
+          {order.fulfilmentMethod === 'DINE_IN' && order.tableLabel && order.tableLabel !== title
+            ? order.tableLabel
+            : FULFILMENT_CHIP[order.fulfilmentMethod].label}
+        </span>
+        {/* Whose order it is, when the band is showing the table instead. */}
+        {subtitle && <span className="truncate text-meta font-medium text-fg-secondary">{subtitle}</span>}
+      </div>
+
+      <div className="p-2.5">
 
       {/* The money, stated on the ticket. An unpaid order on a line is the
           one mistake this board exists to prevent, so it is never a detail
@@ -568,8 +720,6 @@ function OrderCard({
         </div>
       )}
 
-      {order.customerName && <p className="mt-1 truncate text-caption font-medium text-fg">{order.customerName}</p>}
-
       {/* The allergen banner is full width and loud on purpose - it is the
           one thing on this card that can hurt somebody. */}
       {order.allergenNotes && (
@@ -579,27 +729,39 @@ function OrderCard({
         </p>
       )}
 
-      <ul className="mt-2 space-y-1">
+      <ul className="space-y-1.5">
         {order.items.map((item, index) => (
-          <li key={`${item.name}-${index}`} className="text-caption text-fg">
-            <span className="font-semibold">{item.quantity}×</span> {item.name}
-            {item.variant && <span className="text-fg-secondary"> · {item.variant}</span>}
-            {item.modifiers.length > 0 && (
-              <span className="mt-0.5 flex flex-wrap gap-1">
-                {item.modifiers.map((modifier, modifierIndex) => (
-                  <span
-                    key={`${modifier.name}-${modifierIndex}`}
-                    className={`rounded px-1.5 py-0.5 text-meta font-medium ${
-                      modifier.action === 'remove' ? 'bg-error/15 text-error' : 'bg-accent-soft text-accent'
-                    }`}
-                  >
-                    {modifier.action === 'remove' ? 'no ' : modifier.action === 'on_side' ? 'side: ' : '+ '}
-                    {modifier.name}
-                  </span>
-                ))}
-              </span>
-            )}
-            {item.notes && <span className="block text-meta italic text-fg-muted">{item.notes}</span>}
+          <li key={`${item.name}-${index}`} className="flex gap-2">
+            {/* The count in a solid block rather than "2×" inline: on a
+                ticket read at speed the number of things to make is the
+                one figure that must not be skimmed past. */}
+            <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-fg text-meta font-bold tabular-nums text-surface-1">
+              {item.quantity}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-caption font-semibold leading-tight text-fg">
+                {item.name}
+                {item.variant && <span className="font-normal text-fg-secondary"> · {item.variant}</span>}
+              </p>
+              {/* Modifiers indented under their item, one per line, the way
+                  a kitchen screen has always shown them - a wrapped row of
+                  pills reads as a group and loses which item it belongs to.
+                  A removal stays red: "no peanuts" sharing a colour with
+                  "extra cheese" is the one confusion here that can hurt
+                  somebody. */}
+              {item.modifiers.map((modifier, modifierIndex) => (
+                <p
+                  key={`${modifier.name}-${modifierIndex}`}
+                  className={`text-caption leading-tight ${
+                    modifier.action === 'remove' ? 'font-semibold text-error' : 'text-info'
+                  }`}
+                >
+                  {modifier.action === 'remove' ? 'no ' : modifier.action === 'on_side' ? 'side: ' : ''}
+                  {modifier.name}
+                </p>
+              ))}
+              {item.notes && <p className="text-meta italic leading-tight text-fg-muted">{item.notes}</p>}
+            </div>
           </li>
         ))}
       </ul>
@@ -726,6 +888,7 @@ function OrderCard({
       {order.qcPhotoOutstanding && !order.blockedReason && (
         <p className="mt-1.5 text-meta text-warning">Needs a photo before it leaves the pass.</p>
       )}
+      </div>
     </article>
   );
 }

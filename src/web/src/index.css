@@ -43,6 +43,28 @@
   --color-info: #38bdf8;
 
   /*
+   * KITCHEN DISPLAY BANDS.
+   *
+   * The one place in this app whose colours deliberately do NOT follow the
+   * chosen theme. Green/amber/red on a kitchen screen is not decoration, it
+   * is the signal staff are trained on - a red ticket means late, and it has
+   * to mean that whoever picked "sunset" last week. Under the theme tokens
+   * --color-success alone ranges from #10b981 to #d946ef across the five
+   * themes, which would make a fresh ticket magenta.
+   *
+   * Light bands with near-black text rather than the reverse: this is read
+   * across a room, often over a shoulder, sometimes with steam in the way,
+   * and dark-on-light at these saturations is the highest contrast available
+   * (all three clear 10:1 against the band foreground). They sit on the
+   * page's own surface in either light or dark mode, so the band stays loud
+   * either way.
+   */
+  --color-kds-ontime: #86efac;
+  --color-kds-warning: #fcd34d;
+  --color-kds-late: #fca5a5;
+  --color-kds-band-fg: #0b1220;
+
+  /*
    * TYPE SCALE.
    *
    * Six steps, each with a paired line-height, named for the job rather than
