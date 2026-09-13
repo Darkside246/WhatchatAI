@@ -24,6 +24,7 @@ export type WhatsAppMessageContentType =
   | 'button'
   | 'interactive'
   | 'system'
+  | 'call_event'
   | 'unsupported';
 
 export type WhatsAppDocumentSubtype = 'pdf' | 'spreadsheet' | 'other';
@@ -128,7 +129,36 @@ interface ClassifiedContent {
 export type StructuredMessagePayload =
   | { kind: 'location'; latitude: number; longitude: number; name: string | null; address: string | null; isLive: boolean }
   | { kind: 'contacts'; contacts: Array<{ displayName: string | null; vcard: string | null }> }
-  | { kind: 'poll'; question: string | null; options: string[]; selectableCount: number | null };
+  | { kind: 'poll'; question: string | null; options: string[]; selectableCount: number | null }
+  | {
+      kind: 'call';
+      outcome: WhatsAppCallOutcome;
+      isVideo: boolean;
+      /** Seconds the call actually lasted. Null whenever WhatsApp sent no duration - which is every call that never connected. */
+      durationSecs: number | null;
+      /** A group voice chat rather than a one-to-one call. */
+      isVoiceChat: boolean;
+      scheduled: boolean;
+    };
+
+/**
+ * How a call ended, in our own words rather than WhatsApp's enum numbers.
+ *
+ * 'unknown' is a real member rather than an absent field: WhatsApp does send
+ * call logs with no outcome, and a caller that has to distinguish "we were
+ * not told" from "it connected" should not have to know that `undefined`
+ * means the former.
+ */
+export type WhatsAppCallOutcome =
+  | 'connected'
+  | 'missed'
+  | 'failed'
+  | 'declined'
+  | 'answered_elsewhere'
+  | 'ongoing'
+  | 'silenced_dnd'
+  | 'silenced_unknown_caller'
+  | 'unknown';
 
 const MAX_BUFFER_SIZE = 500;
 const TEXT_PREVIEW_MAX_LENGTH = 200;
@@ -201,6 +231,132 @@ function formatDuration(seconds: number): string {
   return `${seconds} seconds`;
 }
 
+/**
+ * proto.Message.CallLogMessage.CallOutcome and .CallType, as raw numbers for
+ * the same reason PROTOCOL_MESSAGE_TYPE above is: this file takes `proto` as
+ * a type only, and these are wire format - they cannot change without
+ * breaking every WhatsApp client at once.
+ */
+const CALL_OUTCOME = {
+  CONNECTED: 0,
+  MISSED: 1,
+  FAILED: 2,
+  REJECTED: 3,
+  ACCEPTED_ELSEWHERE: 4,
+  ONGOING: 5,
+  SILENCED_BY_DND: 6,
+  SILENCED_UNKNOWN_CALLER: 7,
+} as const;
+
+const CALL_TYPE = {
+  REGULAR: 0,
+  SCHEDULED_CALL: 1,
+  VOICE_CHAT: 2,
+} as const;
+
+const CALL_OUTCOMES: Record<number, WhatsAppCallOutcome> = {
+  [CALL_OUTCOME.CONNECTED]: 'connected',
+  [CALL_OUTCOME.MISSED]: 'missed',
+  [CALL_OUTCOME.FAILED]: 'failed',
+  [CALL_OUTCOME.REJECTED]: 'declined',
+  [CALL_OUTCOME.ACCEPTED_ELSEWHERE]: 'answered_elsewhere',
+  [CALL_OUTCOME.ONGOING]: 'ongoing',
+  [CALL_OUTCOME.SILENCED_BY_DND]: 'silenced_dnd',
+  [CALL_OUTCOME.SILENCED_UNKNOWN_CALLER]: 'silenced_unknown_caller',
+};
+
+/**
+ * A call that happened, read off the message WhatsApp puts in the chat for
+ * it.
+ *
+ * This is a different thing from the live `call` socket event the connection
+ * already handles (whatsappTenantConnection.ts -> whatsapp_calls, shown in
+ * the Call History panel). That one is the ringing happening right now; this
+ * one is the line WhatsApp writes into the conversation afterwards, which is
+ * what the official client shows in the thread and what a history sync
+ * brings back for calls that happened before we ever connected. Without it
+ * the envelope matched nothing in classifyContent, fell through to
+ * 'unsupported' -> 'unknown', and every missed call in a customer's thread
+ * read as a bare "System message".
+ *
+ * Note the field name: `callLogMesssage`, with three s's. That is a real
+ * typo in WhatsApp's own protobuf, not one here, and it cannot be corrected
+ * without breaking the wire format.
+ */
+function classifyCallLog(log: proto.Message.ICallLogMessage): Extract<StructuredMessagePayload, { kind: 'call' }> {
+  const outcomeCode = typeof log.callOutcome === 'number' ? log.callOutcome : -1;
+  const typeCode = typeof log.callType === 'number' ? log.callType : CALL_TYPE.REGULAR;
+  const duration = log.durationSecs == null ? null : Number(log.durationSecs);
+
+  return {
+    kind: 'call',
+    outcome: CALL_OUTCOMES[outcomeCode] ?? 'unknown',
+    isVideo: Boolean(log.isVideo),
+    // Zero seconds is not a duration, it is the absence of one - every call
+    // that never connected reports it, and "Voice call - 0s" would read as
+    // though somebody hung up instantly.
+    durationSecs: duration != null && duration > 0 ? duration : null,
+    isVoiceChat: typeCode === CALL_TYPE.VOICE_CHAT,
+    scheduled: typeCode === CALL_TYPE.SCHEDULED_CALL,
+  };
+}
+
+/** "2m 14s". Minutes and seconds, because calls are minutes long and formatDuration above rounds to hours. */
+function formatCallDuration(seconds: number): string {
+  const hours = Math.floor(seconds / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  const remainder = seconds % 60;
+
+  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  if (minutes > 0) return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`;
+  return `${remainder}s`;
+}
+
+/**
+ * Real wording for a call, from whichever side of it we are on.
+ *
+ * Direction matters to the words and to nothing else: the same envelope is
+ * "Missed voice call" when a customer rang us and "No answer" when we rang
+ * them, exactly as the official client shows it. Getting that backwards
+ * would tell an owner they had missed a call they themselves placed.
+ */
+export function describeCall(
+  call: Extract<StructuredMessagePayload, { kind: 'call' }>,
+  fromMe: boolean,
+): string {
+  const base = call.isVoiceChat ? 'voice chat' : call.isVideo ? 'video call' : 'voice call';
+  // "scheduled" belongs inside the noun, not in front of the sentence:
+  // "Missed scheduled voice call" is English, "Scheduled Missed voice call"
+  // is a string concatenation somebody read out loud.
+  const noun = call.scheduled ? `scheduled ${base}` : base;
+  const sentenceNoun = `${noun.charAt(0).toUpperCase()}${noun.slice(1)}`;
+
+  switch (call.outcome) {
+    case 'missed':
+      // Ours going unanswered is not us missing anything.
+      return fromMe ? `${sentenceNoun} - no answer` : `Missed ${noun}`;
+    case 'declined':
+      return fromMe ? `${sentenceNoun} declined` : `${sentenceNoun} you declined`;
+    case 'failed':
+      return `${sentenceNoun} failed`;
+    case 'ongoing':
+      return `${sentenceNoun} in progress`;
+    case 'silenced_dnd':
+      return `${sentenceNoun} silenced - Do Not Disturb`;
+    case 'silenced_unknown_caller':
+      return `${sentenceNoun} silenced - unknown caller`;
+    case 'answered_elsewhere':
+      return `${sentenceNoun} answered on another device`;
+    case 'connected':
+    case 'unknown':
+      // A duration is the one fact worth saying about a call that connected,
+      // and the only honest thing to add when WhatsApp sent no outcome at all.
+      return call.durationSecs != null
+        ? `${sentenceNoun} - ${formatCallDuration(call.durationSecs)}`
+        : `${sentenceNoun}`;
+  }
+}
+
 function classifyProtocolMessage(protocol: proto.Message.IProtocolMessage): WhatsAppSystemEvent {
   const typeCode = typeof protocol.type === 'number' ? protocol.type : -1;
 
@@ -271,7 +427,13 @@ function unwrapContent(
   return { message, isViewOnce };
 }
 
-function classifyContent(content: proto.IMessage | null | undefined): ClassifiedContent {
+/**
+ * `fromMe` is taken rather than inferred because one message type genuinely
+ * reads differently from each side: a call log is "Missed voice call" when a
+ * customer rang us and "No answer" when we rang them. Every other branch
+ * ignores it.
+ */
+function classifyContent(content: proto.IMessage | null | undefined, fromMe: boolean): ClassifiedContent {
   const empty: ClassifiedContent = {
     contentType: 'unsupported',
     documentSubtype: null,
@@ -440,6 +602,20 @@ function classifyContent(content: proto.IMessage | null | undefined): Classified
       message.listResponseMessage?.title ?? message.groupInviteMessage?.groupName ?? null;
     return { ...empty, contentType: 'interactive', textPreview: interactiveText ? truncatePreview(interactiveText) : null, fullText: interactiveText };
   }
+  if (message.callLogMesssage) {
+    const call = classifyCallLog(message.callLogMesssage);
+    const description = describeCall(call, fromMe);
+    // The wording goes in textPreview/fullText as well as the payload, so a
+    // call reads correctly in the chat list and in anything that only knows
+    // how to show text - the same route the identified system events take.
+    return {
+      ...empty,
+      contentType: 'call_event',
+      textPreview: truncatePreview(description),
+      fullText: description,
+      structuredPayload: call,
+    };
+  }
   if (message.protocolMessage) {
     // Identified rather than collapsed - see WhatsAppSystemEvent. The
     // description, where there is one, is put in textPreview/fullText so it
@@ -531,6 +707,7 @@ const CONTENT_TYPES: WhatsAppMessageContentType[] = [
   'button',
   'interactive',
   'system',
+  'call_event',
   'unsupported',
 ];
 
@@ -579,7 +756,7 @@ export class WhatsAppMessageIngestionService {
     const key = message.key as WAMessageKey;
     const remoteJid = key.remoteJid ?? '';
     const jidKind = classifyJid(remoteJid);
-    const { rawMediaMessage, ...classified } = classifyContent(message.message);
+    const { rawMediaMessage, ...classified } = classifyContent(message.message, Boolean(key.fromMe));
     const replyContext = extractReplyContext(message.message);
 
     const mediaDescriptor =

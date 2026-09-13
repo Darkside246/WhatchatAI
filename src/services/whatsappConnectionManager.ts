@@ -58,7 +58,7 @@ const EMPTY_INGESTION_STATS: WhatsAppIngestionStats = {
   byContentType: {
     text: 0, image: 0, video: 0, voice_note: 0, audio: 0, document: 0, sticker: 0,
     location: 0, contact: 0, contacts: 0, reaction: 0, poll: 0, poll_response: 0,
-    button: 0, interactive: 0, system: 0, unsupported: 0,
+    button: 0, interactive: 0, system: 0, call_event: 0, unsupported: 0,
   },
 };
 

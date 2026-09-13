@@ -1,4 +1,4 @@
-import { BarChart3, MapPin, Radio, UserRound } from 'lucide-react';
+import { BarChart3, MapPin, PhoneIncoming, PhoneMissed, PhoneOutgoing, Radio, UserRound, Video } from 'lucide-react';
 import type { StructuredMessagePayload } from '../lib/api.js';
 
 /**
@@ -128,9 +128,47 @@ function PollCard({ payload }: { payload: Extract<StructuredMessagePayload, { ki
   );
 }
 
-export function StructuredMessageCard({ payload }: { payload: StructuredMessagePayload }) {
+/**
+ * A call WhatsApp logged in the conversation.
+ *
+ * The words come from the server, which is the only side that knows which
+ * direction the call went - the same envelope is "Missed voice call" for a
+ * customer's call and "No answer" for ours, and deciding that here would mean
+ * keeping a second copy of the rule in sync with the first. The payload is
+ * used for what it genuinely settles on its own: which icon, and the
+ * duration.
+ *
+ * A missed call is tinted because it is the one outcome that is a job: a
+ * customer tried to reach a person and did not.
+ */
+function CallCard({ payload, text }: { payload: Extract<StructuredMessagePayload, { kind: 'call' }>; text: string | null }) {
+  const missed = payload.outcome === 'missed' || payload.outcome === 'failed';
+  const Icon = payload.isVideo ? Video : missed ? PhoneMissed : payload.outcome === 'ongoing' ? PhoneIncoming : PhoneOutgoing;
+
+  return (
+    <div
+      className={`mt-1 rounded-lg border p-2.5 ${
+        missed ? 'border-error/40 bg-error/10' : 'border-border-subtle bg-surface-2'
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        <Icon size={14} className={`shrink-0 ${missed ? 'text-error' : 'text-accent'}`} aria-hidden />
+        <p className={`text-caption font-medium ${missed ? 'text-error' : 'text-fg'}`}>
+          {/* Only reached when the server stored no wording at all - the
+              payload alone cannot say which way the call went, so it says
+              only what it does know rather than guessing. */}
+          {text ?? (payload.isVoiceChat ? 'Voice chat' : payload.isVideo ? 'Video call' : 'Voice call')}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+export function StructuredMessageCard({ payload, text = null }: { payload: StructuredMessagePayload; text?: string | null }) {
   if (payload.kind === 'location') return <LocationCard payload={payload} />;
   if (payload.kind === 'contacts') return <ContactsCard payload={payload} />;
   if (payload.kind === 'poll') return <PollCard payload={payload} />;
+  if (payload.kind === 'call') return <CallCard payload={payload} text={text} />;
   return null;
 }
+

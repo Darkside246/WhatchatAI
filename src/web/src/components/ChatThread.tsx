@@ -1230,10 +1230,11 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
                   )}
                 </div>
               ) : message.structuredPayload ? (
-                /* A location, shared contact or poll carries real content
-                   WhatsApp does not put in the text body - rendered properly
-                   instead of as the bare word "Location"/"Poll". */
-                <StructuredMessageCard payload={message.structuredPayload} />
+                /* A location, shared contact, poll or call carries real
+                   content WhatsApp does not put in the text body - rendered
+                   properly instead of as the bare word "Location"/"Poll", or
+                   in a call's case the words "System message". */
+                <StructuredMessageCard payload={message.structuredPayload} text={message.textContent ?? null} />
               ) : (
                 <p className="whitespace-pre-wrap break-words">{messageBody(message)}</p>
               )}

@@ -345,7 +345,27 @@ export interface StatusReplyDto {
 export type StructuredMessagePayload =
   | { kind: 'location'; latitude: number; longitude: number; name: string | null; address: string | null; isLive: boolean }
   | { kind: 'contacts'; contacts: Array<{ displayName: string | null; vcard: string | null }> }
-  | { kind: 'poll'; question: string | null; options: string[]; selectableCount: number | null };
+  | { kind: 'poll'; question: string | null; options: string[]; selectableCount: number | null }
+  | {
+      kind: 'call';
+      outcome: WhatsAppCallOutcome;
+      isVideo: boolean;
+      durationSecs: number | null;
+      isVoiceChat: boolean;
+      scheduled: boolean;
+    };
+
+/** Mirrors the server's WhatsAppCallOutcome. 'unknown' is a real value - WhatsApp does send call logs with no outcome. */
+export type WhatsAppCallOutcome =
+  | 'connected'
+  | 'missed'
+  | 'failed'
+  | 'declined'
+  | 'answered_elsewhere'
+  | 'ongoing'
+  | 'silenced_dnd'
+  | 'silenced_unknown_caller'
+  | 'unknown';
 
 export interface WorkspaceMessage {
   id: string;
