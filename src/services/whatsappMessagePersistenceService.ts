@@ -264,10 +264,101 @@ export class WhatsAppMessagePersistenceService {
     jidKind: ReturnType<typeof classifyJid>,
     altJid: string | null,
   ): Promise<void> {
-    if (jidKind !== 'lid' || !altJid) return;
-    const phoneNumber = derivePhoneNumber(jid, jidKind, altJid);
+    if (!altJid) return;
+
+    /* Recorded whichever way round it arrives. Baileys puts the phone JID
+       in remoteJidAlt when the key is a @lid, and the @lid in remoteJidAlt
+       when the key is the phone JID - and before this, only the first of
+       those two was ever stored. A pairing we had been told about in the
+       second form was thrown away, and the chat resolution below then had
+       nothing to join the same person's two identities with. */
+    const lidJid = jidKind === 'lid' ? jid : classifyJid(altJid) === 'lid' ? altJid : null;
+    if (!lidJid) return;
+    const phoneJid = lidJid === jid ? altJid : jid;
+    if (classifyJid(phoneJid) !== 'individual') return;
+
+    const phoneNumber = derivePhoneNumber(phoneJid, 'individual', null);
     if (!phoneNumber) return;
-    await jidMappingRepo.upsert(businessId, whatsappAccountId, jid, altJid, phoneNumber, 'baileys_alt_jid', 'high');
+    await jidMappingRepo.upsert(businessId, whatsappAccountId, lidJid, phoneJid, phoneNumber, 'baileys_alt_jid', 'high');
+  }
+
+  /**
+   * Which chat row this message belongs in.
+   *
+   * WhatsApp is midway through moving every account from a phone-number JID
+   * to a @lid, and during that move the SAME person's messages genuinely
+   * arrive under either one - a customer's own message on one, the echo of
+   * what we sent back to them on the other. Keyed on the raw JID alone,
+   * that opened a second chat row for somebody who already had one: the
+   * reported "forwarding splits the chat into two, and text and images go
+   * to separate chats".
+   *
+   * So before a chat is upserted, the other JID this person is known by is
+   * worked out - from the pairing Baileys attached to this very message,
+   * or from the one already recorded in whatsapp_jid_mappings - and if a
+   * chat already exists under it, THAT is the chat this message lands in.
+   *
+   * Two deliberate limits. It never guesses: only a pairing WhatsApp itself
+   * supplied is used, never one inferred from a name or a similar-looking
+   * number, because merging two strangers' conversations is a far worse
+   * outcome than leaving two rows. And it never renames or rewrites
+   * anything - a business with one clean chat per contact sees no change at
+   * all, since there is no sibling row to find.
+   *
+   * Returns the JID to upsert against, which is simply the incoming one
+   * whenever no sibling chat exists.
+   */
+  private async resolveChatJid(
+    chatRepo: WhatsAppChatRepository,
+    jidMappingRepo: WhatsAppJidMappingRepository,
+    businessId: string,
+    whatsappAccountId: string,
+    ingested: IngestedWhatsAppMessage,
+  ): Promise<string> {
+    // A group, a broadcast or a channel has one real address and no second
+    // identity to reconcile. Only a one-to-one chat can split.
+    if (ingested.jidKind !== 'lid' && ingested.jidKind !== 'individual') return ingested.remoteJid;
+
+    const siblings = new Set<string>();
+
+    // What this message itself carries, which is the freshest evidence
+    // there is and needs no lookup at all.
+    const altKind = classifyJid(ingested.remoteJidAlt);
+    if (ingested.remoteJidAlt && (altKind === 'lid' || altKind === 'individual')) {
+      siblings.add(ingested.remoteJidAlt);
+    }
+
+    // What we were told on some earlier message. The reason this matters:
+    // the message that splits a chat is often the one WITHOUT the pairing
+    // attached, which is precisely when the stored mapping is the only
+    // thing that can join the two.
+    const mapping =
+      ingested.jidKind === 'lid'
+        ? await jidMappingRepo.findByLid(businessId, whatsappAccountId, ingested.remoteJid)
+        : await jidMappingRepo.findByPhoneJid(businessId, whatsappAccountId, ingested.remoteJid);
+    if (mapping) {
+      const counterpart = ingested.jidKind === 'lid' ? mapping.phoneJid : mapping.lidJid;
+      if (counterpart && counterpart !== ingested.remoteJid) siblings.add(counterpart);
+    }
+
+    siblings.delete(ingested.remoteJid);
+    if (siblings.size === 0) return ingested.remoteJid;
+
+    /* The chat under the incoming JID wins whenever it exists: this
+       message is already in the right place and there is nothing to fix.
+       Only when it does not does the sibling get used - which is exactly
+       the moment a second row would otherwise have been created. */
+    const own = await chatRepo.findByJid(businessId, whatsappAccountId, ingested.remoteJid);
+    if (own) return own.chatJid;
+
+    const existing = await chatRepo.findLiveByJids(businessId, whatsappAccountId, [...siblings]);
+    if (!existing || existing.chatType !== 'individual') return ingested.remoteJid;
+
+    console.log(
+      `[WhatsAppMessagePersistence] Message arrived on a second JID for chat ${existing.id}; ` +
+        'filing it in the chat this contact already has rather than opening another.',
+    );
+    return existing.chatJid;
   }
 
   private async persistWithClient(
@@ -334,10 +425,16 @@ export class WhatsAppMessagePersistenceService {
       }
     }
 
+    /* Resolved rather than taken raw - see resolveChatJid for the split
+       this prevents. jidKind stays the incoming message's own, because
+       COALESCE in the upsert leaves an existing row's kind alone and this
+       value is only ever used when the row is genuinely new. */
+    const chatJid = await this.resolveChatJid(chatRepo, jidMappingRepo, businessId, whatsappAccountId, ingested);
+
     const chat = await chatRepo.upsertFromWhatsApp({
       businessId,
       whatsappAccountId,
-      chatJid: ingested.remoteJid,
+      chatJid,
       jidKind: ingested.jidKind,
       chatType,
       // The chat's own contact_id is a DM-only concept (the one person on

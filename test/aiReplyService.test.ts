@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generateAiReply, buildSystemInstruction, wrapUntrustedData, escapeUntrustedDataBoundary } from '../src/services/aiReplyService.js';
+import { generateAiReply, buildSystemInstruction, wrapUntrustedData, escapeUntrustedDataBoundary, NO_REPLY_SENTINEL } from '../src/services/aiReplyService.js';
 import type { AiAgentRecord } from '../src/repositories/aiAgentRepository.js';
 import type { AiHandoffContext } from '../src/services/aiContextGathererService.js';
 import type { WhatsAppMessageRecord } from '../src/repositories/whatsappMessageRepository.js';
@@ -676,6 +676,47 @@ describe('Durable conversation state (Phase 3 - supplements raw history, never r
   it('falls back through the real name hierarchy to a WhatsApp push name when there is no confirmed preferred name', () => {
     const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ contactNameSources: { verifiedName: null, businessName: null, pushName: 'Jane P.', username: null, shortName: null } }));
     expect(instruction).toContain('"Jane P."');
+  });
+
+  /**
+   * Reported from production: the agent went quiet on people who were still
+   * talking. The fix is not to argue with the model afterwards - it is to
+   * stop describing an option it should not have. These pin that the prompt
+   * itself changes with the message.
+   */
+  describe('whether the agent is even told it may say nothing', () => {
+    it('withholds the sentinel when the customer has said something of their own', () => {
+      for (const queryText of ['i will take two fish cutters', 'my order never came', 'send it to worthing']) {
+        const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ queryText }));
+        expect(instruction).not.toContain(NO_REPLY_SENTINEL);
+        expect(instruction).toContain('THIS MESSAGE GETS AN ANSWER');
+      }
+    });
+
+    it('withholds it on a question, which is the version that was actually costing answers', () => {
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ queryText: 'how much is delivery' }));
+      expect(instruction).not.toContain(NO_REPLY_SENTINEL);
+    });
+
+    it('withholds it while we are on record as owing them an answer, even on a sign-off', () => {
+      const state = { ...emptyConversationState('business-1', 'chat-1'), openQuestions: ['what size?'] };
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ queryText: 'ok', conversationState: state }));
+      expect(instruction).not.toContain(NO_REPLY_SENTINEL);
+    });
+
+    it('still offers it on a plain goodbye, so a conversation can actually end', () => {
+      for (const queryText of ['ok thanks', 'cool', 'see you later']) {
+        const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ queryText }));
+        expect(instruction).toContain(NO_REPLY_SENTINEL);
+      }
+    });
+
+    it('always tells it to wind down rather than to manufacture a new topic', () => {
+      // Without this, "you must reply" produces a question nobody needed,
+      // which is what made silence look like the lesser evil to begin with.
+      const instruction = buildSystemInstruction(fakeAgent(), fakeContext({ queryText: 'i will take two fish cutters' }));
+      expect(instruction).toContain('LET A CONVERSATION END');
+    });
   });
 
   it('does not crash when conversationState is missing entirely (older test fixtures that predate this field)', () => {

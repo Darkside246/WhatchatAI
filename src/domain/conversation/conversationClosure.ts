@@ -76,6 +76,120 @@ export function readsAsAQuestion(text: string | null | undefined): boolean {
 }
 
 /**
+ * The short things people say when they are done talking.
+ *
+ * Matched as whole phrases rather than loose words, and consumed from the
+ * front until nothing is left - so "ok thanks", "alright cool see you
+ * later" and "thank you very much" all read as one sign-off, while "ok so
+ * what time do you close" does not, because "what" is not on the list.
+ *
+ * Deliberately missing: "yes" and "no". On WhatsApp those are almost never
+ * a goodbye - they are the answer to something our side asked, and the
+ * reply to an answer is not silence.
+ */
+const SIGN_OFF_PHRASES = [
+  // Longest first: the matcher takes the first phrase that fits, and
+  // "thank" would otherwise swallow the front of "thank you very much".
+  'thank you very much', 'thank you so much', 'thanks very much', 'thanks so much',
+  'talk to you later', 'catch you later', 'have a good night', 'have a good day',
+  'have a great day', 'have a good one', 'see you later', 'see you soon',
+  'much appreciated', 'appreciate it', 'appreciated', 'good looking out',
+  'see you then', 'see you', 'see ya', 'sounds good', 'sounds great',
+  'works for me', 'that works', 'no problem', 'not a problem', 'no worries',
+  'sure thing', 'will do', 'walk good', 'one love', 'take care', 'good night',
+  'nighty night', 'all right', 'bye bye', 'nice one', 'good one', 'great stuff',
+  'thank you', 'thankyou', 'thanks', 'thanx', 'thankx', 'thx', 'ty', 'tysm',
+  'okay', 'okey', 'oki', 'ok', 'kk', 'k',
+  'alright', 'aight', 'iight', 'ight',
+  'cool', 'kool', 'nice', 'great', 'sweet', 'perfect', 'excellent', 'awesome',
+  'lovely', 'wonderful', 'brilliant', 'fine', 'good',
+  'bet', 'word', 'respect', 'blessings', 'peace', 'cheers',
+  'got it', 'gotcha', 'gotchu', 'understood', 'noted',
+  'goodbye', 'byebye', 'bye', 'laters', 'later', 'cya', 'night',
+  'lol', 'lmao', 'haha', 'hahaha', 'hehe',
+];
+
+/** Words that only ever join two sign-offs together, never carry meaning of their own. */
+const SIGN_OFF_FILLERS = ['and', 'then', 'again', 'so', 'very', 'much', 'too', 'man', 'boss'];
+
+/**
+ * True when the whole message is a sign-off and nothing else.
+ *
+ * The length cap is defensive rather than clever: a real goodbye is short,
+ * and anything long enough to contain a request should be read as one even
+ * if every word in it happens to be on the list.
+ */
+export function readsAsASignOff(text: string | null | undefined): boolean {
+  const raw = (text ?? '').trim();
+  if (!raw) return false;
+  if (raw.includes('?')) return false;
+
+  /* Emoji on its own is the commonest sign-off there is - a thumbs-up ends
+     more WhatsApp conversations than any word does. Stripped to nothing
+     with something having been there means exactly that. */
+  const withoutEmoji = raw.replace(/[\p{Extended_Pictographic}\p{Emoji_Component}️]/gu, '').trim();
+  if (!withoutEmoji) return !raw.includes('❓') && !raw.includes('❔');
+
+  const normalised = withoutEmoji
+    .toLowerCase()
+    .replace(/[^a-z\s]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalised || normalised.length > 60) return false;
+
+  let remaining = normalised;
+  while (remaining) {
+    const match = [...SIGN_OFF_PHRASES, ...SIGN_OFF_FILLERS].find(
+      (phrase) => remaining === phrase || remaining.startsWith(`${phrase} `),
+    );
+    if (!match) return false;
+    remaining = remaining.slice(match.length).trim();
+  }
+
+  return true;
+}
+
+/**
+ * Whether the agent is allowed to say nothing this turn.
+ *
+ * ONE predicate, read in two places that must never disagree: the prompt
+ * decides with it whether to even offer the model the option of silence,
+ * and judgeClosure below checks the model's answer against it afterwards.
+ * Two separate rules for the same decision would drift, and the drift
+ * would show up as a customer nobody answered.
+ *
+ * The reported failure this narrows: the agent was going quiet on people
+ * who were still talking. Judging an exchange "finished" is easy to get
+ * wrong on a short message, and the rule that fixes it is the one a person
+ * would use - if somebody said something, say something back. Silence is
+ * for a goodbye, and only for a goodbye.
+ */
+export function silenceIsAvailable(input: {
+  customerText: string | null;
+  openQuestionCount: number;
+}): { available: boolean; reason: string } {
+  if (readsAsAQuestion(input.customerText)) {
+    // The expensive failure, and the one actually reported: a customer
+    // asks something, the model judges the exchange finished, and the
+    // business simply never answers.
+    return { available: false, reason: 'the customer asked something - not closing on an unanswered question' };
+  }
+
+  if (input.openQuestionCount > 0) {
+    return { available: false, reason: `${input.openQuestionCount} question(s) still owed to this customer` };
+  }
+
+  const text = (input.customerText ?? '').trim();
+  if (text && !readsAsASignOff(text)) {
+    // Not a question, but not a goodbye either - they told us something,
+    // and a person who is told something answers.
+    return { available: false, reason: 'the customer said something of their own - that gets an answer, not silence' };
+  }
+
+  return { available: true, reason: 'nothing outstanding and nothing left to say' };
+}
+
+/**
  * Decides whether this exchange is over.
  *
  * `modelSaysClosed` is the agent's own judgement for this turn - it had
@@ -92,18 +206,8 @@ export function judgeClosure(input: {
     return { closed: false, reason: 'the agent had something to say' };
   }
 
-  if (readsAsAQuestion(input.customerText)) {
-    // The expensive failure, and the one actually reported: a customer
-    // asks something, the model judges the exchange finished, and the
-    // business simply never answers.
-    return { closed: false, reason: 'the customer asked something - not closing on an unanswered question' };
-  }
-
-  if (input.openQuestionCount > 0) {
-    return { closed: false, reason: `${input.openQuestionCount} question(s) still owed to this customer` };
-  }
-
-  return { closed: true, reason: 'nothing outstanding and nothing left to say' };
+  const silence = silenceIsAvailable({ customerText: input.customerText, openQuestionCount: input.openQuestionCount });
+  return { closed: silence.available, reason: silence.reason };
 }
 
 /**

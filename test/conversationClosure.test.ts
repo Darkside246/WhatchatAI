@@ -7,6 +7,8 @@ import {
   describeEpisodeBoundary,
   judgeClosure,
   readsAsAQuestion,
+  readsAsASignOff,
+  silenceIsAvailable,
   reopensConversation,
   splitEpisode,
 } from '../src/domain/conversation/conversationClosure.js';
@@ -55,6 +57,104 @@ describe('deciding the conversation is finished', () => {
 
   it('closes when there is nothing to read at all', () => {
     expect(judgeClosure({ ...closed, customerText: null }).closed).toBe(true);
+  });
+});
+
+describe('going quiet on somebody who is still talking', () => {
+  /**
+   * The complaint, in the words it arrived in: "this is too strict - once
+   * someone is talking they should respond". The agent was deciding that
+   * exchanges were finished while the customer was mid-sentence, and the
+   * only thing that had ever overruled it was a question mark.
+   *
+   * The rule now: a question gets an answer, and so does anything else
+   * somebody actually said. Silence is for a goodbye and nothing else.
+   */
+  const closed = { modelSaysClosed: true, customerText: 'ok thanks', openQuestionCount: 0 };
+
+  it('refuses to close on a statement that is not a question', () => {
+    // Nothing here has a question mark and nothing starts with a question
+    // word, and every one of them is somebody waiting to be answered.
+    for (const text of [
+      'i will take two fish cutters',
+      'my order never came',
+      'the driver went to the wrong house',
+      'send it to worthing main road',
+      'i need it for 6',
+    ]) {
+      expect(judgeClosure({ ...closed, customerText: text }).closed).toBe(false);
+    }
+  });
+
+  it('says why, in words an operator reading a log would understand', () => {
+    const judgement = judgeClosure({ ...closed, customerText: 'my order never came' });
+    expect(judgement.reason).toContain('said something of their own');
+  });
+
+  it('still lets a conversation actually end', () => {
+    // The other half of the same complaint: it must still know when things
+    // are winding down. A sign-off that gets a reply is a thread that never
+    // closes.
+    for (const text of ['ok', 'thanks!', 'ok thanks', 'alright cool', 'thank you very much', 'see you later', 'got it', '👍']) {
+      expect(judgeClosure({ ...closed, customerText: text }).closed).toBe(true);
+    }
+  });
+});
+
+describe('telling a goodbye from a sentence', () => {
+  it('reads the ordinary ways people sign off', () => {
+    for (const text of ['ok', 'okay', 'k', 'thanks', 'thank you', 'cool', 'nice one', 'later', 'take care', 'walk good', 'bet']) {
+      expect(readsAsASignOff(text)).toBe(true);
+    }
+  });
+
+  it('reads two of them stuck together, which is how people really write', () => {
+    for (const text of ['ok thanks', 'alright cool thanks', 'thanks so much see you later', 'ok cool bet']) {
+      expect(readsAsASignOff(text)).toBe(true);
+    }
+  });
+
+  it('reads a bare emoji, which ends more conversations than any word', () => {
+    for (const text of ['\u{1F44D}', '\u{1F64F}', '\u{2764}\u{FE0F}']) {
+      expect(readsAsASignOff(text)).toBe(true);
+    }
+  });
+
+  it('is not fooled by a sentence that merely starts like one', () => {
+    // "ok so what time do you close" is the exact shape that made silence
+    // look reasonable: it opens with an acknowledgement and then asks.
+    for (const text of ['ok so what time do you close', 'thanks but it never came', 'cool can i get two', 'nice i need one for friday']) {
+      expect(readsAsASignOff(text)).toBe(false);
+    }
+  });
+
+  it('does not treat yes or no as a goodbye', () => {
+    // On WhatsApp those answer something our side asked, and the reply to
+    // an answer is not silence.
+    for (const text of ['yes', 'no', 'yeah', 'nope']) {
+      expect(readsAsASignOff(text)).toBe(false);
+    }
+  });
+
+  it('refuses anything long enough to be carrying a request', () => {
+    expect(readsAsASignOff('thanks '.repeat(20))).toBe(false);
+  });
+});
+
+describe('the one predicate the prompt and the safety net share', () => {
+  it('is what decides whether the model is even offered silence', () => {
+    // If these two ever disagreed, the model would be handed an option the
+    // worker then overruled - a wasted call and a customer left waiting.
+    const cases = [
+      { customerText: 'ok thanks', openQuestionCount: 0 },
+      { customerText: 'how much is delivery', openQuestionCount: 0 },
+      { customerText: 'i want two cutters', openQuestionCount: 0 },
+      { customerText: 'ok', openQuestionCount: 1 },
+      { customerText: null, openQuestionCount: 0 },
+    ];
+    for (const input of cases) {
+      expect(judgeClosure({ ...input, modelSaysClosed: true }).closed).toBe(silenceIsAvailable(input).available);
+    }
   });
 });
 

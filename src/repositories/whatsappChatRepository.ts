@@ -428,6 +428,42 @@ export class WhatsAppChatRepository {
   }
 
   /**
+   * The chat this person already has, whichever of their two JIDs it is under.
+   *
+   * WhatsApp is midway through moving everybody from a phone-number JID to
+   * a @lid, and during the move the SAME person's messages arrive under
+   * either one depending on who sent it and which way it travelled. Keyed
+   * on chat_jid alone, that produced two chat rows for one contact - the
+   * reported "forwarding splits the chat in two, text and images go to
+   * separate chats".
+   *
+   * Given every JID known to belong to one person, this answers with the
+   * chat they already have. It declares no canonical form and renames
+   * nothing: it exists so a second row is never opened for somebody who
+   * already has one.
+   *
+   * Ordered oldest-first deliberately. If a split has already happened, the
+   * older row is the one carrying the history, the contact link and the
+   * name the operator recognises - so that is the one everything rejoins.
+   */
+  async findLiveByJids(
+    businessId: string,
+    whatsappAccountId: string,
+    chatJids: string[],
+  ): Promise<WhatsAppChatRecord | null> {
+    if (chatJids.length === 0) return null;
+    const { rows } = await this.db.query<ChatRow>(
+      `SELECT * FROM whatsapp_chats
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND chat_jid = ANY($3::text[])
+         AND deleted_at IS NULL
+       ORDER BY created_at ASC
+       LIMIT 1`,
+      [businessId, whatsappAccountId, chatJids],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
    * Reconciliation read: individual chats whose contact link never resolved
    * (e.g. the chat arrived before its contact did). Real candidates for
    * repair, not a fabricated "everything is fine" count.

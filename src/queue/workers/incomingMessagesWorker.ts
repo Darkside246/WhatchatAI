@@ -775,7 +775,7 @@ async function runAiHandoff(params: {
         businessId,
         whatsappAccountId,
         chatId,
-        'The assistant had nothing to say, but the customer asked something - so nobody has answered them yet.',
+        `The assistant had nothing to say, but ${judgement.reason} - so nobody has answered them yet.`,
       );
       return;
     }

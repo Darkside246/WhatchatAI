@@ -39,7 +39,7 @@ import {
 import { FoodOperationsRepository, type FoodAiOrderTaking } from '../repositories/foodOperationsRepository.js';
 import { confirmProposal, resolveProposal, type DraftOrderProposal, type ProposedLine } from './food/orderIntake.js';
 import { describeModifierPrice } from '../domain/food/modifierPricing.js';
-import { describeEpisodeBoundary, splitEpisode } from '../domain/conversation/conversationClosure.js';
+import { describeEpisodeBoundary, silenceIsAvailable, splitEpisode } from '../domain/conversation/conversationClosure.js';
 import { RelayedMessageRepository } from '../repositories/relayedMessageRepository.js';
 import { RetailOperationsRepository } from '../repositories/retailOperationsRepository.js';
 import { recomputeLeadScoreForContact } from './leadScoringService.js';
@@ -931,12 +931,59 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
       'is fine; filling silence is not.',
   );
 
+  /**
+   * Whether silence is even on the table this turn.
+   *
+   * Reported from production: the agent was going quiet on people who were
+   * still talking, one turn at a time, each judgement made fresh. The fix
+   * is not to argue with the model after the fact - it is to stop offering
+   * it an option it should not have. When the customer has said something
+   * of their own, the sentinel is simply not described to it, so the only
+   * thing it can produce is a reply.
+   *
+   * Decided by the same predicate the worker checks the answer against
+   * (conversationClosure.ts's silenceIsAvailable), so the prompt and the
+   * safety net can never drift into disagreeing about the same message.
+   */
+  const silence = silenceIsAvailable({
+    customerText: context.queryText,
+    // Optional-chained on purpose: a caller that predates conversationState
+    // must still get a prompt, and "we do not know what is outstanding" is
+    // the safe side of this particular decision - it only ever means the
+    // model is MORE likely to be told to answer.
+    openQuestionCount: context.conversationState?.openQuestions.length ?? 0,
+  });
+
+  if (silence.available) {
+    lines.push(
+      `SAYING NOTHING IS A VALID REPLY, THIS TURN ONLY. The customer's last message is a sign-off - it closes the ` +
+        `exchange rather than opening one. If you have nothing real to add to it, reply with exactly ${NO_REPLY_SENTINEL} ` +
+        'and nothing else. It is not sent to the customer - it means "no reply needed" - and it is the right answer ' +
+        'to a bare "ok", "thanks" or a thumbs-up at the end of a conversation, exactly as a person would simply not ' +
+        'send anything. Never use it to avoid a question you find difficult, and never put it alongside other words.',
+    );
+  } else {
+    lines.push(
+      'THIS MESSAGE GETS AN ANSWER. The customer has said something of their own, so silence is not available to ' +
+        'you on this turn - there is no sentinel, no "nothing to add", and no option to let it pass. Somebody who ' +
+        'speaks to a business and gets nothing back assumes they have been ignored. Reply to what they actually ' +
+        'said. If it needs one word, send one word.',
+    );
+  }
+
+  /**
+   * The other half of what was asked for: a conversation should be able to
+   * END without being cut off. Told to wind down rather than to stop, the
+   * model shortens and closes warmly; told only "reply", it manufactures a
+   * question to keep the thread alive, which is the behaviour that made
+   * silence look like the lesser evil in the first place.
+   */
   lines.push(
-    `SAYING NOTHING IS A VALID REPLY. When the exchange is genuinely finished and you have nothing real to add, ` +
-      `reply with exactly ${NO_REPLY_SENTINEL} and nothing else. It is not sent to the customer - it means "no reply needed", ` +
-      'and it is the right answer to a bare "ok" or "thanks" at the end of a conversation, exactly as a person ' +
-      'would simply not send anything. Never use it to avoid a question you find difficult, and never put it ' +
-      'alongside other words.',
+    'LET A CONVERSATION END. Replying is not the same as keeping it going. When everything has been dealt with and ' +
+      'the exchange is winding down, get shorter: acknowledge, confirm what happens next if anything does, and ' +
+      'close warmly. Do not open a new topic, do not ask a question you do not need the answer to, and do not offer ' +
+      'help nobody asked for just to fill the turn. A short, final-sounding reply is how a person ends a ' +
+      'conversation without ignoring the last thing said to them.',
   );
 
   lines.push(

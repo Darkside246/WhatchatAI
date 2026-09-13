@@ -68,6 +68,29 @@ export class WhatsAppJidMappingRepository {
     return toRecord(row);
   }
 
+  /**
+   * The same pairing read from the other end.
+   *
+   * A message can arrive addressed either way round - Baileys puts the
+   * @lid in remoteJidAlt when the key itself is the phone JID - so a
+   * mapping is only useful if it can be looked up from whichever side
+   * happens to turn up first.
+   */
+  async findByPhoneJid(
+    businessId: string,
+    whatsappAccountId: string,
+    phoneJid: string,
+  ): Promise<WhatsAppJidMappingRecord | null> {
+    const { rows } = await this.db.query<JidMappingRow>(
+      `SELECT * FROM whatsapp_jid_mappings
+       WHERE business_id = $1 AND whatsapp_account_id = $2 AND phone_jid = $3
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [businessId, whatsappAccountId, phoneJid],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
   async findByLid(businessId: string, whatsappAccountId: string, lidJid: string): Promise<WhatsAppJidMappingRecord | null> {
     const { rows } = await this.db.query<JidMappingRow>(
       `SELECT * FROM whatsapp_jid_mappings WHERE business_id = $1 AND whatsapp_account_id = $2 AND lid_jid = $3`,
