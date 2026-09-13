@@ -2888,6 +2888,15 @@ export const api = {
     request<{ method: FoodPaymentMethodDto }>(`/food-operations/payment-methods/${method}/preferred`, { method: 'POST' }),
 
   /** `sent` says what actually happened; a 200 with sent:false is a reason, not a failure. */
+  /**
+   * Sends the customer their itemised bill on the conversation the order
+   * came from. Every figure comes off the stored order - the browser never
+   * works one out, and neither does this call.
+   */
+  sendFoodBill: (orderId: string) =>
+    request<{ sent: true; outboundMessageId: string; text: string }>(`/food-operations/orders/${orderId}/bill`, {
+      method: 'POST',
+    }),
   sendFoodPaymentRequest: (orderId: string, method?: FoodPaymentMethodKeyDto) =>
     request<{ sent: boolean; reason?: string; request?: FoodPaymentRequestDto; limitWarning?: string }>(
       `/food-operations/orders/${orderId}/payment-request`,

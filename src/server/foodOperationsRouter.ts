@@ -25,9 +25,14 @@ import { eventForStage } from '../services/food/orderNotifications.js';
 import { sendOrderNotification } from '../services/food/sendOrderNotification.js';
 import { requireAuth, requirePermission, requireProductAccess, type AuthContext } from './authMiddleware.js';
 import { hasPermission } from '../domain/auth/permissions.js';
+import { buildCustomerBill } from '../domain/food/foodBill.js';
+import { modifierCharge } from '../domain/food/modifierPricing.js';
+import { WhatsAppChatRepository } from '../repositories/whatsappChatRepository.js';
+import { whatsappOutboundMessageService } from '../services/whatsappOutboundMessageService.js';
 
 const router = Router();
 const repository = new FoodOperationsRepository(pool);
+const chatRepository = new WhatsAppChatRepository(pool);
 const businessRepository = new BusinessRepository(pool);
 
 router.use(requireAuth);
@@ -1436,6 +1441,103 @@ router.post('/orders/:orderId/payment-request', requirePermission('food.manage')
     ...(parsed.data.method ? { method: parsed.data.method } : {}),
   });
   return res.status(200).json(outcome);
+});
+
+/**
+ * Sends the customer their bill, on the conversation it came from.
+ *
+ * Somebody who ordered over chat has no receipt, no screen and no counter -
+ * the conversation IS the till roll. So this writes the itemised bill into
+ * that chat: what they ordered, what it came to, and how to pay.
+ *
+ * Every figure comes off the STORED ORDER, not from a recomputation and
+ * certainly not from anything in the request. The order was priced against
+ * the catalogue when it was taken and frozen there; a bill that re-derived
+ * its own numbers could quote a price the order does not have, which is the
+ * one thing a bill must never do.
+ *
+ * Refuses an order with no conversation attached rather than inventing a
+ * recipient. A counter sale keyed in at the till has no chat to send to,
+ * and that is a normal outcome, not a failure.
+ */
+router.post('/orders/:orderId/bill', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const orderId = String(req.params.orderId ?? '');
+  if (!uuid.safeParse(orderId).success) return res.status(400).json({ error: 'INVALID_ORDER_ID' });
+
+  const order = await repository.findOrder(auth.businessId, orderId);
+  if (!order) return res.status(404).json({ error: 'ORDER_NOT_FOUND' });
+  if (!order.chatId) {
+    return res.status(409).json({
+      error: 'NO_CONVERSATION',
+      message: 'This order was keyed in at the counter, so there is no chat to send a bill to.',
+    });
+  }
+
+  const [settings, methods, chat] = await Promise.all([
+    repository.getSettings(auth.businessId),
+    repository.listPaymentMethods(auth.businessId),
+    // The account comes from the chat, matching sendOrderNotification: an
+    // order's conversation is the authority on which WhatsApp number it
+    // belongs to, and a business can have more than one.
+    chatRepository.findByIdForBusiness(order.chatId, auth.businessId),
+  ]);
+  if (!chat) return res.status(409).json({ error: 'NO_CONVERSATION', message: 'That conversation is no longer in this workspace.' });
+
+  /* The preferred method, or the first that is switched on. Its own
+     instructions where the business wrote any, and its alias where they
+     did not - never both, and never a sentence this app made up about
+     somebody else's money. */
+  const payable = methods.filter((method) => method.enabled);
+  const chosen = payable.find((method) => method.preferred) ?? payable[0] ?? null;
+  const payTo = chosen?.instructions?.trim() || (chosen?.alias ? `Pay to: ${chosen.alias}` : null);
+
+  const text = buildCustomerBill({
+    orderNumber: order.orderNumber,
+    lines: order.items.map((line) => ({
+      name: line.name,
+      quantity: line.quantity,
+      unitPriceCents: line.unitPriceCents,
+      // Priced the same way the order itself was - through modifierCharge,
+      // against the free allowance that was on the catalogue at the time.
+      modifiersPerUnitCents: line.modifiers.reduce(
+        (total, modifier) =>
+          total + modifierCharge(modifier.quantity ?? 1, modifier.freeQuantity ?? 0, modifier.priceDeltaCents).totalCents,
+        0,
+      ),
+      modifiers: line.modifiers.map((modifier) => ({
+        name: modifier.name,
+        action: modifier.action,
+        quantity: modifier.quantity,
+      })),
+    })),
+    subtotalCents: order.subtotalCents,
+    discountCents: order.discountCents,
+    deliveryFeeCents: order.deliveryFeeCents,
+    taxCents: order.taxCents,
+    totalCents: order.totalCents,
+    currency: order.currency,
+    taxInclusive: settings.taxInclusive,
+    payTo,
+    paymentRequired: settings.paymentRequiredBeforeKitchen && order.paymentState === 'UNPAID',
+  });
+
+  const queued = await whatsappOutboundMessageService.send({
+    businessId: auth.businessId,
+    whatsappAccountId: chat.whatsappAccountId,
+    chatId: order.chatId,
+    messageType: 'text',
+    text,
+    // A person pressed a button. Never 'ai' - this is not the assistant
+    // deciding to bill somebody.
+    requestedBy: 'human',
+    // Keyed on the order and its current total, so a double tap sends one
+    // bill - and a bill re-sent AFTER the order was corrected genuinely
+    // goes, because it is a different bill.
+    idempotencyKey: `food-bill:${order.id}:${order.totalCents}`,
+  });
+
+  return res.status(200).json({ sent: true, outboundMessageId: queued.id, text });
 });
 
 router.get('/orders/:orderId/payment-requests', requirePermission('food.view'), async (req, res) => {

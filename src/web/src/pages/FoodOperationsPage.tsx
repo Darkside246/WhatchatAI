@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, Bike, BookOpen, Calculator, Camera, ChefHat, ChevronLeft, Check, ClipboardCheck, ClipboardList, Columns3, Eye, HandCoins, History, LayoutGrid, MessageSquare, Navigation, PackageCheck, Printer, Receipt, RotateCcw, Send, Settings2, Store, Undo2, UtensilsCrossed, X } from 'lucide-react';
+import { AlertTriangle, Bike, BookOpen, Calculator, Camera, ChefHat, ChevronDown, ChevronLeft, ChevronUp, Check, ClipboardCheck, ClipboardList, Columns3, Eye, HandCoins, History, LayoutGrid, MessageSquare, Navigation, PackageCheck, Printer, Receipt, RotateCcw, Send, Settings2, Store, Undo2, UtensilsCrossed, X } from 'lucide-react';
 import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand, type WorkspaceBusiness } from '../lib/api.js';
 import { QcPhotoButton } from '../components/QcPhotoButton.js';
 import { DeliveryControl } from '../components/DeliveryControl.js';
@@ -358,6 +358,56 @@ export function FoodOperationsPage() {
   }
 
   /** Asking the customer for the money. The amount comes off the order, never retyped. */
+  /**
+   * Sends the customer their bill on the conversation the order came from.
+   *
+   * The browser composes nothing: the server builds the message off the
+   * STORED order - the prices it was taken at, frozen - and sends it. A
+   * bill assembled here could quote a figure the order does not have, which
+   * is the one thing a bill must never do.
+   */
+  async function sendBill(order: FoodBoardOrderDto) {
+    setBusyId(order.id);
+    setError(null);
+    try {
+      await api.sendFoodBill(order.id);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not send the bill.');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  /**
+   * Cancelling an order.
+   *
+   * Confirmed first, and confirmed with the order named rather than a bare
+   * "are you sure": CANCELLED is a terminal stage with nowhere to go from
+   * it, so a mis-tap on a busy board is not recoverable by pressing
+   * something else. The reason is asked for and kept, because the one
+   * question anybody asks about a cancelled order a week later is why.
+   */
+  async function cancelOrder(order: FoodBoardOrderDto) {
+    const label = order.customerName?.trim() || `Order #${order.orderNumber}`;
+    const reason = window.prompt(`Cancel ${label}?\n\nThis cannot be undone. Why is it being cancelled?`);
+    // Cancel on the prompt returns null. An empty string is somebody
+    // pressing OK with nothing typed, which is a deliberate "no reason".
+    if (reason === null) return;
+
+    setBusyId(order.id);
+    setError(null);
+    try {
+      await api.moveFoodOrder(order.id, 'CANCELLED', reason.trim() || undefined);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not cancel that order.');
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function askForPayment(order: FoodBoardOrderDto) {
     setBusyId(order.id);
     setError(null);
@@ -551,6 +601,8 @@ export function FoodOperationsPage() {
       onConfirmPayment={() => void confirmPayment(order)}
       onTakePayment={() => setPaymentOrderId(order.id)}
       onPrint={(kind) => void print(order, kind)}
+      onSendBill={() => void sendBill(order)}
+      onCancel={() => void cancelOrder(order)}
       onAcknowledgeQc={() => void acknowledgeQc(order)}
     />
   );
@@ -996,7 +1048,7 @@ const PAYMENT_BADGE: Record<FoodBoardOrderDto['paymentState'], { label: string; 
 };
 
 function OrderCard({
-  order, station, drift, busy, onBump, onSendBack, onRelease, onSendOutWithoutPhoto, onPhotoTaken, onAskForPayment, onConfirmPayment, onTakePayment, onPrint, onAcknowledgeQc,
+  order, station, drift, busy, onBump, onSendBack, onRelease, onSendOutWithoutPhoto, onPhotoTaken, onAskForPayment, onConfirmPayment, onTakePayment, onPrint, onSendBill, onCancel, onAcknowledgeQc,
 }: {
   order: FoodBoardOrderDto;
   /** Which station this screen is for, so a line can say whether it is this cook's job. Null on the whole board, where every line is. */
@@ -1012,6 +1064,10 @@ function OrderCard({
   onConfirmPayment: () => void;
   onTakePayment: () => void;
   onPrint: (kind: 'kitchen' | 'receipt') => void;
+  /** Sends the customer their itemised bill on the conversation the order came from. */
+  onSendBill: () => void;
+  /** Cancels the order. Terminal - hence the confirmation at the call site. */
+  onCancel: () => void;
   /** Somebody looked at what the photo flagged and is saying so. */
   onAcknowledgeQc: () => void;
 }) {
@@ -1032,6 +1088,15 @@ function OrderCard({
   /** Who it is for, when the band is showing their table instead of their name. */
   const subtitle = order.customerName?.trim() && order.customerName.trim() !== title ? order.customerName.trim() : null;
   const placedTime = new Date(order.placedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  /**
+   * Folded down to its band and its buttons.
+   *
+   * Per ticket and per screen, deliberately not stored: a cook folding the
+   * ticket they are working on is saying something about this minute, not
+   * setting a preference, and a board that remembered it would hide a new
+   * ticket's contents from the next person to walk up to the pass.
+   */
+  const [collapsed, setCollapsed] = useState(false);
 
   return (
     <article className="flex flex-col overflow-hidden rounded-lg border border-border-subtle bg-surface-1">
@@ -1064,6 +1129,23 @@ function OrderCard({
           <span className="ml-auto truncate">
             {order.waitingForPayment ? 'Waiting on payment' : STAGE_LABEL[order.stage]}
           </span>
+          {/* Folds the ticket down to its band and its buttons.
+              A board in the middle of service has more tickets than screen,
+              and the ones already being cooked do not need their contents
+              read again - what still matters about them is who, how long,
+              and whether anything on them can hurt somebody. All three stay
+              visible folded, and so does every action, so nothing has to be
+              unfolded to be dealt with. */}
+          <button
+            type="button"
+            onClick={() => setCollapsed((current) => !current)}
+            title={collapsed ? 'Show the whole ticket' : 'Fold this ticket down'}
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? `Show order ${order.orderNumber} in full` : `Fold order ${order.orderNumber} down`}
+            className="-my-1 shrink-0 rounded p-1 opacity-70 hover:opacity-100"
+          >
+            {collapsed ? <ChevronDown size={14} aria-hidden /> : <ChevronUp size={14} aria-hidden />}
+          </button>
         </div>
       </div>
 
@@ -1075,6 +1157,14 @@ function OrderCard({
         </span>
         {/* Whose order it is, when the band is showing the table instead. */}
         {subtitle && <span className="truncate text-meta font-medium text-fg-secondary">{subtitle}</span>}
+        {/* Folded, the one thing lost is the food itself - so the count of
+            it stays, which is enough to tell a two-item ticket from a
+            fifteen-item one without opening it. */}
+        {collapsed && (
+          <span className="ml-auto shrink-0 text-meta font-medium text-fg-muted">
+            {order.items.length} {order.items.length === 1 ? 'item' : 'items'}
+          </span>
+        )}
       </div>
 
       <div className="p-2.5">
@@ -1180,6 +1270,41 @@ function OrderCard({
             Receipt
           </button>
         )}
+
+        {/* The same bill, sent rather than printed.
+            Somebody who ordered over chat has no counter to stand at and no
+            paper to be handed - the conversation is their till roll. Only
+            offered where there IS a conversation: a counter sale has none,
+            and a button that cannot work is worse than no button. */}
+        {order.chatId && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onSendBill}
+            title="Send this customer their bill on WhatsApp"
+            className="flex items-center gap-1 text-meta text-fg-muted hover:text-fg disabled:opacity-50"
+          >
+            <Send size={11} aria-hidden />
+            Send bill
+          </button>
+        )}
+
+        {/* Cancelling. Last, quiet, and on the right, because it is the one
+            action here that cannot be undone - CANCELLED is a terminal
+            stage with nowhere to go from it (see orderLifecycle). Hidden
+            once an order is closed, since there is nothing left to cancel. */}
+        {order.stage !== 'COMPLETED' && order.stage !== 'CANCELLED' && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onCancel}
+            title="Cancel this order"
+            className="ml-auto flex items-center gap-1 text-meta text-fg-muted hover:text-error disabled:opacity-50"
+          >
+            <X size={11} aria-hidden />
+            Cancel
+          </button>
+        )}
       </div>
 
       {/* Settled money is still something somebody may have to correct - a
@@ -1205,6 +1330,11 @@ function OrderCard({
         </p>
       )}
 
+      {/* The food itself is the bulk of a ticket and the only thing folding
+          hides. The allergen banner above stays whatever happens - it is
+          the one thing on this card that can hurt somebody, and a warning
+          that can be folded away is a warning nobody can rely on. */}
+      {!collapsed && (
       <ul className="space-y-1.5">
         {order.items.map((item, index) => {
           // Someone else's job on a ticket this station is also on. Dimmed
@@ -1257,6 +1387,7 @@ function OrderCard({
           );
         })}
       </ul>
+      )}
 
       {order.kitchenNotes && <p className="mt-1.5 text-meta italic text-fg-secondary">{order.kitchenNotes}</p>}
 
