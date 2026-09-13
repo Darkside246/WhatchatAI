@@ -18,7 +18,7 @@ import { ZoomMeetingRepository } from '../repositories/zoomMeetingRepository.js'
 import type { MeetingProvider } from './meeting/meetingProvider.js';
 import { PropertyOperationsRepository } from '../repositories/propertyOperationsRepository.js';
 import { RetailOperationsRepository } from '../repositories/retailOperationsRepository.js';
-import { FoodOperationsRepository } from '../repositories/foodOperationsRepository.js';
+import { FoodOperationsRepository, type FoodAiOrderTaking } from '../repositories/foodOperationsRepository.js';
 import { DEFAULT_NAME_USAGE_LEVEL } from './ai/identityEngine.js';
 import { BusinessMembershipRepository } from '../repositories/businessMembershipRepository.js';
 import { WritingTwinRepository } from '../repositories/writingTwinRepository.js';
@@ -181,6 +181,13 @@ export interface AiHandoffContext {
    */
   hasFoodData: boolean;
   /**
+   * Who the owner has said should take a food order: the assistant all the
+   * way through (FULL), the assistant for questions and prices with a
+   * person placing it (QUOTE_ONLY), or nobody (OFF). Gates which of the
+   * menu tools are offered at all - see buildReplyTools.
+   */
+  foodOrderTaking: FoodAiOrderTaking;
+  /**
    * Emergency "Stop All Agents" kill switch (businesses.ai_actions_paused).
    * The authoritative enforcement is agentGuard.ts's guardToolInvocation -
    * this field only lets buildReplyTools avoid offering a tool Gemini would
@@ -321,7 +328,7 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     : null;
   const useListScopedMemory = !!(activeListId && activeListAssignment?.rememberListSpecificInfo);
 
-  const [crmContact, whatsappContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState, customerMemory, googleMeetingConnection, zoomMeetingConnection, properties, products, menuItems, learnContext] = await Promise.all([
+  const [crmContact, whatsappContact, knowledgeBase, documentContext, conversationHistory, business, media, conversationState, customerMemory, googleMeetingConnection, zoomMeetingConnection, properties, products, menuItems, learnContext, foodSettings] = await Promise.all([
     input.contactId
       ? crmContactRepository.findByWhatsAppContact(input.businessId, input.contactId)
       : Promise.resolve(null),
@@ -337,7 +344,10 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     // the sole enforcement point for tenant/version/deletion/ai_retrievable
     // scoping (D3-C); nothing here duplicates or bypasses it.
     retrieveAiDocumentContext(input.businessId, input.queryText),
-    messageRepository.listByChat(input.chatId, input.historyLimit ?? 20),
+    // ForAgent, not listByChat: this history becomes the model's context,
+    // and a message the Sentinel held must never reach it. See migration
+    // 1046 - held messages are shown to the operator and to nobody else.
+    messageRepository.listByChatForAgent(input.chatId, input.historyLimit ?? 20),
     businessRepository.findById(input.businessId),
     input.mediaId ? resolveInlineMediaPart(input.businessId, input.mediaId) : Promise.resolve(null),
     conversationStateRepository.find(input.businessId, input.chatId),
@@ -355,6 +365,11 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     // as though the business had never heard of it.
     foodOperationsRepository.listMenu(input.businessId),
     resolveLearnContext(input.businessId),
+    // How much of the ordering the owner has actually asked the assistant
+    // to do. Fetched even for a business with no menu - one cheap
+    // already-batched read, and the alternative is a second round trip in
+    // exactly the case (a real kitchen) where latency matters most.
+    foodOperationsRepository.getSettings(input.businessId),
   ]);
 
   // Depends on conversationHistory's own resolved ids, so this can't join
@@ -468,6 +483,11 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     // Same "never offer a tool with nothing real behind it" rule: a
     // business with no menu is never handed order-taking tools.
     hasFoodData: menuItems.length > 0,
+    // The owner's own choice about who takes the order. OFF removes the
+    // menu tools entirely; QUOTE_ONLY leaves the agent able to answer
+    // "what do you have and what does it cost" while a person places the
+    // actual order. See migration 1047.
+    foodOrderTaking: foodSettings.aiOrderTaking,
     aiActionsPaused: business?.aiActionsPaused ?? false,
     customerMemoryEnabled: business?.customerMemoryEnabled ?? true,
     nameUsageLevel: business?.nameUsageLevel ?? DEFAULT_NAME_USAGE_LEVEL,

@@ -54,6 +54,15 @@ export interface PersistIngestedMessageInput {
   whatsappAccountId: string;
   accountJid: string;
   ingested: IngestedWhatsAppMessage;
+  /**
+   * The Security Sentinel's verdict, when it held this message.
+   *
+   * Omitted for everything else, which is the overwhelming majority: a
+   * message with no verdict attached is stored exactly as it always was.
+   * See migration 1046 for why a held message is stored at all rather than
+   * dropped.
+   */
+  screening?: { status: 'held'; reason: string | null } | undefined;
 }
 
 export interface PersistIngestedMessageResult {
@@ -112,7 +121,7 @@ export class WhatsAppMessagePersistenceService {
         event.kind === 'revoke'
           ? await this.messageRepository.markDeletedByPeer(businessId, whatsappAccountId, event.targetMessageId)
           : event.newText
-            ? await this.messageRepository.applyPeerEdit(businessId, whatsappAccountId, event.targetMessageId, event.newText)
+            ? await this.messageRepository.applyPeerEdit(businessId, whatsappAccountId, event.targetMessageId, event.newText, input.screening)
             : null;
       return { consumed: true, chatId };
     } catch (error) {
@@ -373,10 +382,16 @@ export class WhatsAppMessagePersistenceService {
       isForwarded: ingested.isForwarded,
       forwardingScore: ingested.forwardingScore,
       structuredPayload: ingested.structuredPayload,
+      ...(input.screening ? { screeningStatus: input.screening.status, screeningReason: input.screening.reason } : {}),
       rawMetadata: {
         upsertType: ingested.upsertType,
         jidKind: ingested.jidKind,
         ...(ingested.mentionedJids?.length ? { mentionedJids: ingested.mentionedJids } : {}),
+        /* Only ever set on a message nothing could classify, and only ever
+           the protobuf field name - never anything anybody wrote. It is
+           what makes "some messages just say Message" answerable from the
+           database instead of by guesswork. */
+        ...(ingested.unsupportedField ? { unsupportedField: ingested.unsupportedField } : {}),
       },
     });
 

@@ -36,7 +36,7 @@ import {
   listMenuFunctionDeclaration, quoteFoodOrderFunctionDeclaration, confirmFoodOrderFunctionDeclaration,
   type ConfirmFoodOrderToolArgs, type QuoteFoodOrderToolArgs,
 } from './food/foodOrderTools.js';
-import { FoodOperationsRepository } from '../repositories/foodOperationsRepository.js';
+import { FoodOperationsRepository, type FoodAiOrderTaking } from '../repositories/foodOperationsRepository.js';
 import { confirmProposal, resolveProposal, type DraftOrderProposal, type ProposedLine } from './food/orderIntake.js';
 import { RelayedMessageRepository } from '../repositories/relayedMessageRepository.js';
 import { RetailOperationsRepository } from '../repositories/retailOperationsRepository.js';
@@ -440,7 +440,7 @@ const MAX_REPLY_CHARS = 2000;
  * "never offer a tool with nothing real behind it" rule as the meeting
  * tools above, not a property-vertical-only allowlist.
  */
-function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: AiAgentRecord, aiActionsPaused: boolean, hasPropertyData: boolean, hasRetailData: boolean, hasFoodData: boolean) {
+function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: AiAgentRecord, aiActionsPaused: boolean, hasPropertyData: boolean, hasRetailData: boolean, hasFoodData: boolean, foodOrderTaking: FoodAiOrderTaking = 'FULL') {
   let functionDeclarations = [getCurrentTimeFunctionDeclaration, updateConversationStateFunctionDeclaration, takeMessageFunctionDeclaration];
   if (connectedMeetingProviders.includes('google_meet')) functionDeclarations.push(scheduleMeetingFunctionDeclaration);
   if (connectedMeetingProviders.includes('zoom')) functionDeclarations.push(scheduleZoomMeetingFunctionDeclaration);
@@ -449,12 +449,25 @@ function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: Ai
   // Offered to whichever agent is already handling this conversation, never
   // to a separate "food agent" - the customer is talking to one business,
   // and a handover between two agents is a seam they would feel.
-  if (hasFoodData) functionDeclarations.push(listMenuFunctionDeclaration, quoteFoodOrderFunctionDeclaration, confirmFoodOrderFunctionDeclaration);
+  //
+  // Which of the three the agent gets is the owner's own setting (food
+  // Setup -> "Who takes the order", migration 1047). Enforced by simply
+  // not offering the tool: an agent cannot call what it was never given,
+  // which is a stronger guarantee than any instruction in a prompt, and
+  // the one that still holds when a customer spends twenty messages
+  // trying to talk it into placing the order anyway.
+  if (hasFoodData && foodOrderTaking !== 'OFF') {
+    functionDeclarations.push(listMenuFunctionDeclaration, quoteFoodOrderFunctionDeclaration);
+    // QUOTE_ONLY stops exactly here. The agent can still say what is on
+    // the menu and what it costs; what it cannot do is put a ticket in
+    // front of a kitchen, which is the part the owner asked to keep.
+    if (foodOrderTaking === 'FULL') functionDeclarations.push(confirmFoodOrderFunctionDeclaration);
+  }
   // Offered on the same condition as the menu itself. A business with no
   // food data has nothing this could have counted, and an agent holding a
   // tool that can only ever answer "no history" is an agent that will
   // eventually try to be helpful with it anyway.
-  if (hasFoodData) functionDeclarations.push(suggestCompanionsFunctionDeclaration);
+  if (hasFoodData && foodOrderTaking !== 'OFF') functionDeclarations.push(suggestCompanionsFunctionDeclaration);
   // Defensive against undefined, not just empty: allowedTools/forbiddenTools
   // are required on AiAgentRecord, but test/ isn't covered by
   // npm run typecheck (see tsconfig.json's include), so an older fakeAgent()
@@ -1440,6 +1453,30 @@ async function executeOneToolCall(
   }
 
   if (call.name === QUOTE_FOOD_ORDER_TOOL_NAME || call.name === CONFIRM_FOOD_ORDER_TOOL_NAME) {
+    /**
+     * The owner's setting, checked again at the moment of execution.
+     *
+     * buildReplyTools already withholds the tool, so under OFF or
+     * QUOTE_ONLY the model is never offered this and should never call it.
+     * That is the primary control and this does not replace it - but the
+     * declarations are assembled once per turn from a context gathered
+     * slightly earlier, and a tool call that reaches this point unoffered
+     * would otherwise put a real ticket in a real kitchen the owner had
+     * told us not to. A refusal costs one wasted turn; the other mistake
+     * costs somebody food.
+     */
+    const orderTaking = context.foodOrderTaking ?? 'FULL';
+    if (orderTaking === 'OFF') {
+      return { error: 'This business does not take orders through the assistant. Offer to pass the customer to a person.' };
+    }
+    if (orderTaking === 'QUOTE_ONLY' && call.name === CONFIRM_FOOD_ORDER_TOOL_NAME) {
+      return {
+        error:
+          'This business places its own orders. You can tell the customer what is on the menu and what it costs, ' +
+          'then say someone will confirm the order with them shortly. Do not say the order has been placed.',
+      };
+    }
+
     const args = (call.args ?? {}) as unknown as ConfirmFoodOrderToolArgs;
     const proposal = toFoodProposal(args, context);
     const confirmingMessageId = latestInboundMessage(context.conversationHistory)?.id ?? null;
@@ -1802,6 +1839,7 @@ export async function generateAiReply(agent: AiAgentRecord, context: AiHandoffCo
     context.hasPropertyData ?? false,
     context.hasRetailData ?? false,
     context.hasFoodData ?? false,
+    context.foodOrderTaking ?? 'FULL',
   );
 
   const genAi = getGeminiClient();

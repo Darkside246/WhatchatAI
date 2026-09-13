@@ -98,6 +98,12 @@ export interface IngestedWhatsAppMessage {
    * every ordinary message, which is almost all of them.
    */
   systemEvent: WhatsAppSystemEvent | null;
+  /**
+   * Which WhatsApp message type this was, when nothing here could classify
+   * it. The protobuf field name only - structural, never content. Null for
+   * every message that WAS classified, which is almost all of them.
+   */
+  unsupportedField: string | null;
 }
 
 interface ClassifiedContent {
@@ -123,6 +129,23 @@ interface ClassifiedContent {
   structuredPayload: StructuredMessagePayload | null;
   /** What a protocolMessage envelope actually is. Null for every ordinary message - only a protocolMessage sets it. */
   systemEvent: WhatsAppSystemEvent | null;
+  /**
+   * The WhatsApp protobuf field this envelope carried, when nothing here
+   * knew what to do with it.
+   *
+   * The chat renders an unclassified message as the bare word "Message",
+   * and until now that was the end of the trail: nobody could tell which of
+   * WhatsApp's ninety-odd message types it had been, so the only way to
+   * find out was to guess and re-deploy. The field NAME is structural, not
+   * content - it says "pollResultSnapshotMessage", never anything the
+   * customer wrote - so it is safe to store and is exactly what turns "some
+   * messages show as Message" into a one-query answer:
+   *
+   *   SELECT raw_metadata->>'unsupportedField' AS field, count(*)
+   *     FROM whatsapp_messages WHERE message_type = 'unknown'
+   *    GROUP BY 1 ORDER BY 2 DESC;
+   */
+  unsupportedField: string | null;
 }
 
 /** Structured detail for the non-media message types that carry real content of their own. */
@@ -388,8 +411,20 @@ function classifyProtocolMessage(protocol: proto.Message.IProtocolMessage): What
     return { kind: 'revoke', targetMessageId: protocol.key?.id ?? null };
   }
   if (typeCode === PROTOCOL_MESSAGE_TYPE.MESSAGE_EDIT) {
+    /* An edit is not only ever an edit of plain text. WhatsApp lets
+       somebody correct the CAPTION on a photo, a video or a document, and
+       that arrives in exactly the same envelope with the new words on the
+       media field instead. Reading only the two text shapes meant a caption
+       correction was acknowledged and then silently not applied - the chat
+       kept showing the words the customer had already replaced. */
     const edited = protocol.editedMessage;
-    const newText = edited?.conversation ?? edited?.extendedTextMessage?.text ?? null;
+    const newText =
+      edited?.conversation ??
+      edited?.extendedTextMessage?.text ??
+      edited?.imageMessage?.caption ??
+      edited?.videoMessage?.caption ??
+      edited?.documentMessage?.caption ??
+      null;
     return { kind: 'edit', targetMessageId: protocol.key?.id ?? null, newText };
   }
   if (typeCode === PROTOCOL_MESSAGE_TYPE.EPHEMERAL_SETTING) {
@@ -468,6 +503,7 @@ function classifyContent(content: proto.IMessage | null | undefined, fromMe: boo
     rawMediaMessage: null,
     structuredPayload: null,
     systemEvent: null,
+    unsupportedField: null,
   };
 
   const { message, isViewOnce } = unwrapContent(content);
@@ -529,6 +565,7 @@ function classifyContent(content: proto.IMessage | null | undefined, fromMe: boo
       rawMediaMessage: media(message),
       structuredPayload: null,
       systemEvent: null,
+      unsupportedField: null,
     };
   }
   if (message.stickerMessage) {
@@ -825,7 +862,32 @@ function classifyContent(content: proto.IMessage | null | undefined, fromMe: boo
     };
   }
 
-  return empty;
+  /**
+   * Nothing here knew what this was.
+   *
+   * Two different things end up here and they deserve different fates.
+   *
+   * WhatsApp's own transport metadata - the device-list blob it attaches to
+   * ordinary sends, and the group key it distributes - can arrive as the
+   * ONLY thing in an envelope. The official client shows neither to anyone,
+   * so an envelope carrying nothing else is plumbing and is dropped before
+   * it can become a bubble. It is checked as "the only field" rather than
+   * "a field that is present", because both routinely ride ALONGSIDE real
+   * content, and dropping those would delete real messages.
+   *
+   * Everything else is a genuine WhatsApp message type this app has not
+   * taught itself yet. It still renders as the fallback, but it now records
+   * WHICH type it was, so the next one is a query rather than a guess.
+   */
+  const carried = Object.keys(message).filter(
+    (key) => (message as Record<string, unknown>)[key] !== null && (message as Record<string, unknown>)[key] !== undefined,
+  );
+  const PURE_TRANSPORT = new Set(['messageContextInfo', 'senderKeyDistributionMessage']);
+  if (carried.length > 0 && carried.every((key) => PURE_TRANSPORT.has(key))) {
+    return { ...empty, contentType: 'system', systemEvent: { kind: 'plumbing', typeCode: -1 } };
+  }
+
+  return { ...empty, unsupportedField: carried.find((key) => !PURE_TRANSPORT.has(key)) ?? null };
 }
 
 /**

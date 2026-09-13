@@ -44,6 +44,14 @@ export interface WhatsAppMessageRecord {
   /** Held at the top of this conversation, by this business. */
   workspacePinnedAt: string | null;
   workspacePinnedBy: string | null;
+  /**
+   * What the Security Sentinel made of this message. 'held' means it was
+   * screened out before the AI could see it - the operator still reads it,
+   * the model never does. See migration 1046.
+   */
+  screeningStatus: 'passed' | 'held';
+  /** The Sentinel's own reason, shown to the operator. Null unless held. */
+  screeningReason: string | null;
 }
 
 interface MessageRow {
@@ -78,6 +86,9 @@ interface MessageRow {
      file project a narrower row shape than the full table. */
   workspace_starred_at?: string | null;
   workspace_pinned_at?: string | null;
+  /* Migration 1046, optional for the same reason. */
+  screening_status?: 'passed' | 'held' | null;
+  screening_reason?: string | null;
   workspace_pinned_by?: string | null;
   created_at: string;
 }
@@ -175,6 +186,8 @@ async function toRecord(row: MessageRow, wasInserted: boolean): Promise<WhatsApp
     workspaceStarredAt: row.workspace_starred_at ?? null,
     workspacePinnedAt: row.workspace_pinned_at ?? null,
     workspacePinnedBy: row.workspace_pinned_by ?? null,
+    screeningStatus: row.screening_status ?? 'passed',
+    screeningReason: row.screening_reason ?? null,
   };
 }
 
@@ -201,6 +214,12 @@ export interface InsertMessageInput {
   structuredPayload?: StructuredMessagePayload | null;
   forwardingScore?: number | null;
   rawMetadata?: Record<string, unknown>;
+  /**
+   * Set only when the Sentinel held this message. Defaults to 'passed', so
+   * every existing caller writes exactly the row it wrote before.
+   */
+  screeningStatus?: 'passed' | 'held';
+  screeningReason?: string | null;
 }
 
 export class WhatsAppMessageRepository {
@@ -233,8 +252,9 @@ export class WhatsAppMessageRepository {
       `INSERT INTO whatsapp_messages
          (business_id, whatsapp_account_id, chat_id, whatsapp_message_id, remote_jid,
           sender_jid, recipient_jid, sender_contact_id, direction, message_type,
-          text_content, caption, "timestamp", from_me, is_historical, status, has_media, quoted_message_id, is_forwarded, forwarding_score, structured_payload, raw_metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+          text_content, caption, "timestamp", from_me, is_historical, status, has_media, quoted_message_id, is_forwarded, forwarding_score, structured_payload, raw_metadata,
+          screening_status, screening_reason)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
        ON CONFLICT (business_id, whatsapp_account_id, whatsapp_message_id) DO NOTHING
        RETURNING *`,
       [
@@ -260,6 +280,8 @@ export class WhatsAppMessageRepository {
         input.forwardingScore ?? null,
         await encryptedStructuredPayload,
         JSON.stringify(input.rawMetadata ?? {}),
+        input.screeningStatus ?? 'passed',
+        input.screeningReason ?? null,
       ],
     );
 
@@ -458,23 +480,46 @@ export class WhatsAppMessageRepository {
    * Returns the affected chat's id, or null when the message was never
    * persisted here or already reads exactly as the edit would leave it.
    */
+  /**
+   * Applies a peer's edit to the message it edits.
+   *
+   * `screening` carries the Sentinel's verdict on the EDIT, and when the
+   * edit was held the target is marked held too. This is the one path by
+   * which screened text could otherwise reach the model: the edit itself is
+   * held, but its text lands in an already-stored message that passed, and
+   * that message is in the AI's history. Editing a benign message into an
+   * injection attempt is an obvious way to try it, so the mark follows the
+   * text rather than the envelope that carried it. The operator still sees
+   * the edited words - they are simply held back from the assistant, with
+   * the reason attached.
+   */
   async applyPeerEdit(
     businessId: string,
     whatsappAccountId: string,
     whatsappMessageId: string,
     newText: string,
+    screening?: { status: 'held'; reason: string | null } | undefined,
   ): Promise<string | null> {
     const existing = await this.findByWhatsAppId(businessId, whatsappAccountId, whatsappMessageId);
-    if (!existing || existing.textContent === newText) return null;
+    if (!existing || (existing.textContent === newText && !screening)) return null;
 
     const envelope = await getEncryptionService().encryptField(businessId, newText);
     const { rowCount } = await this.db.query(
       `UPDATE whatsapp_messages
          SET text_content = $4,
              raw_metadata = raw_metadata || jsonb_build_object('editedAt', now()::text),
+             screening_status = $5,
+             screening_reason = $6,
              updated_at = now()
        WHERE id = $1 AND business_id = $2 AND whatsapp_account_id = $3 AND deleted_at IS NULL`,
-      [existing.id, businessId, whatsappAccountId, getEncryptionService().serialize(envelope)],
+      [
+        existing.id,
+        businessId,
+        whatsappAccountId,
+        getEncryptionService().serialize(envelope),
+        screening?.status ?? existing.screeningStatus,
+        screening ? screening.reason : existing.screeningReason,
+      ],
     );
     return (rowCount ?? 0) > 0 ? existing.chatId : null;
   }
@@ -544,10 +589,48 @@ export class WhatsAppMessageRepository {
     }));
   }
 
+  /**
+   * The whole conversation as a person reads it, newest first.
+   *
+   * Everything is here, including a message the Sentinel held: the operator
+   * is the one who decides what a customer's message means, and hiding it
+   * from them is how a real question goes unanswered for a week. The AI
+   * reads a different list - see listByChatForAgent.
+   *
+   * `created_at` breaks a tie on `timestamp`, which is only accurate to the
+   * second: two messages sent inside the same second would otherwise come
+   * back in whatever order the planner chose, and could swap places between
+   * two loads of the same thread.
+   */
   async listByChat(chatId: string, limit = 50): Promise<WhatsAppMessageRecord[]> {
     const { rows } = await this.db.query<MessageRow>(
       `SELECT * FROM whatsapp_messages WHERE chat_id = $1 AND deleted_at IS NULL
-       ORDER BY "timestamp" DESC LIMIT $2`,
+       ORDER BY "timestamp" DESC, created_at DESC LIMIT $2`,
+      [chatId, limit],
+    );
+    return Promise.all(rows.map((row) => toRecord(row, false)));
+  }
+
+  /**
+   * The same conversation as the AI is allowed to see it.
+   *
+   * A held message is excluded here and nowhere else. That is the entire
+   * security property the Sentinel exists for: text that looks like an
+   * attempt to hijack the assistant must never enter the model's context,
+   * whether as the turn being answered or as history behind a later one.
+   *
+   * Deliberately a separate method rather than a boolean on listByChat.
+   * With a flag, the safe behaviour depends on every future caller passing
+   * the right value, and the failure is silent in both directions - an AI
+   * path that forgets it reads attacker-controlled text, an operator path
+   * that forgets it loses a customer's message. With two names, a caller
+   * has to say which of the two they are.
+   */
+  async listByChatForAgent(chatId: string, limit = 50): Promise<WhatsAppMessageRecord[]> {
+    const { rows } = await this.db.query<MessageRow>(
+      `SELECT * FROM whatsapp_messages
+       WHERE chat_id = $1 AND deleted_at IS NULL AND screening_status = 'passed'
+       ORDER BY "timestamp" DESC, created_at DESC LIMIT $2`,
       [chatId, limit],
     );
     return Promise.all(rows.map((row) => toRecord(row, false)));
@@ -576,6 +659,9 @@ export class WhatsAppMessageRepository {
          -- messages being switched on is not a question, and treating it as
          -- an unanswered inbound turn makes the AI reply to it.
          AND m.message_type <> 'system'
+         -- Held by the Sentinel: the operator sees it, the model never
+         -- does, and it is certainly not a turn the AI should answer.
+         AND m.screening_status = 'passed'
          AND (
            $2::uuid IS NULL
            OR m.created_at > (SELECT created_at FROM whatsapp_messages WHERE id = $2::uuid)

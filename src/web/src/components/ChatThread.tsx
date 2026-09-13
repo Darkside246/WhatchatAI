@@ -22,6 +22,7 @@ import {
   Trash2,
   Mic,
   Square,
+  ChevronDown,
   CornerUpRight,
   Forward,
   Pin,
@@ -1257,6 +1258,29 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
                 message.fromMe ? 'rounded-tr-none bg-message-out text-message-out-fg' : 'rounded-tl-none bg-message-in text-fg shadow-[0_1px_3px_rgba(0,0,0,0.08)]'
               }`}
             >
+              {/* The chevron WhatsApp puts on every bubble.
+                  Right-click opened this menu already, but right-click is
+                  not discoverable and does not exist on a phone or a
+                  tablet, which is where this app is actually used at a
+                  counter. Anchored to the button's own corner rather than
+                  the pointer, so a tap opens it in the same place a click
+                  does. */}
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  const box = event.currentTarget.getBoundingClientRect();
+                  setMenuFor({ messageId: message.id, x: box.right, y: box.bottom + 2 });
+                }}
+                title="Message options"
+                aria-label="Message options"
+                aria-haspopup="menu"
+                className={`absolute right-0.5 top-0.5 rounded-full p-0.5 opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100 ${
+                  message.fromMe ? 'text-message-out-fg/70 hover:text-message-out-fg' : 'text-fg-muted hover:text-fg'
+                } ${menuFor?.messageId === message.id ? 'opacity-100' : ''}`}
+              >
+                <ChevronDown size={14} aria-hidden />
+              </button>
               {/* Said on the bubble, because a pin or a star nobody can see
                   is a mark nobody trusts is still there. */}
               {(message.workspacePinnedAt || message.workspaceStarredAt) && (
@@ -1312,6 +1336,23 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
 
               {!message.fromMe && detail?.chat.chatType === 'group' && message.senderName && (
                 <p className="mb-0.5 truncate text-meta font-semibold text-accent">{message.senderName}</p>
+              )}
+              {/* Held by the Security Sentinel.
+                  Said on the bubble rather than anywhere else, because the
+                  operator needs to know two things at the moment they read
+                  it: that the assistant has NOT seen this and will not
+                  answer it, so the reply is theirs to write - and what the
+                  screen objected to, so they can judge it themselves. The
+                  message itself is shown in full below, exactly as it
+                  arrived; it used to be discarded and never shown at all. */}
+              {message.screeningStatus === 'held' && (
+                <p className="mb-1 flex items-start gap-1 rounded bg-warning/10 px-1.5 py-1 text-meta text-warning">
+                  <ShieldAlert size={11} className="mt-px shrink-0" aria-hidden />
+                  <span>
+                    Held back from the assistant{message.screeningReason ? `: ${message.screeningReason}` : '.'} You still need to reply
+                    to this yourself.
+                  </span>
+                </p>
               )}
               {/* WhatsApp's own forwarding flag, shown the way the official
                   client shows it - so the operator knows at a glance that the

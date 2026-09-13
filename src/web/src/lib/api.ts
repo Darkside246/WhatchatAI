@@ -349,6 +349,13 @@ export interface FoodSettingsDto {
   paymentRequiredNotice: string | null;
   slaWarningSeconds: number | null;
   slaBreachSeconds: number | null;
+  /**
+   * Who takes the order. FULL: the assistant reads the menu, prices it and
+   * sends it to the kitchen. QUOTE_ONLY: it answers menu and price
+   * questions and a person places the order. OFF: it never touches the
+   * menu. See migration 1047 for why FULL is the default.
+   */
+  aiOrderTaking: 'OFF' | 'QUOTE_ONLY' | 'FULL';
 }
 
 export interface FoodMenuCategoryDto {
@@ -579,6 +586,15 @@ export interface WorkspaceMessage {
    */
   revokeStatus: 'none' | 'requested' | 'revoke_sent' | 'failed';
   revokeSentAt: string | null;
+  /**
+   * 'held' means the Security Sentinel screened this message out before the
+   * assistant could see it. The message is still shown here in full - the
+   * operator is the one who decides what a customer meant - and the AI
+   * never reads it. See migration 1046.
+   */
+  screeningStatus?: 'passed' | 'held';
+  /** Why it was held, in the Sentinel's own words. */
+  screeningReason?: string | null;
   revokeError: string | null;
   /** Resolved sender display name for a group chat's inbound message - null for a DM and for any outbound message. */
   senderName: string | null;

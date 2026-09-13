@@ -828,7 +828,7 @@ export function FoodOperationsPage() {
           <div className="mb-3 flex items-center justify-between">
             <div>
               <h2 className="text-body font-semibold text-fg">Kitchen setup</h2>
-              <p className="text-meta text-fg-muted">How orders behave. Your agent's wording lives on the Agents page.</p>
+              <p className="text-meta text-fg-muted">Who takes the orders, and how they behave. Your agent's name and tone live on the Agents page.</p>
             </div>
             <button type="button" onClick={() => setSettingsOpen(false)} aria-label="Close setup" className="rounded-md p-1 text-fg-muted hover:bg-surface-2 hover:text-fg">
               <X size={16} aria-hidden />

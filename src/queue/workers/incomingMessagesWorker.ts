@@ -150,6 +150,19 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
   // fromMe, so every message skipped before is still skipped now. Nothing
   // a customer sends escapes screening, because a customer's message is
   // never fromMe.
+  /**
+   * What the Sentinel decided, when it decided anything.
+   *
+   * A held message is persisted and shown to the operator like any other,
+   * and excluded from everything the AI reads. It used to be discarded
+   * here, which meant a customer's message could vanish between their
+   * phone and the operator's screen with nobody told - seen in a real chat
+   * on a question that merely contained the word "password". Withholding
+   * suspicious text from the ROBOT is the point; withholding it from the
+   * human being paid to read it never was.
+   */
+  let screening: { status: 'held'; reason: string | null } | undefined;
+
   if (!message.fromMe) {
     const verdict = await runSentinel({
       businessId,
@@ -165,8 +178,8 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     });
 
     if (!verdict.allowed) {
-      console.warn(`[IncomingMessagesWorker] Sentinel blocked message ${message.messageId}: ${verdict.reason}`);
-      return;
+      console.warn(`[IncomingMessagesWorker] Sentinel held message ${message.messageId} back from the AI: ${verdict.reason}`);
+      screening = { status: 'held', reason: verdict.reason };
     }
   }
 
@@ -177,6 +190,7 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     whatsappAccountId,
     accountJid,
     ingested: message,
+    screening,
   });
   if (systemEvent.consumed) {
     if (systemEvent.chatId) {
@@ -191,6 +205,7 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     whatsappAccountId,
     accountJid,
     ingested: message,
+    screening,
   });
 
   if (result.message.wasInserted) {
@@ -252,6 +267,9 @@ async function processJob(job: Job<IncomingMessageJobData>): Promise<void> {
     result.message.wasInserted &&
     !message.fromMe &&
     message.isLive &&
+    // Held by the Sentinel. The row exists and the operator can read it;
+    // the whole point is that no AI turn is ever scheduled for it.
+    screening === undefined &&
     result.chat.aiMode === 'AI_ACTIVE' &&
     // A WhatsApp Channel is a broadcast feed - only its owner can post to
     // it, so there is no reply to write and nowhere to send one. Without

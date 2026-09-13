@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, Check } from 'lucide-react';
+import { AlertTriangle, Bot, Check, HandPlatter, UserRound } from 'lucide-react';
 import { api, ApiError, type FoodSettingsDto } from '../lib/api.js';
 
 /**
@@ -20,6 +20,17 @@ const DEFAULT_NOTICE_HINT =
 
 export function KitchenSettings() {
   const [settings, setSettings] = useState<FoodSettingsDto | null>(null);
+  /**
+   * How many dishes exist, purely so this screen can tell the truth about
+   * whether the assistant can take an order at all.
+   *
+   * The setting on its own is not the whole answer: with no menu there is
+   * nothing to quote from, so the tools are withheld regardless of what is
+   * chosen here. An owner who sets this to FULL and then waits for orders
+   * that never come deserves to be told which of the two halves is
+   * missing. null means "not counted yet", never "none".
+   */
+  const [menuCount, setMenuCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -36,6 +47,12 @@ export function KitchenSettings() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    // Best-effort: a failed count leaves the panel saying nothing about
+    // the menu rather than claiming there isn't one.
+    api.getFoodMenu().then(({ items }) => setMenuCount(items.length)).catch(() => undefined);
+  }, []);
 
   async function save(patch: Partial<FoodSettingsDto>) {
     setSaving(true);
@@ -69,6 +86,13 @@ export function KitchenSettings() {
           Saved.
         </p>
       )}
+
+      <OrderTakingSection
+        value={settings.aiOrderTaking}
+        menuCount={menuCount}
+        disabled={saving}
+        onChange={(aiOrderTaking) => void save({ aiOrderTaking })}
+      />
 
       <Toggle
         label="Take payment before the kitchen starts"
@@ -145,6 +169,105 @@ export function KitchenSettings() {
 
       <SlaFields settings={settings} disabled={saving} onSave={save} />
     </div>
+  );
+}
+
+/**
+ * Who takes the order.
+ *
+ * This is the question owners actually ask first - "where do I set up the
+ * AI to take my orders?" - and until now it had no answer, because the
+ * ordering tools were handed to the agent automatically the moment a menu
+ * existed. That made the behaviour invisible and impossible to turn off.
+ *
+ * Three choices rather than a switch, because a kitchen genuinely has
+ * three positions and the middle one is the one most owners want: let it
+ * answer "what do you have, what does it cost, do you deliver here", and
+ * keep a person on the part that puts food on a stove.
+ *
+ * The menu count is shown alongside because the setting alone does not
+ * decide this. With no menu there is nothing to quote from and the agent
+ * is given no ordering tools whatever this says - so the screen says so,
+ * rather than letting somebody set it to FULL and wonder why nothing
+ * happens.
+ */
+function OrderTakingSection({
+  value, menuCount, disabled, onChange,
+}: {
+  value: FoodSettingsDto['aiOrderTaking'];
+  menuCount: number | null;
+  disabled: boolean;
+  onChange: (value: FoodSettingsDto['aiOrderTaking']) => void;
+}) {
+  const OPTIONS = [
+    {
+      value: 'FULL' as const,
+      icon: Bot,
+      label: 'It takes the whole order',
+      hint: 'Answers menu and price questions, takes the order, and sends the ticket to the kitchen. Everything it quotes comes from your live menu — it cannot invent a price or an item.',
+    },
+    {
+      value: 'QUOTE_ONLY' as const,
+      icon: HandPlatter,
+      label: 'It answers, you place the order',
+      hint: 'Answers what is on the menu, what it costs and whether you deliver there — then tells the customer someone will confirm. Nothing reaches the kitchen without a person.',
+    },
+    {
+      value: 'OFF' as const,
+      icon: UserRound,
+      label: 'You take every order',
+      hint: 'It never uses the menu at all. It still answers everything else it normally would.',
+    },
+  ];
+
+  return (
+    <section className="rounded-xl border border-border-subtle bg-surface-2/40 p-3">
+      <h3 className="text-caption font-semibold text-fg">Who takes the order</h3>
+      <p className="mb-2.5 mt-0.5 text-meta text-fg-muted">
+        This is your own assistant — the one whose name and tone you set on the Agents page. This only decides how much of
+        an order it is allowed to handle.
+      </p>
+
+      <div className="space-y-1.5">
+        {OPTIONS.map((option) => {
+          const Icon = option.icon;
+          const active = value === option.value;
+          return (
+            <label
+              key={option.value}
+              className={`flex cursor-pointer items-start gap-2.5 rounded-lg border p-2.5 transition-colors ${
+                active ? 'border-accent bg-accent/5' : 'border-border-subtle hover:bg-surface-2'
+              }`}
+            >
+              <input
+                type="radio"
+                name="ai-order-taking"
+                className="sr-only"
+                checked={active}
+                disabled={disabled}
+                onChange={() => onChange(option.value)}
+              />
+              <Icon size={15} className={`mt-0.5 shrink-0 ${active ? 'text-accent' : 'text-fg-muted'}`} aria-hidden />
+              <span className="min-w-0">
+                <span className="block text-caption font-medium text-fg">{option.label}</span>
+                <span className="mt-0.5 block text-meta text-fg-muted">{option.hint}</span>
+              </span>
+              {active && <Check size={14} className="ml-auto mt-0.5 shrink-0 text-accent" aria-hidden />}
+            </label>
+          );
+        })}
+      </div>
+
+      {/* Said only when it is actually true, and only when it actually
+          matters: an owner who has chosen OFF is not waiting for orders
+          that are not coming. */}
+      {menuCount === 0 && value !== 'OFF' && (
+        <p className="mt-2.5 flex items-start gap-1.5 rounded-lg bg-warning/10 px-2.5 py-2 text-meta text-warning">
+          <AlertTriangle size={12} className="mt-px shrink-0" aria-hidden />
+          There is nothing on your menu yet, so it cannot quote or take anything. Add your dishes under Menu first.
+        </p>
+      )}
+    </section>
   );
 }
 

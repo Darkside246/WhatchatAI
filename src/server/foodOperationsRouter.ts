@@ -339,6 +339,8 @@ const settingsSchema = z.object({
   tableServiceEnabled: z.boolean().optional(),
   qcPhotoRequired: z.boolean().optional(),
   qcVisionEnabled: z.boolean().optional(),
+  /** Who takes the order: the assistant all the way, the assistant for questions only, or nobody. */
+  aiOrderTaking: z.enum(['OFF', 'QUOTE_ONLY', 'FULL']).optional(),
   /** How much a customer is told as their order moves. CUSTOM hands the decision to the overrides below. */
   notificationVerbosity: z.enum(['MINIMAL', 'STANDARD', 'DETAILED', 'CUSTOM']).optional(),
   notificationOverrides: z

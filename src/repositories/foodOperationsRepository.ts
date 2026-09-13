@@ -91,6 +91,17 @@ export interface FoodOrderLine {
   notes: string | null;
 }
 
+/**
+ * How much of an order the business's own assistant is allowed to take.
+ *
+ * FULL       reads the menu, prices it, and places the order.
+ * QUOTE_ONLY reads the menu and prices it; a person places the order.
+ * OFF        never touches the menu.
+ *
+ * See migration 1047 for why FULL is the default.
+ */
+export type FoodAiOrderTaking = 'OFF' | 'QUOTE_ONLY' | 'FULL';
+
 export interface FoodSettingsRecord {
   businessId: string;
   paymentRequiredBeforeKitchen: boolean;
@@ -106,6 +117,8 @@ export interface FoodSettingsRecord {
   notificationVerbosity: NotificationVerbosity;
   /** Per-event switches and wording, only consulted under CUSTOM. */
   notificationOverrides: NotificationOverrides;
+  /** Who takes the order - see FoodAiOrderTaking. */
+  aiOrderTaking: FoodAiOrderTaking;
 }
 
 export interface FoodCustomerTermsRecord {
@@ -585,6 +598,7 @@ export class FoodOperationsRepository {
       payment_required_notice: string | null; sla_warning_seconds: number | null; sla_breach_seconds: number | null;
       notification_verbosity: NotificationVerbosity; notification_overrides: NotificationOverrides;
       qc_photo_required: boolean; qc_vision_enabled: boolean;
+      ai_order_taking: FoodAiOrderTaking | null;
     }>('SELECT * FROM food_settings WHERE business_id = $1', [businessId]);
 
     const row = rows[0];
@@ -606,6 +620,11 @@ export class FoodOperationsRepository {
       // and none of the ones that only produce noise.
       notificationVerbosity: row?.notification_verbosity ?? 'STANDARD',
       notificationOverrides: row?.notification_overrides ?? {},
+      // FULL, because FULL is what a business that has never opened this
+      // screen already has: the ordering tools were attached whenever a
+      // menu existed. Defaulting to anything else here would turn a live
+      // ordering line off the moment this migration ran.
+      aiOrderTaking: row?.ai_order_taking ?? 'FULL',
     };
   }
 
@@ -625,8 +644,8 @@ export class FoodOperationsRepository {
       `INSERT INTO food_settings
          (business_id, payment_required_before_kitchen, table_service_enabled, payment_required_notice,
           sla_warning_seconds, sla_breach_seconds, notification_verbosity, notification_overrides, updated_by,
-          qc_photo_required, qc_vision_enabled)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          qc_photo_required, qc_vision_enabled, ai_order_taking)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT (business_id) DO UPDATE
          SET payment_required_before_kitchen = EXCLUDED.payment_required_before_kitchen,
              table_service_enabled = EXCLUDED.table_service_enabled,
@@ -638,12 +657,13 @@ export class FoodOperationsRepository {
              updated_by = EXCLUDED.updated_by,
              qc_photo_required = EXCLUDED.qc_photo_required,
              qc_vision_enabled = EXCLUDED.qc_vision_enabled,
+             ai_order_taking = EXCLUDED.ai_order_taking,
              updated_at = now()`,
       [
         businessId, next.paymentRequiredBeforeKitchen, next.tableServiceEnabled, next.paymentRequiredNotice,
         next.slaWarningSeconds, next.slaBreachSeconds, next.notificationVerbosity,
         JSON.stringify(next.notificationOverrides), updatedBy,
-        next.qcPhotoRequired, next.qcVisionEnabled,
+        next.qcPhotoRequired, next.qcVisionEnabled, next.aiOrderTaking,
       ],
     );
     return next;
