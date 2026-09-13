@@ -78,6 +78,10 @@ describe('agentGuard / AI Security Governor (real Postgres tenant, actor, and ra
       'quote_food_order',
       'schedule_google_meet',
       'schedule_zoom_meeting',
+      // Reads what this business's own customers took together. Registered
+      // READ: it writes nothing and cannot be asked for "something to
+      // upsell" in general, only for what goes with a named item.
+      'suggest_companions',
       'take_a_message',
       'update_conversation_memory',
     ]);

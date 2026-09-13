@@ -226,12 +226,12 @@ describe('OpenClawToolGateway - update_lead adversarial acceptance suite', () =>
     // schedule_google_meet, schedule_zoom_meeting, list_properties,
     // check_property_status, list_retail_products, check_retail_order_status,
     // and the food vertical's list_menu, quote_food_order,
-    // confirm_food_order.
+    // confirm_food_order, suggest_companions.
     // This assertion exists to prove the OpenClaw gateway's own tool set
     // below never leaks into the shared registry the live Gemini path reads
     // - update this count deliberately (not by weakening it) whenever a new
     // tool is legitimately registered in aiToolPolicy.ts.
-    expect(listRegisteredTools()).toHaveLength(12);
+    expect(listRegisteredTools()).toHaveLength(13);
     expect(isToolRegistered('get_current_time')).toBe(true);
     expect(isToolRegistered('update_lead')).toBe(false); // never added to the SHARED registry the live Gemini path reads
   });
