@@ -3,7 +3,7 @@ import { Bluetooth, Check, Printer, Usb, X } from 'lucide-react';
 import {
   DEFAULT_PRINTER_SETTINGS, forgetPrinter, loadPrinterSettings, noteSuccessfulPrint, savePrinterSettings, type PrinterSettings,
 } from '../lib/printerSettings.js';
-import { choosePrinter, PrinterError, sendToPrinter, transportAvailable, type PrinterTransportKind } from '../lib/printerTransport.js';
+import { choosePrinter, describePrinterFailure, sendToPrinter, transportAvailable, type PrinterTransportKind } from '../lib/printerTransport.js';
 import { EscPosBuilder } from '../lib/escpos.js';
 
 /**
@@ -50,8 +50,8 @@ export function PrinterSettingsPanel({ onClose }: { onClose: () => void }) {
       setNote(`Paired with ${target.label}. Print a test ticket to check the paper and the width.`);
     } catch (err) {
       // A person closing the chooser is not an error worth shouting about.
-      if (err instanceof DOMException && err.name === 'NotFoundError') setNote('No printer chosen.');
-      else setError(err instanceof PrinterError || err instanceof Error ? err.message : 'Could not reach that printer.');
+      if (err instanceof DOMException && (err.name === 'NotFoundError' || err.name === 'AbortError')) setNote('No printer chosen.');
+      else setError(describePrinterFailure(err, kind));
     } finally {
       setBusy(false);
     }
@@ -87,7 +87,7 @@ export function PrinterSettingsPanel({ onClose }: { onClose: () => void }) {
       setSettings(loadPrinterSettings());
       setNote('Sent. If nothing came out, the printer is off, out of paper, or paired to something else.');
     } catch (err) {
-      setError(err instanceof PrinterError || err instanceof Error ? err.message : 'That did not print.');
+      setError(describePrinterFailure(err, settings.transport));
     } finally {
       setBusy(false);
     }

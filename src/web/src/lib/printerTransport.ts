@@ -263,8 +263,28 @@ export function printViaBrowser(text: string, paperMm: number): void {
 
   const cleanUp = () => frame.remove();
   frame.contentWindow?.addEventListener('afterprint', cleanUp, { once: true });
-  frame.contentWindow?.focus();
-  frame.contentWindow?.print();
+
+  /**
+   * Printed on the next frame, not immediately.
+   *
+   * document.close() queues layout rather than completing it, and a print()
+   * issued in the same tick can capture the document before the text has
+   * been laid out - which produces a blank strip of paper and no error at
+   * all, the worst combination to debug from a kitchen. One frame is enough
+   * for a document this simple.
+   */
+  requestAnimationFrame(() => {
+    try {
+      frame.contentWindow?.focus();
+      frame.contentWindow?.print();
+    } catch {
+      // Nothing to report to: the caller's promise has already settled by
+      // now. Removing the frame is the only useful thing left to do, and
+      // the person sees an empty print queue rather than a stuck page.
+      cleanUp();
+    }
+  });
+
   // afterprint does not fire in every browser. The frame is empty and
   // invisible, so a late removal costs nothing and a missing one leaks.
   setTimeout(cleanUp, 60_000);
@@ -275,4 +295,84 @@ export async function sendToPrinter(kind: PrinterTransportKind, bytes: Uint8Arra
   if (kind === 'browser') return printViaBrowser(plainText, paperMm);
   if (kind === 'bluetooth') return printOverBluetooth(bytes);
   return printOverUsb(bytes);
+}
+
+/**
+ * Turning a browser exception into something a person can act on.
+ *
+ * The device APIs throw bare DOMExceptions whose messages are written for
+ * developers - "Permission denied" on its own tells an operator standing at
+ * a counter nothing at all about what to do next. Worse, the same two words
+ * cover several genuinely different situations: a site permission the
+ * person once blocked, a page embedded in a frame that was never allowed to
+ * reach hardware, and a browser that will not do this at all.
+ *
+ * So each is named, and each says the actual next step. Where the cause
+ * cannot be told apart from here, it says that too rather than guessing -
+ * a confident wrong diagnosis costs more time than an honest vague one.
+ */
+export function describePrinterFailure(
+  error: unknown,
+  kind: PrinterTransportKind,
+  /** Injectable so the branch can be tested without a DOM. Defaults to the real check. */
+  framed: boolean = inFrame(),
+): string {
+  // Our own refusals already explain themselves.
+  if (error instanceof PrinterError) return error.message;
+
+  const name = error instanceof DOMException ? error.name : '';
+  const hardware = kind === 'bluetooth' ? 'Bluetooth' : 'USB';
+
+  if (name === 'NotFoundError' || name === 'AbortError') {
+    return 'No printer was chosen.';
+  }
+
+  if (name === 'NotAllowedError' || name === 'SecurityError') {
+    /**
+     * The one cause this page can actually check for itself.
+     *
+     * A page inside a frame gets no access to Bluetooth or USB unless the
+     * embedding page explicitly allowed it, and nothing in the browser's own
+     * site settings will fix that - so it is worth ruling in or out before
+     * sending somebody to the wrong settings screen.
+     */
+    if (framed) {
+      return `This page is embedded inside another one, which blocks ${hardware} access. Open the app in its own tab and try again.`;
+    }
+    if (kind === 'browser') {
+      return 'The browser blocked the print dialog. Allow pop-ups and printing for this site, then try again.';
+    }
+    return `The browser blocked ${hardware} access for this site. Open the padlock in the address bar, set ${hardware} to Allow, then try again. On a phone or tablet, check that ${hardware} itself is switched on.`;
+  }
+
+  if (name === 'NetworkError') {
+    return 'The printer was found but would not connect. Check it is on and in range, and that nothing else is already connected to it.';
+  }
+
+  if (name === 'InvalidStateError') {
+    return 'That printer is busy - something else on this device is using it. Close that, then try again.';
+  }
+
+  // Anything else: the real message, with enough context to be searchable,
+  // rather than a generic sentence that hides what happened.
+  const detail = error instanceof Error && error.message ? error.message : 'no detail given';
+  return `That did not work: ${detail}`;
+}
+
+/**
+ * Whether this page is running inside a frame.
+ *
+ * Reading window.top across origins throws, and that throw is itself the
+ * answer - a page that cannot see its own top is definitely framed. No
+ * window at all (a test runner, a server render) is not a frame, and must
+ * not be reported as one: the framing message sends somebody off to open a
+ * new tab, which would be wrong advice.
+ */
+export function inFrame(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
 }
