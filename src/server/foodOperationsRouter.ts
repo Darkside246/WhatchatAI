@@ -464,6 +464,17 @@ const proposedLineSchema = z.object({
     .max(20)
     .optional(),
   notes: z.string().trim().max(500).nullish(),
+  /**
+   * A price typed at the till for something not on the menu - a carrier
+   * bag, an extra cup. See ProposedLine.customAmountCents for why this is
+   * the one price field that may be sent, and why the rule it sits under
+   * still holds: the agent's tool schema has no such field, so no
+   * conversation produces one.
+   *
+   * Capped, because a stuck key on a till should not be able to write a
+   * six-figure line into somebody's books.
+   */
+  customAmountCents: z.number().int().min(0).max(1_000_000).nullish(),
 });
 
 /**

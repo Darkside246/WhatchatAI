@@ -47,6 +47,27 @@ export interface ProposedLine {
   quantity: number;
   modifiers?: ProposedModifier[] | undefined;
   notes?: string | null | undefined;
+  /**
+   * A price typed at the till for something that is not on the menu - a
+   * carrier bag, an extra cup, a deposit on a tray.
+   *
+   * THE ONE PLACE A PRICE MAY BE SENT IN, and it is worth being exact about
+   * why that does not undo the rule the rest of this file exists to
+   * enforce.
+   *
+   * The rule is that a CONVERSATION cannot set a price. That holds
+   * structurally and is unchanged: the agent's own tool schema
+   * (foodOrderTools.ts) has no such field, and toFoodProposal never maps
+   * one, so there is no sequence of messages that produces a custom
+   * amount. A person standing at a till with the order-taking permission is
+   * a different actor making a different decision.
+   *
+   * A line carrying this is NOT matched against the catalogue at all - it
+   * has no menu item, and the resolver never pretends it does. That is why
+   * it cannot be used to make a real dish cost something else: the two
+   * paths do not meet.
+   */
+  customAmountCents?: number | null | undefined;
 }
 
 export interface DraftOrderProposal {
@@ -278,6 +299,34 @@ export async function resolveProposal(
   const currencies = new Set<string>();
 
   for (const proposed of proposal.lines) {
+    /**
+     * A price typed at the till for something the menu does not sell.
+     *
+     * Handled before the catalogue lookup and instead of it, never
+     * alongside: a custom line has no menu item, gets no modifiers priced
+     * against a group it does not belong to, and cannot be talked into
+     * being a real dish at a different price. menuItemId stays null, which
+     * the board already understands and shows as a hand-keyed line.
+     */
+    if (proposed.customAmountCents != null) {
+      const amount = Math.max(0, Math.trunc(proposed.customAmountCents));
+      const name = proposed.reference.trim() || 'Custom amount';
+      // The currency has to come from somewhere real. The menu's is the
+      // business's own; with no menu at all there is nothing to disagree
+      // with, and the fallback below applies.
+      if (menu[0]) currencies.add(menu[0].currency);
+      lines.push({
+        menuItemId: null,
+        name,
+        variant: null,
+        quantity: Math.max(1, Math.floor(proposed.quantity)),
+        unitPriceCents: amount,
+        modifiers: [],
+        notes: proposed.notes?.trim() || null,
+      });
+      continue;
+    }
+
     const item = matchMenuItem(proposed.reference, menu);
 
     if (!item) {

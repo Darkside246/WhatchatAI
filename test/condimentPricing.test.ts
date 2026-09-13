@@ -161,3 +161,75 @@ describe('what counts as the same line on the till', () => {
     expect(cheeseFirst).toBe(baconFirst);
   });
 });
+
+/**
+ * A price typed at the till for something the menu does not sell.
+ *
+ * The rule the whole resolver exists for is that a CONVERSATION cannot set
+ * a price, and it is enforced structurally: the agent's tool schema has no
+ * field for one. A person at a till is a different actor, and these pin
+ * that letting them type an amount does not open a door back into the
+ * catalogue.
+ */
+describe('a custom amount rung at the counter', () => {
+  let businessId: string;
+  let repository: FoodOperationsRepository;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    repository = new FoodOperationsRepository(pool);
+    await repository.createMenuItem({ businessId, name: 'Chicken and chips', priceCents: 1_000, currency: 'BBD' });
+  });
+
+  async function ring(line: { reference: string; quantity: number; customAmountCents?: number }) {
+    const result = await resolveProposal(repository, businessId, { fulfilmentMethod: 'PICKUP', lines: [line] });
+    if (!result.ok) throw new Error(`not priced: ${JSON.stringify(result.problems)}`);
+    return result.resolved;
+  }
+
+  it('charges what was typed', async () => {
+    expect((await ring({ reference: 'Carrier bag', quantity: 1, customAmountCents: 50 })).subtotalCents).toBe(50);
+  });
+
+  it('multiplies by however many', async () => {
+    expect((await ring({ reference: 'Extra cup', quantity: 3, customAmountCents: 75 })).subtotalCents).toBe(225);
+  });
+
+  it('keeps the name typed on it, so the books say what was sold', async () => {
+    const [line] = (await ring({ reference: 'Carrier bag', quantity: 1, customAmountCents: 50 })).lines;
+    expect(line?.name).toBe('Carrier bag');
+  });
+
+  it('is not a menu item, and never claims to be', async () => {
+    // The two paths do not meet: a custom line has no catalogue row, so it
+    // cannot be used to make a real dish cost something else.
+    const [line] = (await ring({ reference: 'Carrier bag', quantity: 1, customAmountCents: 50 })).lines;
+    expect(line?.menuItemId).toBeNull();
+  });
+
+  it('does not become a real dish just because it shares its name', async () => {
+    // Typing "Chicken and chips" with an amount must not reprice the menu
+    // item - it rings a separate, hand-keyed line at the typed amount.
+    const resolved = await ring({ reference: 'Chicken and chips', quantity: 1, customAmountCents: 1 });
+    expect(resolved.subtotalCents).toBe(1);
+    expect(resolved.lines[0]?.menuItemId).toBeNull();
+  });
+
+  it('refuses a negative amount rather than paying the customer', async () => {
+    expect((await ring({ reference: 'Oops', quantity: 1, customAmountCents: -5_000 })).subtotalCents).toBe(0);
+  });
+
+  it('names an unnamed line rather than ringing a blank', async () => {
+    const [line] = (await ring({ reference: '   ', quantity: 1, customAmountCents: 100 })).lines;
+    expect(line?.name).toBe('Custom amount');
+  });
+
+  it('leaves an ordinary line alone', async () => {
+    // The invariant: a line with no custom amount is matched and priced
+    // against the catalogue exactly as it always was.
+    const resolved = await ring({ reference: 'Chicken and chips', quantity: 2 });
+    expect(resolved.subtotalCents).toBe(2_000);
+    expect(resolved.lines[0]?.menuItemId).not.toBeNull();
+  });
+});

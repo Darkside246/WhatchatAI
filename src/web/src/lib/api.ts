@@ -491,6 +491,12 @@ export interface FoodProposedLineDto {
   quantity: number;
   modifiers?: { name: string; action: 'add' | 'remove' | 'on_side'; quantity?: number }[];
   notes?: string | null;
+  /**
+   * A price typed on the till keypad, for something the menu does not sell.
+   * A line carrying this is never matched against the catalogue - it has no
+   * menu item and cannot be turned into one.
+   */
+  customAmountCents?: number;
 }
 
 export interface FoodOrderProposalDto {

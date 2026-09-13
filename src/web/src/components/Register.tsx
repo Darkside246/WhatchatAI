@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, Search, Trash2, X } from 'lucide-react';
+import { Calculator, ChevronLeft, Loader2, Search, Trash2, X } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -11,6 +11,7 @@ import {
   type FoodSettingsDto,
 } from '../lib/api.js';
 import { basketLineKey } from '../lib/basket.js';
+import { changeDue, keypadDigitsToCents, quickTenderOptions } from '../lib/tillMath.js';
 
 /**
  * The counter till.
@@ -39,7 +40,12 @@ function money(cents: number, currency: string): string {
 /** One basket line. Modifiers are part of its identity - "burger, no onions" is not the same line as "burger". */
 interface BasketLine {
   key: string;
-  item: FoodMenuItemDto;
+  /** Null on a hand-keyed amount, which has no menu item by definition. */
+  item: FoodMenuItemDto | null;
+  /** What the cashier called it. Only on a hand-keyed amount. */
+  customName?: string;
+  /** The amount typed on the keypad, in cents. Only on a hand-keyed amount. */
+  customAmountCents?: number;
   quantity: number;
   /**
    * `quantity` is how many of that extra - "two extra sauces" is 2. It is
@@ -99,9 +105,12 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
     const lines: FoodProposedLineDto[] = basket.map((line) => ({
       // By name, because that is what the server's resolver matches on and
       // what ends up written on the ticket the kitchen reads.
-      reference: line.item.name,
+      reference: line.item?.name ?? line.customName ?? 'Custom amount',
       quantity: line.quantity,
       ...(line.modifiers.length > 0 ? { modifiers: line.modifiers } : {}),
+      // The one price this screen ever sends, and only for a line that has
+      // no menu item to be priced from. See ProposedLine.customAmountCents.
+      ...(line.customAmountCents !== undefined ? { customAmountCents: line.customAmountCents } : {}),
     }));
     return {
       fulfilmentMethod: fulfilment,
@@ -146,6 +155,42 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
 
     return () => clearTimeout(timer);
   }, [proposal, basket.length]);
+
+  /**
+   * The keypad, in place of the item grid.
+   *
+   * A mode rather than a dialog, because it is the other half of the same
+   * screen: somebody switches to it, rings a bag, and switches back. A
+   * dialog floating over a grid they cannot use is just a grid they cannot
+   * use.
+   */
+  const [padOpen, setPadOpen] = useState(false);
+
+  /**
+   * Rings something the menu does not sell.
+   *
+   * Held as its own kind of basket line - no menu item, the amount typed -
+   * so nothing downstream mistakes it for a dish. The server rings it the
+   * same way, with menuItemId null, which is what a hand-keyed line already
+   * is on the board.
+   */
+  const addCustomAmount = useCallback((name: string, amountCents: number) => {
+    setTaken(null);
+    setBasket((current) => [
+      ...current,
+      {
+        // Its own identity every time, deliberately: two bags rung
+        // separately at different prices are two lines, and a cashier who
+        // rings a second one is not correcting the first.
+        key: `custom:${Date.now()}:${name}:${amountCents}`,
+        item: null,
+        customName: name,
+        customAmountCents: amountCents,
+        quantity: 1,
+        modifiers: [],
+      },
+    ]);
+  }, []);
 
   const addToBasket = useCallback((item: FoodMenuItemDto, modifiers: BasketLine['modifiers'] = []) => {
     setTaken(null);
@@ -233,19 +278,46 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
 
       {/* ── Items ── */}
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="relative shrink-0 border-b border-border-subtle p-2">
-          <Search size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-fg-muted" aria-hidden />
-          <input
-            type="search"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search the menu…"
-            aria-label="Search the menu"
-            className="w-full rounded-lg border border-border-subtle bg-surface-2 py-2 pl-8 pr-3 text-caption text-fg placeholder:text-fg-muted focus:border-accent focus:outline-none"
-          />
+        <div className="flex shrink-0 items-center gap-2 border-b border-border-subtle p-2">
+          <div className="relative min-w-0 flex-1">
+            <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-fg-muted" aria-hidden />
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search the menu…"
+              aria-label="Search the menu"
+              className="w-full rounded-lg border border-border-subtle bg-surface-2 py-2 pl-8 pr-3 text-caption text-fg placeholder:text-fg-muted focus:border-accent focus:outline-none"
+            />
+          </div>
+          {/* The way in to the keypad, beside the search, because both are
+              "I cannot find it by tapping" and that is the moment somebody
+              reaches for either. */}
+          <button
+            type="button"
+            onClick={() => setPadOpen((open) => !open)}
+            aria-pressed={padOpen}
+            title="Ring a price for something not on the menu"
+            className={`flex min-h-10 shrink-0 items-center gap-1.5 rounded-lg border px-3 text-caption font-semibold ${
+              padOpen ? 'border-accent bg-accent-soft text-accent' : 'border-border-subtle text-fg hover:bg-surface-2'
+            }`}
+          >
+            <Calculator size={14} aria-hidden />
+            Keypad
+          </button>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          {padOpen ? (
+            <AmountPad
+              currency={currency}
+              onAdd={addCustomAmount}
+              // Straight back to the tiles. Ringing a bag is a detour, not
+              // a destination.
+              onBack={() => setPadOpen(false)}
+            />
+          ) : (
+            <>
           {menu === null && <p className="p-4 text-caption text-fg-muted">Loading the menu…</p>}
           {menu !== null && menu.length === 0 && (
             <p className="p-4 text-caption text-fg-muted">
@@ -279,6 +351,8 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
               </button>
             ))}
           </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -309,10 +383,20 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
           {basket.length === 0 && <p className="p-4 text-caption text-fg-muted">Tap an item to start.</p>}
 
           <ul>
-            {basket.map((line) => (
+            {basket.map((line) => {
+              // A hand-keyed amount has no menu item, so its name is the one
+              // the cashier typed.
+              const label = line.item?.name ?? line.customName ?? 'Custom amount';
+              return (
               <li key={line.key} className="flex items-start gap-2 border-b border-border-subtle px-3 py-2">
                 <div className="min-w-0 flex-1">
-                  <p className="text-caption font-medium text-fg">{line.item.name}</p>
+                  <p className="text-caption font-medium text-fg">{label}</p>
+                  {/* Said on the line, because a hand-keyed price is the one
+                      figure on this screen a person chose rather than the
+                      catalogue - and the one somebody will want to check. */}
+                  {line.customAmountCents !== undefined && (
+                    <p className="text-meta text-fg-muted">Typed in · {money(line.customAmountCents, currency)}</p>
+                  )}
                   {line.modifiers.map((modifier) => (
                     <p
                       key={modifier.name}
@@ -327,7 +411,7 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
                   <button
                     type="button"
                     onClick={() => changeQuantity(line.key, -1)}
-                    aria-label={`One fewer ${line.item.name}`}
+                    aria-label={`One fewer ${label}`}
                     className="h-7 w-7 rounded border border-border-subtle text-fg-muted hover:text-fg"
                   >
                     −
@@ -336,14 +420,15 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
                   <button
                     type="button"
                     onClick={() => changeQuantity(line.key, 1)}
-                    aria-label={`One more ${line.item.name}`}
+                    aria-label={`One more ${label}`}
                     className="h-7 w-7 rounded border border-border-subtle text-fg-muted hover:text-fg"
                   >
                     +
                   </button>
                 </div>
               </li>
-            ))}
+              );
+            })}
           </ul>
         </div>
 
@@ -393,13 +478,35 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
                 <span>Subtotal</span>
                 <span className="tabular-nums">{quote ? money(quote.subtotalCents, currency) : '—'}</span>
               </div>
+              {/* Each of these appears only when it is real. A "Discount
+                  0.00" row invites the question "why is there a discount",
+                  and a tax row on a business that charges none is a claim
+                  about their registration that is not ours to make. */}
+              {quote && quote.discountCents > 0 && (
+                <div className="flex justify-between text-fg-secondary">
+                  <span>Discount</span>
+                  <span className="tabular-nums">-{money(quote.discountCents, currency)}</span>
+                </div>
+              )}
               {quote && quote.deliveryFeeCents > 0 && (
                 <div className="flex justify-between text-fg-secondary">
                   <span>Delivery</span>
                   <span className="tabular-nums">{money(quote.deliveryFeeCents, currency)}</span>
                 </div>
               )}
+              {quote && quote.taxCents > 0 && (
+                <div className="flex justify-between text-fg-muted">
+                  <span>Tax</span>
+                  <span className="tabular-nums">{money(quote.taxCents, currency)}</span>
+                </div>
+              )}
             </div>
+
+            {/* Counting change.
+                Offered only once there is something to count against - a
+                cash panel over an unknown total is a till doing arithmetic
+                on a number it does not have. */}
+            {quote && quote.totalCents > 0 && <CashPanel totalCents={quote.totalCents} currency={currency} />}
 
             <button
               type="button"
@@ -443,6 +550,203 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
  * Only shown for an item that genuinely has options - an unnecessary dialog
  * between a cashier and a queue is how a till stops being used.
  */
+/**
+ * The number pad every till has.
+ *
+ * Two jobs, and they share a keypad because a cashier's hands already know
+ * where the digits are:
+ *
+ *   Ringing something the menu does not sell - a carrier bag, an extra
+ *   cup, a deposit on a tray. Without it the only way to charge for a bag
+ *   was to put a bag on the menu.
+ *
+ *   Counting change.
+ *
+ * Digits build from the RIGHT, the way a till has worked since the
+ * mechanical ones: 1, 5, 0 is one fifty, not a hundred and fifty. Somebody
+ * who has used a till will type it that way whatever this app would prefer.
+ */
+function Keypad({ digits, onDigits, disabled }: { digits: string; onDigits: (next: string) => void; disabled?: boolean }) {
+  const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '00', '0', '⌫'];
+
+  function press(key: string) {
+    if (key === '⌫') return onDigits(digits.slice(0, -1));
+    // Capped so a stuck key cannot build a number nobody could have meant.
+    if (digits.length >= 9) return;
+    onDigits(`${digits}${key}`);
+  }
+
+  return (
+    <div className="grid grid-cols-3 gap-1.5">
+      {KEYS.map((key) => (
+        <button
+          key={key}
+          type="button"
+          disabled={disabled}
+          onClick={() => press(key)}
+          aria-label={key === '⌫' ? 'Delete the last digit' : key}
+          className="min-h-12 rounded-lg border border-border-subtle bg-surface-1 text-body font-semibold text-fg hover:bg-surface-2 active:bg-surface-3 disabled:opacity-50"
+        >
+          {key}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Ringing a price for something that is not on the menu.
+ *
+ * Replaces the item tiles rather than opening over them, because it IS the
+ * other half of the same screen - somebody switches to it, uses it, and
+ * switches back, and a dialog floating over a grid they cannot use is just
+ * a grid they cannot use.
+ *
+ * The browser still works out no prices. What it sends is an amount a
+ * person typed and a name they gave it; the server rings it as a line with
+ * no menu item, which is what a hand-keyed line already is on the board.
+ */
+function AmountPad({
+  currency,
+  onAdd,
+  onBack,
+}: {
+  currency: string;
+  onAdd: (name: string, amountCents: number) => void;
+  onBack: () => void;
+}) {
+  const [digits, setDigits] = useState('');
+  const [name, setName] = useState('');
+  const amount = keypadDigitsToCents(digits);
+
+  function add() {
+    if (amount <= 0) return;
+    // An unnamed amount is still a real sale. Naming it something honest
+    // beats refusing it at a counter with a queue.
+    onAdd(name.trim() || 'Custom amount', amount);
+    setDigits('');
+    setName('');
+  }
+
+  return (
+    <div className="mx-auto flex w-full max-w-xs flex-col gap-2 p-3">
+      <button
+        type="button"
+        onClick={onBack}
+        className="flex items-center gap-1 self-start text-caption font-medium text-accent hover:underline"
+      >
+        <ChevronLeft size={14} aria-hidden />
+        Back to the menu
+      </button>
+
+      <output className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-3 text-right text-body-lg font-bold tabular-nums text-fg">
+        {money(amount, currency)}
+      </output>
+
+      <input
+        value={name}
+        onChange={(event) => setName(event.target.value)}
+        placeholder="What is it? (carrier bag, extra cup…)"
+        aria-label="What this amount is for"
+        className="w-full rounded-lg border border-border-subtle bg-surface-1 px-2.5 py-2 text-caption text-fg placeholder:text-fg-muted"
+      />
+
+      <Keypad digits={digits} onDigits={setDigits} />
+
+      <button
+        type="button"
+        disabled={amount <= 0}
+        onClick={add}
+        className="min-h-12 w-full rounded-lg bg-accent text-body font-semibold text-white disabled:opacity-50"
+      >
+        Add {amount > 0 ? money(amount, currency) : ''} to sale
+      </button>
+    </div>
+  );
+}
+
+/**
+ * What they gave you, and what to hand back.
+ *
+ * The arithmetic is in tillMath.ts and tested there; this is the panel. The
+ * quick buttons are derived from THIS bill rather than a fixed row of
+ * denominations - on a $92 sale a fixed 5/20/50/100 row has three buttons
+ * that cannot settle it and is missing the one that can.
+ *
+ * Nothing here is sent anywhere. Change is a thing a cashier works out at
+ * the counter, and recording it would mean claiming a payment arrived -
+ * which is what the payment screen is for, and where it belongs.
+ */
+function CashPanel({ totalCents, currency }: { totalCents: number; currency: string }) {
+  const [open, setOpen] = useState(false);
+  const [digits, setDigits] = useState('');
+
+  const tendered = keypadDigitsToCents(digits);
+  const due = changeDue(totalCents, tendered);
+  const quick = quickTenderOptions(totalCents);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-border-subtle py-2 text-caption font-medium text-fg hover:bg-surface-2"
+      >
+        <Calculator size={14} aria-hidden />
+        Cash &amp; change
+      </button>
+    );
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-border-subtle bg-surface-2 p-2.5">
+      <div className="flex items-center gap-2">
+        <span className="text-caption font-semibold text-fg">Cash</span>
+        <button
+          type="button"
+          onClick={() => { setOpen(false); setDigits(''); }}
+          aria-label="Close cash and change"
+          className="ml-auto rounded p-0.5 text-fg-muted hover:text-fg"
+        >
+          <X size={14} aria-hidden />
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-1.5">
+        {quick.map((option) => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => setDigits(String(option))}
+            className="min-h-10 rounded-lg border border-border-subtle bg-surface-1 text-caption font-semibold tabular-nums text-fg hover:bg-surface-3"
+          >
+            {money(option, currency)}
+          </button>
+        ))}
+      </div>
+
+      <output className="block rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-right text-body font-bold tabular-nums text-fg">
+        {money(tendered, currency)}
+      </output>
+
+      <Keypad digits={digits} onDigits={setDigits} />
+
+      {/* Shown only once somebody has actually put money on the counter.
+          "Change $0.00" before anything is tendered is a number that will
+          be read as an answer. */}
+      {tendered > 0 && (
+        <p
+          className={`rounded-lg px-2.5 py-2 text-center text-body font-bold tabular-nums ${
+            due.settled ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'
+          }`}
+        >
+          {due.settled ? `Change ${money(due.changeCents, currency)}` : `Still owing ${money(due.shortfallCents, currency)}`}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ModifierPicker({
   item,
   onCancel,
