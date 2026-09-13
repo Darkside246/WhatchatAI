@@ -1089,6 +1089,15 @@ router.post('/orders/:orderId/qc-photo', requirePermission('food.manage'), async
     check: { ...check, findings: raisedFindings(check.findings) },
     read: read !== null,
     readFailed,
+    /*
+     * What it actually saw, in one sentence, whatever the verdict.
+     *
+     * A check that only ever says "nothing wrong" is indistinguishable
+     * from a check that is not running - reported live, when a photograph
+     * of a MAN came back as a clean bill of health. Seeing it describe
+     * their own burger is how somebody knows it looked.
+     */
+    description: read?.observation.description ?? null,
   });
 });
 

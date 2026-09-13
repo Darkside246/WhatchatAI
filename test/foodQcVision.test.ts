@@ -25,7 +25,7 @@ describe('reading a photo of an order at the pass', () => {
     it('flags something visible that the order excluded', () => {
       const findings = classifyQcObservation(
         [line({ modifiers: [{ name: 'ketchup', action: 'remove', priceDeltaCents: 0 }] })],
-        { visible: ['beef patty', 'ketchup', 'sesame bun'], portionsInFrame: 1 },
+        { visible: ['beef patty', 'ketchup', 'sesame bun'], portionsInFrame: 1, isFood: true, description: null },
       );
 
       expect(raisedFindings(findings)).toHaveLength(1);
@@ -42,7 +42,7 @@ describe('reading a photo of an order at the pass', () => {
     it('never raises anything for something it simply could not see', () => {
       const findings = classifyQcObservation(
         [line({ modifiers: [{ name: 'bacon', action: 'add', priceDeltaCents: 250 }] })],
-        { visible: ['sesame bun', 'lettuce'], portionsInFrame: 1 },
+        { visible: ['sesame bun', 'lettuce'], portionsInFrame: 1, isFood: true, description: null },
       );
 
       expect(raisedFindings(findings)).toHaveLength(0);
@@ -53,7 +53,7 @@ describe('reading a photo of an order at the pass', () => {
     it('never raises anything for a side order it cannot see into', () => {
       const findings = classifyQcObservation(
         [line({ modifiers: [{ name: 'garlic mayo', action: 'on_side', priceDeltaCents: 100 }] })],
-        { visible: ['burger', 'paper bag'], portionsInFrame: 1 },
+        { visible: ['burger', 'paper bag'], portionsInFrame: 1, isFood: true, description: null },
       );
 
       expect(raisedFindings(findings)).toHaveLength(0);
@@ -63,7 +63,7 @@ describe('reading a photo of an order at the pass', () => {
     it('keeps the unverifiable finding in the record even though nobody is shown it', () => {
       const findings = classifyQcObservation(
         [line({ modifiers: [{ name: 'onions', action: 'remove', priceDeltaCents: 0 }] })],
-        { visible: ['beef patty', 'cheese'], portionsInFrame: 1 },
+        { visible: ['beef patty', 'cheese'], portionsInFrame: 1, isFood: true, description: null },
       );
 
       expect(findings).toHaveLength(1);
@@ -77,7 +77,7 @@ describe('reading a photo of an order at the pass', () => {
     it('matches across plurals and adjectives', () => {
       const findings = classifyQcObservation(
         [line({ modifiers: [{ name: 'onions', action: 'remove', priceDeltaCents: 0 }] })],
-        { visible: ['sliced red onion'], portionsInFrame: null },
+        { visible: ['sliced red onion'], portionsInFrame: null, isFood: true, description: null },
       );
       expect(raisedFindings(findings)).toHaveLength(1);
     });
@@ -85,7 +85,7 @@ describe('reading a photo of an order at the pass', () => {
     it('matches a specific cheese against a plain one', () => {
       const findings = classifyQcObservation(
         [line({ modifiers: [{ name: 'cheese', action: 'remove', priceDeltaCents: 0 }] })],
-        { visible: ['melted cheddar cheese'], portionsInFrame: null },
+        { visible: ['melted cheddar cheese'], portionsInFrame: null, isFood: true, description: null },
       );
       expect(raisedFindings(findings)).toHaveLength(1);
     });
@@ -97,7 +97,7 @@ describe('reading a photo of an order at the pass', () => {
     it('does not fire on a word that merely contains the excluded one', () => {
       const findings = classifyQcObservation(
         [line({ modifiers: [{ name: 'ham', action: 'remove', priceDeltaCents: 0 }] })],
-        { visible: ['hamburger bun', 'beef patty'], portionsInFrame: null },
+        { visible: ['hamburger bun', 'beef patty'], portionsInFrame: null, isFood: true, description: null },
       );
       expect(raisedFindings(findings)).toHaveLength(0);
     });
@@ -105,20 +105,102 @@ describe('reading a photo of an order at the pass', () => {
 
   describe('counting', () => {
     it('asks about a count that does not match', () => {
-      const findings = classifyQcObservation([line({ quantity: 3 })], { visible: ['burger'], portionsInFrame: 2 });
+      const findings = classifyQcObservation([line({ quantity: 3 })], { visible: ['burger'], portionsInFrame: 2, isFood: true, description: null });
       expect(raisedFindings(findings)).toHaveLength(1);
       expect(raisedFindings(findings)[0]?.kind).toBe('COUNT');
     });
 
     it('says nothing when the count agrees', () => {
-      const findings = classifyQcObservation([line({ quantity: 2 })], { visible: ['burger'], portionsInFrame: 2 });
+      const findings = classifyQcObservation([line({ quantity: 2 })], { visible: ['burger'], portionsInFrame: 2, isFood: true, description: null });
       expect(raisedFindings(findings)).toHaveLength(0);
     });
 
     /** "I cannot tell how many" is a normal answer, not a failure. */
     it('says nothing when the model could not count', () => {
-      const findings = classifyQcObservation([line({ quantity: 2 })], { visible: ['burger'], portionsInFrame: null });
+      const findings = classifyQcObservation([line({ quantity: 2 })], { visible: ['burger'], portionsInFrame: null, isFood: true, description: null });
       expect(raisedFindings(findings)).toHaveLength(0);
+    });
+  });
+
+  /**
+   * A photograph of something that is not the order.
+   *
+   * Reported live: a photograph of a MAN came back as "Nothing seen that
+   * should not be" - a clean bill of health for a picture nobody had taken
+   * of the food. That is worse than finding a fault, because it reads as a
+   * pass, and a check that passes everything is a check that is not
+   * running.
+   */
+  describe('a photo that is not of the order', () => {
+    it('says so, rather than giving it a clean bill of health', () => {
+      const findings = classifyQcObservation([line({})], {
+        visible: [],
+        portionsInFrame: null,
+        isFood: false,
+        description: 'a man standing in a kitchen',
+      });
+      expect(findings).toHaveLength(1);
+      expect(findings[0]!.kind).toBe('NOT_FOOD');
+    });
+
+    it('repeats what it saw, so the words are the operator own evidence', () => {
+      const [finding] = classifyQcObservation([line({})], {
+        visible: [],
+        portionsInFrame: null,
+        isFood: false,
+        description: 'a man standing in a kitchen',
+      });
+      expect(finding!.message).toContain('a man standing in a kitchen');
+    });
+
+    it('still says something useful when it could not describe it either', () => {
+      const [finding] = classifyQcObservation([line({})], {
+        visible: [],
+        portionsInFrame: null,
+        isFood: false,
+        description: null,
+      });
+      expect(finding!.message).toMatch(/does not look like food/i);
+    });
+
+    it('returns that finding ALONE, so nothing reassuring can sit beside it', () => {
+      // Every other check here reasons about whether the ORDER matches, and
+      // the order is not in the frame.
+      const findings = classifyQcObservation([line({ quantity: 3 })], {
+        visible: ['a face'],
+        portionsInFrame: 1,
+        isFood: false,
+        description: 'a person',
+      });
+      expect(findings.map((finding) => finding.kind)).toEqual(['NOT_FOOD']);
+    });
+  });
+
+  describe('what the check says it saw', () => {
+    it('reads a description back', () => {
+      const observation = parseObservation('{"isFood":true,"description":"a burger and chips in a box","visible":["chips"]}');
+      expect(observation.description).toBe('a burger and chips in a box');
+    });
+
+    it('reads a refusal back', () => {
+      expect(parseObservation('{"isFood":false,"description":"a man","visible":[]}').isFood).toBe(false);
+    });
+
+    it('assumes food when the model did not say', () => {
+      // The default matters. A dropped field must not turn into an
+      // accusation that somebody photographed the wrong thing: a missed
+      // warning is cheap, telling a cook their good burger is not food is
+      // not.
+      expect(parseObservation('{"visible":["chips"],"portionsInFrame":1}').isFood).toBe(true);
+    });
+
+    it('assumes food when the answer could not be read at all', () => {
+      expect(parseObservation('not json').isFood).toBe(true);
+      expect(parseObservation('not json').description).toBeNull();
+    });
+
+    it('ignores a description that is blank rather than showing an empty quote', () => {
+      expect(parseObservation('{"description":"   ","visible":[]}').description).toBeNull();
     });
   });
 
@@ -148,11 +230,20 @@ describe('reading a photo of an order at the pass', () => {
     it('asks it to look into the layers rather than only at the top', () => {
       expect(buildQcPrompt([line()])).toContain('at the edges of a bun, in the layers of a sandwich');
     });
+
+    it('asks whether it is food at all, and for a sentence of what it sees', () => {
+      // Both are what stopped a photograph of a man reading as a pass: one
+      // gives the verdict, the other gives the operator the evidence.
+      const prompt = buildQcPrompt([line()]);
+      expect(prompt).toContain('isFood');
+      expect(prompt).toMatch(/photograph of FOOD at all/i);
+      expect(prompt).toMatch(/one short sentence/i);
+    });
   });
 
   describe('reading the answer back', () => {
     it('takes a well-formed answer', () => {
-      expect(parseObservation('{"visible":["ketchup","bun"],"portionsInFrame":2}')).toEqual({
+      expect(parseObservation('{"visible":["ketchup","bun"],"portionsInFrame":2}')).toMatchObject({
         visible: ['ketchup', 'bun'],
         portionsInFrame: 2,
       });
@@ -161,12 +252,12 @@ describe('reading a photo of an order at the pass', () => {
     /** A check that cannot read the photo finds nothing. It never blocks an order. */
     it('degrades to an empty observation rather than throwing', () => {
       for (const answer of ['not json at all', '', 'null', '[]', '{"visible":"ketchup"}']) {
-        expect(parseObservation(answer)).toEqual({ visible: [], portionsInFrame: null });
+        expect(parseObservation(answer)).toEqual({ visible: [], portionsInFrame: null, isFood: true, description: null });
       }
     });
 
     it('drops entries that are not usable strings', () => {
-      expect(parseObservation('{"visible":["ketchup", 7, "  ", null, "bun"],"portionsInFrame":-1}')).toEqual({
+      expect(parseObservation('{"visible":["ketchup", 7, "  ", null, "bun"],"portionsInFrame":-1}')).toMatchObject({
         visible: ['ketchup', 'bun'],
         portionsInFrame: null,
       });
@@ -215,7 +306,7 @@ describe('the photo gate at the pass (real Postgres)', () => {
 
     await expect(repo.moveToStage(businessId, order.id, 'READY_FOR_PICKUP')).rejects.toBeInstanceOf(QcPhotoRequiredError);
 
-    await repo.recordQcCheck({ businessId, orderId: order.id, observation: { visible: [], portionsInFrame: null }, findings: [] });
+    await repo.recordQcCheck({ businessId, orderId: order.id, observation: { visible: [], portionsInFrame: null, isFood: true, description: null }, findings: [] });
     expect((await repo.moveToStage(businessId, order.id, 'READY_FOR_PICKUP'))?.stage).toBe('READY_FOR_PICKUP');
   });
 
@@ -257,7 +348,7 @@ describe('the photo gate at the pass (real Postgres)', () => {
     const check = await repo.recordQcCheck({
       businessId,
       orderId: order.id,
-      observation: { visible: ['ketchup'], portionsInFrame: 1 },
+      observation: { visible: ['ketchup'], portionsInFrame: 1, isFood: true, description: null },
       findings: [
         { kind: 'CONTRADICTION', line: 'Burger', message: 'Burger was ordered without ketchup, but ketchup is visible.' },
         { kind: 'UNVERIFIABLE', line: 'Burger', message: 'Could not confirm the bacon.' },

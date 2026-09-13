@@ -62,13 +62,15 @@ export function buildQcPrompt(lines: FoodOrderLine[]): string {
     'Report ONLY what you can actually see in the photograph.',
     '',
     'Rules:',
-    '1. List every ingredient, item, sauce and condiment you can genuinely identify. Include things you can see at the edges of a bun, in the layers of a sandwich, or through a lid.',
-    '2. NEVER report that something is missing, absent, or not visible. Food hides under buns, lettuce and lids. You cannot see it, and saying so is wrong and unhelpful.',
-    '3. Do not guess. If you are not sure what something is, leave it out.',
-    '4. Count the separate portions or plates in frame. If you cannot tell, say null - that is a normal answer, not a failure.',
+    '1. First say whether this is a photograph of FOOD at all. A person, a room, a receipt, a screen, a thumb over the lens - none of those are food, and for those isFood is false.',
+    '2. Describe what is in the picture in one short sentence, in plain words, whatever it is. Say "a burger and chips in a takeaway box" or "a man standing in a kitchen". This is shown to the person who took the photo so they can see you looked.',
+    '3. List every ingredient, item, sauce and condiment you can genuinely identify. Include things you can see at the edges of a bun, in the layers of a sandwich, or through a lid.',
+    '4. NEVER report that something is missing, absent, or not visible. Food hides under buns, lettuce and lids. You cannot see it, and saying so is wrong and unhelpful.',
+    '5. Do not guess. If you are not sure what something is, leave it out.',
+    '6. Count the separate portions or plates in frame. If you cannot tell, say null - that is a normal answer, not a failure.',
     '',
     'Answer as JSON only, in exactly this shape:',
-    '{"visible": ["item or ingredient", "..."], "portionsInFrame": 2}',
+    '{"isFood": true, "description": "a burger and chips in a takeaway box", "visible": ["item or ingredient", "..."], "portionsInFrame": 2}',
   ].join('\n');
 }
 
@@ -85,9 +87,9 @@ export function parseObservation(raw: string): QcVisionObservation {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { visible: [], portionsInFrame: null };
+    return unreadable();
   }
-  if (typeof parsed !== 'object' || parsed === null) return { visible: [], portionsInFrame: null };
+  if (typeof parsed !== 'object' || parsed === null) return unreadable();
 
   const record = parsed as Record<string, unknown>;
   const visible = Array.isArray(record.visible)
@@ -98,7 +100,28 @@ export function parseObservation(raw: string): QcVisionObservation {
       ? record.portionsInFrame
       : null;
 
-  return { visible, portionsInFrame: portions };
+  return {
+    visible,
+    portionsInFrame: portions,
+    /*
+     * TRUE unless the model actually said false.
+     *
+     * The default matters: an older model, a dropped field or a malformed
+     * answer must not turn into an accusation that somebody photographed
+     * the wrong thing. A false negative here is a missing warning; a false
+     * positive is telling a cook their perfectly good burger is not food.
+     */
+    isFood: record.isFood !== false,
+    description:
+      typeof record.description === 'string' && record.description.trim().length > 0
+        ? record.description.trim().slice(0, 200)
+        : null,
+  };
+}
+
+/** A photo nothing could be read from. Not food-negative - simply nothing known. */
+function unreadable(): QcVisionObservation {
+  return { visible: [], portionsInFrame: null, isFood: true, description: null };
 }
 
 export async function runQcVisionCheck(input: {

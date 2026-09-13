@@ -336,8 +336,12 @@ export interface FoodDriverDto {
 }
 
 export interface FoodQcFindingDto {
-  /** CONTRADICTION: something visible the order excluded. COUNT: the number in frame does not match. */
-  kind: 'CONTRADICTION' | 'COUNT' | 'UNVERIFIABLE';
+  /**
+   * CONTRADICTION: something visible the order excluded. COUNT: the number
+   * in frame does not match. NOT_FOOD: the photograph is not of the order
+   * at all, and no other verdict can be given about it.
+   */
+  kind: 'CONTRADICTION' | 'COUNT' | 'UNVERIFIABLE' | 'NOT_FOOD';
   line: string;
   message: string;
 }
@@ -2850,7 +2854,13 @@ export const api = {
     }),
   /** `read` says whether the photo was actually looked at; `readFailed` that it was meant to be and could not. */
   uploadFoodQcPhoto: (orderId: string, photoBase64: string, mimeType: string) =>
-    request<{ check: { id: string; findings: FoodQcFindingDto[] }; read: boolean; readFailed: boolean }>(
+    request<{
+      check: { id: string; findings: FoodQcFindingDto[] };
+      read: boolean;
+      readFailed: boolean;
+      /** One sentence of what the check saw, shown whatever the verdict. */
+      description: string | null;
+    }>(
       `/food-operations/orders/${orderId}/qc-photo`,
       { method: 'POST', body: JSON.stringify({ photoBase64, mimeType }) },
     ),

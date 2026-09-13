@@ -52,6 +52,15 @@ export function QcPhotoButton({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [findings, setFindings] = useState<FoodQcFindingDto[] | null>(null);
+  /**
+   * What the check said it saw, in one sentence.
+   *
+   * Shown whatever the verdict, because a check that only ever says
+   * "nothing wrong" is indistinguishable from a check that is not running.
+   * Reported live: a photograph of a MAN came back as a clean bill of
+   * health, and there was nothing on screen to suggest otherwise.
+   */
+  const [description, setDescription] = useState<string | null>(null);
 
   async function send(file: File) {
     setBusy(true);
@@ -62,6 +71,7 @@ export function QcPhotoButton({
 
       const result = await api.uploadFoodQcPhoto(orderId, base64, 'image/jpeg');
       setFindings(result.check.findings);
+      setDescription(result.description);
       // Said plainly rather than passed over in silence: a photo that was
       // meant to be read and was not is a different thing from one that
       // was read and found nothing.
@@ -95,6 +105,7 @@ export function QcPhotoButton({
         disabled={busy}
         onClick={() => {
           setFindings(null);
+          setDescription(null);
           input.current?.click();
         }}
         // The whole instruction, on the thing you press. Nobody reads a
@@ -116,10 +127,30 @@ export function QcPhotoButton({
       {/* Shown once, right after the photo, so the person holding the bag
           sees it before they put it down. The card carries it afterwards. */}
       {findings !== null && !error && (
-        <span className={`text-meta ${findings.length > 0 ? 'text-warning' : 'text-success'}`}>
-          {findings.length > 0 ? `${findings.length} to look at` : 'Nothing seen that should not be'}
+        <span
+          className={`text-meta ${
+            findings.some((finding) => finding.kind === 'NOT_FOOD')
+              ? 'text-error'
+              : findings.length > 0
+                ? 'text-warning'
+                : 'text-success'
+          }`}
+        >
+          {/* A photo that is not of the order gets its own words and no
+              reassurance beside them. Saying "nothing seen that should not
+              be" about a picture of a man is worse than saying nothing at
+              all - it reads as a pass. */}
+          {findings.some((finding) => finding.kind === 'NOT_FOOD')
+            ? 'That is not a photo of the order'
+            : findings.length > 0
+              ? `${findings.length} to look at`
+              : 'Nothing seen that should not be'}
         </span>
       )}
+
+      {/* Always, whatever the verdict. This is the line that tells somebody
+          the check is real. */}
+      {description && !error && <span className="truncate text-meta italic text-fg-muted">Saw: {description}</span>}
     </>
   );
 }

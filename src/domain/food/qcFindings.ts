@@ -28,7 +28,17 @@ export type QcFindingKind =
   /** The number of portions in the photo does not match the number ordered. */
   | 'COUNT'
   /** Something ordered could not be confirmed from the photo. Recorded; never raised as a fault. */
-  | 'UNVERIFIABLE';
+  | 'UNVERIFIABLE'
+  /**
+   * The photograph is not of food.
+   *
+   * Reported live: a photograph of a MAN came back as "Nothing seen that
+   * should not be" - a clean bill of health for a picture of the order
+   * nobody had taken. Every other finding here is about what is wrong with
+   * an order; this one is about the check itself being unable to say
+   * anything, which is worse than a fault because it looks like a pass.
+   */
+  | 'NOT_FOOD';
 
 export interface QcFinding {
   kind: QcFindingKind;
@@ -40,16 +50,38 @@ export interface QcFinding {
 /**
  * What the vision model is allowed to tell us.
  *
- * Deliberately only two fields, and both are about what is VISIBLE. There
- * is nowhere to record "the bacon is missing", because that is not
- * something a photograph can establish - so the model is never asked, and
- * a model that volunteers it has nowhere to put it.
+ * Every field is about what is VISIBLE. There is nowhere to record "the
+ * bacon is missing", because that is not something a photograph can
+ * establish - so the model is never asked, and a model that volunteers it
+ * has nowhere to put it.
  */
 export interface QcVisionObservation {
   /** Ingredients, items and condiments the model can actually see. */
   visible: string[];
   /** How many separate portions are in frame, or null when it cannot tell - which is often and is fine. */
   portionsInFrame: number | null;
+  /**
+   * Whether this is a photograph of food at all.
+   *
+   * False on a picture of a person, a room, a receipt, a blurred thumb over
+   * the lens. Without it the check gave a clean bill of health to any
+   * photograph whatsoever, which is the one outcome worse than finding
+   * nothing: it looks like a pass.
+   *
+   * Defaults TRUE when the model did not say, so an older or malformed
+   * answer is not turned into an accusation that somebody photographed the
+   * wrong thing.
+   */
+  isFood: boolean;
+  /**
+   * One short sentence of what is in the picture, in plain words.
+   *
+   * Shown to the person at the pass whatever the verdict, because a check
+   * that only ever says "nothing wrong" is indistinguishable from a check
+   * that is not running. Seeing it describe their own burger is how
+   * somebody knows it looked.
+   */
+  description: string | null;
 }
 
 function normalise(value: string): string {
@@ -91,6 +123,25 @@ function mentions(seen: string, excluded: string): boolean {
  */
 export function classifyQcObservation(lines: FoodOrderLine[], observation: QcVisionObservation): QcFinding[] {
   const findings: QcFinding[] = [];
+
+  /*
+   * Not food. Nothing else is worth saying about this photograph, and
+   * saying anything else would be worse than saying nothing: every check
+   * below reasons about whether the ORDER matches, and the order is not in
+   * the frame. Returned alone so the screen cannot show a reassurance
+   * beside it.
+   */
+  if (!observation.isFood) {
+    return [
+      {
+        kind: 'NOT_FOOD',
+        line: lines[0]?.name ?? 'this order',
+        message: observation.description
+          ? `That photo does not look like the order — it looks like ${observation.description}. Take one of the food before it goes out.`
+          : 'That photo does not look like food. Take one of the order before it goes out.',
+      },
+    ];
+  }
 
   for (const line of lines) {
     for (const modifier of line.modifiers) {
