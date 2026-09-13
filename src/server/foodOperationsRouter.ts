@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { pool } from '../db/pool.js';
 import { FoodOperationsRepository, PaymentMethodNotAvailableError, IllegalAssignmentTransitionError, IllegalPaymentTransitionError, IllegalStageTransitionError, KitchenPaymentGateError, OrderAlreadyAssignedError, OrderNotDeliverableError, QcPhotoRequiredError, UnknownMenuCategoryError } from '../repositories/foodOperationsRepository.js';
 import { DRIVER_ASSIGNMENT_STATES } from '../domain/food/driverAssignment.js';
+import { generateSessionToken, hashSessionToken } from '../services/sessionTokenService.js';
+import { LINK_MINUTES } from './driverPortalRouter.js';
 import { importMenu } from '../services/food/menuImportService.js';
 import { FOOD_PAYMENT_METHODS, PAYMENT_ALIAS_KINDS, PAYMENT_METHOD_CAPABILITIES, availableMethods } from '../domain/food/paymentMethods.js';
 import { sendPaymentRequest } from '../services/food/sendPaymentRequest.js';
@@ -1087,6 +1089,51 @@ router.post('/drivers/:driverId/active', requirePermission('food.manage'), async
   const driver = await repository.setDriverActive(auth.businessId, driverId, parsed.data.active);
   if (!driver) return res.status(404).json({ error: 'DRIVER_NOT_FOUND' });
   return res.status(200).json({ driver });
+});
+
+/**
+ * A sign-in link for one driver.
+ *
+ * Returned to the operator rather than sent from the server. Sending it
+ * ourselves would mean putting a message through this business's live
+ * WhatsApp connection on a background path, and that connection is the one
+ * thing in this product that must never be disturbed - so the shop shares
+ * the link themselves, from their own phone, however they already talk to
+ * that driver.
+ *
+ * The link is shown once. It is not stored in a readable form anywhere: what
+ * the database keeps is a SHA-256 of it, so an operator who loses it issues
+ * a new one, which is also what invalidates the old.
+ */
+router.post('/drivers/:driverId/sign-in-link', requirePermission('food.manage'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const driverId = String(req.params.driverId ?? '');
+  if (!uuid.safeParse(driverId).success) return res.status(400).json({ error: 'INVALID_DRIVER_ID' });
+
+  const driver = (await repository.listDrivers(auth.businessId)).find((candidate) => candidate.id === driverId);
+  if (!driver) return res.status(404).json({ error: 'DRIVER_NOT_FOUND' });
+  // A link for somebody who has been taken off the road is a link that
+  // should not exist. Refused here as well as at redemption, so the operator
+  // is told now rather than the driver finding out at the door.
+  if (!driver.active) return res.status(409).json({ error: 'DRIVER_NOT_ACTIVE' });
+
+  const token = generateSessionToken();
+  const expiresAt = new Date(Date.now() + LINK_MINUTES * 60 * 1000);
+  await repository.issueDriverSignInToken({
+    businessId: auth.businessId,
+    driverId,
+    tokenHash: hashSessionToken(token),
+    expiresAt,
+    issuedBy: auth.userId,
+  });
+
+  return res.status(200).json({
+    // Relative, so it works on whatever host this deployment answers on
+    // rather than on whatever APP_BASE_URL was set to last.
+    path: `/driver?token=${token}`,
+    expiresAt: expiresAt.toISOString(),
+    driver: { id: driver.id, name: driver.name, phoneNumber: driver.phoneNumber },
+  });
 });
 
 router.get('/drivers/:driverId/runs', requirePermission('food.view'), async (req, res) => {

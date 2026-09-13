@@ -2,6 +2,7 @@ import type { Express } from 'express';
 import { propertyOperationsRouter } from './propertyOperationsRouter.js';
 import { retailOperationsRouter } from './retailOperationsRouter.js';
 import { foodOperationsRouter } from './foodOperationsRouter.js';
+import { driverPortalRouter } from './driverPortalRouter.js';
 import { platformApprovalRouter } from './platformApprovalRouter.js';
 import { propertyConversationBindingRouter } from './propertyConversationBindingRouter.js';
 import { productAccountRouter } from './productAccountRoutes.js';
@@ -27,6 +28,13 @@ export function mountPlatformRoutes(app: Express): void {
   app.use('/api/property-operations/conversations', propertyConversationBindingRouter);
   app.use('/api/retail-operations', retailOperationsRouter);
   app.use('/api/food-operations', foodOperationsRouter);
+  /**
+   * The driver portal, mounted as its own principal rather than inside the
+   * workspace. A driver is not a member of the business and must never reach
+   * a workspace route - see driverPortalRouter.ts. It applies its own
+   * authentication, exactly as every router above does.
+   */
+  app.use('/api/driver', driverPortalRouter);
   app.use('/api/platform/approvals', platformApprovalRouter);
   app.use('/api/platform', productAccountRouter);
   app.use('/api/billing', billingRouter);

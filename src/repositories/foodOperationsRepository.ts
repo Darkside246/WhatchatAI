@@ -309,6 +309,37 @@ interface OrderRow {
   placed_at: string; closed_at: string | null; cancel_reason: string | null; created_at: string; updated_at: string;
 }
 
+interface ManifestRow {
+  delivery_id: string; state: DriverAssignmentState; assigned_at: string; collected_at: string | null;
+  order_id: string; order_number: string; items: FoodOrderLine[]; total_cents: string; currency: string;
+  customer_name: string | null; customer_phone: string | null;
+  delivery_address: string | null; delivery_notes: string | null;
+  delivery_latitude: number | null; delivery_longitude: number | null;
+  allergen_notes: string | null; payment_state: FoodPaymentState; placed_at: string;
+}
+
+/** One stop on a driver's run - the delivery and just enough of the order to make it. */
+export interface FoodDriverManifestStop {
+  deliveryId: string;
+  state: DriverAssignmentState;
+  assignedAt: string;
+  collectedAt: string | null;
+  orderId: string;
+  orderNumber: number;
+  items: FoodOrderLine[];
+  totalCents: number;
+  currency: string;
+  customerName: string | null;
+  customerPhone: string | null;
+  deliveryAddress: string | null;
+  deliveryNotes: string | null;
+  deliveryLatitude: number | null;
+  deliveryLongitude: number | null;
+  allergenNotes: string | null;
+  paymentState: FoodPaymentState;
+  placedAt: string;
+}
+
 interface EventRow {
   id: string; order_id: string; from_stage: FoodOrderStage | null; to_stage: FoodOrderStage;
   actor_user_id: string | null; actor_kind: 'user' | 'ai' | 'system' | 'customer'; note: string | null; created_at: string;
@@ -1675,12 +1706,146 @@ export class FoodOperationsRepository {
    * happened, and the schema's ON DELETE RESTRICT makes this the only
    * route rather than merely the recommended one.
    */
+  /**
+   * Taking a driver off the road, or putting them back on.
+   *
+   * Deactivating ends their access as well as hiding them from the picker.
+   * Without that, "this person no longer works here" would leave a live
+   * session on their phone carrying every customer address they had been
+   * given - the exact moment access should stop is the moment somebody says
+   * it should, not whenever their session happens to expire.
+   */
   async setDriverActive(businessId: string, id: string, active: boolean): Promise<FoodDriverRecord | null> {
-    const { rows } = await this.db.query<DriverRow>(
-      'UPDATE food_drivers SET active = $3, updated_at = now() WHERE business_id = $1 AND id = $2 RETURNING *',
-      [businessId, id, active],
+    return withTransaction(async (client) => {
+      const { rows } = await client.query<DriverRow>(
+        'UPDATE food_drivers SET active = $3, updated_at = now() WHERE business_id = $1 AND id = $2 RETURNING *',
+        [businessId, id, active],
+      );
+      if (!rows[0]) return null;
+
+      if (!active) {
+        await client.query(
+          `UPDATE food_driver_sessions SET revoked_at = now()
+           WHERE business_id = $1 AND driver_id = $2 AND revoked_at IS NULL`,
+          [businessId, id],
+        );
+        // An unredeemed invitation is a key that has not been used yet.
+        // Leaving it behind would let somebody sign in after being removed.
+        await client.query(
+          'DELETE FROM food_driver_sign_in_tokens WHERE business_id = $1 AND driver_id = $2 AND redeemed_at IS NULL',
+          [businessId, id],
+        );
+      }
+
+      return toDriver(rows[0]);
+    });
+  }
+
+  // ── The driver's own sign-in ───────────────────────────────────────────
+
+  /**
+   * Issues a single-use sign-in link for one driver.
+   *
+   * Replaces any unredeemed one rather than adding to it: a driver with three
+   * live links has three keys, and only the person who sent the newest knows
+   * it is meant to be the only one. The unique partial index makes that a
+   * rule the database keeps, but the delete is what makes re-issuing work
+   * rather than fail.
+   */
+  async issueDriverSignInToken(input: {
+    businessId: string;
+    driverId: string;
+    tokenHash: string;
+    expiresAt: Date;
+    issuedBy: string | null;
+  }): Promise<void> {
+    await withTransaction(async (client) => {
+      await client.query(
+        'DELETE FROM food_driver_sign_in_tokens WHERE business_id = $1 AND driver_id = $2 AND redeemed_at IS NULL',
+        [input.businessId, input.driverId],
+      );
+      await client.query(
+        `INSERT INTO food_driver_sign_in_tokens (business_id, driver_id, token_hash, expires_at, issued_by)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [input.businessId, input.driverId, input.tokenHash, input.expiresAt, input.issuedBy],
+      );
+    });
+  }
+
+  /**
+   * Turns a sign-in link into a session, once.
+   *
+   * The redemption and the session insert are one transaction with the
+   * redeemed_at guard inside the UPDATE, so two taps on the same link in the
+   * same moment cannot both produce a session. Returns null for a link that
+   * is unknown, spent, expired, or belongs to a driver who has since been
+   * taken off the road.
+   */
+  async redeemDriverSignInToken(input: {
+    tokenHash: string;
+    sessionTokenHash: string;
+    sessionExpiresAt: Date;
+    userAgent: string | null;
+  }): Promise<{ businessId: string; driverId: string } | null> {
+    return withTransaction(async (client) => {
+      const { rows } = await client.query<{ business_id: string; driver_id: string }>(
+        `UPDATE food_driver_sign_in_tokens SET redeemed_at = now()
+         WHERE token_hash = $1 AND redeemed_at IS NULL AND expires_at > now()
+         RETURNING business_id, driver_id`,
+        [input.tokenHash],
+      );
+      const token = rows[0];
+      if (!token) return null;
+
+      // Checked here rather than trusted from issue time: a driver can be
+      // deactivated between the link being sent and being tapped, and that
+      // has to be the answer rather than the invitation's age.
+      const { rows: driverRows } = await client.query<{ active: boolean }>(
+        'SELECT active FROM food_drivers WHERE business_id = $1 AND id = $2',
+        [token.business_id, token.driver_id],
+      );
+      if (!driverRows[0]?.active) return null;
+
+      await client.query(
+        `INSERT INTO food_driver_sessions (business_id, driver_id, token_hash, expires_at, user_agent)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [token.business_id, token.driver_id, input.sessionTokenHash, input.sessionExpiresAt, input.userAgent],
+      );
+
+      return { businessId: token.business_id, driverId: token.driver_id };
+    });
+  }
+
+  /**
+   * Who this session belongs to, if it is still good for anything.
+   *
+   * Every condition is in the one statement - live, unexpired, and a driver
+   * who is still active - so there is no window in which a caller has a
+   * session but has not yet checked whether it means anything.
+   */
+  async findLiveDriverSession(tokenHash: string): Promise<{ businessId: string; driverId: string; driverName: string } | null> {
+    const { rows } = await this.db.query<{ business_id: string; driver_id: string; name: string }>(
+      `UPDATE food_driver_sessions AS session SET last_seen_at = now()
+       FROM food_drivers AS driver
+       WHERE session.token_hash = $1
+         AND session.revoked_at IS NULL
+         AND session.expires_at > now()
+         AND driver.business_id = session.business_id
+         AND driver.id = session.driver_id
+         AND driver.active = true
+       RETURNING session.business_id, session.driver_id, driver.name`,
+      [tokenHash],
     );
-    return rows[0] ? toDriver(rows[0]) : null;
+    const row = rows[0];
+    return row ? { businessId: row.business_id, driverId: row.driver_id, driverName: row.name } : null;
+  }
+
+  /** Signing out. Idempotent - an already-revoked or unknown token is not an error worth telling anybody about. */
+  async revokeDriverSession(tokenHash: string): Promise<void> {
+    await this.db.query(
+      'UPDATE food_driver_sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL',
+      [tokenHash],
+    );
   }
 
   // ── Deliveries ─────────────────────────────────────────────────────────
@@ -1768,6 +1933,63 @@ export class FoodOperationsRepository {
   }
 
   /** What this driver has carried. The question asked of a name rather than of an order. */
+  /**
+   * What one driver is carrying right now, with the order behind each stop.
+   *
+   * The narrowest query in this file on purpose. It is the ONLY way the
+   * driver portal reaches an order, and it is scoped to that driver's own
+   * live assignments in the WHERE clause rather than filtered afterwards -
+   * so there is no shape of request, and no bug in a route handler, that can
+   * widen it into somebody else's deliveries.
+   *
+   * It does return the customer's name, phone and address. That is real
+   * personal information and it is here deliberately: it is precisely what
+   * the person carrying their dinner to their door needs, and withholding it
+   * would not protect them, it would just mean the food does not arrive. It
+   * is bounded to the stops this driver is actually on, and it stops being
+   * readable the moment the run is finished or their session is revoked.
+   */
+  async listDriverManifest(businessId: string, driverId: string): Promise<FoodDriverManifestStop[]> {
+    const { rows } = await this.db.query<ManifestRow>(
+      `SELECT
+         delivery.id AS delivery_id, delivery.state, delivery.assigned_at, delivery.collected_at,
+         o.id AS order_id, o.order_number, o.items, o.total_cents, o.currency,
+         o.customer_name, o.customer_phone,
+         o.delivery_address, o.delivery_notes, o.delivery_latitude, o.delivery_longitude,
+         o.allergen_notes, o.payment_state, o.placed_at
+       FROM food_order_deliveries delivery
+       JOIN food_orders o ON o.business_id = delivery.business_id AND o.id = delivery.order_id
+       WHERE delivery.business_id = $1
+         AND delivery.driver_id = $2
+         -- A run that is done is not on the manifest. FAILED stays, because
+         -- a failed drop is still in the van and still has to be resolved.
+         AND delivery.state IN ('ASSIGNED', 'COLLECTED', 'FAILED')
+       ORDER BY o.placed_at ASC`,
+      [businessId, driverId],
+    );
+
+    return rows.map((row) => ({
+      deliveryId: row.delivery_id,
+      state: row.state,
+      assignedAt: row.assigned_at,
+      collectedAt: row.collected_at,
+      orderId: row.order_id,
+      orderNumber: Number(row.order_number),
+      items: row.items ?? [],
+      totalCents: Number(row.total_cents),
+      currency: row.currency,
+      customerName: row.customer_name,
+      customerPhone: row.customer_phone,
+      deliveryAddress: row.delivery_address,
+      deliveryNotes: row.delivery_notes,
+      deliveryLatitude: row.delivery_latitude,
+      deliveryLongitude: row.delivery_longitude,
+      allergenNotes: row.allergen_notes,
+      paymentState: row.payment_state,
+      placedAt: row.placed_at,
+    }));
+  }
+
   async listDriverRuns(businessId: string, driverId: string, limit = 50): Promise<FoodDeliveryRecord[]> {
     const { rows } = await this.db.query<DeliveryRow>(
       `${FoodOperationsRepository.DELIVERY_SELECT}
@@ -1785,14 +2007,27 @@ export class FoodOperationsRepository {
    * person nothing they can act on - and the next person is usually
    * standing in a shop holding food that has come back.
    */
+  /**
+   * `restrictToDriverId` is how the driver portal calls this.
+   *
+   * A driver may only move their own stop, and that has to be enforced where
+   * the row is read and written rather than checked in the route handler -
+   * a delivery id is a UUID somebody could hold from a previous run, and
+   * "which driver is this" is not a question a caller should be trusted to
+   * have asked. Omitted by the workspace, where an operator legitimately
+   * moves anybody's delivery.
+   */
   async moveDelivery(
     businessId: string,
     id: string,
     to: DriverAssignmentState,
-    actor: { failureReason?: string | null; note?: string | null } = {},
+    actor: { failureReason?: string | null; note?: string | null; restrictToDriverId?: string } = {},
   ): Promise<FoodDeliveryRecord | null> {
     const existing = await this.findDelivery(businessId, id);
     if (!existing) return null;
+    // Indistinguishable from "no such delivery" on purpose: a driver probing
+    // ids should not learn which ones exist.
+    if (actor.restrictToDriverId && existing.driverId !== actor.restrictToDriverId) return null;
     if (existing.state === to) return existing;
 
     if (!canTransitionAssignment(existing.state, to)) {
@@ -1812,11 +2047,15 @@ export class FoodOperationsRepository {
            note = COALESCE($6, note),
            updated_at = now()
          WHERE business_id = $1 AND id = $2
+           -- Belt and braces with the check above: the constraint is in the
+           -- statement that actually writes, so no future refactor of the
+           -- read can quietly remove it.
+           AND ($7::uuid IS NULL OR driver_id = $7::uuid)
          RETURNING *
        )
        SELECT updated.*, driver.name AS driver_name, driver.phone_number AS driver_phone, driver.vehicle AS driver_vehicle
        FROM updated JOIN food_drivers driver ON driver.business_id = updated.business_id AND driver.id = updated.driver_id`,
-      [businessId, id, to, isFinalAssignmentState(to), actor.failureReason ?? null, actor.note ?? null],
+      [businessId, id, to, isFinalAssignmentState(to), actor.failureReason ?? null, actor.note ?? null, actor.restrictToDriverId ?? null],
     );
     return rows[0] ? toDelivery(rows[0]) : null;
   }

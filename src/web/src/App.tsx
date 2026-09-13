@@ -22,6 +22,12 @@ import { PublicLandingPage, TrialStartPage } from './pages/PublicLandingPage.js'
 const TermsPage = lazy(() => import('./pages/TermsPage.js').then((m) => ({ default: m.TermsPage })));
 const PrivacyPage = lazy(() => import('./pages/PrivacyPage.js').then((m) => ({ default: m.PrivacyPage })));
 import { ConsentConfirmPage } from './pages/ConsentConfirmPage.js';
+/**
+ * Lazy for the same reason the legal pages are, and for one more: nobody
+ * who opens the workspace will ever render this, and nobody who opens this
+ * will ever render the workspace.
+ */
+const DriverPortalPage = lazy(() => import('./pages/DriverPortalPage.js').then((m) => ({ default: m.DriverPortalPage })));
 
 /**
  * ScreenLock wraps ONLY the final, fully-ready workspace - never
@@ -65,6 +71,23 @@ function AuthenticatedApp() {
 export default function App() {
   const auth = useAuth();
   const location = useLocation();
+
+  /**
+   * The driver portal, decided before anything else on this page.
+   *
+   * A driver holds no workspace session, so every branch below - including
+   * the "Loading AURA…" probe - is wrong for them. Checking the path first
+   * means their phone never waits on an auth call that was never going to
+   * say yes, and a shop owner who happens to be signed in on the same device
+   * still gets the driver page when they open a driver link.
+   */
+  if (location.pathname === '/driver') {
+    return (
+      <Suspense fallback={null}>
+        <DriverPortalPage />
+      </Suspense>
+    );
+  }
 
   // Applied at this top level (not inside AuthenticatedApp) so it resets to
   // the app default the moment a business's data leaves scope, e.g. logout.

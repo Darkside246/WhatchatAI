@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Bike, Plus, RotateCcw, UserMinus } from 'lucide-react';
+import { Bike, Copy, LogIn, Plus, RotateCcw, UserMinus } from 'lucide-react';
 import { api, ApiError, type FoodDriverDto } from '../lib/api.js';
 
 /**
@@ -21,6 +21,14 @@ export function DriverRoster() {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [vehicle, setVehicle] = useState('');
+  /**
+   * The link just issued, shown once.
+   *
+   * Not stored anywhere readable - the database keeps only a hash of it - so
+   * if the operator navigates away before sharing it, the answer is to issue
+   * a new one, which is also what invalidates the old.
+   */
+  const [issued, setIssued] = useState<{ driverId: string; name: string; url: string; phoneNumber: string | null } | null>(null);
 
   const load = useCallback(() => {
     api
@@ -112,6 +120,29 @@ export function DriverRoster() {
                   {[driver.vehicle, driver.phoneNumber].filter(Boolean).join(' · ') || 'No number on file'}
                 </span>
               </span>
+              {/* Their way in. Issued here and shared by the shop, never sent
+                  by the server - putting a message through this business's
+                  live WhatsApp connection on a background path is the one
+                  thing worth avoiding entirely. */}
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() =>
+                  void run(async () => {
+                    const link = await api.createFoodDriverSignInLink(driver.id);
+                    setIssued({
+                      driverId: driver.id,
+                      name: driver.name,
+                      url: `${window.location.origin}${link.path}`,
+                      phoneNumber: link.driver.phoneNumber,
+                    });
+                  })
+                }
+                title="Give this driver a sign-in link for their phone"
+                className="shrink-0 rounded p-1 text-fg-muted hover:bg-surface-2 hover:text-fg disabled:opacity-40"
+              >
+                <LogIn size={13} aria-hidden />
+              </button>
               <button
                 type="button"
                 disabled={busy}
@@ -127,6 +158,46 @@ export function DriverRoster() {
             </li>
           ))}
         </ul>
+      )}
+
+      {issued && (
+        <div className="mt-2 rounded-lg border border-accent/40 bg-accent-soft p-2.5">
+          <p className="text-caption font-semibold text-fg">Sign-in link for {issued.name}</p>
+          <p className="mt-0.5 text-meta text-fg-secondary">
+            Good for one use and about half an hour. Send it however you already talk to them — it is shown once.
+          </p>
+          <p className="mt-1.5 break-all rounded bg-surface-1 px-2 py-1.5 text-meta text-fg">{issued.url}</p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={() => void navigator.clipboard?.writeText(issued.url)}
+              className="flex items-center gap-1 rounded-md border border-border-subtle bg-surface-1 px-2 py-1 text-meta font-medium text-fg"
+            >
+              <Copy size={11} aria-hidden />
+              Copy
+            </button>
+            {/* Opens the operator's own WhatsApp with it typed out. Their
+                phone, their message - nothing goes near the server's
+                connection. */}
+            {issued.phoneNumber && (
+              <a
+                href={`https://wa.me/${issued.phoneNumber.replace(/\D/g, '')}?text=${encodeURIComponent(`Your delivery run: ${issued.url}`)}`}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="rounded-md border border-border-subtle bg-surface-1 px-2 py-1 text-meta font-medium text-fg"
+              >
+                Send on WhatsApp
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={() => setIssued(null)}
+              className="ml-auto rounded-md px-2 py-1 text-meta text-fg-muted hover:text-fg"
+            >
+              Done
+            </button>
+          </div>
+        </div>
       )}
 
       {past.length > 0 && (

@@ -102,6 +102,39 @@ export interface FoodOrderLineDto {
   station: string | null;
 }
 
+/** One stop on a driver's own run. Never reaches the workspace - this is what /api/driver returns to the driver's phone. */
+export interface DriverRunStop {
+  deliveryId: string;
+  state: 'ASSIGNED' | 'COLLECTED' | 'DELIVERED' | 'FAILED' | 'RETURNED' | 'CANCELLED';
+  orderId: string;
+  orderNumber: number;
+  items: FoodOrderLineDto[];
+  totalCents: number;
+  currency: string;
+  customerName: string | null;
+  customerPhone: string | null;
+  deliveryAddress: string | null;
+  deliveryNotes: string | null;
+  deliveryLatitude: number | null;
+  deliveryLongitude: number | null;
+  allergenNotes: string | null;
+  paymentState: FoodBoardOrderDto['paymentState'];
+  placedAt: string;
+  /** Where this stop falls in the planned run, and how far it is from the one before. */
+  position: number | null;
+  legMetres: number | null;
+  ageSeconds: number;
+}
+
+export interface DriverRunResponse {
+  driver: { id: string; name: string };
+  /** The route in a sentence, already worded honestly about what it measures. */
+  summary: string;
+  /** False when the business has no delivery zone, so the run is ordered between the stops rather than from the shop. */
+  startedFromShop: boolean;
+  stops: DriverRunStop[];
+}
+
 /** Both halves of the keyset position. Half a cursor is not a position, so they travel together. */
 export interface FoodHistoryCursor {
   closedAt: string;
@@ -2524,6 +2557,24 @@ export const api = {
       `/food-operations/history${suffix ? `?${suffix}` : ''}`,
     );
   },
+  // ── The driver's own portal ────────────────────────────────────────────
+  // A separate principal with its own cookie. None of these touch a
+  // workspace route, and a driver never holds a workspace session.
+  signInDriver: (token: string) =>
+    request<{ ok: true }>('/driver/session', { method: 'POST', body: JSON.stringify({ token }) }),
+  signOutDriver: () => request<{ ok: true }>('/driver/signout', { method: 'POST' }),
+  getDriverRun: () => request<DriverRunResponse>('/driver/run'),
+  moveDriverStop: (deliveryId: string, state: string, failureReason?: string) =>
+    request<{ stop: unknown }>(`/driver/stops/${deliveryId}/state`, {
+      method: 'POST',
+      body: JSON.stringify(failureReason ? { state, failureReason } : { state }),
+    }),
+  /** The shop issuing a driver a one-use sign-in link, to share however they already talk to them. */
+  createFoodDriverSignInLink: (driverId: string) =>
+    request<{ path: string; expiresAt: string; driver: { id: string; name: string; phoneNumber: string | null } }>(
+      `/food-operations/drivers/${driverId}/sign-in-link`,
+      { method: 'POST' },
+    ),
   getFoodBoard: () =>
     request<{ serverTime: string; settings: FoodSettingsDto; stations: string[]; orders: FoodBoardOrderDto[] }>(
       '/food-operations/board',
