@@ -303,3 +303,76 @@ describe('securityAlertService (Zero-Leak Rule: no *customer* message text, cont
     expect(await listHumanTakeoverAlerts(businessId)).toEqual([]);
   });
 });
+
+/**
+ * The banner dismisses by chat id AND triggeredAt together, so triggeredAt
+ * decides how long "I have seen this" lasts.
+ *
+ * It used to be the chat row's updated_at, which moves for a presence
+ * change, a read receipt, a profile-picture sync, an inbound or outbound
+ * message - anything at all. So the alert an operator had just closed
+ * reappeared on the next five-second poll, reported as "it goes away for a
+ * short time and comes back". These pin it to the handoff itself.
+ */
+describe('securityAlertService triggeredAt (a dismissal has to outlive an unrelated chat update)', () => {
+  let businessId: string;
+  let accountId: string;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    businessId = await createTestBusiness();
+    accountId = await createTestAccount(businessId, '15550003333@s.whatsapp.net');
+  });
+
+  async function takeoverChat(unreadCount = 1) {
+    const chatRepository = new WhatsAppChatRepository(pool);
+    const chat = await chatRepository.upsertFromWhatsApp({
+      businessId,
+      whatsappAccountId: accountId,
+      chatJid: '15550004444@s.whatsapp.net',
+      jidKind: 'individual',
+      chatType: 'individual',
+      unreadCount,
+    });
+    await chatRepository.setAiMode(chat.id, 'HUMAN_TAKEOVER');
+    return { chatRepository, chat };
+  }
+
+  it('does not change when the chat row is touched for an unrelated reason', async () => {
+    const { chat } = await takeoverChat();
+    const [before] = await listHumanTakeoverAlerts(businessId);
+    expect(before).toBeDefined();
+
+    // A real, ordinary update of the same row - exactly the kind of thing
+    // that happens constantly on a live conversation and that used to
+    // resurrect a dismissed banner.
+    await pool.query('UPDATE whatsapp_chats SET unread_count = 4, updated_at = now() WHERE id = $1', [chat.id]);
+
+    const [after] = await listHumanTakeoverAlerts(businessId);
+    expect(after?.triggeredAt).toBe(before?.triggeredAt);
+    // The alert itself is still live and its urgency did follow the change -
+    // this is not achieved by the row going stale.
+    expect(after?.urgency).toBe('MEDIUM');
+  });
+
+  it('is stable across repeated polls of an unchanged handoff', async () => {
+    await takeoverChat();
+    const first = (await listHumanTakeoverAlerts(businessId))[0]?.triggeredAt;
+    const second = (await listHumanTakeoverAlerts(businessId))[0]?.triggeredAt;
+    expect(second).toBe(first);
+  });
+
+  it('does change when the conversation genuinely enters a new handoff', async () => {
+    // The other half of the contract: a dismissal must not silence a later,
+    // separate handoff on the same conversation.
+    const { chatRepository, chat } = await takeoverChat();
+    const [first] = await listHumanTakeoverAlerts(businessId);
+
+    await chatRepository.setAiMode(chat.id, 'AI_ACTIVE');
+    expect(await listHumanTakeoverAlerts(businessId)).toEqual([]);
+
+    await chatRepository.setAiMode(chat.id, 'HUMAN_TAKEOVER');
+    const [second] = await listHumanTakeoverAlerts(businessId);
+    expect(second?.triggeredAt).not.toBe(first?.triggeredAt);
+  });
+});

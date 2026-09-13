@@ -204,6 +204,12 @@ export function AlertNotifier() {
   // Opening a conversation acknowledges its alert. Keyed on triggeredAt like
   // every other dismissal here, so a genuinely NEW handoff on the same chat
   // raises the pill again rather than staying permanently silenced.
+  //
+  // That only works because triggeredAt is the handoff's own start time
+  // (securityAlertService -> handoff_started_at). It used to be the chat
+  // row's updated_at, which moves for a presence change, a read receipt or
+  // any inbound message - so every dismissal here was undone by the next
+  // five-second poll and the banner came straight back.
   const openChatId = /^\/chats\/([^/]+)$/.exec(location.pathname)?.[1] ?? null;
   openChatIdRef.current = openChatId;
   useEffect(() => {

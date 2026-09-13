@@ -8,6 +8,14 @@ export interface HumanTakeoverAlert {
   chatId: string;
   lineLabel: string;
   urgency: AlertUrgency;
+  /**
+   * When this handoff began - stable for as long as the conversation stays
+   * in HUMAN_TAKEOVER, and different the next time it enters it.
+   *
+   * The banner dismisses by chat id AND this value together, so "I have seen
+   * this one" lasts for the handoff it was said about, and a later, genuinely
+   * separate handoff on the same conversation is not silently pre-dismissed.
+   */
   triggeredAt: string;
   /** Only ever populated when the caller passes includeIdentity: true - see listHumanTakeoverAlerts's own doc comment. */
   customerName: string | null;
@@ -46,7 +54,10 @@ export async function listHumanTakeoverAlerts(businessId: string, includeIdentit
     chatId: row.chat_id,
     lineLabel: row.account_name?.trim() || row.phone_number?.trim() || `Line ${row.line_number}`,
     urgency: urgencyFromUnreadCount(row.unread_count),
-    triggeredAt: row.updated_at,
+    // The handoff, not the chat row. See HumanTakeoverAlertRow.handoff_started_at:
+    // this value is what the banner keys a dismissal on, so it has to change
+    // when there is genuinely a new handoff and at no other time.
+    triggeredAt: row.handoff_started_at,
   }));
 
   // Identity off: nothing about the customer is read, resolved or returned -

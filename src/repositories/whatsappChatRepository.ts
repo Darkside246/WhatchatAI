@@ -651,7 +651,14 @@ export class WhatsAppChatRepository {
          FROM whatsapp_accounts
          WHERE business_id = $1
        )
-       SELECT c.id AS chat_id, c.unread_count, c.updated_at, na.line_number, na.account_name, na.phone_number,
+       SELECT c.id AS chat_id, c.unread_count, c.updated_at,
+              -- When THIS handoff began, which is not the same thing as
+              -- when the chat row was last touched. NULL only for a chat
+              -- that entered HUMAN_TAKEOVER before migration 933 started
+              -- recording transitions; created_at stands in because it is
+              -- at least stable, and the next real transition replaces it.
+              COALESCE(c.ai_mode_set_at, c.created_at) AS handoff_started_at,
+              na.line_number, na.account_name, na.phone_number,
               c.name AS customer_name, c.phone_number AS customer_phone_number,
               c.whatsapp_account_id, c.chat_jid, c.jid_kind, c.contact_id
        FROM whatsapp_chats c
@@ -684,6 +691,17 @@ export interface HumanTakeoverAlertRow {
   chat_id: string;
   unread_count: number;
   updated_at: string;
+  /**
+   * When this conversation entered HUMAN_TAKEOVER - the identity of the
+   * handoff itself, which is what a dismissal has to be keyed on.
+   *
+   * updated_at above cannot serve: it moves for a presence change, a read
+   * receipt, a profile-picture sync, an outbound message, anything at all.
+   * Keying a dismissal on it meant the alert the operator had just closed
+   * reappeared within one poll - reported as "it goes away for a short time
+   * and comes back".
+   */
+  handoff_started_at: string;
   line_number: string;
   account_name: string | null;
   phone_number: string | null;
