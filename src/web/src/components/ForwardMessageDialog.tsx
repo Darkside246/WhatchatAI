@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Loader2, Search, Send, X } from 'lucide-react';
 import { api, ApiError, type WorkspaceChatSummary, type WorkspaceMessage } from '../lib/api.js';
+import { forwardTargets } from '../lib/forwardTargets.js';
 
 /**
  * Sending a message on to other conversations.
@@ -42,33 +43,40 @@ export function ForwardMessageDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const { chats: fetched } = await api.listChats();
-        if (!cancelled) setChats(fetched);
-      } catch (err) {
-        if (!cancelled) setError(err instanceof ApiError ? err.message : 'Could not load your conversations.');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+  const [showAll, setShowAll] = useState(false);
+
+  /**
+   * Loads the conversation list.
+   *
+   * A failure sets the list to empty rather than leaving it null: null is
+   * "still loading" here, and a catch that only set an error string left the
+   * dialog showing "could not load" and "Loading…" at the same time, forever.
+   * One of those is always a lie.
+   *
+   * The real message is shown, not a generic sentence. "Could not load your
+   * conversations" tells nobody whether they have been signed out, whether
+   * WhatsApp is disconnected, or whether something is genuinely broken - and
+   * that is exactly what somebody needs in order to do anything about it.
+   */
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const { chats: fetched } = await api.listChats();
+      setChats(fetched);
+    } catch (err) {
+      setChats([]);
+      setError(err instanceof ApiError ? `Could not load your conversations: ${err.message}` : 'Could not load your conversations.');
+    }
   }, []);
 
-  const visible = useMemo(() => {
-    const wanted = query.trim().toLowerCase();
-    return (chats ?? [])
-      // A channel is a broadcast feed only its owner posts to, and the
-      // conversation this came from is not somewhere to forward it back to.
-      .filter((chat) => chat.chatType !== 'newsletter' && chat.id !== message.chatId)
-      .filter((chat) =>
-        !wanted ||
-        chat.displayName.toLowerCase().includes(wanted) ||
-        (chat.phoneNumber ?? '').toLowerCase().includes(wanted),
-      );
-  }, [chats, query, message.chatId]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const { visible, matching, hiddenCount, searching } = useMemo(
+    () => forwardTargets(chats ?? [], { excludeChatId: message.chatId, query, showAll }),
+    [chats, message.chatId, query, showAll],
+  );
 
   function toggle(chatId: string) {
     setError(null);
@@ -138,14 +146,35 @@ export function ForwardMessageDialog({
           </div>
         </div>
 
-        {error && <p className="border-b border-error/30 bg-error/10 px-4 py-2 text-caption text-error">{error}</p>}
+        {error && (
+          <div className="flex items-start gap-2 border-b border-error/30 bg-error/10 px-4 py-2">
+            <p className="min-w-0 flex-1 text-caption text-error">{error}</p>
+            {/* A load that failed once is usually a load that succeeds on the
+                second try. Closing and reopening the dialog is the same
+                thing with more steps. */}
+            <button
+              type="button"
+              onClick={() => void load()}
+              className="shrink-0 text-caption font-medium text-error underline hover:no-underline"
+            >
+              Retry
+            </button>
+          </div>
+        )}
 
         <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1">
           {chats === null && <p className="p-3 text-caption text-fg-muted">Loading…</p>}
+
           {chats !== null && visible.length === 0 && (
             <p className="p-3 text-caption text-fg-muted">
-              {query ? 'Nothing matches that.' : 'No other conversations to forward to.'}
+              {searching ? 'Nothing matches that.' : 'No other conversations to forward to.'}
             </p>
+          )}
+
+          {/* Named, so the short list reads as a deliberate shortlist rather
+              than as the whole address book being unexpectedly small. */}
+          {chats !== null && visible.length > 0 && !searching && !showAll && (
+            <p className="px-2.5 pb-1 pt-2 text-meta font-medium uppercase tracking-wide text-fg-muted">Recent</p>
           )}
 
           {visible.map((chat) => {
@@ -172,6 +201,16 @@ export function ForwardMessageDialog({
               </button>
             );
           })}
+
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAll(true)}
+              className="mt-1 w-full rounded-lg px-2.5 py-2 text-left text-caption font-medium text-accent hover:bg-surface-2"
+            >
+              Show all {matching.length} conversations
+            </button>
+          )}
         </div>
 
         {/* What will actually be sent, so nobody forwards the wrong thing off
