@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { detectPii, describePiiFindings, type PiiFinding } from '../lib/piiDetector.js';
+import { decideThreadScroll } from '../lib/threadScroll.js';
 import {
   ArrowLeft,
   Check,
@@ -435,7 +436,7 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
    * bookmark. Every other way into a conversation still lands on the newest
    * message, which is what you want when you are picking up a live chat.
    */
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const anchorMessageId = searchParams.get('message');
   const [messages, setMessages] = useState<WorkspaceMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -798,29 +799,50 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
     const list = messageListRef.current;
     if (!list || !messages || messages.length === 0) return;
 
-    // An anchored open wins over the usual jump-to-newest, but only once:
-    // after landing on the bookmarked message the thread behaves normally,
-    // and the operator is left exactly where they were put rather than
-    // being dragged to the bottom by the next poll.
-    if (pendingInitialScrollRef.current && anchorMessageId) {
-      const target = list.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(anchorMessageId)}"]`);
-      if (target) {
-        target.scrollIntoView({ block: 'center' });
-        // Reading history, not following the live end.
-        followNewestRef.current = false;
-        pendingInitialScrollRef.current = false;
-        return;
-      }
-      // The anchor is not in the loaded window (or was deleted) - fall
-      // through to the newest message rather than leaving the operator
-      // stranded at the top with no explanation.
+    const target = anchorMessageId
+      ? list.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(anchorMessageId)}"]`)
+      : null;
+
+    const action = decideThreadScroll({
+      pendingInitialScroll: pendingInitialScrollRef.current,
+      anchorMessageId,
+      anchorIsLoaded: Boolean(target),
+      followNewest: followNewestRef.current,
+    });
+
+    /**
+     * Taking ?message= out of the URL is the actual fix, not tidying.
+     *
+     * Nothing removed it before, so the anchor was not used once - it was
+     * permanent. Every later render of that chat left the view pinned up in
+     * the history with new messages arriving unseen below, and every
+     * re-entry scrolled back to the same old message again. Reported as
+     * "when i forward something it goes to a random location in the chat
+     * starting from like a day before": the forward was at the bottom all
+     * along, and the thread was looking somewhere else.
+     *
+     * replace, not push: landing back on the anchored URL through the Back
+     * button would simply re-arm the thing being disarmed.
+     */
+    if (action.consumeAnchor) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('message');
+      setSearchParams(next, { replace: true });
     }
 
-    if (!pendingInitialScrollRef.current && !followNewestRef.current) return;
+    if (action.kind === 'stay') return;
+
+    if (action.kind === 'anchor') {
+      target?.scrollIntoView({ block: 'center' });
+      followNewestRef.current = false;
+      pendingInitialScrollRef.current = false;
+      return;
+    }
 
     list.scrollTop = list.scrollHeight;
+    followNewestRef.current = true;
     pendingInitialScrollRef.current = false;
-  }, [messages, chatId, anchorMessageId]);
+  }, [messages, chatId, anchorMessageId, searchParams, setSearchParams]);
 
   /**
    * Real Gemini-drafted replies, fetched only when the newest real message

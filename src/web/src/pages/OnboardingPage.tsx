@@ -65,7 +65,26 @@ export function OnboardingPage({ connection, serverUnreachable = false }: Props)
     if (pairMethod !== 'qr') return;
     if (readStoredPairMethod() === 'phone') return;
     if (hasInProgressPhonePairing(connection)) return;
-    if ((connection.status === 'DISCONNECTED' || connection.status === 'LOGGED_OUT') && !triggered.current) {
+    /**
+     * PAIRING_ABANDONED belongs here, and it is what makes the whole thing
+     * work.
+     *
+     * The server stops offering codes once several have gone unscanned
+     * (migration 1050), which is right when nobody is there - and would be
+     * wrong if it meant a person who came back had to hunt for a button.
+     * Somebody reaching this screen IS the evidence that there is now
+     * somebody there, so it asks for a fresh code immediately, exactly as
+     * it does for a disconnected or logged-out account.
+     *
+     * The loop is now demand-driven rather than permanent: quiet while
+     * nobody is signed in, a code the moment somebody is.
+     */
+    if (
+      (connection.status === 'DISCONNECTED' ||
+        connection.status === 'LOGGED_OUT' ||
+        connection.status === 'PAIRING_ABANDONED') &&
+      !triggered.current
+    ) {
       triggered.current = true;
       api.connectWhatsApp().catch(() => {
         triggered.current = false;

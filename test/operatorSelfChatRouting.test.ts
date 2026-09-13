@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { pool } from '../src/db/pool.js';
+import { WhatsAppMessageRepository } from '../src/repositories/whatsappMessageRepository.js';
 import { register } from '../src/services/authService.js';
 import { generatePinSalt, hashPin } from '../src/services/operator/operatorCommandService.js';
 import { OperatorModeRepository } from '../src/repositories/operatorModeRepository.js';
@@ -326,7 +327,7 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
     expect(audit).toHaveLength(0);
   }, 15_000);
 
-  it('the exact same spammy content sent as a genuine customer message is still blocked by the Sentinel', async () => {
+  it('the exact same spammy content sent as a genuine customer message is still kept from the AI', async () => {
     const spammyCommand = 'free money, you\'ve won! wire transfer now: https://bit.ly/totally-legit';
     const messageId = `CUSTOMER-SENTINEL-${Date.now()}`;
     const ingested: IngestedWhatsAppMessage = {
@@ -361,11 +362,33 @@ describe('operator self-chat routing (real BullMQ worker + real Postgres)', () =
     await enqueueIncomingMessage({ businessId, whatsappAccountId: accountId, accountJid: ACCOUNT_JID, message: ingested });
     await completed;
 
-    const { rows } = await pool.query('SELECT id FROM whatsapp_messages WHERE business_id = $1 AND whatsapp_message_id = $2', [
-      businessId,
-      messageId,
-    ]);
-    expect(rows).toHaveLength(0); // Sentinel blocked it before persistence ever ran.
+    /*
+     * This used to assert zero rows - "Sentinel blocked it before
+     * persistence ever ran" - and that was the bug, not the feature. A
+     * customer's message vanished between their phone and the operator's
+     * screen with nobody told; reported live on a question that merely
+     * contained the word "password". See migration 1046.
+     *
+     * The security property is unchanged and is asserted below: the model
+     * never sees it. What changed is that the human does.
+     */
+    const { rows } = await pool.query(
+      'SELECT id, chat_id, screening_status, screening_reason FROM whatsapp_messages WHERE business_id = $1 AND whatsapp_message_id = $2',
+      [businessId, messageId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].screening_status).toBe('held');
+    expect(rows[0].screening_reason).toBeTruthy();
+
+    // The part that actually matters: held text reaches neither the AI's
+    // history nor its list of turns to answer.
+    const messageRepository = new WhatsAppMessageRepository(pool);
+    expect(await messageRepository.listByChatForAgent(rows[0].chat_id)).toHaveLength(0);
+    expect(await messageRepository.findUnansweredInboundSince(rows[0].chat_id, null)).toHaveLength(0);
+
+    // And the operator can read every word of it.
+    const [visible] = await messageRepository.listByChat(rows[0].chat_id);
+    expect(visible?.textContent).toBe(spammyCommand);
 
     const { rows: audit } = await pool.query(
       `SELECT event_type FROM security_audit_logs WHERE business_id = $1 AND event_type = 'sentinel_heuristic_block'`,

@@ -245,7 +245,19 @@ export class WhatsAppAccountRepository {
     const { rows } = await this.db.query<{ business_id: string }>(
       `SELECT DISTINCT ON (business_id) business_id
        FROM whatsapp_accounts
-       WHERE deleted_at IS NULL AND whatsapp_jid IS NOT NULL AND connection_status <> 'LOGGED_OUT'
+       /* PAIRING_ABANDONED is excluded for the same reason LOGGED_OUT is,
+          and it matters more than it looks: that status is only ever
+          reached by DECIDING to stop offering codes nobody was scanning
+          (see migration 1050). Reviving it here would undo that decision
+          on every deploy and every restart, which is how the loop it
+          exists to end would quietly come back.
+
+          CONFLICT_REPLACED is deliberately NOT excluded. A restart is
+          often exactly what resolves it - the duplicate process holding
+          the session was usually this one - so reconnecting on boot is a
+          real chance of recovery rather than a re-entry into a loop. */
+       WHERE deleted_at IS NULL AND whatsapp_jid IS NOT NULL
+         AND connection_status NOT IN ('LOGGED_OUT', 'PAIRING_ABANDONED')
        ORDER BY business_id, connected_at DESC NULLS LAST`,
     );
     return rows.map((row) => row.business_id);
