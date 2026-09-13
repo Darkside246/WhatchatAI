@@ -47,6 +47,7 @@ import { WhatsAppAccountRepository } from '../repositories/whatsappAccountReposi
 import { CrmContactRepository } from '../repositories/crmContactRepository.js';
 import { UserPreferenceRepository } from '../repositories/userPreferenceRepository.js';
 import { SecurityAuditLogRepository } from '../repositories/securityAuditLogRepository.js';
+import { verifyRecaptcha } from '../services/recaptchaService.js';
 import { toCsv } from '../services/export/csvExport.js';
 import { checkDatabaseHealth, pool, queryAsTenant } from '../db/pool.js';
 import { checkRedisHealth } from '../redis/client.js';
@@ -568,7 +569,43 @@ app.get('/api/auth/bootstrap-status', async (_req, res) => {
   return res.status(200).json({ registrationOpen });
 });
 
+/**
+ * One place every public endpoint screens a reCAPTCHA token.
+ *
+ * Always records a rejection, whether or not the caller goes on to act on
+ * it, because the signal is worth having even where blocking is not: the
+ * oversight sweep's recaptcha_failure_spike finding reads exactly these
+ * rows. Reuses the existing signup_recaptcha_failed event type with the
+ * action in its metadata rather than minting new ones - the event_type check
+ * constraint is restated by several migrations, and adding a value to it is
+ * how a deploy breaks on data that already exists.
+ *
+ * Never throws. Verification failing to run is not the visitor's fault and
+ * must never be the reason somebody cannot get into their own account.
+ */
+async function screenRecaptcha(
+  req: express.Request,
+  token: string | undefined,
+  action: string,
+): Promise<{ allowed: boolean; score: number | null }> {
+  const result = await verifyRecaptcha(token, req.ip ?? null, action).catch(() => ({ ok: true as const, score: null }));
+  if (result.ok) return { allowed: true, score: result.score };
+
+  await new SecurityAuditLogRepository(pool)
+    .record({
+      businessId: null,
+      eventType: 'signup_recaptcha_failed',
+      severity: 'warning',
+      reason: result.reason,
+      rawMetadata: { ipAddress: req.ip ?? null, action, score: result.score },
+    })
+    .catch(() => undefined);
+
+  return { allowed: false, score: result.score };
+}
+
 const registerSchema = z.object({
+  recaptchaToken: z.string().max(4096).optional(),
   email: z.string().trim().email(),
   password: z.string().min(1),
   displayName: z.string().trim().min(1).max(200),
@@ -578,8 +615,12 @@ app.post('/api/auth/register', async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_REGISTER_PAYLOAD', details: parsed.error.flatten() });
 
+  const gate = await screenRecaptcha(req, parsed.data.recaptchaToken, 'register');
+  if (!gate.allowed) return res.status(400).json({ error: 'RECAPTCHA_FAILED', message: 'We could not verify this request. Please try again.' });
+
   try {
-    const result = await register(parsed.data, deviceContextFrom(req));
+    const { recaptchaToken: _registerToken, ...registerInput } = parsed.data;
+    const result = await register(registerInput, deviceContextFrom(req));
     setSessionCookie(req, res, result.token, SESSION_MAX_AGE_SECONDS);
     const extra = await enrichBusinessForAuthResponse(result.business.id, result.user.platformRole);
     return res.status(201).json({ user: result.user, business: { ...result.business, ...extra }, role: result.membership.role });
@@ -591,11 +632,27 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-const loginSchema = z.object({ email: z.string().trim().email(), password: z.string().min(1), rememberMe: z.boolean().optional().default(true) });
+const loginSchema = z.object({ email: z.string().trim().email(), password: z.string().min(1), rememberMe: z.boolean().optional().default(true), recaptchaToken: z.string().max(4096).optional() });
 
 app.post('/api/auth/login', async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_LOGIN_PAYLOAD' });
+
+  /**
+   * Login is scored but not blocked unless RECAPTCHA_ENFORCE_LOGIN is on.
+   *
+   * The asymmetry is deliberate. A false positive on signup costs somebody a
+   * retry; a false positive on login locks an owner out of their own
+   * business in the middle of service, and this endpoint already has a real
+   * rate limiter in front of it. So the score is always recorded - the
+   * oversight sweep's recaptcha_failure_spike finding reads exactly these
+   * rows - and whether it actually refuses is a decision the operator makes
+   * once they have seen their own traffic.
+   */
+  const gate = await screenRecaptcha(req, parsed.data.recaptchaToken, 'login');
+  if (!gate.allowed && process.env['RECAPTCHA_ENFORCE_LOGIN'] === 'true') {
+    return res.status(400).json({ error: 'RECAPTCHA_FAILED', message: 'We could not verify this request. Please try again.' });
+  }
 
   try {
     const result = await login(parsed.data.email, parsed.data.password, deviceContextFrom(req));
@@ -723,13 +780,19 @@ app.patch('/api/auth/account/phone', requireAuth, async (req, res) => {
  * UNAUTHENTICATED - the whole point is that the person cannot sign in - so
  * both sit behind the auth rate limiter rather than a session.
  */
-const forgotPasswordSchema = z.object({ email: z.string().trim().email() });
+const forgotPasswordSchema = z.object({ email: z.string().trim().email(), recaptchaToken: z.string().max(4096).optional() });
 
 app.post('/api/auth/password/forgot', async (req, res) => {
   const parsed = forgotPasswordSchema.safeParse(req.body);
   // Even a malformed address gets the same answer. Anything else lets a
   // caller distinguish "not an account" from "not an email".
   if (!parsed.success) return res.status(200).json({ status: 'sent', channel: null });
+
+  // Same indistinguishable answer as every other rejection on this route: a
+  // caller must not be able to tell a blocked request from an address that
+  // has no account, or this becomes an account-enumeration oracle.
+  const gate = await screenRecaptcha(req, parsed.data.recaptchaToken, 'password_forgot');
+  if (!gate.allowed) return res.status(200).json({ status: 'sent', channel: null });
 
   try {
     const { channel } = await requestPasswordReset(parsed.data.email);

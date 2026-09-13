@@ -69,10 +69,12 @@ router.post('/trials/register', async (req, res) => {
   const parsed = trialRegistrationSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_TRIAL_REGISTRATION', details: parsed.error.flatten() });
 
-  const recaptcha = await verifyRecaptcha(parsed.data.recaptchaToken, req.ip ?? null);
+  // The action name has to match the one the browser minted the token for
+  // (useAuth.tsx), or the token is rejected as being for something else.
+  const recaptcha = await verifyRecaptcha(parsed.data.recaptchaToken, req.ip ?? null, 'trial_register');
   if (!recaptcha.ok) {
     await securityAuditLogRepository
-      .record({ businessId: null, eventType: 'signup_recaptcha_failed', severity: 'warning', reason: recaptcha.reason, rawMetadata: { ipAddress: req.ip ?? null } })
+      .record({ businessId: null, eventType: 'signup_recaptcha_failed', severity: 'warning', reason: recaptcha.reason, rawMetadata: { ipAddress: req.ip ?? null, action: 'trial_register', score: recaptcha.score } })
       .catch(() => undefined);
     return res.status(400).json({ error: 'RECAPTCHA_FAILED', message: 'We could not verify this request. Please try again.' });
   }

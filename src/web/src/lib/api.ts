@@ -1,3 +1,5 @@
+import { getRecaptchaToken } from './recaptcha.js';
+
 export interface WhatsAppConnectionSnapshot {
   status: 'DISCONNECTED' | 'CONNECTING' | 'QR_READY' | 'PAIRING_CODE_READY' | 'CONNECTED' | 'RECONNECTING' | 'LOGGED_OUT' | 'CONFLICT_REPLACED' | 'ERROR';
   connected: boolean;
@@ -2337,12 +2339,28 @@ export const api = {
   updatePreferences: (body: { country?: string | null; navigationOrder?: string[] | null; emailPanelCardOrder?: string[] | null; timezone?: string; language?: string }) =>
     request<{ preferences: UserPreferencesDto }>('/auth/preferences', { method: 'PATCH', body: JSON.stringify(body) }),
   getBootstrapStatus: () => request<BootstrapStatusResponse>('/auth/bootstrap-status'),
-  registerAccount: (body: { email: string; password: string; displayName: string }) =>
-    request<AuthMeResponse>('/auth/register', { method: 'POST', body: JSON.stringify(body) }),
+  /**
+   * The three public auth calls mint their own reCAPTCHA token here rather
+   * than at each call site.
+   *
+   * One place, so a new caller cannot forget and the action name cannot
+   * drift from the endpoint it is spent on - the server checks that the
+   * token was minted for the same action, so a mismatch is a rejection
+   * rather than a silent downgrade. Resolves to undefined when reCAPTCHA is
+   * not configured, which the server treats as "nothing to verify".
+   */
+  registerAccount: async (body: { email: string; password: string; displayName: string }) =>
+    request<AuthMeResponse>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ ...body, recaptchaToken: await getRecaptchaToken('register') }),
+    }),
   registerTrial: (body: { name: string; email: string; phone: string; password: string; productKey: string; recaptchaToken?: string }) =>
     request<RegisterTrialResponse>('/trials/register', { method: 'POST', body: JSON.stringify(body) }),
-  login: (email: string, password: string, rememberMe = true) =>
-    request<AuthMeResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password, rememberMe }) }),
+  login: async (email: string, password: string, rememberMe = true) =>
+    request<AuthMeResponse>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password, rememberMe, recaptchaToken: await getRecaptchaToken('login') }),
+    }),
   logout: () => request<{ status: string }>('/auth/logout', { method: 'POST' }),
   getMe: () => request<AuthMeResponse>('/auth/me'),
   listSessions: () => request<{ sessions: AuthSessionDto[] }>('/auth/sessions'),
@@ -2957,10 +2975,10 @@ export const api = {
    * address belongs to an account - the server will not say, because saying
    * would turn this into a way to test which addresses use AURA.
    */
-  requestPasswordReset: (email: string) =>
+  requestPasswordReset: async (email: string) =>
     request<{ status: string; channel: 'email' | 'whatsapp' | null }>('/auth/password/forgot', {
       method: 'POST',
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ email, recaptchaToken: await getRecaptchaToken('password_forgot') }),
     }),
   /** Spends a reset token and sets the new password. Every other session is signed out. */
   resetPassword: (token: string, newPassword: string) =>
