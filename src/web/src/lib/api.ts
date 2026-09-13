@@ -449,6 +449,43 @@ export interface FoodMenuImportResultDto {
   counts: { create: number; update: number; skip: number };
 }
 
+/** One line as the register proposes it. No price - the server works every figure out from the catalogue. */
+export interface FoodProposedLineDto {
+  /** The item, by name or alias. The server resolves it; the browser never picks a price. */
+  reference: string;
+  quantity: number;
+  modifiers?: { name: string; action: 'add' | 'remove' | 'on_side' }[];
+  notes?: string | null;
+}
+
+export interface FoodOrderProposalDto {
+  fulfilmentMethod: 'PICKUP' | 'DELIVERY' | 'DINE_IN';
+  lines: FoodProposedLineDto[];
+  customerName?: string | null;
+  customerPhone?: string | null;
+  tableLabel?: string | null;
+  deliveryAddress?: string | null;
+  allergenNotes?: string | null;
+  kitchenNotes?: string | null;
+}
+
+/** What the server says the order actually costs. The only figures a till may display. */
+export interface FoodQuoteDto {
+  lines: FoodOrderLineDto[];
+  subtotalCents: number;
+  deliveryFeeCents: number;
+  totalCents: number;
+  currency: string;
+}
+
+/** Why an order cannot be priced - an item sold out, a reference that matches nothing. Each carries a sentence for the customer. */
+export interface FoodOrderProblemDto {
+  reference?: string;
+  reason?: string;
+  message?: string;
+  [key: string]: unknown;
+}
+
 export interface FoodMenuItemDto {
   id: string;
   name: string;
@@ -2786,6 +2823,29 @@ export const api = {
       body: JSON.stringify({ state, ...extras }),
     }),
   getFoodMenu: () => request<{ items: FoodMenuItemDto[] }>('/food-operations/menu'),
+  /**
+   * Prices a basket without creating anything.
+   *
+   * The register calls this on every change. It is the ONLY source of money
+   * on that screen - the browser holds references and quantities and never
+   * multiplies a price, because a till that computes its own totals will one
+   * day disagree with the kitchen ticket and the customer will be right.
+   */
+  quoteFoodOrder: (proposal: FoodOrderProposalDto) =>
+    request<{ quote: FoodQuoteDto }>('/food-operations/orders/quote', { method: 'POST', body: JSON.stringify(proposal) }),
+  /**
+   * Takes the order.
+   *
+   * idempotencyKey is not optional in practice: a till gets double-tapped,
+   * and without it the second tap is a second ticket and a second plate of
+   * food. The server returns 200 with deduplicated:true for a replay and 201
+   * for a genuinely new order.
+   */
+  confirmFoodOrder: (proposal: FoodOrderProposalDto & { idempotencyKey: string }) =>
+    request<{ order: FoodBoardOrderDto; deduplicated: boolean; notice?: string | null }>(
+      '/food-operations/orders/confirm',
+      { method: 'POST', body: JSON.stringify(proposal) },
+    ),
   /** The shipped wording and the usable tokens come from the server, so a screen cannot show a default the server no longer sends. */
   getFoodSettings: () =>
     request<{
