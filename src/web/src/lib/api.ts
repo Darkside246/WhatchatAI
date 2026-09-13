@@ -509,6 +509,13 @@ export interface FoodOrderProposalDto {
    * tool schema has no such field.
    */
   discountCents?: number;
+  /**
+   * A percentage typed at the till instead of an amount. The SERVER
+   * converts it against the subtotal it works out - this screen never
+   * multiplies a price, and that promise is the reason this field exists
+   * rather than the browser doing the sum.
+   */
+  discountPercent?: number;
   discountReason?: string | null;
   customerName?: string | null;
   customerPhone?: string | null;

@@ -518,6 +518,8 @@ const proposalSchema = z.object({
   kitchenNotes: z.string().trim().max(500).nullish(),
   /** Money off the food, in cents, decided by a person at the till. See the note above. */
   discountCents: z.number().int().min(0).max(10_000_000).nullish(),
+  /** A percentage typed instead of an amount. The server converts it, so the browser never multiplies. */
+  discountPercent: z.number().min(0).max(100).nullish(),
   discountReason: z.string().trim().max(200).nullish(),
 });
 
@@ -530,8 +532,13 @@ const proposalSchema = z.object({
  * approver just so they can ring a coffee.
  */
 function refuseUnapprovedDiscount(body: unknown, res: ExpressResponse): boolean {
-  const requested = Number((body as { discountCents?: unknown } | null)?.discountCents ?? 0);
-  if (!Number.isFinite(requested) || requested <= 0) return false;
+  /* Both shapes, or this is a hole rather than a gate: somebody refused an
+     amount would simply send the same discount as a percentage. */
+  const asBody = body as { discountCents?: unknown; discountPercent?: unknown } | null;
+  const amount = Number(asBody?.discountCents ?? 0);
+  const percent = Number(asBody?.discountPercent ?? 0);
+  const requested = Math.max(Number.isFinite(amount) ? amount : 0, Number.isFinite(percent) ? percent : 0);
+  if (requested <= 0) return false;
 
   const auth = res.locals.auth as AuthContext;
   if (hasPermission(auth.role, 'food.approve')) return false;

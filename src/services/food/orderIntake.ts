@@ -1,7 +1,7 @@
 import type { FulfilmentMethod } from '../../domain/food/orderLifecycle.js';
 import { checkDelivery } from '../../domain/food/deliveryZone.js';
 import { modifierCharge } from '../../domain/food/modifierPricing.js';
-import { computeOrderTotals } from '../../domain/food/orderTotals.js';
+import { computeOrderTotals, discountFromPercent } from '../../domain/food/orderTotals.js';
 import type { FoodMenuItemRecord, FoodOrderLine, FoodOperationsRepository } from '../../repositories/foodOperationsRepository.js';
 
 /**
@@ -94,6 +94,21 @@ export interface DraftOrderProposal {
    * make one.
    */
   discountCents?: number | null | undefined;
+  /**
+   * A percentage typed at the till instead of an amount.
+   *
+   * Converted here, against the subtotal this resolver just worked out, and
+   * then forgotten - the AMOUNT is what gets stored, because an order
+   * corrected afterwards makes the same percentage a different number and
+   * the one somebody agreed to with the customer is the one they said out
+   * loud. Taking precedence over discountCents when both arrive, since a
+   * caller sending both has told us which one they typed.
+   *
+   * It exists so the browser never has to multiply: the till says "ten per
+   * cent" and the server, which is the only thing here that knows the
+   * subtotal, works out what that is.
+   */
+  discountPercent?: number | null | undefined;
   /** Why, in the operator's own words. Shown in the books, never on the kitchen ticket. */
   discountReason?: string | null | undefined;
 }
@@ -453,7 +468,10 @@ export async function resolveProposal(
   const totals = computeOrderTotals({
     itemsSubtotalCents: subtotalCents,
     deliveryFeeCents,
-    requestedDiscountCents: proposal.discountCents ?? 0,
+    requestedDiscountCents:
+      proposal.discountPercent != null
+        ? discountFromPercent(subtotalCents, proposal.discountPercent)
+        : (proposal.discountCents ?? 0),
     tax: { rateBasisPoints: settings.taxRateBasisPoints, inclusive: settings.taxInclusive },
   });
 

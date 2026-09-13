@@ -11,6 +11,7 @@ import {
   type FoodSettingsDto,
 } from '../lib/api.js';
 import { basketLineKey } from '../lib/basket.js';
+import { useAuth } from '../hooks/useAuth.js';
 import { changeDue, keypadDigitsToCents, quickTenderOptions } from '../lib/tillMath.js';
 
 /**
@@ -60,6 +61,20 @@ interface BasketLine {
 
 
 export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
+  /**
+   * Whether this person may give money away.
+   *
+   * Mirrors food.approve in domain/auth/permissions.ts, the same way
+   * SettingsRoute mirrors settings.manage: the browser cannot import that
+   * table, and the server enforces it regardless - a discount from a role
+   * without it is refused with a message saying to ask a manager. This only
+   * decides whether the button is offered, so being wrong here costs a
+   * confusing 403 rather than an unauthorised discount.
+   *
+   * AGENT - a cook or a cashier - deliberately does NOT hold it.
+   */
+  const auth = useAuth();
+  const canDiscount = auth.role !== 'AGENT' && auth.role !== 'VIEWER' && auth.role !== 'MARKETING';
   const [menu, setMenu] = useState<FoodMenuItemDto[] | null>(null);
   const [categories, setCategories] = useState<FoodMenuCategoryDto[]>([]);
   const [settings, setSettings] = useState<FoodSettingsDto | null>(null);
@@ -101,6 +116,18 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
     })();
   }, []);
 
+  /**
+   * Money off this sale, as it was TYPED.
+   *
+   * Held as the shape somebody entered rather than as a resolved amount,
+   * so a discount applied before another item is added still means what
+   * they said: "ten per cent off" stays ten per cent when the basket grows.
+   * The server turns it into the amount it stores - see
+   * ProposedLine.discountPercent for why the amount is the truth once the
+   * order exists.
+   */
+  const [discount, setDiscount] = useState<{ kind: 'amount' | 'percent'; value: number; reason: string } | null>(null);
+
   const proposal = useMemo<FoodOrderProposalDto>(() => {
     const lines: FoodProposedLineDto[] = basket.map((line) => ({
       // By name, because that is what the server's resolver matches on and
@@ -117,8 +144,14 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
       lines,
       ...(customerName.trim() ? { customerName: customerName.trim() } : {}),
       ...(fulfilment === 'DINE_IN' && tableLabel.trim() ? { tableLabel: tableLabel.trim() } : {}),
+      /* A percentage goes as a percentage. The SERVER converts it against
+         the subtotal it works out - this screen never multiplies a price,
+         and that promise is the whole reason the field exists. */
+      ...(discount?.kind === 'percent' ? { discountPercent: discount.value } : {}),
+      ...(discount?.kind === 'amount' ? { discountCents: discount.value } : {}),
+      ...(discount?.reason ? { discountReason: discount.reason } : {}),
     };
-  }, [basket, fulfilment, customerName, tableLabel]);
+  }, [basket, fulfilment, customerName, tableLabel, discount]);
 
   /**
    * Re-priced on every change, debounced.
@@ -165,6 +198,7 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
    * use.
    */
   const [padOpen, setPadOpen] = useState(false);
+
 
   /**
    * Rings something the menu does not sell.
@@ -215,6 +249,10 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
     setQuote(null);
     setCustomerName('');
     setTableLabel('');
+    // A discount belongs to the sale it was given on. Carrying it into the
+    // next customer is the kind of mistake nobody finds until the drawer is
+    // counted, and it would be silent every single time.
+    setDiscount(null);
     setError(null);
     idempotencyKey.current = crypto.randomUUID();
   }
@@ -506,6 +544,14 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
                 Offered only once there is something to count against - a
                 cash panel over an unknown total is a till doing arithmetic
                 on a number it does not have. */}
+            <DiscountPad
+              currency={currency}
+              discount={discount}
+              canDiscount={canDiscount}
+              onApply={setDiscount}
+              onClear={() => setDiscount(null)}
+            />
+
             {quote && quote.totalCents > 0 && <CashPanel totalCents={quote.totalCents} currency={currency} />}
 
             <button
@@ -566,6 +612,146 @@ export function Register({ onOrderTaken }: { onOrderTaken?: () => void }) {
  * mechanical ones: 1, 5, 0 is one fifty, not a hundred and fifty. Somebody
  * who has used a till will type it that way whatever this app would prefer.
  */
+/**
+ * Taking money off a sale.
+ *
+ * Either shape, because both are how people say it: "five dollars off" and
+ * "ten per cent off" are the same intention typed two ways, and a till that
+ * only takes one makes somebody do arithmetic in front of a queue.
+ *
+ * A percentage is sent AS a percentage. The server converts it against the
+ * subtotal it works out, so this screen keeps its one promise - it never
+ * multiplies a price - and so a discount applied before another item is
+ * added still means what was said when the basket grows.
+ *
+ * The reason is asked for and not optional-feeling, because a discount is
+ * money leaving the business and the books have to be able to answer "who
+ * gave that away, and why" a week later.
+ */
+function DiscountPad({
+  currency,
+  discount,
+  canDiscount,
+  onApply,
+  onClear,
+}: {
+  currency: string;
+  discount: { kind: 'amount' | 'percent'; value: number; reason: string } | null;
+  /** food.approve. A cashier can ring a sale; giving one away is a different decision. */
+  canDiscount: boolean;
+  onApply: (next: { kind: 'amount' | 'percent'; value: number; reason: string }) => void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [kind, setKind] = useState<'amount' | 'percent'>('amount');
+  const [digits, setDigits] = useState('');
+  const [reason, setReason] = useState('');
+
+  // Percent is typed whole - "10" is ten per cent, not a tenth of one.
+  const value = kind === 'amount' ? keypadDigitsToCents(digits) : Math.min(100, Number(digits.slice(0, 3) || 0));
+
+  /* Shown rather than hidden, and disabled with the reason on it.
+     Hiding it entirely would mean a cashier never learns the shop can
+     discount at all, and asks by shouting across the counter. */
+  if (!canDiscount) {
+    return (
+      <p className="rounded-lg border border-border-subtle px-2.5 py-2 text-center text-meta text-fg-muted">
+        Taking money off needs a manager.
+      </p>
+    );
+  }
+
+  if (discount && !open) {
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-accent/50 bg-accent-soft px-2.5 py-2">
+        <span className="min-w-0 flex-1 truncate text-caption font-medium text-accent">
+          {discount.kind === 'percent' ? `${discount.value}% off` : `${money(discount.value, currency)} off`}
+          {discount.reason ? ` · ${discount.reason}` : ''}
+        </span>
+        <button
+          type="button"
+          onClick={onClear}
+          aria-label="Remove the discount"
+          className="shrink-0 rounded p-0.5 text-accent hover:opacity-70"
+        >
+          <X size={14} aria-hidden />
+        </button>
+      </div>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="w-full rounded-lg border border-border-subtle py-2 text-caption font-medium text-fg hover:bg-surface-2"
+      >
+        Discount
+      </button>
+    );
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-border-subtle bg-surface-2 p-2.5">
+      <div className="flex items-center gap-2">
+        <span className="text-caption font-semibold text-fg">Discount</span>
+        <button
+          type="button"
+          onClick={() => { setOpen(false); setDigits(''); setReason(''); }}
+          aria-label="Close discount"
+          className="ml-auto rounded p-0.5 text-fg-muted hover:text-fg"
+        >
+          <X size={14} aria-hidden />
+        </button>
+      </div>
+
+      <div className="flex gap-1">
+        {(['amount', 'percent'] as const).map((option) => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => { setKind(option); setDigits(''); }}
+            className={`min-h-9 flex-1 rounded-lg border text-caption font-semibold ${
+              kind === option ? 'border-accent bg-accent-soft text-accent' : 'border-border-subtle text-fg'
+            }`}
+          >
+            {option === 'amount' ? currency : '%'}
+          </button>
+        ))}
+      </div>
+
+      <output className="block rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-right text-body font-bold tabular-nums text-fg">
+        {kind === 'amount' ? money(value, currency) : `${value}%`}
+      </output>
+
+      <Keypad digits={digits} onDigits={setDigits} />
+
+      <input
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+        placeholder="Why? (staff meal, sorry about the wait…)"
+        aria-label="Why this discount is being given"
+        className="w-full rounded-lg border border-border-subtle bg-surface-1 px-2.5 py-2 text-caption text-fg placeholder:text-fg-muted"
+      />
+
+      <button
+        type="button"
+        disabled={value <= 0}
+        onClick={() => {
+          onApply({ kind, value, reason: reason.trim() });
+          setOpen(false);
+          setDigits('');
+          setReason('');
+        }}
+        className="min-h-10 w-full rounded-lg bg-accent text-caption font-semibold text-white disabled:opacity-50"
+      >
+        Take it off
+      </button>
+    </div>
+  );
+}
+
 function Keypad({ digits, onDigits, disabled }: { digits: string; onDigits: (next: string) => void; disabled?: boolean }) {
   const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '00', '0', '⌫'];
 
