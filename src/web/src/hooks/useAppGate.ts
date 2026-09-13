@@ -189,6 +189,10 @@ export function useAppGate(): AppGateState {
       // regardless of pairedOnce/everConnectedBefore, unlike a merely
       // transient reconnect.
       connection.status === 'CONFLICT_REPLACED' ||
+      // The automatic loop gave up on a code nobody was scanning. Showing
+      // the pairing screen is exactly right here - that screen is where the
+      // person is, and asking for a code from it is what resumes it.
+      connection.status === 'PAIRING_ABANDONED' ||
       // Real, confirmed bug fixed here: this used to also exclude
       // `connection.status !== 'RECONNECTING'`, on the theory that
       // RECONNECTING only ever follows a real prior connection (true of

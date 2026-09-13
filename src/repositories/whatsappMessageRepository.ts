@@ -315,9 +315,19 @@ export class WhatsAppMessageRepository {
    * returns null, identically to a genuinely nonexistent id. Prefer this
    * over the bare findById() for any caller that has a businessId in scope.
    */
+  /**
+   * One message, for a caller that already knows its id.
+   *
+   * Excludes a deleted one. It did not before, which meant a soft delete
+   * was only a delete to the queries that happened to remember to filter:
+   * the chat list follows last_message_id through here to build its
+   * preview, so a cleared conversation kept showing the last thing the
+   * customer had said. The same gap would have let a cleared message be
+   * forwarded on to somebody else.
+   */
   async findByIdForBusiness(id: string, businessId: string): Promise<WhatsAppMessageRecord | null> {
     const { rows } = await this.db.query<MessageRow>(
-      'SELECT * FROM whatsapp_messages WHERE id = $1 AND business_id = $2',
+      'SELECT * FROM whatsapp_messages WHERE id = $1 AND business_id = $2 AND deleted_at IS NULL',
       [id, businessId],
     );
     return rows[0] ? toRecord(rows[0], false) : null;

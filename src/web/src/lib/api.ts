@@ -1,7 +1,7 @@
 import { getRecaptchaToken } from './recaptcha.js';
 
 export interface WhatsAppConnectionSnapshot {
-  status: 'DISCONNECTED' | 'CONNECTING' | 'QR_READY' | 'PAIRING_CODE_READY' | 'CONNECTED' | 'RECONNECTING' | 'LOGGED_OUT' | 'CONFLICT_REPLACED' | 'ERROR';
+  status: 'DISCONNECTED' | 'CONNECTING' | 'QR_READY' | 'PAIRING_CODE_READY' | 'CONNECTED' | 'RECONNECTING' | 'LOGGED_OUT' | 'CONFLICT_REPLACED' | 'PAIRING_ABANDONED' | 'ERROR';
   connected: boolean;
   qrAvailable: boolean;
   qrDataUrl: string | null;

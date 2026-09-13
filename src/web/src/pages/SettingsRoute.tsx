@@ -68,6 +68,8 @@ const STATUS_COLOR: Record<WhatsAppConnectionSnapshot['status'], string> = {
   DISCONNECTED: 'bg-fg-muted/15 text-fg-muted',
   LOGGED_OUT: 'bg-error/15 text-error',
   CONFLICT_REPLACED: 'bg-error/15 text-error',
+  // Amber, not red: it is waiting for a person, not broken.
+  PAIRING_ABANDONED: 'bg-warning/15 text-warning',
   ERROR: 'bg-error/15 text-error',
 };
 

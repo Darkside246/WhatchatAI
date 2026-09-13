@@ -6,6 +6,8 @@ export type ConnectionStatus =
   | 'RECONNECTING'
   | 'LOGGED_OUT'
   | 'CONFLICT_REPLACED'
+  /** Nobody scanned the code. The automatic loop stopped; a manual connect starts it again. */
+  | 'PAIRING_ABANDONED'
   | 'ERROR';
 
 export type SyncStatus = 'not_started' | 'in_progress' | 'completed' | 'failed';
@@ -94,6 +96,8 @@ export type ConnectionEventType =
   | 'reconnecting'
   | 'logged_out'
   | 'conflict_replaced'
+  /** A run of pairing codes nobody scanned - the automatic loop stopped. See migration 1050. */
+  | 'pairing_abandoned'
   | 'error';
 
 export type SyncType =

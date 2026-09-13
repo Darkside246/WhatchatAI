@@ -29,7 +29,8 @@ import { WhatsAppAccountRepository } from '../repositories/whatsappAccountReposi
 import { WhatsAppConnectionEventRepository } from '../repositories/whatsappConnectionEventRepository.js';
 import { BusinessRepository } from '../repositories/businessRepository.js';
 import { tryAcquireGroupSyncCooldown } from './whatsappGroupSyncCooldown.js';
-import { reconnectDelayMs } from './whatsappReconnectBackoff.js';
+import { judgePairingAttempt, MAX_UNSCANNED_PAIRING_CYCLES, reconnectDelayMs } from './whatsappReconnectBackoff.js';
+import { notifyBusiness } from './notificationService.js';
 
 export type WhatsAppConnectionStatus =
   | 'DISCONNECTED'
@@ -40,6 +41,8 @@ export type WhatsAppConnectionStatus =
   | 'RECONNECTING'
   | 'LOGGED_OUT'
   | 'CONFLICT_REPLACED'
+  /** Nobody scanned the code. The automatic loop has stopped; asking to connect starts it again. */
+  | 'PAIRING_ABANDONED'
   | 'ERROR';
 
 export interface WhatsAppConnectionSnapshot {
@@ -88,6 +91,9 @@ function sessionRootDir(): string {
  * filesystem path segment.
  */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/* MAX_UNSCANNED_PAIRING_CYCLES and the rule itself live in
+   whatsappReconnectBackoff.ts - pure, and testable without a live socket. */
 
 /** See conflictReplacedRetryCount's own doc comment - one bounded, short-delay auto-retry for a connectionReplaced disconnect before giving up and requiring a manual reconnect. */
 const MAX_CONFLICT_REPLACED_AUTO_RETRIES = 1;
@@ -205,6 +211,27 @@ export class WhatsAppTenantConnection {
   private socket: WASocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempt = 0;
+
+  /**
+   * Consecutive pairing cycles that issued a QR and were never scanned.
+   *
+   * The signal for "there is nobody at the other end of this". Reset by a
+   * successful connection and by a PERSON asking to connect - an automatic
+   * reconnect deliberately does not reset it, or the loop this bounds would
+   * reset its own bound on every pass.
+   */
+  private unscannedPairingCycles = 0;
+
+  /**
+   * Whether this attempt got as far as offering a code.
+   *
+   * What separates "nobody is pairing this account" from "a paired account
+   * dropped on a flaky network". Only the first advances the counter above;
+   * the second never issues a QR at all and keeps retrying forever, exactly
+   * as it does today. This distinction is the entire safety argument for
+   * the loop ever stopping.
+   */
+  private sawQrThisAttempt = false;
   private listenersAttached = false;
   /**
    * Bounded, one-shot auto-recovery for DisconnectReason.connectionReplaced
@@ -539,7 +566,17 @@ export class WhatsAppTenantConnection {
    * flow. This parameter is additive only; every existing QR caller
    * (connect() with no arguments) is completely unaffected.
    */
-  async connect(pairingPhoneNumberE164?: string): Promise<WhatsAppConnectionSnapshot> {
+  async connect(
+    pairingPhoneNumberE164?: string,
+    /** Set only by scheduleReconnect. A person asking to connect is a different thing and is treated as one. */
+    options: { automatic?: boolean } = {},
+  ): Promise<WhatsAppConnectionSnapshot> {
+    // Somebody is at the pairing screen. That is the one piece of evidence
+    // that makes offering a code worth doing again, so the abandoned-pairing
+    // count starts over - before the early-return guards below, so it still
+    // counts when this particular call turns out to be a no-op.
+    if (!options.automatic) this.unscannedPairingCycles = 0;
+
     // Recorded before any of the early-return guards below so an explicit
     // phone-pairing request is remembered even if this particular call
     // turns out to be a no-op (e.g. a connect is already in flight) - the
@@ -561,6 +598,9 @@ export class WhatsAppTenantConnection {
     this.connectInFlight = true;
     try {
       this.clearReconnectTimer();
+      // Per attempt, not per connection: this asks "did THIS try offer a
+      // code", which is the question the close handler needs answered.
+      this.sawQrThisAttempt = false;
       this.snapshot = {
         ...this.snapshot,
         status: this.reconnectAttempt > 0 ? 'RECONNECTING' : 'CONNECTING',
@@ -1057,6 +1097,7 @@ export class WhatsAppTenantConnection {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
+        this.sawQrThisAttempt = true;
         try {
           const qrDataUrl = await QRCode.toDataURL(qr, {
             margin: 2,
@@ -1092,6 +1133,10 @@ export class WhatsAppTenantConnection {
         const pushName = user?.name ?? null;
 
         this.reconnectAttempt = 0;
+        // Somebody scanned it. Whatever came before was pairing, and it
+        // worked.
+        this.unscannedPairingCycles = 0;
+        this.sawQrThisAttempt = false;
         // conflictReplacedRetryCount only resets once this connection has
         // stayed open for a real, sustained window - not the instant this
         // 'open' event fires - see its own doc comment for why.
@@ -1253,6 +1298,50 @@ export class WhatsAppTenantConnection {
         // other in this app's own logs, making a real WhatsApp-side rejection
         // (e.g. a conflicting duplicate linked device) look identical to a
         // routine network blip.
+        /**
+         * A pairing cycle nobody answered.
+         *
+         * This attempt offered a QR and never reached 'open', which is what
+         * "there is nobody pairing this account" looks like from here. Two
+         * businesses sat in exactly this loop in production for hours -
+         * issue a code, let it expire, close, wait thirty seconds, issue
+         * another - because the backoff was working perfectly and nothing
+         * ever decided to stop.
+         *
+         * A paired account dropping on a flaky network never gets here: it
+         * has credentials, so it issues no QR, so sawQrThisAttempt is false
+         * and it falls through to the ordinary unbounded reconnect exactly
+         * as before. Nothing that is working can be given up on by this.
+         */
+        const pairing = judgePairingAttempt(this.sawQrThisAttempt, this.unscannedPairingCycles);
+        this.unscannedPairingCycles = pairing.cycles;
+
+        if (this.sawQrThisAttempt) {
+          if (pairing.stop) {
+            this.snapshot = {
+              ...this.snapshot,
+              status: 'PAIRING_ABANDONED',
+              qrAvailable: false,
+              qrDataUrl: null,
+              lastError:
+                'Nobody scanned the code, so we stopped asking for one. Nothing has been lost - open WhatsApp settings ' +
+                'here and connect when you are ready with the phone.',
+            };
+            console.warn(
+              `[WhatsApp] No one paired business ${this.businessId} after ${this.unscannedPairingCycles} code(s) - ` +
+                'stopping the automatic reconnect loop. Session state is untouched; a manual connect resumes it.',
+            );
+            this.recordDisconnectEvent('pairing_abandoned', 'PAIRING_ABANDONED');
+            this.notifyPairingAbandoned();
+            return;
+          }
+
+          console.warn(
+            `[WhatsApp] Code ${this.unscannedPairingCycles}/${MAX_UNSCANNED_PAIRING_CYCLES} for business ${this.businessId} ` +
+              'expired unscanned - will stop asking after that.',
+          );
+        }
+
         console.error(`[WhatsApp] Connection closed for business ${this.businessId} (code=${code ?? 'unknown'}) - reconnecting.`);
         this.recordDisconnectEvent('disconnected', 'DISCONNECTED');
         this.scheduleReconnect();
@@ -1383,7 +1472,34 @@ export class WhatsAppTenantConnection {
     fn(this.businessId, this.persistedAccountId, this.snapshot.jid);
   }
 
-  private recordDisconnectEvent(eventType: 'disconnected' | 'logged_out' | 'conflict_replaced', status: string): void {
+  /**
+   * Tells the business that its WhatsApp is waiting on them.
+   *
+   * The loop stopping is the right thing to do and is also completely
+   * invisible from the outside - the account simply goes quiet - so the one
+   * thing that must not happen is somebody discovering weeks later that
+   * their WhatsApp was never connected. Best-effort: a notification that
+   * cannot be written must never be allowed to revive the loop it is
+   * reporting on.
+   */
+  private notifyPairingAbandoned(): void {
+    void notifyBusiness({
+      businessId: this.businessId,
+      type: 'SYNC_FAILURE',
+      severity: 'warning',
+      title: 'WhatsApp is still waiting to be connected',
+      body:
+        'We offered a code several times and nobody scanned it, so we have stopped asking. Nothing has been lost - ' +
+        'open WhatsApp settings and connect when you have the phone to hand.',
+    }).catch((error) => {
+      console.error('[WhatsApp] Failed to notify about an abandoned pairing:', error instanceof Error ? error.message : error);
+    });
+  }
+
+  private recordDisconnectEvent(
+    eventType: 'disconnected' | 'logged_out' | 'conflict_replaced' | 'pairing_abandoned',
+    status: string,
+  ): void {
     if (!this.persistedAccountId) return;
     const businessId = this.businessId;
     const accountId = this.persistedAccountId;
@@ -1437,7 +1553,7 @@ export class WhatsAppTenantConnection {
     };
 
     this.reconnectTimer = setTimeout(() => {
-      void this.connect(this.pairingNumberForReconnect()).catch((error) => {
+      void this.connect(this.pairingNumberForReconnect(), { automatic: true }).catch((error) => {
         this.snapshot = {
           ...this.snapshot,
           status: 'ERROR',

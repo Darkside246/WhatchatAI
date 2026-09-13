@@ -364,12 +364,40 @@ export class WhatsAppChatRepository {
    * Returns how many were cleared, so the caller can tell the operator what
    * actually happened rather than claiming success over a no-op.
    */
+  /**
+   * Emptying a conversation.
+   *
+   * Soft-deletes the messages AND lets go of the chat's own pointer at the
+   * last one. Both halves are needed and only the first was being done:
+   * the chat list builds its preview by following last_message_id, so a
+   * cleared conversation went on showing the last thing the customer said
+   * underneath their name. Reported from a real chat - clear it, start
+   * typing, and the message you just cleared reappears in the list.
+   *
+   * last_message_at is deliberately LEFT ALONE. It is what the chat list
+   * sorts on, and nulling it would drop a conversation you just cleared to
+   * the bottom of the list - which is not what clearing means and not what
+   * WhatsApp itself does. The conversation keeps its place and simply has
+   * nothing to show, exactly as the official client leaves it.
+   *
+   * The counts go to zero because they are counts of what is there, and
+   * after this there is nothing there. An unread count surviving a clear
+   * would leave a badge pointing at messages nobody can open.
+   */
   async clearMessages(businessId: string, chatId: string): Promise<number> {
     const { rowCount } = await this.db.query(
       `UPDATE whatsapp_messages SET deleted_at = now()
        WHERE business_id = $1 AND chat_id = $2 AND deleted_at IS NULL`,
       [businessId, chatId],
     );
+
+    await this.db.query(
+      `UPDATE whatsapp_chats
+          SET last_message_id = NULL, unread_count = 0, message_count = 0, updated_at = now()
+        WHERE business_id = $1 AND id = $2`,
+      [businessId, chatId],
+    );
+
     return rowCount ?? 0;
   }
 

@@ -38,6 +38,12 @@ const STATUS_COPY: Record<Status, { title: string; detail: string }> = {
     title: 'Connected elsewhere',
     detail: 'This WhatsApp account is already connected from another location or device. Disconnect it there first, then try linking again here.',
   },
+  /* Not a failure, and worded so nobody reads it as one: nothing was lost
+     and the only thing needed is the phone. */
+  PAIRING_ABANDONED: {
+    title: 'Waiting for you',
+    detail: 'We stopped asking for codes nobody was scanning. Nothing has been lost - ask for a new one when you have the phone to hand.',
+  },
   ERROR: { title: 'Could not get a code', detail: 'WhatsApp did not return a pairing code.' },
 };
 
@@ -74,7 +80,10 @@ export function QrPanel({
     return () => clearInterval(timer);
   }, []);
 
-  const failed = status === 'ERROR' || status === 'LOGGED_OUT' || status === 'CONFLICT_REPLACED';
+  // PAIRING_ABANDONED belongs here not because anything failed, but because
+  // this is the set that offers the 'get a new code' action - and asking
+  // for one is precisely what resumes it.
+  const failed = status === 'ERROR' || status === 'LOGGED_OUT' || status === 'CONFLICT_REPLACED' || status === 'PAIRING_ABANDONED';
   const ago = refreshedAgo(connection?.qrGeneratedAt ?? null, now);
 
   return (
