@@ -53,6 +53,7 @@ migrations:
 - `1042_driver_portal.sql`
 - `1043_chat_workspace_flags.sql`
 - `1044_message_workspace_flags.sql`
+- `1045_modifier_free_allowance.sql`
 
 All three are `IF NOT EXISTS` / `DROP POLICY IF EXISTS` throughout, so
 re-running is safe. The full set has been verified to apply against a fresh
@@ -232,6 +233,86 @@ These have been stated explicitly and are not up for quiet reinterpretation:
 - **No CLAUDE.md in this repo** — explicitly asked for.
 - **The core model does not change.** Baileys stays; no Cloud API
   migration. Only the food vertical is being extended.
+
+---
+
+## Next up — the short list
+
+In rough priority order. The first two are half-built and pushed as
+groundwork, so they are the cheapest to finish.
+
+### 1. Finish "condiment free, pay for extra"
+
+Groundwork is in (`2e1d052`): migration 1045, `modifierPricing.ts` with 16
+tests, and the repository. Nothing in the app offers it yet. Still to do:
+
+- The on/off toggle and free-count field on each option in the menu editor
+  (`MenuEditor.tsx`, the `GroupCard` / option rows).
+- The Register's per-option quantity stepper, so "extra" can be chosen at
+  the counter at all (`Register.tsx`, the modifier chooser).
+- Price the line through `modifierCharge()` in `orderIntake.ts` — it still
+  sums `priceDeltaCents` directly and ignores `freeQuantity`.
+- Tell the ordering agent, via `describeModifierPrice()`, so it says
+  "first one free, then $1.50 each" in the owner's own pricing rather than
+  inventing wording (`aiReplyService.ts` around the menu context).
+
+Open question for the owner: the free allowance is a **count**, not a
+boolean, so the toggle is a view of it (on = 1, off = 0). If a plain yes/no
+is wanted instead, change it before the UI is built on top.
+
+### 2. Message types still rendering as "Message"
+
+The classifier sweep (`1d55295`) closed the ones that mattered. These are
+what is left, and none is a silent failure now — they reach the fallback,
+which says "Message" rather than pretending to be something else.
+
+Worth doing, roughly in order of how likely a real business sees them:
+
+- `pollResultSnapshotMessage`, `pollResultSnapshotMessageV3` — poll results.
+  We read the poll and not its outcome, which is the half people care about.
+- `scheduledCallCreationMessage`, `scheduledCallEditMessage` — a scheduled
+  call is an appointment, which is exactly this app's business.
+- `commentMessage` — channel comments.
+- `invoiceMessage` — the commerce cluster's last member.
+- `stickerPackMessage`, `groupMentionedMessage`, `messageHistoryNotice`.
+- `questionMessage`, `questionReplyMessage`, `questionResponseMessage`.
+- The status family: `statusAddYours`, `statusMentionMessage`,
+  `statusNotificationMessage`, `statusQuestionAnswerMessage`,
+  `statusQuotedMessage`, `statusStickerInteractionMessage`,
+  `groupStatusMessage`, `groupStatusMessageV2`, `groupStatusMentionMessage`.
+- Newsletters: `newsletterAdminInviteMessage`,
+  `newsletterFollowerInviteMessageV2`.
+- `highlyStructuredMessage`, `bcallMessage`, `eventCoverImage`,
+  `pollCreationOptionImageMessage`.
+
+**How to re-derive this list** rather than trusting it as it ages: diff the
+`IMessage` fields in
+`node_modules/@whiskeysockets/baileys/WAProto/index.d.ts` against every
+`message.<field>` referenced in `whatsappMessageIngestionService.ts`. There
+were 95 fields and 41 handled when this was written.
+
+**Also outstanding from that fix:** messages already stored as `unknown`
+stay that way — the fix applies to new messages only. A one-off
+re-classification of existing rows has been offered and not written.
+
+### 3. The retroactive unread cleanup
+
+Still owed, see the notification section above. Deploy first, then scope by
+age rather than blanket-resetting.
+
+### 4. The forward picker's load failure
+
+`d9ca2cd` fixed the two display bugs around it (an error and "Loading…"
+showing together) and made the real error message visible. **The underlying
+failure has not been diagnosed** — `api.listChats()` is the same call
+`ChatListPane` makes, so the endpoint works. The next deploy will show the
+real message; read it before guessing.
+
+### 5. The printer "Permission denied"
+
+`ce4a19b` translates browser exceptions into something actionable and
+detects the embedded-in-a-frame case, which was the leading theory. Not yet
+confirmed against the real device — needs the deploy, then a retry.
 
 ---
 
