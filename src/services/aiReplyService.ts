@@ -29,6 +29,8 @@ import { CHECK_PROPERTY_STATUS_TOOL_NAME, checkPropertyStatusFunctionDeclaration
 import { LIST_RETAIL_PRODUCTS_TOOL_NAME, listRetailProductsFunctionDeclaration } from './retail/listRetailProductsTool.js';
 import { CHECK_RETAIL_ORDER_STATUS_TOOL_NAME, checkRetailOrderStatusFunctionDeclaration, type CheckRetailOrderStatusToolArgs } from './retail/checkRetailOrderStatusTool.js';
 import { TAKE_MESSAGE_TOOL_NAME, takeMessageFunctionDeclaration, type TakeMessageToolArgs } from './messages/takeMessageTool.js';
+import { SUGGEST_COMPANIONS_TOOL_NAME, suggestCompanionsFunctionDeclaration } from './recommender/recommenderTool.js';
+import { suggestCompanions } from './recommender/companionLookup.js';
 import {
   LIST_MENU_TOOL_NAME, QUOTE_FOOD_ORDER_TOOL_NAME, CONFIRM_FOOD_ORDER_TOOL_NAME,
   listMenuFunctionDeclaration, quoteFoodOrderFunctionDeclaration, confirmFoodOrderFunctionDeclaration,
@@ -448,6 +450,11 @@ function buildReplyTools(connectedMeetingProviders: MeetingProvider[], agent: Ai
   // to a separate "food agent" - the customer is talking to one business,
   // and a handover between two agents is a seam they would feel.
   if (hasFoodData) functionDeclarations.push(listMenuFunctionDeclaration, quoteFoodOrderFunctionDeclaration, confirmFoodOrderFunctionDeclaration);
+  // Offered on the same condition as the menu itself. A business with no
+  // food data has nothing this could have counted, and an agent holding a
+  // tool that can only ever answer "no history" is an agent that will
+  // eventually try to be helpful with it anyway.
+  if (hasFoodData) functionDeclarations.push(suggestCompanionsFunctionDeclaration);
   // Defensive against undefined, not just empty: allowedTools/forbiddenTools
   // are required on AiAgentRecord, but test/ isn't covered by
   // npm run typecheck (see tsconfig.json's include), so an older fakeAgent()
@@ -1257,7 +1264,8 @@ async function executeOneToolCall(
     call.name !== TAKE_MESSAGE_TOOL_NAME &&
     call.name !== LIST_MENU_TOOL_NAME &&
     call.name !== QUOTE_FOOD_ORDER_TOOL_NAME &&
-    call.name !== CONFIRM_FOOD_ORDER_TOOL_NAME
+    call.name !== CONFIRM_FOOD_ORDER_TOOL_NAME &&
+    call.name !== SUGGEST_COMPANIONS_TOOL_NAME
   ) {
     // Fails closed on any tool name this codebase did not explicitly
     // register (defense in depth beyond the declared tools above) - never
@@ -1382,6 +1390,14 @@ async function executeOneToolCall(
       );
       return { recorded: false, error: 'Could not record that message right now.' };
     }
+  }
+
+  if (call.name === SUGGEST_COMPANIONS_TOOL_NAME) {
+    const item = typeof call.args?.['item'] === 'string' ? call.args['item'] : '';
+    // An empty ask is answered as "no history" rather than refused: the
+    // response already tells the model that empty means say nothing, and a
+    // refusal is a thing a model tries to work around.
+    return suggestCompanions(context.businessId, item);
   }
 
   if (call.name === LIST_MENU_TOOL_NAME) {

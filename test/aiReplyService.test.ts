@@ -687,9 +687,9 @@ describe('Durable conversation state (Phase 3 - supplements raw history, never r
 });
 
 describe('generateAiReply tool boundary is unaffected by document content (Phase D4-B, items 9 and 10)', () => {
-  it('exactly twelve AI tools are registered, each at an explicit risk tier - and no others', () => {
+  it('exactly thirteen AI tools are registered, each at an explicit risk tier - and no others', () => {
     const tools = listRegisteredTools();
-    expect(tools).toHaveLength(12);
+    expect(tools).toHaveLength(13);
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
     expect(byName.get(GET_CURRENT_TIME_TOOL_NAME)?.risk).toBe('READ');
     expect(byName.get(UPDATE_CONVERSATION_STATE_TOOL_NAME)?.risk).toBe('WRITE');
@@ -709,6 +709,12 @@ describe('generateAiReply tool boundary is unaffected by document content (Phase
     expect(byName.get('list_menu')?.risk).toBe('READ');
     expect(byName.get('quote_food_order')?.risk).toBe('READ');
     expect(byName.get('confirm_food_order')?.risk).toBe('SEND');
+
+    // Reading what this business's own customers have taken together.
+    // READ: it writes nothing, commits nothing, and cannot be asked for
+    // "something to upsell" in general - only for what goes with an item
+    // the customer already chose.
+    expect(byName.get('suggest_companions')?.risk).toBe('READ');
   });
 
   it("9/10. a hostile document instructing the AI to call a tool never changes the declared tools array - Gemini still has only the existing registered tools", async () => {

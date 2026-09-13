@@ -59,6 +59,7 @@ import { isBroadcastFeed } from '../../domain/whatsapp/chatType.js';
 import { mediaFallbackText } from '../../services/ai/mediaContext.js';
 import { sweepStaleFunnelInstances } from '../../services/funnelService.js';
 import { runSecurityScan } from '../../services/securityScanService.js';
+import { runRecommenderSweep } from '../../services/recommender/recommenderSweep.js';
 import { runSecurityWatcher } from '../../services/openclawSecurityWatcherService.js';
 import { sweepDueAccountDeletions } from '../../services/accountDeletionService.js';
 import { sweepExpiredTrials } from '../../services/billing/subscriptionExpiryService.js';
@@ -1415,6 +1416,12 @@ export async function sweepStaleAiHandoff(): Promise<void> {
 }
 
 const AUTONOMOUS_OPS_SWEEP_INTERVAL_MS = Number(process.env.AUTONOMOUS_OPS_SWEEP_INTERVAL_MS ?? 600_000);
+/**
+ * Daily. What goes with what barely moves - one more roti does not change
+ * what people take alongside it - and the count is an O(items squared) pass
+ * per customer, so running it more often buys nothing and costs real work.
+ */
+const RECOMMENDER_SWEEP_INTERVAL_MS = Number(process.env.RECOMMENDER_SWEEP_INTERVAL_MS ?? 24 * 60 * 60 * 1000);
 
 /**
  * Section 41-42 Phase 1's real "work while you're away" tick - server-side
@@ -1758,6 +1765,8 @@ async function processRealtimeEventJob(
     await sweepDueAccountDeletions();
   } else if (job.name === 'autonomous-ops-sweep') {
     await runAutonomousOpsSweep();
+  } else if (job.name === 'recommender-rebuild-sweep') {
+    await runRecommenderSweep();
   } else if (job.name === 'media-download') {
     await processMediaDownload(job.data as MediaDownloadJobData);
   } else if (job.name === 'message-reaction') {
@@ -1930,6 +1939,11 @@ void realtimeEventsQueue
   .upsertJobScheduler('autonomous-ops-sweep', { every: AUTONOMOUS_OPS_SWEEP_INTERVAL_MS }, { name: 'autonomous-ops-sweep' })
   .then(() => console.log(`[RealtimeEventsWorker] Scheduled autonomous-ops-sweep every ${AUTONOMOUS_OPS_SWEEP_INTERVAL_MS}ms`))
   .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule autonomous-ops-sweep:', error.message));
+
+void realtimeEventsQueue
+  .upsertJobScheduler('recommender-rebuild-sweep', { every: RECOMMENDER_SWEEP_INTERVAL_MS }, { name: 'recommender-rebuild-sweep' })
+  .then(() => console.log(`[RealtimeEventsWorker] Scheduled recommender-rebuild-sweep every ${RECOMMENDER_SWEEP_INTERVAL_MS}ms`))
+  .catch((error: Error) => console.error('[RealtimeEventsWorker] Failed to schedule recommender-rebuild-sweep:', error.message));
 
 void realtimeEventsQueue
   .upsertJobScheduler('meeting-completion-sweep', { every: MEETING_COMPLETION_SWEEP_INTERVAL_MS }, { name: 'meeting-completion-sweep' })

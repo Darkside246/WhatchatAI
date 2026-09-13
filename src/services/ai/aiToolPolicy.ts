@@ -66,6 +66,15 @@ const AI_TOOL_POLICY: Record<string, AiToolPolicyEntry> = {
       'therefore governs it - at level 2 the business approves each one before it reaches the board. Prices and ' +
       'totals are computed server-side from the catalogue and cannot be supplied by the caller.',
   },
+  suggest_companions: {
+    name: 'suggest_companions',
+    risk: 'READ',
+    description:
+      "Reads what this business's own customers have historically taken ALONGSIDE a named item, counted nightly from " +
+      'real past orders. READ: it writes nothing, commits nothing, and cannot be asked for "something to upsell" in ' +
+      'general - only for what actually goes with an item the customer already chose. Returns nothing at all when the ' +
+      'history is too thin to be sure, and an empty answer means say nothing rather than invent a pairing.',
+  },
   list_properties: {
     name: 'list_properties',
     risk: 'READ',

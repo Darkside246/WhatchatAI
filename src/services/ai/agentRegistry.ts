@@ -87,6 +87,7 @@ export const AGENT_REGISTRY: readonly RegisteredAgent[] = [
       'list_menu',
       'quote_food_order',
       'confirm_food_order',
+      'suggest_companions',
     ],
     neverDoes: [
       'Set or alter a price, a total, a tax or a delivery fee - every figure it quotes is computed server-side from the catalogue',
