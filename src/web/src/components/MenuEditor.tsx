@@ -115,8 +115,13 @@ export function MenuEditor() {
         <TabButton active={tab === 'items'} onClick={() => setTab('items')}>
           Menu{items.length > 0 && <span className="ml-1.5 text-fg-muted">{items.length}</span>}
         </TabButton>
+        {/* Named for what a kitchen calls these, not for what the data
+            model calls them. "Option groups" is the accurate general term -
+            it covers a sauce choice and a cooking temperature as well as
+            condiments - and it is not a phrase anybody running a food
+            business goes looking for. */}
         <TabButton active={tab === 'groups'} onClick={() => setTab('groups')}>
-          Option groups{groups.length > 0 && <span className="ml-1.5 text-fg-muted">{groups.length}</span>}
+          Condiments &amp; options{groups.length > 0 && <span className="ml-1.5 text-fg-muted">{groups.length}</span>}
         </TabButton>
         <TabButton active={tab === 'import'} onClick={() => setTab('import')}>
           Paste a menu
@@ -516,9 +521,11 @@ function ItemForm({
       </Field>
 
       <div>
-        <p className="text-meta font-medium text-fg">Option groups</p>
+        <p className="text-meta font-medium text-fg">Condiments &amp; options</p>
         <p className="mb-1.5 text-meta text-fg-muted">
-          {groups.length === 0 ? 'Build one under Option groups, then attach it here.' : 'Tick the groups this dish offers.'}
+          {groups.length === 0
+            ? 'Make a set under “Condiments & options”, then tick it on here.'
+            : 'What this dish comes with, or can be asked for with.'}
         </p>
         <div className="flex flex-wrap gap-1.5">
           {groups.map((group) => (
@@ -613,7 +620,7 @@ function ModifierGroups({
           <input
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="Add-ons, Choose a sauce…"
+            placeholder="Condiments, Choose a sauce, Add-ons…"
             className={inputClass}
           />
         </label>
@@ -632,11 +639,15 @@ function ModifierGroups({
       </form>
 
       <p className="mb-3 px-1 text-meta text-fg-muted">
-        “Least” and “most” are how many choices this group allows — one sauce, any number of add-ons. Leave “most” empty for no limit.
+        Build a set once — ketchup, pepper sauce, coleslaw — then tick it on every dish that comes with it.
+        Change the price here and it changes everywhere, rather than on forty items by hand.
+        “Least” and “most” are how many choices the set allows: one sauce, any number of add-ons. Leave “most” empty for no limit.
       </p>
 
       {groups.length === 0 ? (
-        <p className="px-1 py-6 text-center text-caption text-fg-muted">No option groups yet.</p>
+        <p className="px-1 py-6 text-center text-caption text-fg-muted">
+          Nothing yet. Make one called “Condiments”, put your sauces in it, then open a dish on the Menu tab and tick it on.
+        </p>
       ) : (
         <ul className="space-y-2">
           {groups.map((group) => <GroupCard key={group.id} group={group} busy={busy} onRun={onRun} />)}
