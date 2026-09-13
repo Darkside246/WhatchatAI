@@ -102,6 +102,43 @@ export interface FoodOrderLineDto {
   station: string | null;
 }
 
+/** Both halves of the keyset position. Half a cursor is not a position, so they travel together. */
+export interface FoodHistoryCursor {
+  closedAt: string;
+  id: string;
+}
+
+/**
+ * A finished order, as the archive returns it.
+ *
+ * Deliberately not FoodBoardOrderDto: everything that DTO computes - the
+ * elapsed clock, the SLA band, the next stage, the payment gate - is about a
+ * ticket somebody is working on, and none of it means anything about one
+ * that closed last Tuesday.
+ */
+export interface FoodHistoryOrderDto {
+  id: string;
+  orderNumber: number;
+  chatId: string | null;
+  stage: FoodOrderStage;
+  fulfilmentMethod: 'PICKUP' | 'DELIVERY' | 'DINE_IN';
+  customerName: string | null;
+  customerPhone: string | null;
+  tableLabel: string | null;
+  items: FoodOrderLineDto[];
+  subtotalCents: number;
+  deliveryFeeCents: number;
+  totalCents: number;
+  currency: string;
+  deliveryAddress: string | null;
+  allergenNotes: string | null;
+  kitchenNotes: string | null;
+  paymentState: FoodBoardOrderDto['paymentState'];
+  placedAt: string;
+  closedAt: string | null;
+  cancelReason: string | null;
+}
+
 export interface FoodBoardOrderDto {
   id: string;
   orderNumber: number;
@@ -2469,6 +2506,24 @@ export const api = {
   listStatusReplies: (id: string) => request<{ replies: StatusReplyDto[] }>(`/workspace/scheduled-statuses/${id}/replies`),
   listStatusViewers: (id: string) => request<{ viewers: StatusViewerDto[] }>(`/workspace/scheduled-statuses/${id}/viewers`),
 
+  /**
+   * Orders that are finished with. Separate from the board on purpose - the
+   * board is polled every five seconds and should not carry a searchable
+   * archive on that hot path.
+   */
+  getFoodHistory: (options: { query?: string; limit?: number; cursor?: FoodHistoryCursor | null } = {}) => {
+    const search = new URLSearchParams();
+    if (options.query?.trim()) search.set('query', options.query.trim());
+    if (options.limit) search.set('limit', String(options.limit));
+    if (options.cursor) {
+      search.set('cursorClosedAt', options.cursor.closedAt);
+      search.set('cursorId', options.cursor.id);
+    }
+    const suffix = search.toString();
+    return request<{ orders: FoodHistoryOrderDto[]; nextCursor: FoodHistoryCursor | null }>(
+      `/food-operations/history${suffix ? `?${suffix}` : ''}`,
+    );
+  },
   getFoodBoard: () =>
     request<{ serverTime: string; settings: FoodSettingsDto; stations: string[]; orders: FoodBoardOrderDto[] }>(
       '/food-operations/board',

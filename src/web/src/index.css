@@ -100,6 +100,39 @@
 }
 
 /*
+ * PRINTING.
+ *
+ * Only one screen prints today - the kitchen's past-orders sheet - and what
+ * it needs is the paper, not a generated PDF. The browser already makes a
+ * good one; what it cannot know is that the nav rail and the app header are
+ * chrome rather than content, and that the sheet it is being asked to print
+ * is a fixed, internally-scrolling overlay whose contents would otherwise be
+ * clipped to one viewport's worth.
+ *
+ * Scoped to [data-print-sheet] rather than applied globally, so a future
+ * screen has to opt in rather than inheriting layout rules written for this
+ * one.
+ */
+@media print {
+  nav,
+  header {
+    display: none !important;
+  }
+
+  [data-print-sheet] {
+    position: static !important;
+    overflow: visible !important;
+  }
+
+  /* Every scroll container inside the sheet has to give up its height, or
+     the print stops at whatever happened to be on screen. */
+  [data-print-sheet] * {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+}
+
+/*
  * Selectable themes, layered on top of the base ("Sleek Interface") tokens
  * above via [data-theme] attribute overrides on <html> - every component
  * already styles itself from these same custom-property names (bg-surface-0,

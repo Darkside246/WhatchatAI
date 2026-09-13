@@ -1203,6 +1203,88 @@ export class FoodOperationsRepository {
     return rows.map(toOrder);
   }
 
+  /**
+   * Orders that are finished with - the history behind the board.
+   *
+   * A closed ticket leaves the board, which is right: a kitchen screen
+   * showing this morning's deliveries is a kitchen screen nobody can read.
+   * But it is then gone, and the questions that come afterwards are real
+   * ones - what was in order 412, did that refund go through, what did this
+   * customer order last time, did we actually send the thing they say we
+   * did not.
+   *
+   * Keyset pagination on (closed_at, id) rather than OFFSET: an order
+   * closing while somebody is on page three would otherwise shift every
+   * later row up and quietly skip one.
+   */
+  async listHistory(
+    businessId: string,
+    options: { query?: string | undefined; limit?: number; before?: { closedAt: string; id: string } | undefined } = {},
+  ): Promise<{ orders: FoodOrderRecord[]; nextCursor: { closedAt: string; id: string } | null }> {
+    const limit = Math.min(Math.max(options.limit ?? 25, 1), 100);
+    const query = options.query?.trim() ?? '';
+    const parameters: unknown[] = [businessId];
+    const conditions: string[] = [
+      "business_id = $1",
+      "stage IN ('COMPLETED', 'CANCELLED')",
+      // A closed order without a closed_at cannot be positioned in a
+      // time-ordered list at all. moveToStage has always set it; this keeps
+      // a row that somehow lacks one from silently anchoring the cursor.
+      'closed_at IS NOT NULL',
+    ];
+
+    if (query) {
+      // Order number is matched exactly, and only when the search really is
+      // a number: "412" should find order 412, not every order whose items
+      // happen to contain those digits in a price.
+      const asNumber = /^#?\d+$/.test(query) ? Number(query.replace('#', '')) : null;
+      parameters.push(`%${query}%`);
+      const like = `$${parameters.length}`;
+      parameters.push(asNumber);
+      const number = `$${parameters.length}`;
+
+      conditions.push(`(
+        (${number}::bigint IS NOT NULL AND order_number = ${number}::bigint)
+        OR customer_name ILIKE ${like}
+        OR customer_phone ILIKE ${like}
+        OR table_label ILIKE ${like}
+        -- What was in it. The line names live in the items JSONB, and
+        -- "which orders had the lamb roti" is a question an owner asks far
+        -- more often than any other search here.
+        OR EXISTS (
+          SELECT 1 FROM jsonb_array_elements(items) AS line
+          WHERE line->>'name' ILIKE ${like}
+        )
+      )`);
+    }
+
+    if (options.before) {
+      parameters.push(options.before.closedAt);
+      const cursorTime = `$${parameters.length}`;
+      parameters.push(options.before.id);
+      const cursorId = `$${parameters.length}`;
+      conditions.push(`(closed_at, id) < (${cursorTime}::timestamptz, ${cursorId}::uuid)`);
+    }
+
+    // One more than asked for, so "is there another page" is answered
+    // without a second COUNT over the same predicate.
+    parameters.push(limit + 1);
+    const { rows } = await this.db.query<OrderRow>(
+      `SELECT * FROM food_orders
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY closed_at DESC, id DESC
+       LIMIT $${parameters.length}`,
+      parameters,
+    );
+
+    const page = rows.slice(0, limit).map(toOrder);
+    const last = rows.length > limit ? page[page.length - 1] : null;
+    return {
+      orders: page,
+      nextCursor: last?.closedAt ? { closedAt: last.closedAt, id: last.id } : null,
+    };
+  }
+
   async findOrder(businessId: string, id: string): Promise<FoodOrderRecord | null> {
     const { rows } = await this.db.query<OrderRow>(
       'SELECT * FROM food_orders WHERE business_id = $1 AND id = $2',

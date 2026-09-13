@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, Bike, BookOpen, Camera, ChefHat, ChevronLeft, ClipboardCheck, Columns3, Eye, HandCoins, LayoutGrid, MessageSquare, Navigation, PackageCheck, RotateCcw, Send, Settings2, Store, Undo2, UtensilsCrossed, X } from 'lucide-react';
+import { AlertTriangle, Bike, BookOpen, Camera, ChefHat, ChevronLeft, ClipboardCheck, Columns3, Eye, HandCoins, History, LayoutGrid, MessageSquare, Navigation, PackageCheck, RotateCcw, Send, Settings2, Store, Undo2, UtensilsCrossed, X } from 'lucide-react';
 import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand } from '../lib/api.js';
 import { QcPhotoButton } from '../components/QcPhotoButton.js';
 import { DeliveryControl } from '../components/DeliveryControl.js';
@@ -20,6 +20,7 @@ import {
 } from '../lib/stationView.js';
 import { KitchenSettings } from '../components/KitchenSettings.js';
 import { MenuEditor } from '../components/MenuEditor.js';
+import { OrderHistory } from '../components/OrderHistory.js';
 
 /**
  * The kitchen board.
@@ -161,6 +162,12 @@ export function FoodOperationsPage() {
    * away from the tickets to fix it is how a menu stays wrong all evening.
    */
   const [menuOpen, setMenuOpen] = useState(false);
+  /**
+   * The archive, over the board for the same reason the menu is: the person
+   * who needs to look something up is standing at this screen, and sending
+   * them to another page loses the tickets they were watching.
+   */
+  const [historyOpen, setHistoryOpen] = useState(false);
   /** Their own name over their own board. Falls back to 'Kitchen' rather than showing a blank while it loads. */
   const [businessName, setBusinessName] = useState<string | null>(null);
 
@@ -492,6 +499,14 @@ export function FoodOperationsPage() {
           </button>
           <button
             type="button"
+            onClick={() => setHistoryOpen(true)}
+            className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2"
+          >
+            <History size={14} aria-hidden />
+            History
+          </button>
+          <button
+            type="button"
             onClick={() => setSettingsOpen((open) => !open)}
             aria-expanded={settingsOpen}
             className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2"
@@ -521,6 +536,28 @@ export function FoodOperationsPage() {
       {/* Over the board, not instead of it: the tickets are still behind
           this, and closing it puts the operator back exactly where they
           were rather than at the top of a board they had scrolled. */}
+      {historyOpen && (
+        <div data-print-sheet className="fixed inset-0 z-40 flex flex-col bg-surface-0">
+          <header className="flex items-center gap-3 border-b border-border-subtle px-4 py-3 print:hidden">
+            <div className="min-w-0">
+              <h2 className="text-body font-semibold text-fg">Past orders</h2>
+              <p className="text-meta text-fg-muted">
+                Everything finished with, newest first. Search by number, customer, phone, or something that was in it.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setHistoryOpen(false)}
+              className="ml-auto flex shrink-0 items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2"
+            >
+              <X size={14} aria-hidden />
+              Back to the board
+            </button>
+          </header>
+          <OrderHistory />
+        </div>
+      )}
+
       {menuOpen && (
         <div className="fixed inset-0 z-40 flex flex-col bg-surface-0">
           <header className="flex items-center gap-3 border-b border-border-subtle px-4 py-3">

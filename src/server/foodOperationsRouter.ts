@@ -130,6 +130,41 @@ router.get('/board', requirePermission('food.view'), async (_req, res) => {
   });
 });
 
+/**
+ * The history behind the board.
+ *
+ * Read-only and deliberately separate from /board: the board is what the
+ * kitchen is working on right now and is polled every five seconds, and
+ * folding a searchable archive into it would make the hot path pay for a
+ * question nobody asks during a rush.
+ */
+const historySchema = z.object({
+  query: z.string().trim().max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  cursorClosedAt: z.string().datetime({ offset: true }).optional(),
+  cursorId: uuid.optional(),
+});
+
+router.get('/history', requirePermission('food.view'), async (req, res) => {
+  const auth = res.locals.auth as AuthContext;
+  const parsed = historySchema.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_HISTORY_QUERY' });
+
+  // Both halves of the cursor or neither - half a keyset is not a position,
+  // and silently ignoring the stray half would quietly restart the listing
+  // at page one while the caller believed it was paging.
+  const { cursorClosedAt, cursorId } = parsed.data;
+  if (Boolean(cursorClosedAt) !== Boolean(cursorId)) return res.status(400).json({ error: 'INVALID_HISTORY_CURSOR' });
+
+  const result = await repository.listHistory(auth.businessId, {
+    query: parsed.data.query,
+    ...(parsed.data.limit !== undefined ? { limit: parsed.data.limit } : {}),
+    ...(cursorClosedAt && cursorId ? { before: { closedAt: cursorClosedAt, id: cursorId } } : {}),
+  });
+
+  return res.status(200).json(result);
+});
+
 router.get('/orders/:orderId', requirePermission('food.view'), async (req, res) => {
   const auth = res.locals.auth as AuthContext;
   const orderId = String(req.params.orderId ?? '');
