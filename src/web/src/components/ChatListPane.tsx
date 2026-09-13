@@ -7,6 +7,7 @@ import { Avatar } from './Avatar.js';
 import { MediaLightbox } from './MediaLightbox.js';
 import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 import { ChatContextMenu } from './ChatContextMenu.js';
+import { ChatListPicker } from './ChatListPicker.js';
 
 const AI_MODE_DOT: Record<WorkspaceChatSummary['aiMode'], string> = {
   AI_ACTIVE: 'bg-accent',
@@ -183,6 +184,9 @@ export function ChatListPane({ className = '' }: Props) {
   /** The right-click menu, and which conversation it was opened on. */
   const [menu, setMenu] = useState<{ chat: WorkspaceChatSummary; x: number; y: number } | null>(null);
 
+  /** The chat whose list membership is being edited, once the menu hands it over. */
+  const [listPickerFor, setListPickerFor] = useState<WorkspaceChatSummary | null>(null);
+
   function openMenu(chat: WorkspaceChatSummary, x: number, y: number) {
     setMenu({ chat, x, y });
   }
@@ -320,6 +324,15 @@ export function ChatListPane({ className = '' }: Props) {
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
+          onChanged={() => void load()}
+          onAddToList={setListPickerFor}
+        />
+      )}
+
+      {listPickerFor && (
+        <ChatListPicker
+          chat={listPickerFor}
+          onClose={() => setListPickerFor(null)}
           onChanged={() => void load()}
         />
       )}

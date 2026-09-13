@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, Bike, BookOpen, Calculator, Camera, ChefHat, ChevronLeft, ClipboardCheck, ClipboardList, Columns3, Eye, HandCoins, History, LayoutGrid, MessageSquare, Navigation, PackageCheck, RotateCcw, Send, Settings2, Store, Undo2, UtensilsCrossed, X } from 'lucide-react';
+import { AlertTriangle, Bike, BookOpen, Calculator, Camera, ChefHat, ChevronLeft, Check, ClipboardCheck, ClipboardList, Columns3, Eye, HandCoins, History, LayoutGrid, MessageSquare, Navigation, PackageCheck, RotateCcw, Send, Settings2, Store, Undo2, UtensilsCrossed, X } from 'lucide-react';
 import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand } from '../lib/api.js';
 import { QcPhotoButton } from '../components/QcPhotoButton.js';
 import { DeliveryControl } from '../components/DeliveryControl.js';
@@ -380,6 +380,27 @@ export function FoodOperationsPage() {
    */
   const unroutedTickets = useMemo(() => ticketsWithUnassignedWork(orders ?? []), [orders]);
 
+  /**
+   * Clearing a photo finding.
+   *
+   * No confirmation: this says "a person looked", which is exactly the
+   * thing that should be one tap, and it destroys nothing - the check and
+   * its findings stay in the record with who cleared them.
+   */
+  async function acknowledgeQc(order: FoodBoardOrderDto) {
+    if (!order.qcCheckId) return;
+    setBusyId(order.id);
+    try {
+      await api.acknowledgeFoodQcCheck(order.qcCheckId);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not clear that check.');
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   const late = stationOrders.filter((order) => order.slaBand === 'BREACHED').length;
 
   /**
@@ -403,11 +424,16 @@ export function FoodOperationsPage() {
       onPhotoTaken={() => void load()}
       onAskForPayment={() => void askForPayment(order)}
       onConfirmPayment={() => void confirmPayment(order)}
+      onAcknowledgeQc={() => void acknowledgeQc(order)}
     />
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-surface-0">
+    // min-w-0 here for the same reason it is on the board below: this page
+    // is itself a flex child, and without it the page refuses to shrink
+    // below its widest row and overflows the window rather than letting the
+    // board scroll inside it.
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-0">
       <header className="flex flex-wrap items-center gap-3 border-b border-border-subtle px-4 py-3">
         <div className="min-w-0">
           <h1 className="text-display font-semibold text-fg">{businessName?.trim() || 'Kitchen'}</h1>
@@ -679,16 +705,6 @@ export function FoodOperationsPage() {
         </section>
       )}
 
-      {orders !== null && orders.length === 0 && !error && (
-        <div className="flex flex-1 flex-col items-center justify-center px-6 py-16 text-center text-fg-muted">
-          <ChefHat size={32} strokeWidth={1.25} className="mb-3 opacity-40" aria-hidden />
-          <p className="text-body font-medium text-fg">Nothing on the board</p>
-          <p className="mt-1 max-w-sm text-caption">
-            Orders appear here the moment one is taken — from a WhatsApp conversation or keyed in at the counter.
-          </p>
-        </div>
-      )}
-
       {/* Orders and the conversation, side by side.
           The board keeps the space it had and the chat takes what is left,
           because the orders are the main thing and a chat pane that
@@ -696,8 +712,25 @@ export function FoodOperationsPage() {
           two cannot share a row, so an open conversation takes the screen
           and closing it returns to the board. */}
       <div className="flex min-h-0 flex-1">
-      <div className={`min-h-0 flex-1 ${view === 'wall' ? 'overflow-y-auto' : 'overflow-x-auto'} ${paneOpen ? 'hidden lg:block' : ''}`}>
-        {view === 'wall' ? (
+      {/* min-w-0 is load-bearing.
+          A flex item defaults to min-width:auto, which means it refuses to
+          shrink below its own content - and the stage board's five columns
+          are 85rem of content. Without this the board pushed the chat pane
+          clean off the right edge of the screen instead of scrolling
+          itself, which is exactly what its own overflow-x-auto is for. */}
+      <div className={`min-h-0 min-w-0 flex-1 ${view === 'wall' ? 'overflow-y-auto' : 'overflow-x-auto'} ${paneOpen ? 'hidden lg:block' : ''}`}>
+        {/* Instead of the board, never alongside it: rendering both put
+            "Nothing on the board" above five empty columns, which reads as
+            two screens stacked on top of each other. */}
+        {orders !== null && orders.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center px-6 py-16 text-center text-fg-muted">
+            <ChefHat size={32} strokeWidth={1.25} className="mb-3 opacity-40" aria-hidden />
+            <p className="text-body font-medium text-fg">Nothing on the board</p>
+            <p className="mt-1 max-w-sm text-caption">
+              Orders appear here the moment one is taken — from a WhatsApp conversation or keyed in at the counter.
+            </p>
+          </div>
+        ) : view === 'wall' ? (
           /**
            * Every live ticket on one wall, oldest first.
            *
@@ -803,7 +836,7 @@ const PAYMENT_BADGE: Record<FoodBoardOrderDto['paymentState'], { label: string; 
 };
 
 function OrderCard({
-  order, station, drift, busy, onBump, onSendBack, onRelease, onSendOutWithoutPhoto, onPhotoTaken, onAskForPayment, onConfirmPayment,
+  order, station, drift, busy, onBump, onSendBack, onRelease, onSendOutWithoutPhoto, onPhotoTaken, onAskForPayment, onConfirmPayment, onAcknowledgeQc,
 }: {
   order: FoodBoardOrderDto;
   /** Which station this screen is for, so a line can say whether it is this cook's job. Null on the whole board, where every line is. */
@@ -817,6 +850,8 @@ function OrderCard({
   onPhotoTaken: () => void;
   onAskForPayment: () => void;
   onConfirmPayment: () => void;
+  /** Somebody looked at what the photo flagged and is saying so. */
+  onAcknowledgeQc: () => void;
 }) {
   /**
    * What the ticket is called.
@@ -1008,6 +1043,23 @@ function OrderCard({
               <li key={`${finding.line}-${index}`}>{finding.message}</li>
             ))}
           </ul>
+          {/* Somebody saying they looked.
+              Without this the warning stayed on the ticket forever - the
+              board could raise a finding and had no way to be told it had
+              been dealt with, so a flag people could not clear became a
+              flag people stopped reading. Only offered while it is still
+              outstanding; a cleared check needs no button. */}
+          {!order.qcAcknowledgedAt && order.qcCheckId && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onAcknowledgeQc}
+              className="mt-1.5 flex items-center gap-1 rounded-md border border-warning/60 px-2 py-1 text-meta font-semibold text-warning hover:bg-warning/10 disabled:opacity-50"
+            >
+              <Check size={11} aria-hidden />
+              I checked it
+            </button>
+          )}
         </div>
       )}
 

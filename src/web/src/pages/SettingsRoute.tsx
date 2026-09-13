@@ -1331,6 +1331,63 @@ function AlertBannerCard() {
  * in: a borrowed laptop or a stolen session token would otherwise be enough
  * to lock the real owner out of their own account.
  */
+/**
+ * Asking for the confirmation email again.
+ *
+ * The endpoint has always existed and nothing called it, while the
+ * verification page told anyone whose link had expired to "sign in and ask
+ * for a new one from Settings" - which they then could not do. A dead end
+ * that pointed at itself.
+ *
+ * Reports honestly whether anything actually went out. The route returns
+ * sent:false with a reason when no sender is configured, and telling
+ * somebody an email is on its way when no email service exists would leave
+ * them waiting on a message nobody sent.
+ */
+function ResendVerificationCard() {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  async function resend() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const outcome = await api.resendVerificationEmail();
+      setResult(
+        outcome.sent
+          ? { ok: true, message: 'Sent. Check your inbox, and your spam folder if it is not there.' }
+          : { ok: false, message: outcome.reason ?? 'Nothing was sent.' },
+      );
+    } catch (err) {
+      setResult({ ok: false, message: err instanceof ApiError ? err.message : 'Could not send that.' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-1 p-4">
+      <p className="text-body font-semibold text-fg">Confirmation email</p>
+      <p className="mt-1 text-caption text-fg-secondary">
+        Never received it, or the link expired? Links last 48 hours and work once.
+      </p>
+
+      {result && (
+        <p className={`mt-2 text-caption ${result.ok ? 'text-success' : 'text-error'}`}>{result.message}</p>
+      )}
+
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void resend()}
+        className="mt-3 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2 disabled:opacity-50"
+      >
+        {busy ? 'Sending…' : 'Send a new link'}
+      </button>
+    </div>
+  );
+}
+
 function ChangePasswordCard() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -2350,6 +2407,7 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
               <SecurityCard />
             </div>
             <ChangePasswordCard />
+            <ResendVerificationCard />
             <SessionsCard />
             <OperatorModeCard />
             <DangerZoneCard />

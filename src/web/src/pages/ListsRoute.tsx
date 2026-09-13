@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Plus, Trash2, X } from 'lucide-react';
-import { api, ApiError, type ListDto, type ListAgentAssignmentDto, type AiAgentSummary, type ChatRelationshipSignalDto } from '../lib/api.js';
+import { Pencil, Plus, Trash2, X } from 'lucide-react';
+import { api, ApiError, type ListDto,
+  type ListMemberDto, type ListAgentAssignmentDto, type AiAgentSummary, type ChatRelationshipSignalDto } from '../lib/api.js';
 import { ToggleSwitch } from '../components/ToggleSwitch.js';
 import { useAuth } from '../hooks/useAuth.js';
 
@@ -69,6 +70,82 @@ const AUTONOMY_LABELS: Record<number, string> = {
   4: 'Trusted',
   5: 'Fully autonomous',
 };
+
+/**
+ * Who is actually in a list.
+ *
+ * The membership API has always existed and nothing read it, so a list was a
+ * name with an agent attached and no way to see - or correct - what it
+ * applied to. An agent assigned to a list nobody can inspect is an agent
+ * answering for conversations nobody knows about.
+ *
+ * Conversations are added from the chat list's own right-click menu, which
+ * is where somebody is when they decide a conversation belongs somewhere.
+ * This panel is for seeing and removing.
+ */
+function ListMembersPanel({ list }: { list: ListDto }) {
+  const [members, setMembers] = useState<ListMemberDto[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  function load() {
+    api
+      .getListMembers(list.id)
+      .then((res) => setMembers(res.members))
+      .catch((err) => setError(err instanceof ApiError ? err.message : 'Failed to load members.'));
+  }
+  useEffect(load, [list.id]);
+
+  async function remove(member: ListMemberDto) {
+    setBusyId(member.id);
+    try {
+      await api.removeListMember(list.id, member.id);
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to remove that.');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-1 p-4">
+      <p className="text-caption font-semibold text-fg">In this list</p>
+      {error && <p className="mt-2 text-meta text-error">{error}</p>}
+
+      {members === null && <p className="mt-2 text-meta text-fg-muted">Loading…</p>}
+      {members !== null && members.length === 0 && (
+        <p className="mt-2 text-meta text-fg-muted">
+          Nothing yet. Right-click a conversation in the Inbox and choose “Add to list”.
+        </p>
+      )}
+
+      <ul className="mt-2 space-y-1">
+        {(members ?? []).map((member) => (
+          <li key={member.id} className="flex items-center gap-2 rounded-lg bg-surface-2 px-2.5 py-1.5">
+            {/* The member's own id rather than a name: this panel does not
+                have the chat list in scope, and inventing a display name it
+                has not loaded would be worse than showing the real thing it
+                does know. */}
+            <span className="min-w-0 flex-1 truncate font-mono text-meta text-fg-secondary">
+              {member.chatId ?? member.contactId ?? member.groupId ?? member.id}
+            </span>
+            <span className="shrink-0 rounded bg-surface-3 px-1.5 py-0.5 text-meta text-fg-muted">{member.memberType}</span>
+            <button
+              type="button"
+              disabled={busyId === member.id}
+              onClick={() => void remove(member)}
+              aria-label="Remove from this list"
+              className="shrink-0 rounded p-1 text-fg-muted hover:text-error disabled:opacity-40"
+            >
+              <X size={13} />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 function ListAgentAssignmentPanel({ list, agents }: { list: ListDto; agents: AiAgentSummary[] }) {
   const [assignments, setAssignments] = useState<ListAgentAssignmentDto[] | null>(null);
@@ -325,6 +402,21 @@ export function ListsRoute() {
     api.listAgents().then((res) => setAgents(res.agents)).catch(() => setAgents([]));
   }, []);
 
+  async function handleRename(list: ListDto) {
+    const name = window.prompt('Rename this list', list.name);
+    if (name === null) return;
+    const trimmed = name.trim();
+    // An empty name is not a rename, and a list with no name is unusable on
+    // every screen that shows one.
+    if (!trimmed || trimmed === list.name) return;
+    try {
+      await api.updateList(list.id, { name: trimmed });
+      loadLists();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to rename List.');
+    }
+  }
+
   async function handleDelete(list: ListDto) {
     try {
       await api.deleteList(list.id);
@@ -366,15 +458,30 @@ export function ListsRoute() {
                     <p className="text-caption font-semibold text-fg">{list.name}</p>
                     {list.description && <p className="text-meta text-fg-muted">{list.description}</p>}
                   </div>
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => { e.stopPropagation(); void handleDelete(list); }}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); void handleDelete(list); } }}
-                    className="rounded p-1 text-fg-muted hover:text-error"
-                    aria-label={`Delete ${list.name}`}
-                  >
-                    <X size={14} />
+                  <span className="flex shrink-0 items-center gap-1">
+                    {/* Renaming. Without it a typo meant deleting the list and
+                        starting again, which threw away every chat in it and
+                        whichever agent had been assigned. */}
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => { e.stopPropagation(); void handleRename(list); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); void handleRename(list); } }}
+                      className="rounded p-1 text-fg-muted hover:text-fg"
+                      aria-label={`Rename ${list.name}`}
+                    >
+                      <Pencil size={13} />
+                    </span>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => { e.stopPropagation(); void handleDelete(list); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); void handleDelete(list); } }}
+                      className="rounded p-1 text-fg-muted hover:text-error"
+                      aria-label={`Delete ${list.name}`}
+                    >
+                      <X size={14} />
+                    </span>
                   </span>
                 </button>
               ))}
@@ -384,7 +491,10 @@ export function ListsRoute() {
 
           <div>
             {selectedList ? (
-              <ListAgentAssignmentPanel list={selectedList} agents={agents} />
+              <div className="space-y-4">
+                <ListAgentAssignmentPanel list={selectedList} agents={agents} />
+                <ListMembersPanel list={selectedList} />
+              </div>
             ) : (
               <div className="rounded-xl border border-dashed border-border-subtle p-6 text-center text-caption text-fg-muted">
                 Select a List to assign an AI Agent to it.
