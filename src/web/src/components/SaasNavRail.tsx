@@ -4,9 +4,10 @@ import {
   MessageCircle, BarChart3, Bot, Contact, Zap, Megaphone, Mail, CreditCard, Settings,
   Building2, CookingPot, Store, Truck, UsersRound, Receipt, ShoppingBag, Scissors,
   Car, Stethoscope, Scale, Hotel, HardHat, Package, KeyRound, History, ShieldCheck, CalendarClock, PlugZap,
-  MoreHorizontal, type LucideIcon,
+  MoreHorizontal, LayoutGrid, type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth.js';
+import { BUSINESS_TYPES_PATH } from '../lib/productCatalog.js';
 
 export type ProductNav =
   | 'platform' | 'property' | 'food' | 'retail' | 'beauty'
@@ -20,8 +21,7 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
     { to: '/trends',              label: 'Trends',             icon: BarChart3 },
     { to: '/agents',              label: 'AI Agents',          icon: Bot },
     { to: '/crm',                 label: 'CRM & Leads',        icon: Contact },
-    { to: '/property-operations', label: 'Property Ops',       icon: Building2 },
-    { to: '/retail-operations',   label: 'Retail Ops',         icon: ShoppingBag },
+    { to: BUSINESS_TYPES_PATH,    label: 'Business Types',     icon: LayoutGrid },
     { to: '/invoices',            label: 'Invoices',           icon: Receipt },
     { to: '/automations',         label: 'Automations',        icon: Zap },
     { to: '/marketing',           label: 'Marketing',          icon: Megaphone },
@@ -172,6 +172,24 @@ const NAV_ITEMS: Record<ProductNav, NavItem[]> = {
   ],
 };
 
+/**
+ * The Business Types tiles are a developer tool, so the icon only exists for
+ * a developer.
+ *
+ * Two things have to be true at once. A customer on the platform nav - one
+ * whose productKey is unset, which is a real state during onboarding - must
+ * not see nine products they did not buy, hence the filter. And a developer
+ * who opens a vertical lands on that vertical's own nav, which has no way
+ * back to the tiles, hence the append: without it, picking a business type
+ * was a one-way door out of the platform nav.
+ */
+export function navItemsFor(product: ProductNav, isDeveloper: boolean): NavItem[] {
+  const items = NAV_ITEMS[product];
+  if (!isDeveloper) return items.filter((item) => item.to !== BUSINESS_TYPES_PATH);
+  if (items.some((item) => item.to === BUSINESS_TYPES_PATH)) return items;
+  return [...items, { to: BUSINESS_TYPES_PATH, label: 'Business Types', icon: LayoutGrid }];
+}
+
 /** Derive product from URL — used only for developer (platform-wide) navigation. */
 function productFromPath(pathname: string): ProductNav {
   if (pathname.startsWith('/food'))         return 'food';
@@ -219,7 +237,7 @@ export function SaasNavRail() {
     product = 'platform';
   }
 
-  const items = NAV_ITEMS[product];
+  const items = navItemsFor(product, Boolean(business?.isDeveloper));
 
   return (
     <nav className="hidden w-16 shrink-0 flex-col items-center gap-1 border-r border-border-subtle bg-surface-1 py-4 md:flex">
@@ -265,7 +283,7 @@ export function SaasNavBottomBar() {
     product = 'platform';
   }
 
-  const items = NAV_ITEMS[product];
+  const items = navItemsFor(product, Boolean(business?.isDeveloper));
   const [moreOpen, setMoreOpen] = useState(false);
 
   /**

@@ -31,6 +31,7 @@ const HandoffLogPage = lazy(() => import('./HandoffLogPage.js').then((m) => ({ d
 const ApprovalsPage = lazy(() => import('./ApprovalsPage.js').then((m) => ({ default: m.ApprovalsPage })));
 const AppointmentsPage = lazy(() => import('./AppointmentsPage.js').then((m) => ({ default: m.AppointmentsPage })));
 const IntegrationHealthPage = lazy(() => import('./IntegrationHealthPage.js').then((m) => ({ default: m.IntegrationHealthPage })));
+const BusinessTypesPage = lazy(() => import('./BusinessTypesPage.js').then((m) => ({ default: m.BusinessTypesPage })));
 
 function RouteFallback() { return <div className="flex h-full flex-1 items-center justify-center text-caption text-fg-muted">Loading…</div>; }
 
@@ -236,6 +237,7 @@ export function WorkspaceShell({ connection, sync }: Props) {
         <Route path="/construction/operations" element={<PlaceholderPage title="Projects & Teams" description="Project tracking, subcontractors and materials management — coming soon." />} />
         <Route path="/logistics" element={<ProductDashboardPage product="logistics" />} />
         <Route path="/logistics/operations" element={<PlaceholderPage title="Deliveries & Routes" description="Delivery tracking, route optimisation and driver dispatch — coming soon." />} />
+        <Route path="/business-types" element={<BusinessTypesPage />} />
         <Route path="/developer" element={<DeveloperControlPlanePage />} />
         <Route path="/chats" element={<ChatsRoute />} /><Route path="/chats/:chatId" element={<ChatsRoute />} /><Route path="/agents" element={<AgentsPage />} /><Route path="/dashboard" element={<DashboardRoute />} /><Route path="/trends" element={<TrendsRoute />} /><Route path="/lists" element={<ListsRoute />} /><Route path="/crm" element={<CrmRoute />} /><Route path="/property-operations" element={<PropertyOperationsPage />} /><Route path="/retail-operations" element={<RetailOperationsPage />} /><Route path="/invoices" element={<InvoicesPage />} /><Route path="/activity-log" element={<ActivityLogPage />} /><Route path="/handoff-log" element={<HandoffLogPage />} /><Route path="/approvals" element={<ApprovalsPage />} /><Route path="/appointments" element={<AppointmentsPage />} /><Route path="/integrations" element={<IntegrationHealthPage />} /><Route path="/automations" element={<FunnelsRoute />} /><Route path="/marketing" element={<MarketingRoute />} /><Route path="/email" element={<EmailRoute />} /><Route path="/billing" element={<BillingRoute />} /><Route path="/billing/plans/:planKey" element={<PlanCheckoutRoute />} /><Route path="/settings" element={<SettingsRoute connection={connection} />} /><Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes></Suspense></div>
