@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, Bike, BookOpen, Calculator, Camera, ChefHat, ChevronLeft, Check, ClipboardCheck, ClipboardList, Columns3, Eye, HandCoins, History, LayoutGrid, MessageSquare, Navigation, PackageCheck, RotateCcw, Send, Settings2, Store, Undo2, UtensilsCrossed, X } from 'lucide-react';
-import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand } from '../lib/api.js';
+import { AlertTriangle, Bike, BookOpen, Calculator, Camera, ChefHat, ChevronLeft, Check, ClipboardCheck, ClipboardList, Columns3, Eye, HandCoins, History, LayoutGrid, MessageSquare, Navigation, PackageCheck, Printer, Receipt, RotateCcw, Send, Settings2, Store, Undo2, UtensilsCrossed, X } from 'lucide-react';
+import { api, ApiError, type FoodBoardOrderDto, type FoodOrderStage, type FoodSlaBand, type WorkspaceBusiness } from '../lib/api.js';
 import { QcPhotoButton } from '../components/QcPhotoButton.js';
 import { DeliveryControl } from '../components/DeliveryControl.js';
 import { DriverRoster } from '../components/DriverRoster.js';
@@ -21,6 +21,10 @@ import {
 import { KitchenSettings } from '../components/KitchenSettings.js';
 import { MenuEditor } from '../components/MenuEditor.js';
 import { FoodPaymentPanel } from '../components/FoodPaymentPanel.js';
+import { PrinterSettingsPanel } from '../components/PrinterSettingsPanel.js';
+import { buildCustomerReceipt, buildKitchenTicket } from '../lib/foodTicket.js';
+import { loadPrinterSettings } from '../lib/printerSettings.js';
+import { PrinterError, sendToPrinter } from '../lib/printerTransport.js';
 import { OrderHistory } from '../components/OrderHistory.js';
 import { ServiceSummary } from '../components/ServiceSummary.js';
 import { Register } from '../components/Register.js';
@@ -125,6 +129,19 @@ export function FoodOperationsPage() {
    * just recorded.
    */
   const [paymentOrderId, setPaymentOrderId] = useState<string | null>(null);
+  const [printerOpen, setPrinterOpen] = useState(false);
+  /** For the receipt's header. Fetched once - a business does not rename itself during service. */
+  const [business, setBusiness] = useState<WorkspaceBusiness | null>(null);
+  /**
+   * Orders this device has already printed a kitchen ticket for.
+   *
+   * Auto-print watches the board, and the board is polled - so without
+   * this, every poll would reprint every ticket still in the kitchen and
+   * the roll would be gone within the hour. A ref rather than state: it
+   * must not cause a render, and it must be read inside the effect without
+   * becoming a dependency of it.
+   */
+  const printedOrderIds = useRef<Set<string>>(new Set());
   /**
    * Seconds since the last poll, added to each server-computed age so the
    * timers tick smoothly between refreshes. The BAND still comes from the
@@ -292,6 +309,51 @@ export function FoodOperationsPage() {
     }
   }
 
+  /**
+   * Putting a ticket on paper.
+   *
+   * Built here and sent straight from this device - nothing about a ticket
+   * goes to the server to be printed, because the printer is in the room
+   * and the server is not.
+   */
+  const printTicket = useCallback(
+    async (order: FoodBoardOrderDto, kind: 'kitchen' | 'receipt') => {
+      const settings = loadPrinterSettings();
+      if (!settings.enabled) {
+        setError('No printer is set up on this device yet — open Printer to set one up.');
+        return;
+      }
+      const ticket =
+        kind === 'kitchen'
+          ? buildKitchenTicket(order, { paper: settings.paper, station: settings.station ?? station })
+          : buildCustomerReceipt(
+              order,
+              {
+                name: business?.name ?? 'Receipt',
+                address: business?.address ?? null,
+                phone: business?.phone ?? null,
+                taxRegistrationNumber: business?.taxRegistrationNumber ?? null,
+                taxRegistrationLabel: business?.taxRegistrationLabel ?? null,
+              },
+              { paper: settings.paper },
+            );
+      await sendToPrinter(settings.transport, ticket.bytes, ticket.text, settings.paper);
+    },
+    [business, station],
+  );
+
+  async function print(order: FoodBoardOrderDto, kind: 'kitchen' | 'receipt') {
+    setBusyId(order.id);
+    setError(null);
+    try {
+      await printTicket(order, kind);
+    } catch (err) {
+      setError(err instanceof PrinterError || err instanceof Error ? err.message : 'That did not print.');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   /** Asking the customer for the money. The amount comes off the order, never retyped. */
   async function askForPayment(order: FoodBoardOrderDto) {
     setBusyId(order.id);
@@ -378,6 +440,46 @@ export function FoodOperationsPage() {
     [stationOrders],
   );
 
+  useEffect(() => {
+    api
+      .getBusiness()
+      .then((result) => setBusiness(result.business))
+      .catch(() => undefined);
+  }, []);
+
+  /**
+   * Print a kitchen ticket once, when an order first reaches the kitchen.
+   *
+   * Only from a device that asked for it, and only once per order: the
+   * board is polled, so anything keyed on "is in the kitchen now" rather
+   * than "has this device printed it" would reprint the same ticket every
+   * few seconds until the roll ran out.
+   *
+   * A failure is silent. The board is a screen somebody is working from,
+   * and an error banner they did not ask for - because a printer they are
+   * not standing next to is out of paper - is an interruption in the middle
+   * of service. The manual print button says what went wrong, because there
+   * somebody is waiting for the paper.
+   */
+  useEffect(() => {
+    if (!orders) return;
+    const settings = loadPrinterSettings();
+    if (!settings.enabled || !settings.autoPrintKitchen) return;
+
+    for (const order of orders) {
+      if (order.stage !== 'IN_KITCHEN' || printedOrderIds.current.has(order.id)) continue;
+      // Marked before the await, not after: two polls can overlap, and the
+      // second must not start a duplicate while the first is still sending.
+      printedOrderIds.current.add(order.id);
+      void printTicket(order, 'kitchen').catch(() => {
+        // Let it be retried on the next poll rather than silently never
+        // printing - a ticket that failed because the printer was asleep
+        // usually succeeds moments later.
+        printedOrderIds.current.delete(order.id);
+      });
+    }
+  }, [orders, printTicket]);
+
   /**
    * Resolved from the live board every render, so the panel follows the
    * order rather than a copy of it. It closes on its own if the order
@@ -445,6 +547,7 @@ export function FoodOperationsPage() {
       onAskForPayment={() => void askForPayment(order)}
       onConfirmPayment={() => void confirmPayment(order)}
       onTakePayment={() => setPaymentOrderId(order.id)}
+      onPrint={(kind) => void print(order, kind)}
       onAcknowledgeQc={() => void acknowledgeQc(order)}
     />
   );
@@ -579,6 +682,15 @@ export function FoodOperationsPage() {
           </button>
           <button
             type="button"
+            onClick={() => setPrinterOpen(true)}
+            title="Set up this device's ticket printer"
+            className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2"
+          >
+            <Printer size={14} aria-hidden />
+            Printer
+          </button>
+          <button
+            type="button"
             onClick={() => setSettingsOpen((open) => !open)}
             aria-expanded={settingsOpen}
             className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-caption font-medium text-fg hover:bg-surface-2"
@@ -653,6 +765,8 @@ export function FoodOperationsPage() {
           <ServiceSummary />
         </div>
       )}
+
+      {printerOpen && <PrinterSettingsPanel onClose={() => setPrinterOpen(false)} />}
 
       {paymentOrder && (
         <FoodPaymentPanel order={paymentOrder} onClose={() => setPaymentOrderId(null)} onChanged={load} />
@@ -861,7 +975,7 @@ const PAYMENT_BADGE: Record<FoodBoardOrderDto['paymentState'], { label: string; 
 };
 
 function OrderCard({
-  order, station, drift, busy, onBump, onSendBack, onRelease, onSendOutWithoutPhoto, onPhotoTaken, onAskForPayment, onConfirmPayment, onTakePayment, onAcknowledgeQc,
+  order, station, drift, busy, onBump, onSendBack, onRelease, onSendOutWithoutPhoto, onPhotoTaken, onAskForPayment, onConfirmPayment, onTakePayment, onPrint, onAcknowledgeQc,
 }: {
   order: FoodBoardOrderDto;
   /** Which station this screen is for, so a line can say whether it is this cook's job. Null on the whole board, where every line is. */
@@ -876,6 +990,7 @@ function OrderCard({
   onAskForPayment: () => void;
   onConfirmPayment: () => void;
   onTakePayment: () => void;
+  onPrint: (kind: 'kitchen' | 'receipt') => void;
   /** Somebody looked at what the photo flagged and is saying so. */
   onAcknowledgeQc: () => void;
 }) {
@@ -1005,6 +1120,35 @@ function OrderCard({
           )}
         </div>
       )}
+
+      {/* Paper, on demand.
+          Two documents because they are two different things: the kitchen's
+          copy has the food and no prices, the customer's has the money and
+          the business's details. A receipt is offered only once there is
+          something to receipt - printing one for an order nobody has paid
+          for hands somebody a document saying they did. */}
+      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onPrint('kitchen')}
+          className="flex items-center gap-1 text-meta text-fg-muted hover:text-fg disabled:opacity-50"
+        >
+          <Printer size={11} aria-hidden />
+          Ticket
+        </button>
+        {(order.paymentState === 'PAID' || order.paymentState === 'NOT_REQUIRED' || order.paymentState === 'WAIVED') && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onPrint('receipt')}
+            className="flex items-center gap-1 text-meta text-fg-muted hover:text-fg disabled:opacity-50"
+          >
+            <Receipt size={11} aria-hidden />
+            Receipt
+          </button>
+        )}
+      </div>
 
       {/* Settled money is still something somebody may have to correct - a
           refund given at the door, a payment recorded against the wrong
