@@ -214,7 +214,18 @@ export class WhatsAppChatRepository {
          group_id = COALESCE(EXCLUDED.group_id, whatsapp_chats.group_id),
          name = COALESCE(EXCLUDED.name, whatsapp_chats.name),
          phone_number = COALESCE(EXCLUDED.phone_number, whatsapp_chats.phone_number),
-         unread_count = COALESCE($11, whatsapp_chats.unread_count),
+         /* A sync may LOWER this, never raise it.
+            WhatsApp's own count is the phone's opinion, and the phone does
+            not know the operator read the conversation in AURA. Writing it
+            back verbatim meant every history sync resurrected the unread
+            count on conversations that had been handled weeks ago - which
+            is what put months-old chats back on the alert bar and the
+            "what to do next" list.
+            LEAST keeps the half that is genuinely useful: a chat the owner
+            really did read on their phone arrives here as 0 and clears. A
+            genuinely new inbound message raises the count through
+            recordLastMessage, which is the only path that should. */
+         unread_count = LEAST(whatsapp_chats.unread_count, COALESCE($11, whatsapp_chats.unread_count)),
          is_archived = COALESCE(EXCLUDED.is_archived, whatsapp_chats.is_archived),
          is_pinned = COALESCE(EXCLUDED.is_pinned, whatsapp_chats.is_pinned),
          updated_at = now()
@@ -816,6 +827,12 @@ export class WhatsAppChatRepository {
        FROM whatsapp_chats c
        JOIN numbered_accounts na ON na.id = c.whatsapp_account_id
        WHERE c.business_id = $1 AND c.ai_mode = 'HUMAN_TAKEOVER' AND c.deleted_at IS NULL
+         -- Still genuinely waiting, exactly as listNeedingHumanTakeover
+         -- above defines it. Without this the pill was every chat ever left
+         -- in HUMAN_TAKEOVER, read or not, forever - so a conversation the
+         -- operator had already dealt with kept shouting, and the only way
+         -- to quiet it was to dismiss it again on every page load.
+         AND c.unread_count > 0
          -- A channel is a broadcast feed only its owner can post to. There
          -- is no reply a human could send, so it can never be something
          -- "waiting on a human" - see isBroadcastFeed in

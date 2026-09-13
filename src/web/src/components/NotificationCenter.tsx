@@ -132,12 +132,34 @@ export function NotificationCenter() {
     }
   }
 
+  /**
+   * Closing a notification about a conversation settles the conversation
+   * too.
+   *
+   * Dismissing only the row left the chat's own unread count sitting where
+   * it was, so the same conversation still had a badge in the list and
+   * still counted as waiting on a human - the operator had cleared the
+   * notice and nothing had actually changed. Marking it read is what
+   * opening the chat does, which is what clicking this notification does,
+   * so the X now agrees with both instead of being the one way to
+   * acknowledge something that acknowledged nothing.
+   *
+   * Only for chat notifications: a billing notice or an AI configuration
+   * warning has no conversation to settle.
+   */
   async function handleDismiss(notification: NotificationDto, event: ReactMouseEvent) {
     event.stopPropagation();
     setNotifications((prev) => prev.filter((n) => n.id !== notification.id));
     if (!notification.readAt) setUnreadCount((count) => Math.max(0, count - 1));
     try {
-      await api.dismissNotification(notification.id);
+      if (notification.targetType === 'chat' && notification.targetId) {
+        // Clears this chat's unread count and, server-side, every one of
+        // this user's outstanding notifications about it - this row
+        // included, so there is nothing left for dismissNotification to do.
+        await api.markChatRead(notification.targetId);
+      } else {
+        await api.dismissNotification(notification.id);
+      }
       notifyChanged();
     } catch {
       await load();

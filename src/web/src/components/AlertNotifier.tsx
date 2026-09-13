@@ -91,12 +91,16 @@ function groupLabel(group: AlertGroup, showIdentity: boolean): string {
  * resolving server-side still clears it on its own.
  *
  * Detected from the router rather than a cross-component event, so it holds
- * however the chat was reached and the two components stay uncoupled. It is
- * deliberately a LOCAL dismissal only: the server-side takeover state is
- * untouched, so the AI stays paused while the human finishes handling it.
- * Each mount polls/dismisses independently (component-local
- * state), so dismissing one on the lock screen and the other in the
- * header is expected, not a bug.
+ * however the chat was reached and the two components stay uncoupled.
+ *
+ * Inside the app, dismissing marks that conversation read for this user -
+ * the same thing opening it does - so the pill stays gone across a reload
+ * and the chat's own unread count goes with it. The server-side takeover
+ * state is still untouched: the AI stays paused while the human finishes
+ * handling it, and a teammate who has not looked at the conversation keeps
+ * their own notification.
+ *
+ * Behind the lock screen it does not: see `locked` below.
  *
  * Zero-Leak Rule (default): the API response carries only the business's
  * own WhatsApp line label and an urgency tier - no customer name, phone
@@ -105,7 +109,20 @@ function groupLabel(group: AlertGroup, showIdentity: boolean): string {
  * see securityAlertService.ts for why that's an explicit, request-scoped
  * opt-in rather than always-fetched-but-hidden.
  */
-export function AlertNotifier() {
+export function AlertNotifier({
+  /**
+   * This mount is the one behind the lock screen.
+   *
+   * The pill still shows and still updates - a live handoff arriving while
+   * the workspace is locked is exactly what somebody needs to see. What it
+   * will not do is act: dismissing quiets it on this screen only, and it
+   * does not open the conversation. Neither is a judgement about whether
+   * the alert matters; it is that nobody at a locked workspace has proved
+   * they are the operator, and both of those clear a real customer's unread
+   * count. Unlocking and dealing with it is what removes it for good.
+   */
+  locked = false,
+}: { locked?: boolean } = {}) {
   const navigate = useNavigate();
   const location = useLocation();
   const [alerts, setAlerts] = useState<HumanTakeoverAlertDto[]>([]);
@@ -193,12 +210,42 @@ export function AlertNotifier() {
     // setting changes, rather than waiting up to POLL_MS for the next tick.
   }, [showIdentity]);
 
+  /**
+   * Inside the app, dismissing is a real acknowledgement rather than a local
+   * hide.
+   *
+   * The local dismissal below still happens first so the pill goes at once,
+   * but on its own it was only half the job: the alert is raised by the
+   * conversation still carrying unread messages, so a dismissal that touched
+   * nothing server-side was undone by the next page load, and the count on
+   * the chat itself stayed exactly where it was. Marking it read is the same
+   * thing opening the conversation does - it resets that chat's unread count
+   * and clears this user's outstanding notifications about it.
+   *
+   * It deliberately does NOT resolve the handoff: the AI stays paused, so a
+   * conversation a person took over is still theirs after they close the
+   * banner. And it is this user's read state only - a teammate who has not
+   * looked at it keeps their own notification.
+   *
+   * Behind the lock screen, none of that happens. Whoever is at a locked
+   * workspace has not proved they are the operator, and clearing a real
+   * customer's unread count is a decision about the business's work - so the
+   * X there only quiets the pill on this screen. The conversation is still
+   * waiting, and it is still waiting when the app is unlocked, which is
+   * where it can actually be dealt with.
+   */
   function dismissGroup(group: AlertGroup) {
     setDismissed((prev) => {
       const next = { ...prev };
       for (const alert of group.alerts) next[alert.chatId] = alert.triggeredAt;
       return next;
     });
+    if (locked) return;
+    for (const alert of group.alerts) {
+      // Best-effort: the pill is already gone, and a failed request here
+      // must not put it back or raise an error over a dismissal.
+      void api.markChatRead(alert.chatId).catch(() => {});
+    }
   }
 
   // Opening a conversation acknowledges its alert. Keyed on triggeredAt like
@@ -257,8 +304,14 @@ export function AlertNotifier() {
   return (
     <button
       type="button"
-      onClick={() => navigate(`/chats/${mostRecent(current).chatId}`)}
-      title="Open this chat"
+      // Behind the lock screen this opens nothing: the router lives under
+      // the overlay, so navigating there would quietly mount the thread and
+      // mark it read without anybody entering a PIN.
+      onClick={() => {
+        if (locked) return;
+        navigate(`/chats/${mostRecent(current).chatId}`);
+      }}
+      title={locked ? 'Unlock to open this chat' : 'Open this chat'}
       // Has to be able to shrink on a phone. max-w-xs alone is 320px, which
       // on a ~390px screen leaves nothing for the search button, the bell and
       // the account menu either side of it - the row overflowed and the pill
