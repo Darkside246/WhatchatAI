@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Bike, Copy, LogIn, Plus, RotateCcw, UserMinus } from 'lucide-react';
-import { api, ApiError, type FoodDriverDto } from '../lib/api.js';
+import { Bike, ChevronDown, ChevronRight, Copy, LogIn, Plus, RotateCcw, UserMinus } from 'lucide-react';
+import { api, ApiError, type FoodDeliveryDto, type FoodDriverDto } from '../lib/api.js';
 
 /**
  * The people who drive.
@@ -29,6 +29,8 @@ export function DriverRoster() {
    * a new one, which is also what invalidates the old.
    */
   const [issued, setIssued] = useState<{ driverId: string; name: string; url: string; phoneNumber: string | null } | null>(null);
+  /** Which driver is opened up. One at a time - a roster with every row expanded is a list nobody can scan. */
+  const [openDriverId, setOpenDriverId] = useState<string | null>(null);
 
   const load = useCallback(() => {
     api
@@ -113,13 +115,26 @@ export function DriverRoster() {
       ) : (
         <ul className="space-y-1">
           {active.map((driver) => (
-            <li key={driver.id} className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-1 px-2.5 py-1.5">
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-caption font-medium text-fg">{driver.name}</span>
-                <span className="block truncate text-meta text-fg-muted">
-                  {[driver.vehicle, driver.phoneNumber].filter(Boolean).join(' · ') || 'No number on file'}
+            <li key={driver.id} className="rounded-lg border border-border-subtle bg-surface-1">
+              <div className="flex items-center gap-2 px-2.5 py-1.5">
+              <button
+                type="button"
+                onClick={() => setOpenDriverId((current) => (current === driver.id ? null : driver.id))}
+                aria-expanded={openDriverId === driver.id}
+                className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+              >
+                {openDriverId === driver.id ? (
+                  <ChevronDown size={13} className="shrink-0 text-fg-muted" aria-hidden />
+                ) : (
+                  <ChevronRight size={13} className="shrink-0 text-fg-muted" aria-hidden />
+                )}
+                <span className="min-w-0">
+                  <span className="block truncate text-caption font-medium text-fg">{driver.name}</span>
+                  <span className="block truncate text-meta text-fg-muted">
+                    {[driver.vehicle, driver.phoneNumber].filter(Boolean).join(' · ') || 'No number on file'}
+                  </span>
                 </span>
-              </span>
+              </button>
               {/* Their way in. Issued here and shared by the shop, never sent
                   by the server - putting a message through this business's
                   live WhatsApp connection on a background path is the one
@@ -155,6 +170,11 @@ export function DriverRoster() {
               >
                 <UserMinus size={13} aria-hidden />
               </button>
+              </div>
+
+              {openDriverId === driver.id && (
+                <DriverDetail driver={driver} busy={busy} onSaved={load} />
+              )}
             </li>
           ))}
         </ul>
@@ -226,3 +246,129 @@ export function DriverRoster() {
 }
 
 const inputClass = 'w-full rounded-md border border-border-subtle bg-surface-1 px-2.5 py-1.5 text-caption text-fg placeholder:text-fg-muted';
+
+const RUN_STATE_LABEL: Record<FoodDeliveryDto['state'], string> = {
+  ASSIGNED: 'Given to them',
+  COLLECTED: 'Picked up',
+  DELIVERED: 'Delivered',
+  FAILED: 'Did not arrive',
+  RETURNED: 'Came back',
+  CANCELLED: 'Cancelled',
+};
+
+/**
+ * One driver, opened up: their details to correct, and what they have
+ * actually been carrying.
+ *
+ * The runs are the half that was missing. A roster that can only add and
+ * remove people answers "who drives for us" and never "did that order ever
+ * get there" - which is the question actually asked about a driver, and the
+ * one a customer is on the phone about.
+ */
+function DriverDetail({ driver, busy, onSaved }: { driver: FoodDriverDto; busy: boolean; onSaved: () => void }) {
+  const [name, setName] = useState(driver.name);
+  const [phone, setPhone] = useState(driver.phoneNumber ?? '');
+  const [vehicle, setVehicle] = useState(driver.vehicle ?? '');
+  const [runs, setRuns] = useState<FoodDeliveryDto[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listFoodDriverRuns(driver.id)
+      .then((result) => {
+        if (!cancelled) setRuns(result.runs);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof ApiError ? err.message : 'Could not load their runs.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [driver.id]);
+
+  const dirty = name.trim() !== driver.name || phone.trim() !== (driver.phoneNumber ?? '') || vehicle.trim() !== (driver.vehicle ?? '');
+
+  async function save() {
+    if (!name.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api.updateFoodDriver(driver.id, {
+        name: name.trim(),
+        phoneNumber: phone.trim() || null,
+        vehicle: vehicle.trim() || null,
+      });
+      onSaved();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not save that.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3 border-t border-border-subtle px-2.5 py-2.5">
+      {error && <p className="rounded-md bg-error/10 px-2 py-1.5 text-meta text-error">{error}</p>}
+
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="min-w-0 flex-1">
+          <span className="block text-meta font-medium text-fg">Name</span>
+          <input value={name} onChange={(event) => setName(event.target.value)} className={inputClass} />
+        </label>
+        <label className="w-32">
+          <span className="block text-meta font-medium text-fg">Phone</span>
+          <input value={phone} inputMode="tel" onChange={(event) => setPhone(event.target.value)} className={inputClass} />
+        </label>
+        <label className="w-28">
+          <span className="block text-meta font-medium text-fg">Vehicle</span>
+          <input value={vehicle} onChange={(event) => setVehicle(event.target.value)} className={inputClass} />
+        </label>
+        {/* Only once something has genuinely changed. A Save that is always
+            available is a Save people press to find out what it does. */}
+        <button
+          type="button"
+          disabled={busy || saving || !dirty || !name.trim()}
+          onClick={() => void save()}
+          className="rounded-md bg-accent px-3 py-1.5 text-caption font-semibold text-white disabled:opacity-40"
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+
+      <div>
+        <p className="text-meta font-semibold uppercase tracking-wide text-fg-muted">Recent runs</p>
+        {runs === null && <p className="mt-1 text-meta text-fg-muted">Loading…</p>}
+        {runs !== null && runs.length === 0 && (
+          <p className="mt-1 text-meta text-fg-muted">They have not been given a delivery yet.</p>
+        )}
+        {runs !== null && runs.length > 0 && (
+          <ul className="mt-1 space-y-1">
+            {runs.slice(0, 10).map((run) => (
+              <li key={run.id} className="flex flex-wrap items-baseline gap-2 text-meta">
+                <span className="tabular-nums text-fg-muted">
+                  {new Date(run.assignedAt).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                </span>
+                <span
+                  className={`rounded px-1.5 py-0.5 font-semibold ${
+                    run.state === 'DELIVERED'
+                      ? 'bg-success/15 text-success'
+                      : run.state === 'FAILED' || run.state === 'RETURNED'
+                        ? 'bg-error/15 text-error'
+                        : 'bg-surface-2 text-fg-secondary'
+                  }`}
+                >
+                  {RUN_STATE_LABEL[run.state]}
+                </span>
+                {/* Why it did not arrive, where the driver said. "Failed" on
+                    its own tells whoever reads this nothing they can act on. */}
+                {run.failureReason && <span className="text-fg-muted">{run.failureReason}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
