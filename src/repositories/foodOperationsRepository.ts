@@ -20,7 +20,16 @@ export interface FoodModifierOptionRecord {
   id: string;
   groupId: string;
   name: string;
+  /** What one costs once the free ones are used up. */
   priceDeltaCents: number;
+  /**
+   * How many come with the dish at no charge.
+   *
+   * 0 is the ordinary paid add-on and the default, so every option written
+   * before migration 1045 prices exactly as it always did. See
+   * modifierPricing.ts for the arithmetic.
+   */
+  freeQuantity: number;
   available: boolean;
   sortOrder: number;
 }
@@ -72,7 +81,13 @@ export interface FoodOrderLine {
   variant: string | null;
   quantity: number;
   unitPriceCents: number;
-  modifiers: { name: string; action: 'add' | 'remove' | 'on_side'; priceDeltaCents: number }[];
+  /**
+   * quantity is how many were asked for; priceDeltaCents is what the whole
+   * modifier adds to the line, already net of anything the dish includes
+   * free. Optional so every order line written before migration 1045 reads
+   * back unchanged - absent means one.
+   */
+  modifiers: { name: string; action: 'add' | 'remove' | 'on_side'; priceDeltaCents: number; quantity?: number; freeQuantity?: number }[];
   notes: string | null;
 }
 
@@ -841,7 +856,7 @@ export class FoodOperationsRepository {
         'SELECT * FROM food_modifier_groups WHERE business_id = $1 ORDER BY sort_order, name',
         [businessId],
       ),
-      this.db.query<{ id: string; group_id: string; name: string; price_delta_cents: string; available: boolean; sort_order: number }>(
+      this.db.query<{ id: string; group_id: string; name: string; price_delta_cents: string; free_quantity: number; available: boolean; sort_order: number }>(
         `SELECT * FROM food_modifier_options
          WHERE business_id = $1 AND ($2::boolean IS NOT TRUE OR available = true)
          ORDER BY sort_order, name`,
@@ -862,6 +877,10 @@ export class FoodOperationsRepository {
         groupId: option.group_id,
         name: option.name,
         priceDeltaCents: Number(option.price_delta_cents),
+        /* How many come with the dish at no charge. 0 - the default - is the
+           ordinary paid add-on, priced exactly as it was before this column
+           existed. See modifierPricing.ts. */
+        freeQuantity: option.free_quantity ?? 0,
         available: option.available,
         sortOrder: option.sort_order,
       });
@@ -965,18 +984,53 @@ export class FoodOperationsRepository {
   async addModifierOption(
     businessId: string,
     groupId: string,
-    input: { name: string; priceDeltaCents?: number },
+    input: { name: string; priceDeltaCents?: number; freeQuantity?: number },
   ): Promise<FoodModifierOptionRecord | null> {
-    const { rows } = await this.db.query<{ id: string; group_id: string; name: string; price_delta_cents: string; available: boolean; sort_order: number }>(
-      `INSERT INTO food_modifier_options (business_id, group_id, name, price_delta_cents, sort_order)
-       SELECT $1, $2, $3, $4, (SELECT COALESCE(MAX(sort_order), 0) + 10 FROM food_modifier_options WHERE business_id = $1 AND group_id = $2)
+    const { rows } = await this.db.query<{ id: string; group_id: string; name: string; price_delta_cents: string; free_quantity: number; available: boolean; sort_order: number }>(
+      `INSERT INTO food_modifier_options (business_id, group_id, name, price_delta_cents, free_quantity, sort_order)
+       SELECT $1, $2, $3, $4, $5, (SELECT COALESCE(MAX(sort_order), 0) + 10 FROM food_modifier_options WHERE business_id = $1 AND group_id = $2)
        WHERE EXISTS (SELECT 1 FROM food_modifier_groups WHERE business_id = $1 AND id = $2)
        RETURNING *`,
-      [businessId, groupId, input.name.trim(), input.priceDeltaCents ?? 0],
+      [businessId, groupId, input.name.trim(), input.priceDeltaCents ?? 0, Math.max(0, Math.trunc(input.freeQuantity ?? 0))],
     );
     const row = rows[0];
     return row
-      ? { id: row.id, groupId: row.group_id, name: row.name, priceDeltaCents: Number(row.price_delta_cents), available: row.available, sortOrder: row.sort_order }
+      ? { id: row.id, groupId: row.group_id, name: row.name, priceDeltaCents: Number(row.price_delta_cents), freeQuantity: row.free_quantity ?? 0, available: row.available, sortOrder: row.sort_order }
+      : null;
+  }
+
+  /**
+   * Changing what an option costs, and how many come free.
+   *
+   * Both together, because they are one decision: "free, then a pound each"
+   * is a single sentence an owner says, and letting them be saved
+   * separately creates a moment where the menu charges for something that
+   * was meant to be included.
+   */
+  async updateModifierOption(
+    businessId: string,
+    optionId: string,
+    input: { name?: string; priceDeltaCents?: number; freeQuantity?: number },
+  ): Promise<FoodModifierOptionRecord | null> {
+    const { rows } = await this.db.query<{ id: string; group_id: string; name: string; price_delta_cents: string; free_quantity: number; available: boolean; sort_order: number }>(
+      `UPDATE food_modifier_options
+       SET name = COALESCE($3, name),
+           price_delta_cents = COALESCE($4, price_delta_cents),
+           free_quantity = COALESCE($5, free_quantity),
+           updated_at = now()
+       WHERE business_id = $1 AND id = $2
+       RETURNING *`,
+      [
+        businessId,
+        optionId,
+        input.name?.trim() ?? null,
+        input.priceDeltaCents ?? null,
+        input.freeQuantity === undefined ? null : Math.max(0, Math.trunc(input.freeQuantity)),
+      ],
+    );
+    const row = rows[0];
+    return row
+      ? { id: row.id, groupId: row.group_id, name: row.name, priceDeltaCents: Number(row.price_delta_cents), freeQuantity: row.free_quantity ?? 0, available: row.available, sortOrder: row.sort_order }
       : null;
   }
 
