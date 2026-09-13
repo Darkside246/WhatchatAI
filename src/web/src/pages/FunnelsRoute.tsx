@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type MouseEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ArrowLeft, GitBranch, Plus, Trash2, Play, Pause, ArrowUp, ArrowDown, UserPlus2 } from 'lucide-react';
+import { ArrowLeft, Ban, GitBranch, Pencil, Plus, Trash2, Play, Pause, ArrowUp, ArrowDown, UserPlus2 } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -310,6 +310,49 @@ function FunnelDetailView({ funnelId, onBack }: { funnelId: string; onBack: () =
     }
   }
 
+  /**
+   * Stop one contact's run without touching anybody else's.
+   *
+   * Deactivating the funnel stops new enrolments; it does not stop the runs
+   * already going. So a funnel pointed at the wrong list, or one contact
+   * enrolled by mistake, had no off switch at all - the instances list
+   * showed the status and offered nothing to do about it. This is the
+   * per-person stop: their run ends where it is, everyone else's continues.
+   */
+  async function handleCancelInstance(instanceId: string) {
+    if (!window.confirm('Stop this automation for this contact?\n\nNo further steps run for them. Messages already sent stay sent, and nobody else on this funnel is affected.')) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.cancelFunnelInstance(funnelId, instanceId);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not stop that automation.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRename() {
+    if (!detail) return;
+    const name = window.prompt('Funnel name', detail.funnel.name)?.trim();
+    if (!name || name === detail.funnel.name) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // Description is sent unchanged - the API takes both together, and
+      // renaming should not quietly wipe what somebody wrote about it.
+      await api.updateFunnel(funnelId, name, detail.funnel.description ?? null);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not rename that funnel.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleEnroll(event: FormEvent) {
     event.preventDefault();
     if (!enrollContactId) return;
@@ -335,8 +378,20 @@ function FunnelDetailView({ funnelId, onBack }: { funnelId: string; onBack: () =
         Back to funnels
       </button>
 
-      <div className="flex items-center justify-between">
-        <h2 className="text-body-lg font-semibold text-fg">{detail.funnel.name}</h2>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <h2 className="min-w-0 truncate text-body-lg font-semibold text-fg">{detail.funnel.name}</h2>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={handleRename}
+            title="Rename this funnel"
+            aria-label="Rename this funnel"
+            className="shrink-0 rounded p-1 text-fg-muted hover:bg-surface-3 hover:text-fg disabled:opacity-50"
+          >
+            <Pencil size={13} aria-hidden />
+          </button>
+        </div>
         <button
           type="button"
           disabled={busy}
@@ -414,9 +469,25 @@ function FunnelDetailView({ funnelId, onBack }: { funnelId: string; onBack: () =
       <div className="mt-2 rounded-lg border border-border-subtle">
         {detail.instances.length === 0 && <p className="p-3 text-caption text-fg-muted">No one enrolled yet.</p>}
         {detail.instances.map((instance) => (
-          <div key={instance.id} className="flex items-center justify-between border-b border-border-subtle px-3 py-2 last:border-b-0">
-            <p className="text-caption text-fg">Step {instance.currentPosition + 1}{instance.lastError ? ` · ${instance.lastError}` : ''}</p>
-            <span className="text-caption font-medium text-fg-secondary">{instance.status}</span>
+          <div key={instance.id} className="flex items-center justify-between gap-3 border-b border-border-subtle px-3 py-2 last:border-b-0">
+            <p className="min-w-0 flex-1 truncate text-caption text-fg">Step {instance.currentPosition + 1}{instance.lastError ? ` · ${instance.lastError}` : ''}</p>
+            <span className="shrink-0 text-caption font-medium text-fg-secondary">{instance.status}</span>
+            {/* Only where there is something left to stop. A run that has
+                already completed, failed or been cancelled has no next step
+                to cancel, and a button that would do nothing is worse than
+                no button. */}
+            {(instance.status === 'ACTIVE' || instance.status === 'WAITING') && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void handleCancelInstance(instance.id)}
+                title="Stop this automation for this contact"
+                aria-label="Stop this automation for this contact"
+                className="shrink-0 rounded p-1 text-fg-muted hover:bg-error/10 hover:text-error disabled:opacity-50"
+              >
+                <Ban size={13} aria-hidden />
+              </button>
+            )}
           </div>
         ))}
       </div>

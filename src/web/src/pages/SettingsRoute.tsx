@@ -11,6 +11,7 @@ import {
   type BusinessRole,
   type TeamDto,
   type AgentCapacityDto,
+  type CapacitySummaryDto,
   type AgentAvailability,
   type TimeStatusResponse,
 } from '../lib/api.js';
@@ -2011,6 +2012,37 @@ function TeamCard({ team, members, onChanged }: { team: TeamDto; members: Member
     }
   }
 
+  /**
+   * Rename a team, and give it the description it could never have had.
+   *
+   * A team could be created and deleted and nothing in between, so a typo
+   * in the name meant deleting the team and re-adding everybody. The
+   * description was worse: the card renders one, and createTeam has always
+   * sent null - so there was no path by which a team could ever have had
+   * one to render.
+   *
+   * Two prompts rather than a dialog, deliberately: both are one short
+   * line, and this card already sits inside a settings page dense with
+   * forms.
+   */
+  async function handleEditTeam() {
+    const name = window.prompt('Team name', team.name)?.trim();
+    if (!name) return;
+    const description = window.prompt('Description (optional)', team.description ?? '');
+    // Cancel on the second prompt cancels the whole edit - somebody who
+    // backed out should not find the name changed anyway.
+    if (description === null) return;
+    if (name === team.name && description.trim() === (team.description ?? '')) return;
+
+    setBusy(true);
+    try {
+      await api.updateTeam(team.id, { name, description: description.trim() || null });
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="rounded-lg border border-border-subtle p-3">
       <div className="flex items-center justify-between">
@@ -2019,9 +2051,14 @@ function TeamCard({ team, members, onChanged }: { team: TeamDto; members: Member
           {team.description && <p className="text-meta text-fg-muted">{team.description}</p>}
         </div>
         {canManage && (
-          <button type="button" onClick={handleDeleteTeam} disabled={busy} className="text-fg-muted hover:text-error" aria-label="Delete this team">
-            <Trash2 size={13} aria-hidden />
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button type="button" onClick={handleEditTeam} disabled={busy} className="text-fg-muted hover:text-fg" aria-label="Rename this team">
+              <Pencil size={13} aria-hidden />
+            </button>
+            <button type="button" onClick={handleDeleteTeam} disabled={busy} className="text-fg-muted hover:text-error" aria-label="Delete this team">
+              <Trash2 size={13} aria-hidden />
+            </button>
+          </div>
         )}
       </div>
 
@@ -2239,6 +2276,62 @@ function AvailabilityCard() {
   );
 }
 
+/**
+ * Who on the team can actually take another conversation right now.
+ *
+ * Every agent could already set their own availability and their own limit,
+ * and nobody could see anyone else's - so the person doing the assigning
+ * had no way to tell who was free, who was at their limit, and who had gone
+ * offline. The data has been on the server the whole time; this is the view
+ * of it.
+ *
+ * Managers only. An agent's load is a management view of their working day,
+ * not something every teammate needs on their settings page.
+ */
+function TeamAvailabilityCard() {
+  const auth = useAuth();
+  const canManage = auth.role === 'OWNER' || auth.role === 'ADMIN' || auth.role === 'MANAGER' || auth.role === 'SUPERVISOR';
+  const [capacity, setCapacity] = useState<CapacitySummaryDto[] | null>(null);
+
+  useEffect(() => {
+    if (!canManage) return;
+    api
+      .listCapacity()
+      .then((result) => setCapacity(result.capacity))
+      .catch(() => undefined);
+  }, [canManage]);
+
+  if (!canManage || capacity === null) return null;
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-surface-2 p-5">
+      <h2 className="text-body font-semibold text-fg">Team availability</h2>
+      <p className="mt-1 text-caption text-fg-muted">Who is free to take a conversation, and how loaded they already are.</p>
+
+      {capacity.length === 0 && <p className="mt-3 text-caption text-fg-muted">Nobody has set their availability yet.</p>}
+
+      <div className="mt-3 space-y-1.5">
+        {capacity.map((agent) => {
+          const atLimit = agent.currentAssignedCount >= agent.maxActiveConversations;
+          return (
+            <div key={agent.userId} className="flex items-center gap-2 rounded-lg bg-surface-1 px-3 py-2">
+              <span className="min-w-0 flex-1 truncate text-caption text-fg">{agent.displayName || agent.email}</span>
+              {/* The real numbers, not a bar: "3/5" is what somebody deciding
+                  where to send a conversation actually needs to read. */}
+              <span className={`shrink-0 text-caption tabular-nums ${atLimit ? 'font-semibold text-warning' : 'text-fg-secondary'}`}>
+                {agent.currentAssignedCount}/{agent.maxActiveConversations}
+              </span>
+              <span className={`shrink-0 rounded-full px-2 py-0.5 text-meta font-medium ${AVAILABILITY_COLOR[agent.availability]}`}>
+                {AVAILABILITY_LABEL[agent.availability]}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const COUNTRIES: [string, string][] = [
   ['BB', 'Barbados'], ['TT', 'Trinidad & Tobago'], ['JM', 'Jamaica'], ['GY', 'Guyana'], ['BS', 'Bahamas'],
   ['AG', 'Antigua & Barbuda'], ['LC', 'Saint Lucia'], ['VC', 'Saint Vincent'], ['GD', 'Grenada'], ['KN', 'Saint Kitts & Nevis'],
@@ -2360,8 +2453,9 @@ export function SettingsRoute({ connection }: { connection: WhatsAppConnectionSn
               <TeamMembersCard />
               <TeamsCard />
             </div>
-            <div className="max-w-lg">
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
               <AvailabilityCard />
+              <TeamAvailabilityCard />
             </div>
           </div>
         )}

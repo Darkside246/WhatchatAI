@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { Pencil, X } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -500,6 +501,138 @@ function ContactsTab({ focusContactId }: { focusContactId: string | null }) {
   );
 }
 
+/**
+ * Editing what a lead is actually worth.
+ *
+ * The card has always shown a deal value, a score, a next action and notes,
+ * and the only control on it moved the pipeline status - so every one of
+ * those four was display-only, with no way to set them after the lead was
+ * created. A pipeline whose numbers can never be corrected is a pipeline
+ * nobody trusts the totals of.
+ *
+ * Every field is optional and blank means "not set", never zero: a lead
+ * with no value yet is a different thing from a lead worth nothing, and
+ * a form that silently turns the first into the second would quietly
+ * change the forecast.
+ */
+function LeadEditor({
+  lead,
+  onClose,
+  onSaved,
+}: {
+  lead: WorkspaceLeadSummary;
+  onClose: () => void;
+  onSaved: (updated: WorkspaceLeadSummary) => void;
+}) {
+  const [stage, setStage] = useState(lead.stage ?? '');
+  const [score, setScore] = useState(lead.score === null ? '' : String(lead.score));
+  const [value, setValue] = useState(lead.value === null ? '' : String(lead.value));
+  const [nextAction, setNextAction] = useState(lead.nextAction ?? '');
+  const [notes, setNotes] = useState(lead.notes ?? '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  /** Blank stays null. A number that will not parse is rejected rather than silently becoming 0. */
+  function parseOptionalNumber(raw: string): number | null | undefined {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const parsedScore = parseOptionalNumber(score);
+    const parsedValue = parseOptionalNumber(value);
+    if (parsedScore === undefined) {
+      setError('Score has to be a number, or empty.');
+      return;
+    }
+    if (parsedValue === undefined) {
+      setError('Value has to be a number, or empty.');
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    try {
+      const { lead: updated } = await api.updateLead(lead.id, {
+        stage: stage.trim() || null,
+        score: parsedScore,
+        value: parsedValue,
+        nextAction: nextAction.trim() || null,
+        notes: notes.trim() || null,
+      });
+      onSaved(updated);
+      onClose();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not save that.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const field = 'w-full rounded-lg border border-border-subtle bg-surface-1 px-2.5 py-1.5 text-caption text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true">
+      <form onSubmit={submit} className="flex max-h-[85vh] w-full max-w-sm flex-col overflow-y-auto rounded-t-2xl bg-surface-2 p-4 sm:rounded-2xl">
+        <div className="flex items-start gap-2">
+          <div className="min-w-0">
+            <p className="truncate text-body font-semibold text-fg">Edit lead</p>
+            <p className="truncate text-meta text-fg-muted">{lead.displayName}</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close" className="ml-auto shrink-0 rounded p-1 text-fg-muted hover:text-fg">
+            <X size={16} aria-hidden />
+          </button>
+        </div>
+
+        {error && <p className="mt-2 rounded bg-error/10 px-2 py-1 text-caption text-error">{error}</p>}
+
+        <label className="mt-3 block text-meta font-medium uppercase tracking-wide text-fg-muted">
+          Value
+          <input inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} placeholder="Not set" className={`mt-1 ${field}`} />
+        </label>
+        <label className="mt-2 block text-meta font-medium uppercase tracking-wide text-fg-muted">
+          Score
+          <input inputMode="numeric" value={score} onChange={(e) => setScore(e.target.value)} placeholder="Not set" className={`mt-1 ${field}`} />
+        </label>
+        <label className="mt-2 block text-meta font-medium uppercase tracking-wide text-fg-muted">
+          Stage
+          {/* The same vocabulary the rest of this page filters and groups by
+              - a free-text stage would sort itself into a bucket nothing
+              else on the screen knows about. */}
+          <select value={stage} onChange={(e) => setStage(e.target.value)} className={`mt-1 ${field}`}>
+            <option value="">Not set</option>
+            {STAGE_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {option.replace(/_/g, ' ')}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="mt-2 block text-meta font-medium uppercase tracking-wide text-fg-muted">
+          Next action
+          <input value={nextAction} onChange={(e) => setNextAction(e.target.value)} placeholder="Not set" className={`mt-1 ${field}`} />
+        </label>
+        <label className="mt-2 block text-meta font-medium uppercase tracking-wide text-fg-muted">
+          Notes
+          <textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Not set" className={`mt-1 resize-y ${field}`} />
+        </label>
+
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3">
+            Cancel
+          </button>
+          <button type="submit" disabled={busy} className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50">
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function LeadCard({
   lead,
   onChanged,
@@ -510,6 +643,7 @@ function LeadCard({
   highlighted: boolean;
 }) {
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   async function move(status: LeadStatusValue) {
     setBusy(true);
@@ -525,7 +659,18 @@ function LeadCard({
 
   return (
     <div className={`rounded-xl border bg-surface-2 p-3 ${highlighted ? 'border-accent ring-1 ring-accent' : 'border-border-subtle'}`}>
-      <p className="text-body font-medium text-fg">{lead.displayName}</p>
+      <div className="flex items-start gap-2">
+        <p className="min-w-0 flex-1 text-body font-medium text-fg">{lead.displayName}</p>
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          title="Edit this lead"
+          aria-label={`Edit ${lead.displayName}`}
+          className="shrink-0 rounded p-1 text-fg-muted hover:bg-surface-3 hover:text-fg"
+        >
+          <Pencil size={13} aria-hidden />
+        </button>
+      </div>
       {lead.nextAction && <p className="mt-1 text-caption text-fg-secondary">Next: {lead.nextAction}</p>}
       <div className="mt-2 flex items-center justify-between text-meta text-fg-muted">
         <span>{formatMoney(lead.value)}</span>
@@ -544,6 +689,8 @@ function LeadCard({
           </button>
         ))}
       </div>
+
+      {editing && <LeadEditor lead={lead} onClose={() => setEditing(false)} onSaved={onChanged} />}
     </div>
   );
 }
