@@ -1995,7 +1995,20 @@ app.post(
  */
 const messageFlagSchema = z.object({ on: z.boolean() });
 
-app.patch('/api/workspace/messages/:messageId/starred', requireWorkspaceContext, async (req, res) => {
+/**
+ * Starring and pinning both change state the WHOLE TEAM sees - a star and a
+ * pin live on the message, not on the person who set them - so neither is
+ * the self-scoped bookkeeping that the reviewed exemption list is for.
+ *
+ * whatsapp.send is the key, matching the reaction route directly below.
+ * Not because a star is sent anywhere (it never leaves this workspace - see
+ * migration 1044) but because that key is the line between somebody who
+ * WORKS this inbox and somebody who only reads it: every role that handles
+ * conversations holds it, and VIEWER holds only whatsapp.view. A viewer
+ * quietly re-pinning what the rest of the team sees at the top of a
+ * conversation is exactly the outcome to prevent.
+ */
+app.patch('/api/workspace/messages/:messageId/starred', requireWorkspaceContext, requirePermission('whatsapp.send'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string };
   const parsed = messageFlagSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' });
@@ -2004,7 +2017,7 @@ app.patch('/api/workspace/messages/:messageId/starred', requireWorkspaceContext,
   return res.status(200).json({ starredAt: message.workspaceStarredAt });
 });
 
-app.patch('/api/workspace/messages/:messageId/pinned', requireWorkspaceContext, async (req, res) => {
+app.patch('/api/workspace/messages/:messageId/pinned', requireWorkspaceContext, requirePermission('whatsapp.send'), async (req, res) => {
   const { businessId } = res.locals.workspaceContext as { businessId: string };
   const auth = res.locals.auth as AuthContext;
   const parsed = messageFlagSchema.safeParse(req.body);

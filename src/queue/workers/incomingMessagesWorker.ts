@@ -24,6 +24,8 @@ import {
 import { whatsappMessagePersistenceService } from '../../services/whatsappMessagePersistenceService.js';
 import { persistStatusUpdate } from '../../services/whatsappStatusPersistenceService.js';
 import { runSentinel } from '../../security/sentinel/sentinel.js';
+import { ConversationStateRepository } from '../../repositories/conversationStateRepository.js';
+import { judgeClosure } from '../../domain/conversation/conversationClosure.js';
 import { orchestrateAiReply } from '../../services/ai/aiOrchestrator.js';
 import { timeService } from '../../services/time/timeService.js';
 import { whatsappOutboundMessageService } from '../../services/whatsappOutboundMessageService.js';
@@ -724,7 +726,71 @@ async function runAiHandoff(params: {
   // customer says next. Logged so a silence is never invisible when
   // somebody asks why nothing was sent.
   if (outcome.kind === 'no_reply_needed') {
-    console.log(`[IncomingMessagesWorker] No reply needed for chat ${chatId} (agent ${outcome.agent.id}): ${outcome.reason}`);
+    /**
+     * The agent had nothing to say. Checked before it is believed.
+     *
+     * Seen in the live logs: three consecutive customer messages, three
+     * consecutive silences, each decided from scratch with no memory of
+     * the last one. One turn's judgement of "this is finished" is exactly
+     * the call a model gets wrong on a short message, and nothing was
+     * checking it - so a customer could ask something and simply never be
+     * answered, with the log line reading as though that were fine.
+     *
+     * judgeClosure can only ever keep a conversation OPEN. The two
+     * mistakes are not equal: an unnecessary reply is mildly annoying and
+     * visible, while silence in front of a question looks like a business
+     * that does not care, and nobody finds out until the customer gives
+     * up.
+     */
+    const state = await conversationStateRepository.find(businessId, chatId);
+    const judgement = judgeClosure({
+      modelSaysClosed: true,
+      customerText: queryText,
+      openQuestionCount: state?.openQuestions.length ?? 0,
+    });
+
+    if (!judgement.closed) {
+      // Overruled. There is no reply to send - the model produced none -
+      // so this goes to a person rather than being swallowed. Handing it
+      // over is what this app does when it cannot answer honestly; the
+      // alternative here is inventing a reply, which it never does.
+      console.warn(
+        `[IncomingMessagesWorker] Chat ${chatId}: the agent said nothing, but ${judgement.reason}. Telling a person.`,
+      );
+
+      /*
+       * Notified, but deliberately NOT a hand-off: ai_mode is untouched and
+       * nothing is written to the hand-off log.
+       *
+       * Those reasons mirror whatsapp_chats.ai_mode_source exactly so the
+       * log and the chat row can never describe the same event
+       * differently, and nothing here changes the chat row. More to the
+       * point, this is one turn the assistant fumbled, not a conversation
+       * it has been taken off: flipping to HUMAN_TAKEOVER would leave a
+       * state somebody has to undo by hand, for a case this heuristic will
+       * sometimes call wrong. A person is told, the AI stays on, and the
+       * next message is tried normally.
+       */
+      await notifyConversationNeedsHuman(
+        businessId,
+        whatsappAccountId,
+        chatId,
+        'The assistant had nothing to say, but the customer asked something - so nobody has answered them yet.',
+      );
+      return;
+    }
+
+    // Remembered, so the next message from this customer is a NEW
+    // conversation rather than a continuation of a finished one. Failing
+    // to record it is not worth losing a silence over, so it never throws.
+    await conversationStateRepository.markClosed(businessId, chatId, messageId).catch((error) => {
+      console.error('[IncomingMessagesWorker] Failed to record conversation closure:', error instanceof Error ? error.message : error);
+    });
+
+    console.log(
+      `[IncomingMessagesWorker] No reply needed for chat ${chatId} (agent ${outcome.agent.id}): ${outcome.reason} - ` +
+        `conversation marked finished (${judgement.reason}).`,
+    );
     return;
   }
 
@@ -825,6 +891,7 @@ const outboundMessageRepository = new WhatsAppOutboundMessageRepository(pool);
 const emailMessageRepository = new EmailMessageRepository(pool);
 const businessDocumentRepository = new BusinessDocumentRepository(pool);
 const chatRepository = new WhatsAppChatRepository(pool);
+const conversationStateRepository = new ConversationStateRepository(pool);
 const businessRepositoryForOperatorResume = new BusinessRepository(pool);
 const crmContactRepository = new CrmContactRepository(pool);
 const operatorCommandService = new OperatorCommandService(pool);

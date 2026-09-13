@@ -187,6 +187,10 @@ export interface AiHandoffContext {
    * menu tools are offered at all - see buildReplyTools.
    */
   foodOrderTaking: FoodAiOrderTaking;
+  /** The owner's own house rules for taking an order. Null when never set. */
+  foodOrderTakingInstructions: string | null;
+  /** How long an order usually takes, in minutes. Null when the business has not said. */
+  foodTypicalPrepMinutes: number | null;
   /**
    * Emergency "Stop All Agents" kill switch (businesses.ai_actions_paused).
    * The authoritative enforcement is agentGuard.ts's guardToolInvocation -
@@ -488,6 +492,12 @@ export async function gatherAiHandoffContext(input: GatherAiHandoffContextInput)
     // "what do you have and what does it cost" while a person places the
     // actual order. See migration 1047.
     foodOrderTaking: foodSettings.aiOrderTaking,
+    // The owner's own words about how THIS kitchen takes an order, and how
+    // long it usually takes. Carried whether or not there is a menu: the
+    // system instruction decides whether to use them, and doing that
+    // filtering in two places is how they drift apart.
+    foodOrderTakingInstructions: foodSettings.orderTakingInstructions,
+    foodTypicalPrepMinutes: foodSettings.typicalPrepMinutes,
     aiActionsPaused: business?.aiActionsPaused ?? false,
     customerMemoryEnabled: business?.customerMemoryEnabled ?? true,
     nameUsageLevel: business?.nameUsageLevel ?? DEFAULT_NAME_USAGE_LEVEL,

@@ -181,7 +181,12 @@ async function processOutboundMessage(job: Job<OutboundMessageJobData>): Promise
   }
 
   if (!whatsappConnectionManager.isReady(record.businessId)) {
-    throw new Error('WhatsApp is not connected - cannot send right now');
+    // Named rather than generic: with several businesses on one process, a
+    // bare "not connected" cannot be told apart from another tenant's
+    // outage, and the one question worth answering from a log line is
+    // "whose socket is down". The business id, never the recipient's
+    // number - see the send line below for why.
+    throw new Error(`WhatsApp is not connected for business ${record.businessId} - cannot send right now`);
   }
   const socket = whatsappConnectionManager.getSocket(record.businessId);
   if (!socket) throw new Error('WhatsApp socket unavailable');
@@ -279,6 +284,26 @@ async function processOutboundMessage(job: Job<OutboundMessageJobData>): Promise
   // check must refuse to call sendMessage again - a known-good send is
   // worth a manual reconciliation, never a risk of sending it twice.
   await outboundMessageRepository.markSent(record.id, whatsappMessageId);
+
+  /**
+   * The line that says it actually went.
+   *
+   * Until now a successful send logged nothing at all, so the last thing
+   * anybody could see was the worker upstream saying "AI reply queued" -
+   * which is true whether the message reached WhatsApp a second later or
+   * never left at all. Diagnosing "the AI is not responding" therefore
+   * meant proving a negative from silence.
+   *
+   * Ids and types only. The recipient's JID is their phone number, and a
+   * log file is the last place a customer's number should end up; chatId
+   * identifies the same conversation for anyone with database access, and
+   * is meaningless to anyone without it.
+   */
+  console.log(
+    `[OutboundDispatchWorker] Sent ${record.messageType} for chat ${record.chatId} ` +
+      `(outbound ${record.id}, requested by ${record.requestedBy}).`,
+  );
+
   await publishRealtimeEvent({ type: 'chat.updated', businessId: record.businessId, chatId: record.chatId });
 }
 

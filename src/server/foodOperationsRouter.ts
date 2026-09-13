@@ -341,6 +341,10 @@ const settingsSchema = z.object({
   qcVisionEnabled: z.boolean().optional(),
   /** Who takes the order: the assistant all the way, the assistant for questions only, or nobody. */
   aiOrderTaking: z.enum(['OFF', 'QUOTE_ONLY', 'FULL']).optional(),
+  /** The owner's own house rules for taking an order, passed to the agent verbatim. */
+  orderTakingInstructions: z.string().trim().max(2000).nullish(),
+  /** Bounded the same way the column is - see migration 1048. */
+  typicalPrepMinutes: z.number().int().min(1).max(480).nullish(),
   /** How much a customer is told as their order moves. CUSTOM hands the decision to the overrides below. */
   notificationVerbosity: z.enum(['MINIMAL', 'STANDARD', 'DETAILED', 'CUSTOM']).optional(),
   notificationOverrides: z

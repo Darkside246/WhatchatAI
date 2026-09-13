@@ -83,6 +83,15 @@ export interface ConversationStateRecord {
   preferredName: string | null;
   /** Section 19 (Name Repetition Protection): set by the system, never the model, after checking whether a just-sent reply actually used the resolved name. */
   lastNameUsedAt: string | null;
+  /** When the agent last judged this exchange finished. Null until it ever has. See migration 1049. */
+  closedAt: string | null;
+  /**
+   * The last message of the previous conversation - everything up to and
+   * including it is background the agent reads but never answers. A
+   * watermark, not a relationship: it may point at a message that has since
+   * been deleted, and splitEpisode treats that as no boundary at all.
+   */
+  closedAtMessageId: string | null;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -100,6 +109,8 @@ interface ConversationStateRow {
   customer_readiness: CustomerReadiness | null;
   preferred_name: string | null;
   last_name_used_at: string | null;
+  closed_at?: string | null;
+  closed_at_message_id?: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -118,6 +129,8 @@ function toRecord(row: ConversationStateRow): ConversationStateRecord {
     customerReadiness: row.customer_readiness,
     preferredName: row.preferred_name,
     lastNameUsedAt: row.last_name_used_at,
+    closedAt: row.closed_at ?? null,
+    closedAtMessageId: row.closed_at_message_id ?? null,
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -149,6 +162,8 @@ export function emptyConversationState(businessId: string, chatId: string): Conv
     customerReadiness: null,
     preferredName: null,
     lastNameUsedAt: null,
+    closedAt: null,
+    closedAtMessageId: null,
     version: 1,
     createdAt: now,
     updatedAt: now,
@@ -234,6 +249,31 @@ export class ConversationStateRepository {
     const created = await this.find(businessId, chatId);
     if (!created) throw new Error('conversation_states getOrCreate found no row after a conflicting insert');
     return created;
+  }
+
+  /**
+   * Records that the agent judged this conversation finished.
+   *
+   * Deliberately NOT routed through update() and its optimistic version
+   * check. That guard exists because the model writes goals, facts and open
+   * questions and two turns must not silently overwrite each other's
+   * reasoning. This is a watermark - a single id and a timestamp, written by
+   * the system, never by the model - and making it fight for a version would
+   * mean a closure that quietly failed to record, which puts the pipeline
+   * straight back to the behaviour this exists to fix: judging closure from
+   * scratch on every message with no memory of having judged it before.
+   *
+   * version is left exactly as it is, so a concurrent model write is neither
+   * blocked by this nor blocks it.
+   */
+  async markClosed(businessId: string, chatId: string, closedAtMessageId: string): Promise<void> {
+    await this.db.query(
+      `INSERT INTO conversation_states (business_id, chat_id, closed_at, closed_at_message_id)
+       VALUES ($1, $2, now(), $3)
+       ON CONFLICT (business_id, chat_id) DO UPDATE
+         SET closed_at = now(), closed_at_message_id = EXCLUDED.closed_at_message_id, updated_at = now()`,
+      [businessId, chatId, closedAtMessageId],
+    );
   }
 
   /**

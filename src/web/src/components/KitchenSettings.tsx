@@ -15,6 +15,10 @@ import { api, ApiError, type FoodSettingsDto } from '../lib/api.js';
  * them is how an owner ends up trying to fix a price by rewording a prompt.
  */
 
+/** Real examples of the kind of thing a menu cannot say, not filler. */
+const RULES_HINT =
+  'We need an hour on anything from the grill.\nNo substitutions on the combos.\nDelivery is two meals minimum after 8pm.\nIf somebody asks for something we do not have, offer the closest thing on the menu.';
+
 const DEFAULT_NOTICE_HINT =
   'Thanks {{name}} — your order is saved as #{{order_number}}, total {{total}}. We start cooking once the payment comes through…';
 
@@ -88,10 +92,10 @@ export function KitchenSettings() {
       )}
 
       <OrderTakingSection
-        value={settings.aiOrderTaking}
+        settings={settings}
         menuCount={menuCount}
         disabled={saving}
-        onChange={(aiOrderTaking) => void save({ aiOrderTaking })}
+        onSave={save}
       />
 
       <Toggle
@@ -192,13 +196,22 @@ export function KitchenSettings() {
  * happens.
  */
 function OrderTakingSection({
-  value, menuCount, disabled, onChange,
+  settings, menuCount, disabled, onSave,
 }: {
-  value: FoodSettingsDto['aiOrderTaking'];
+  settings: FoodSettingsDto;
   menuCount: number | null;
   disabled: boolean;
-  onChange: (value: FoodSettingsDto['aiOrderTaking']) => void;
+  onSave: (patch: Partial<FoodSettingsDto>) => void | Promise<void>;
 }) {
+  const value = settings.aiOrderTaking;
+  /* Held locally while it is being typed and committed on blur, the same
+     way the payment notice above is: saving on every keystroke would be a
+     request per character, and a paragraph of house rules is a lot of
+     characters. */
+  const [rules, setRules] = useState(settings.orderTakingInstructions ?? '');
+  const [prep, setPrep] = useState(settings.typicalPrepMinutes?.toString() ?? '');
+  const onChange = (aiOrderTaking: FoodSettingsDto['aiOrderTaking']) => void onSave({ aiOrderTaking });
+
   const OPTIONS = [
     {
       value: 'FULL' as const,
@@ -266,6 +279,71 @@ function OrderTakingSection({
           <AlertTriangle size={12} className="mt-px shrink-0" aria-hidden />
           There is nothing on your menu yet, so it cannot quote or take anything. Add your dishes under Menu first.
         </p>
+      )}
+
+      {/* Hidden under OFF, because none of it is used then and a setting
+          that does nothing is a setting somebody will fill in and then
+          wonder about. */}
+      {value !== 'OFF' && (
+        <div className="mt-3 space-y-3 border-t border-border-subtle pt-3">
+          <div>
+            <label htmlFor="order-rules" className="block text-caption font-medium text-fg">
+              Your house rules for taking orders
+            </label>
+            <p className="mb-1.5 text-meta text-fg-muted">
+              Anything your menu cannot say. It follows this exactly and never contradicts it. How it SOUNDS — its name
+              and tone — stays on the Agents page.
+            </p>
+            <textarea
+              id="order-rules"
+              value={rules}
+              onChange={(event) => setRules(event.target.value)}
+              onBlur={() => {
+                const trimmed = rules.trim();
+                if (trimmed !== (settings.orderTakingInstructions ?? '')) void onSave({ orderTakingInstructions: trimmed || null });
+              }}
+              rows={4}
+              maxLength={2000}
+              placeholder={RULES_HINT}
+              disabled={disabled}
+              className="w-full rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-caption text-fg placeholder:text-fg-muted"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="prep-minutes" className="block text-caption font-medium text-fg">
+              How long an order usually takes
+            </label>
+            <p className="mb-1.5 text-meta text-fg-muted">
+              Minutes, once it reaches the kitchen. It says &ldquo;about&rdquo;, never a guarantee. Leave this empty and it
+              will offer to check rather than guess a time you have to live up to.
+            </p>
+            <input
+              id="prep-minutes"
+              type="number"
+              min={1}
+              max={480}
+              value={prep}
+              onChange={(event) => setPrep(event.target.value)}
+              onBlur={() => {
+                const trimmed = prep.trim();
+                if (trimmed === '') {
+                  if (settings.typicalPrepMinutes !== null) void onSave({ typicalPrepMinutes: null });
+                  return;
+                }
+                const minutes = Number(trimmed);
+                // Out of range is left alone rather than clamped: silently
+                // turning a typed 900 into 480 stores a promise the owner
+                // never made.
+                if (!Number.isInteger(minutes) || minutes < 1 || minutes > 480) return;
+                if (minutes !== settings.typicalPrepMinutes) void onSave({ typicalPrepMinutes: minutes });
+              }}
+              placeholder="25"
+              disabled={disabled}
+              className="w-28 rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-caption text-fg placeholder:text-fg-muted"
+            />
+          </div>
+        </div>
       )}
     </section>
   );

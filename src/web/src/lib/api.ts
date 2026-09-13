@@ -356,6 +356,10 @@ export interface FoodSettingsDto {
    * menu. See migration 1047 for why FULL is the default.
    */
   aiOrderTaking: 'OFF' | 'QUOTE_ONLY' | 'FULL';
+  /** The owner's own house rules for taking an order, passed to the agent verbatim. */
+  orderTakingInstructions: string | null;
+  /** How long an order usually takes. Null means the business has not said, and the agent offers to check instead of guessing. */
+  typicalPrepMinutes: number | null;
 }
 
 export interface FoodMenuCategoryDto {

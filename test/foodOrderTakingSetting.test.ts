@@ -60,6 +60,41 @@ describe('the order-taking setting', () => {
     expect(settings.aiOrderTaking).toBe('QUOTE_ONLY');
   });
 
+  it('starts with no house rules and no prep time, rather than inventing either', async () => {
+    // A default sentence here would be this app putting words in an
+    // owner's mouth about their own kitchen, and a default prep time would
+    // be a promise they never made.
+    const settings = await repository.getSettings(businessId);
+    expect(settings.orderTakingInstructions).toBeNull();
+    expect(settings.typicalPrepMinutes).toBeNull();
+  });
+
+  it('stores the house rules verbatim', async () => {
+    const rules = 'We need an hour on anything from the grill.\nNo substitutions on the combos.';
+    await repository.saveSettings(businessId, { orderTakingInstructions: rules }, null);
+    expect((await repository.getSettings(businessId)).orderTakingInstructions).toBe(rules);
+  });
+
+  it('keeps the house rules when the order-taking mode changes', async () => {
+    await repository.saveSettings(businessId, { orderTakingInstructions: 'No substitutions.' }, null);
+    await repository.saveSettings(businessId, { aiOrderTaking: 'QUOTE_ONLY' }, null);
+    expect((await repository.getSettings(businessId)).orderTakingInstructions).toBe('No substitutions.');
+  });
+
+  it('stores a prep time and lets it be cleared back to unknown', async () => {
+    await repository.saveSettings(businessId, { typicalPrepMinutes: 25 }, null);
+    expect((await repository.getSettings(businessId)).typicalPrepMinutes).toBe(25);
+
+    await repository.saveSettings(businessId, { typicalPrepMinutes: null }, null);
+    expect((await repository.getSettings(businessId)).typicalPrepMinutes).toBeNull();
+  });
+
+  it('refuses a prep time that is not a real promise', async () => {
+    await expect(repository.saveSettings(businessId, { typicalPrepMinutes: 0 }, null)).rejects.toThrow();
+    await expect(repository.saveSettings(businessId, { typicalPrepMinutes: -5 }, null)).rejects.toThrow();
+    await expect(repository.saveSettings(businessId, { typicalPrepMinutes: 10_000 }, null)).rejects.toThrow();
+  });
+
   it('refuses a value that is not one of the three', async () => {
     // The check constraint is the last line: the route validates it too,
     // but a constraint that only exists in one of the two places is a

@@ -38,6 +38,7 @@ import {
 } from './food/foodOrderTools.js';
 import { FoodOperationsRepository, type FoodAiOrderTaking } from '../repositories/foodOperationsRepository.js';
 import { confirmProposal, resolveProposal, type DraftOrderProposal, type ProposedLine } from './food/orderIntake.js';
+import { describeEpisodeBoundary, splitEpisode } from '../domain/conversation/conversationClosure.js';
 import { RelayedMessageRepository } from '../repositories/relayedMessageRepository.js';
 import { RetailOperationsRepository } from '../repositories/retailOperationsRepository.js';
 import { recomputeLeadScoreForContact } from './leadScoringService.js';
@@ -613,6 +614,80 @@ export function buildSystemInstruction(agent: AiAgentRecord, context: AiHandoffC
   if (agent.responseStyle) lines.push(`Response style: ${agent.responseStyle}`);
   if (agent.systemInstruction) lines.push(agent.systemInstruction);
 
+  /**
+   * Where the last conversation ended.
+   *
+   * A returning customer's message arrives at the bottom of a transcript
+   * the model reads as one continuous thread, so without this it answers
+   * the thread rather than the sentence in front of it - apologising for a
+   * question that was answered last week, or picking a finished exchange
+   * back up. Said in words, because a model handed a transcript answers
+   * the transcript: the only reliable way to stop it re-opening yesterday
+   * is to name which part of it is already done.
+   *
+   * Computed over the same turns the transcript itself is built from (see
+   * conversationTurns), or the count would point at the wrong message.
+   */
+  const turns = conversationTurns(context.conversationHistory);
+  const { background, current } = splitEpisode(turns, context.conversationState?.closedAtMessageId ?? null);
+  // Nothing new to answer means this is not a reopening at all, and drawing
+  // a line under the entire transcript would leave the model nothing it is
+  // allowed to reply to.
+  if (current.length > 0) {
+    const boundary = describeEpisodeBoundary(background.length);
+    if (boundary) lines.push(boundary);
+  }
+
+  /**
+   * How THIS kitchen takes an order.
+   *
+   * The menu says what the dishes are and what they cost. It says nothing
+   * about the hour's notice on anything from the grill, the no-substitutions
+   * rule, or the minimum for delivery that is a sentence rather than a
+   * number - and a model with a gap of that shape fills it plausibly, on
+   * the business's behalf, sometimes wrongly.
+   *
+   * Only added when the assistant can actually do something about it. An
+   * agent told the house rules for taking orders while holding no ordering
+   * tools is an agent that will find a way to be helpful with them anyway.
+   *
+   * Operator-authored, so it is stated directly rather than wrapped as
+   * untrusted data - it is the business instructing its own assistant,
+   * exactly like agent.businessContext above, and wrapping it would tell
+   * the model to treat its own owner's instructions as suspect.
+   */
+  if (context.hasFoodData && (context.foodOrderTaking ?? 'FULL') !== 'OFF') {
+    if (context.foodOrderTakingInstructions?.trim()) {
+      lines.push(
+        `How this business takes food orders, in the owner's own words - follow it exactly, and never contradict it:\n` +
+          context.foodOrderTakingInstructions.trim(),
+      );
+    }
+
+    if (context.foodTypicalPrepMinutes) {
+      lines.push(
+        `Food orders here usually take about ${context.foodTypicalPrepMinutes} minutes to prepare once they reach ` +
+          'the kitchen. Say "usually" or "about" - it is a typical time, not a guarantee, and a busy service runs longer.',
+      );
+    } else {
+      // The alternative to saying this is a model that answers the single
+      // most-asked question in food service by inventing a number, which
+      // the kitchen then has to live up to.
+      lines.push(
+        'This business has not said how long its food takes to prepare. If somebody asks how long their order will ' +
+          'be, do not estimate - say you will check and let them know.',
+      );
+    }
+
+    if ((context.foodOrderTaking ?? 'FULL') === 'QUOTE_ONLY') {
+      lines.push(
+        'This business places its own orders. You can say what is on the menu, what it costs and whether delivery ' +
+          'reaches them - then tell the customer someone will confirm the order with them shortly. Never say an ' +
+          'order has been placed, and never promise a time for it.',
+      );
+    }
+  }
+
   const hasUntrustedData =
     Boolean(context.crmContact?.notes) ||
     (context.knowledgeBase.available && context.knowledgeBase.results.length > 0) ||
@@ -1088,21 +1163,36 @@ function groupSenderPrefix(senderName: string): string {
   return `[Message from "${senderName}" in this group - only this exact turn is theirs, never any other line in this transcript]: `;
 }
 
+/**
+ * The conversation as a sequence of real turns, oldest first.
+ *
+ * Shared by the transcript the model is given and by the episode boundary
+ * described to it, because those two have to agree about what counts as a
+ * message. Counting one way and rendering the other produces a boundary
+ * line pointing at the wrong place - which is worse than no boundary at
+ * all, since it tells the model to ignore something it is supposed to
+ * answer.
+ *
+ * A system notice ("Disappearing messages turned on - 7 days") is a fact
+ * about the chat, not a turn in it. It carries real text now, so without
+ * this filter it would enter the transcript as something the customer said
+ * - and, as the last such turn, as the thing being answered.
+ */
+function conversationTurns(history: AiHandoffContext['conversationHistory']) {
+  return history
+    .filter((message) => message.messageType !== 'system')
+    .filter((message) => Boolean(message.textContent) || message.hasMedia)
+    .slice()
+    .reverse();
+}
+
 function toContents(
   history: AiHandoffContext['conversationHistory'],
   media: InlineMediaPart | null,
   aiGeneratedMessageIds: Set<string>,
   groupSenderNameByContactId: Map<string, string>,
 ) {
-  const chronological = history
-    // A system notice ("Disappearing messages turned on - 7 days") is a
-    // fact about the chat, not a turn in it. It carries real text now, so
-    // without this it would enter the transcript as something the customer
-    // said - and, as the last such turn, as the thing being answered.
-    .filter((message) => message.messageType !== 'system')
-    .filter((message) => Boolean(message.textContent) || message.hasMedia)
-    .slice()
-    .reverse();
+  const chronological = conversationTurns(history);
 
   while (chronological.length > 0 && chronological[chronological.length - 1]!.fromMe) {
     chronological.pop();
