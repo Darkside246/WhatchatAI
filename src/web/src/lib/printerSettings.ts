@@ -27,6 +27,17 @@ export interface PrinterSettings {
   /** What the chooser called the device, so the settings screen can name it. */
   label: string | null;
   /**
+   * When this device was last paired, and when it last actually printed.
+   *
+   * A browser can revoke a device grant, a printer can be unpaired at the
+   * operating system, and a USB cable can be pulled - none of which tell
+   * the page anything. So the panel never claims a printer is "connected";
+   * it says when it last worked, which is a fact, and offers the test print
+   * as the only way to find out about now.
+   */
+  pairedAt: string | null;
+  lastPrintedAt: string | null;
+  /**
    * Print a kitchen ticket by itself the moment an order reaches the
    * kitchen. Off by default: a printer that starts producing paper without
    * being asked is the fastest way to empty a roll.
@@ -41,6 +52,8 @@ export const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
   transport: 'browser',
   paper: 58,
   label: null,
+  pairedAt: null,
+  lastPrintedAt: null,
   autoPrintKitchen: false,
   station: null,
 };
@@ -77,4 +90,23 @@ export function savePrinterSettings(settings: PrinterSettings): void {
     // Nothing to do: the setting is a convenience, and failing to persist
     // it must not stop the person printing right now.
   }
+}
+
+/** Records a print that actually went out, so the panel can say when it last worked. */
+export function noteSuccessfulPrint(): void {
+  const current = loadPrinterSettings();
+  savePrinterSettings({ ...current, lastPrintedAt: new Date().toISOString() });
+}
+
+/**
+ * Forget the paired device.
+ *
+ * Only this app's own record of it. The browser's device grant and the
+ * operating system's pairing both live outside the page and are not ours to
+ * revoke - so this says what it does rather than implying a disconnection
+ * it cannot perform.
+ */
+export function forgetPrinter(): void {
+  const current = loadPrinterSettings();
+  savePrinterSettings({ ...current, transport: 'browser', label: null, pairedAt: null });
 }

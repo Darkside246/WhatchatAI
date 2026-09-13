@@ -23,7 +23,7 @@ import { MenuEditor } from '../components/MenuEditor.js';
 import { FoodPaymentPanel } from '../components/FoodPaymentPanel.js';
 import { PrinterSettingsPanel } from '../components/PrinterSettingsPanel.js';
 import { buildCustomerReceipt, buildKitchenTicket } from '../lib/foodTicket.js';
-import { loadPrinterSettings } from '../lib/printerSettings.js';
+import { loadPrinterSettings, noteSuccessfulPrint } from '../lib/printerSettings.js';
 import { PrinterError, sendToPrinter } from '../lib/printerTransport.js';
 import { OrderHistory } from '../components/OrderHistory.js';
 import { ServiceSummary } from '../components/ServiceSummary.js';
@@ -338,6 +338,9 @@ export function FoodOperationsPage() {
               { paper: settings.paper },
             );
       await sendToPrinter(settings.transport, ticket.bytes, ticket.text, settings.paper);
+      // So the setup panel can say when this device last actually printed,
+      // rather than only that a printer was once chosen.
+      noteSuccessfulPrint();
     },
     [business, station],
   );

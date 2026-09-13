@@ -23,8 +23,14 @@ import {
   Mic,
   Square,
   CornerUpRight,
+  Forward,
+  Pin,
   ShieldAlert,
+  Star,
+  X,
 } from 'lucide-react';
+import { MessageContextMenu } from './MessageContextMenu.js';
+import { ForwardMessageDialog } from './ForwardMessageDialog.js';
 import {
   api,
   mediaUrl,
@@ -475,6 +481,17 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
   const [reactionError, setReactionError] = useState<string | null>(null);
   const [revokeError, setRevokeError] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
+  /**
+   * Which message the context menu is open on, and where the pointer was.
+   *
+   * The message is held by id and resolved from the live list at render,
+   * not captured as an object - the thread refetches under the menu, and a
+   * captured copy would show a stale star or pin state on the very items
+   * that toggle it.
+   */
+  const [menuFor, setMenuFor] = useState<{ messageId: string; x: number; y: number } | null>(null);
+  const [forwardMessageId, setForwardMessageId] = useState<string | null>(null);
+  const [forwardNote, setForwardNote] = useState<string | null>(null);
   const [mediaRetryError, setMediaRetryError] = useState<string | null>(null);
   const [retryingMediaId, setRetryingMediaId] = useState<string | null>(null);
   const [members, setMembers] = useState<MemberDto[]>([]);
@@ -639,6 +656,32 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
       await api.sendReaction(messageId, emoji);
     } catch (err) {
       setReactionError(err instanceof Error ? err.message : 'Failed to send reaction.');
+    }
+  }
+
+  /**
+   * Re-reads the one message the menu just changed.
+   *
+   * Only that message, and only its local flags: refetching the whole
+   * thread would jump the scroll position, and a star is not worth losing
+   * somebody's place in a conversation over.
+   */
+  async function refreshMessageFlags(messageId: string) {
+    if (!chatId) return;
+    try {
+      const { messages: fresh } = await api.listMessages(chatId);
+      const updated = fresh.find((candidate) => candidate.id === messageId);
+      if (!updated) return;
+      setMessages((current) =>
+        current?.map((message) =>
+          message.id === messageId
+            ? { ...message, workspaceStarredAt: updated.workspaceStarredAt, workspacePinnedAt: updated.workspacePinnedAt }
+            : message,
+        ) ?? current,
+      );
+    } catch {
+      // The change is already saved; failing to re-read it just means the
+      // icon updates on the next load rather than now.
     }
   }
 
@@ -1115,6 +1158,19 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
         {error && <p className="text-caption text-error">{error}</p>}
         {reactionError && <p className="text-caption text-error">{reactionError}</p>}
         {revokeError && <p className="text-caption text-error">{revokeError}</p>}
+        {/* Confirmation that something left this conversation for another
+            one - dismissable, because it is news for a moment and clutter
+            after that. */}
+        {forwardNote && (
+          <button
+            type="button"
+            onClick={() => setForwardNote(null)}
+            className="mx-auto flex items-center gap-1.5 rounded-full bg-success/15 px-3 py-1 text-meta font-medium text-success"
+          >
+            {forwardNote}
+            <X size={11} aria-hidden />
+          </button>
+        )}
         {mediaRetryError && <p className="text-caption text-error">{mediaRetryError}</p>}
         {messages === null && !error && <p className="text-caption text-fg-muted">Loading real message history…</p>}
         {messages?.length === 0 && <p className="text-caption text-fg-muted">No messages persisted for this chat yet.</p>}
@@ -1137,6 +1193,26 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
             </span>
           </div>
         )}
+        {menuFor && messages?.some((message) => message.id === menuFor.messageId) && (
+          <MessageContextMenu
+            message={messages.find((message) => message.id === menuFor.messageId)!}
+            x={menuFor.x}
+            y={menuFor.y}
+            canSend
+            onClose={() => setMenuFor(null)}
+            onChanged={() => void refreshMessageFlags(menuFor.messageId)}
+            onForward={(message) => setForwardMessageId(message.id)}
+          />
+        )}
+
+        {forwardMessageId && messages?.some((message) => message.id === forwardMessageId) && (
+          <ForwardMessageDialog
+            message={messages.find((message) => message.id === forwardMessageId)!}
+            onClose={() => setForwardMessageId(null)}
+            onForwarded={(count) => setForwardNote(`Forwarded to ${count} ${count === 1 ? 'conversation' : 'conversations'}.`)}
+          />
+        )}
+
         {messages?.map((message, index) => (
           /* The anchored message gets a quiet ring so the operator can see
              which one the board sent them to, rather than being dropped
@@ -1153,12 +1229,42 @@ export function ChatThread({ onOpenDetail, detailPanelOpen }: Props) {
                 </span>
               </div>
             )}
-            <div className={`group relative flex ${message.fromMe ? 'justify-end' : 'justify-start'} ${message.reactions.length > 0 ? 'mb-4' : ''}`}>
+            <div className={`group relative flex items-center gap-1 ${message.fromMe ? 'justify-end' : 'justify-start'} ${message.reactions.length > 0 ? 'mb-4' : ''}`}>
+            {/* The quick forward, on the side the bubble is not. One tap to
+                the picker, which is the thing people reach for far more
+                often than any other item on the menu. */}
+            <button
+              type="button"
+              onClick={() => setForwardMessageId(message.id)}
+              title="Forward"
+              aria-label="Forward this message"
+              /* Always on the outside of the bubble: to its right for a
+                 message that came in, to its left for one we sent. Written
+                 with order rather than two copies of the button, so there is
+                 one thing to change. */
+              className={`shrink-0 rounded-full p-1 text-fg-muted opacity-0 transition-opacity hover:text-fg focus:opacity-100 group-hover:opacity-100 ${
+                message.fromMe ? 'order-first' : 'order-last'
+              }`}
+            >
+              <Forward size={14} aria-hidden />
+            </button>
             <div
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setMenuFor({ messageId: message.id, x: event.clientX, y: event.clientY });
+              }}
               className={`relative max-w-[75%] rounded-2xl px-3 py-2 text-body shadow-sm ${
                 message.fromMe ? 'rounded-tr-none bg-message-out text-message-out-fg' : 'rounded-tl-none bg-message-in text-fg shadow-[0_1px_3px_rgba(0,0,0,0.08)]'
               }`}
             >
+              {/* Said on the bubble, because a pin or a star nobody can see
+                  is a mark nobody trusts is still there. */}
+              {(message.workspacePinnedAt || message.workspaceStarredAt) && (
+                <span className="mb-0.5 flex items-center gap-1 text-meta opacity-60">
+                  {message.workspacePinnedAt && <Pin size={10} aria-label="Pinned" />}
+                  {message.workspaceStarredAt && <Star size={10} aria-label="Starred" />}
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => setReactionPickerFor((current) => (current === message.id ? null : message.id))}

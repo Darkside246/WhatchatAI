@@ -39,6 +39,11 @@ export interface WhatsAppMessageRecord {
   createdAt: string;
   /** True when this row was newly inserted; false when an existing message satisfied the identity constraint. */
   wasInserted: boolean;
+  /** Kept for later by somebody here. Never sent to WhatsApp - see migration 1044. */
+  workspaceStarredAt: string | null;
+  /** Held at the top of this conversation, by this business. */
+  workspacePinnedAt: string | null;
+  workspacePinnedBy: string | null;
 }
 
 interface MessageRow {
@@ -69,6 +74,11 @@ interface MessageRow {
   structured_payload: string | null;
   forwarding_score: number | null;
   raw_metadata: Record<string, unknown>;
+  /* Migration 1044. Optional on the type because several SELECTs in this
+     file project a narrower row shape than the full table. */
+  workspace_starred_at?: string | null;
+  workspace_pinned_at?: string | null;
+  workspace_pinned_by?: string | null;
   created_at: string;
 }
 
@@ -162,6 +172,9 @@ async function toRecord(row: MessageRow, wasInserted: boolean): Promise<WhatsApp
     rawMetadata: row.raw_metadata,
     createdAt: row.created_at,
     wasInserted,
+    workspaceStarredAt: row.workspace_starred_at ?? null,
+    workspacePinnedAt: row.workspace_pinned_at ?? null,
+    workspacePinnedBy: row.workspace_pinned_by ?? null,
   };
 }
 
@@ -286,6 +299,61 @@ export class WhatsAppMessageRepository {
       [id, businessId],
     );
     return rows[0] ? toRecord(rows[0], false) : null;
+  }
+
+  /**
+   * The operator's own decisions about one message, inside AURA.
+   *
+   * Separate columns from anything the ingestion path writes - see
+   * migration 1044. Nothing here reaches WhatsApp: starring a message in
+   * AURA does not star it on the owner's phone, and the customer's app is
+   * untouched.
+   *
+   * Tenant-scoped in the UPDATE itself rather than by a lookup first: one
+   * statement that cannot match another business's row is safer than two
+   * that rely on the caller having checked.
+   */
+  async setStarred(id: string, businessId: string, starred: boolean): Promise<WhatsAppMessageRecord | null> {
+    const { rows } = await this.db.query<MessageRow>(
+      `UPDATE whatsapp_messages SET workspace_starred_at = CASE WHEN $3 THEN COALESCE(workspace_starred_at, now()) ELSE NULL END
+       WHERE id = $1 AND business_id = $2 RETURNING *`,
+      [id, businessId, starred],
+    );
+    return rows[0] ? toRecord(rows[0], false) : null;
+  }
+
+  /** COALESCE on the way in, so re-pinning something already pinned keeps the original time and the original pinner rather than quietly reassigning both. */
+  async setPinned(id: string, businessId: string, pinned: boolean, userId: string | null): Promise<WhatsAppMessageRecord | null> {
+    const { rows } = await this.db.query<MessageRow>(
+      `UPDATE whatsapp_messages
+       SET workspace_pinned_at = CASE WHEN $3 THEN COALESCE(workspace_pinned_at, now()) ELSE NULL END,
+           workspace_pinned_by = CASE WHEN $3 THEN COALESCE(workspace_pinned_by, $4::uuid) ELSE NULL END
+       WHERE id = $1 AND business_id = $2 RETURNING *`,
+      [id, businessId, pinned, userId],
+    );
+    return rows[0] ? toRecord(rows[0], false) : null;
+  }
+
+  /** Everything kept, newest first, across every conversation. */
+  async listStarred(businessId: string, limit = 100): Promise<WhatsAppMessageRecord[]> {
+    const { rows } = await this.db.query<MessageRow>(
+      `SELECT * FROM whatsapp_messages
+       WHERE business_id = $1 AND workspace_starred_at IS NOT NULL
+       ORDER BY workspace_starred_at DESC LIMIT $2`,
+      [businessId, limit],
+    );
+    return Promise.all(rows.map((row) => toRecord(row, false)));
+  }
+
+  /** The pins in one conversation, newest pin first. */
+  async listPinnedForChat(businessId: string, chatId: string): Promise<WhatsAppMessageRecord[]> {
+    const { rows } = await this.db.query<MessageRow>(
+      `SELECT * FROM whatsapp_messages
+       WHERE business_id = $1 AND chat_id = $2 AND workspace_pinned_at IS NOT NULL
+       ORDER BY workspace_pinned_at DESC`,
+      [businessId, chatId],
+    );
+    return Promise.all(rows.map((row) => toRecord(row, false)));
   }
 
   async updateStatus(id: string, status: MessageStatus): Promise<void> {

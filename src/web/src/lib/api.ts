@@ -582,6 +582,15 @@ export interface WorkspaceMessage {
   revokeError: string | null;
   /** Resolved sender display name for a group chat's inbound message - null for a DM and for any outbound message. */
   senderName: string | null;
+  /**
+   * Kept, and held at the top of the conversation, by this business.
+   *
+   * Both are local to AURA (migration 1044) and neither is pushed to
+   * WhatsApp - starring a message here does not star it on the owner's
+   * phone, and the customer's app never sees either one.
+   */
+  workspaceStarredAt?: string | null;
+  workspacePinnedAt?: string | null;
 }
 
 export interface OutboundMessageDto {
@@ -2574,6 +2583,37 @@ export const api = {
    * queued for WhatsApp, not that recipients' devices have already dropped
    * the message - keep any wording you attach to these honest.
    */
+  /**
+   * Sends a message the business already has on to other conversations.
+   *
+   * Answers per recipient rather than per batch: forwarding to six people
+   * where one conversation has gone stale should tell you which five it
+   * reached, not fail all six.
+   */
+  forwardMessage: (messageId: string, chatIds: string[]) =>
+    request<{ results: { chatId: string; outboundMessageId: string | null; skippedReason: string | null }[] }>(
+      `/workspace/messages/${messageId}/forward`,
+      { method: 'POST', body: JSON.stringify({ chatIds }) },
+    ),
+  /** Local to AURA. Starring a message here does not star it on the owner's phone. */
+  setMessageStarred: (messageId: string, on: boolean) =>
+    request<{ starredAt: string | null }>(`/workspace/messages/${messageId}/starred`, {
+      method: 'PATCH',
+      body: JSON.stringify({ on }),
+    }),
+  setMessagePinned: (messageId: string, on: boolean) =>
+    request<{ pinnedAt: string | null }>(`/workspace/messages/${messageId}/pinned`, {
+      method: 'PATCH',
+      body: JSON.stringify({ on }),
+    }),
+  listStarredMessages: () =>
+    request<{
+      messages: {
+        id: string; chatId: string; messageType: string; textContent: string | null;
+        caption: string | null; timestamp: string; fromMe: boolean; starredAt: string | null;
+      }[];
+    }>('/workspace/messages/starred'),
+
   revokeMessage: (messageId: string) =>
     request<{ status: 'requested' }>(`/workspace/messages/${messageId}/revoke`, { method: 'POST' }),
   recallCampaign: (campaignId: string) =>

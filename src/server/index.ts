@@ -283,6 +283,8 @@ import {
   isRevocationNotFoundError,
   isNotRevocableError,
 } from '../services/messageRevocationService.js';
+import { forwardMessage, isForwardNotPossibleError } from '../services/whatsappForwardService.js';
+import { WhatsAppMessageRepository } from '../repositories/whatsappMessageRepository.js';
 import { startIncidentMonitoring } from '../services/alerting/incidentAlertService.js';
 import type { Request, Response, NextFunction } from 'express';
 
@@ -1937,6 +1939,103 @@ app.post(
     }
   },
 );
+
+/**
+ * Forwarding one message on to other conversations.
+ *
+ * A real send under whatsapp.send, because that is exactly what it is - a
+ * new message to somebody who was not in the original conversation. It is
+ * the same permission the composer needs, for the same reason.
+ *
+ * Partial success is the normal case with several recipients, so this
+ * answers 200 with a per-chat outcome rather than one status for the batch:
+ * an operator who forwarded to six people needs to know which of the six
+ * it reached.
+ */
+const whatsappMessageRepository = new WhatsAppMessageRepository(pool);
+
+const forwardMessageSchema = z.object({
+  chatIds: z.array(z.string().uuid()).min(1).max(25),
+});
+
+app.post(
+  '/api/workspace/messages/:messageId/forward',
+  requireWorkspaceContext,
+  requirePermission('whatsapp.send'),
+  async (req, res) => {
+    const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+    const auth = res.locals.auth as AuthContext;
+    const parsed = forwardMessageSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_FORWARD', details: parsed.error.flatten() });
+
+    try {
+      const results = await forwardMessage({
+        businessId,
+        whatsappAccountId,
+        messageId: String(req.params.messageId ?? ''),
+        chatIds: parsed.data.chatIds,
+        requestedByUserId: auth.userId,
+      });
+      return res.status(200).json({ results });
+    } catch (error) {
+      // A refusal here is a real answer with a reason the operator can act
+      // on - "that attachment has not downloaded yet" - never a 500.
+      if (isForwardNotPossibleError(error)) return res.status(409).json({ error: 'CANNOT_FORWARD', message: error.message });
+      throw error;
+    }
+  },
+);
+
+/**
+ * Keeping a message, and holding one at the top of its conversation.
+ *
+ * Both are local to AURA (migration 1044) and neither reaches WhatsApp, so
+ * they need only whatsapp.view - nothing here sends anything or changes
+ * what the customer sees.
+ */
+const messageFlagSchema = z.object({ on: z.boolean() });
+
+app.patch('/api/workspace/messages/:messageId/starred', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string };
+  const parsed = messageFlagSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' });
+  const message = await whatsappMessageRepository.setStarred(String(req.params.messageId ?? ''), businessId, parsed.data.on);
+  if (!message) return res.status(404).json({ error: 'MESSAGE_NOT_FOUND' });
+  return res.status(200).json({ starredAt: message.workspaceStarredAt });
+});
+
+app.patch('/api/workspace/messages/:messageId/pinned', requireWorkspaceContext, async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string };
+  const auth = res.locals.auth as AuthContext;
+  const parsed = messageFlagSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' });
+  const message = await whatsappMessageRepository.setPinned(
+    String(req.params.messageId ?? ''),
+    businessId,
+    parsed.data.on,
+    auth.userId,
+  );
+  if (!message) return res.status(404).json({ error: 'MESSAGE_NOT_FOUND' });
+  return res.status(200).json({ pinnedAt: message.workspacePinnedAt });
+});
+
+/** Everything kept, across every conversation. */
+app.get('/api/workspace/messages/starred', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string };
+  const messages = await whatsappMessageRepository.listStarred(businessId);
+  return res.status(200).json({
+    messages: messages.map((message) => ({
+      id: message.id,
+      chatId: message.chatId,
+      messageType: message.messageType,
+      textContent: message.textContent,
+      caption: message.caption,
+      timestamp: message.timestamp,
+      fromMe: message.fromMe,
+      starredAt: message.workspaceStarredAt,
+    })),
+  });
+});
 
 app.post(
   '/api/workspace/campaigns/:campaignId/recall',

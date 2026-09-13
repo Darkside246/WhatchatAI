@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Bluetooth, Check, Printer, Usb, X } from 'lucide-react';
 import {
-  DEFAULT_PRINTER_SETTINGS, loadPrinterSettings, savePrinterSettings, type PrinterSettings,
+  DEFAULT_PRINTER_SETTINGS, forgetPrinter, loadPrinterSettings, noteSuccessfulPrint, savePrinterSettings, type PrinterSettings,
 } from '../lib/printerSettings.js';
 import { choosePrinter, PrinterError, sendToPrinter, transportAvailable, type PrinterTransportKind } from '../lib/printerTransport.js';
 import { EscPosBuilder } from '../lib/escpos.js';
@@ -46,8 +46,8 @@ export function PrinterSettingsPanel({ onClose }: { onClose: () => void }) {
     setNote(null);
     try {
       const target = await choosePrinter(kind);
-      update({ transport: kind, label: target.label, enabled: true });
-      setNote(`Connected to ${target.label}.`);
+      update({ transport: kind, label: target.label, enabled: true, pairedAt: new Date().toISOString() });
+      setNote(`Paired with ${target.label}. Print a test ticket to check the paper and the width.`);
     } catch (err) {
       // A person closing the chooser is not an error worth shouting about.
       if (err instanceof DOMException && err.name === 'NotFoundError') setNote('No printer chosen.');
@@ -83,7 +83,9 @@ export function PrinterSettingsPanel({ onClose }: { onClose: () => void }) {
       builder.cut();
 
       await sendToPrinter(settings.transport, builder.build(), builder.toPlainText(), settings.paper);
-      setNote('Sent. Check the printer.');
+      noteSuccessfulPrint();
+      setSettings(loadPrinterSettings());
+      setNote('Sent. If nothing came out, the printer is off, out of paper, or paired to something else.');
     } catch (err) {
       setError(err instanceof PrinterError || err instanceof Error ? err.message : 'That did not print.');
     } finally {
@@ -107,10 +109,67 @@ export function PrinterSettingsPanel({ onClose }: { onClose: () => void }) {
         {error && <p className="mt-2 rounded bg-error/10 px-2 py-1 text-caption text-error">{error}</p>}
         {note && <p className="mt-2 rounded bg-success/10 px-2 py-1 text-caption text-success">{note}</p>}
 
-        <label className="mt-3 flex items-center gap-2 rounded-lg bg-surface-2 px-3 py-2.5 text-caption text-fg">
-          <input type="checkbox" checked={settings.enabled} onChange={(event) => update({ enabled: event.target.checked })} />
-          Print tickets from this device
-        </label>
+        {/* The switch, said as a switch. Off is the default and the honest
+            state for a device with no printer near it - nothing on the board
+            offers to print until this is on. */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={settings.enabled}
+          onClick={() => update({ enabled: !settings.enabled })}
+          className="mt-3 flex w-full items-center gap-3 rounded-lg bg-surface-2 px-3 py-2.5 text-left"
+        >
+          <span
+            className={`relative h-5 w-9 shrink-0 rounded-full transition ${settings.enabled ? 'bg-accent' : 'bg-surface-3'}`}
+            aria-hidden
+          >
+            <span
+              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${settings.enabled ? 'left-[1.125rem]' : 'left-0.5'}`}
+            />
+          </span>
+          <span className="min-w-0">
+            <span className="block text-caption font-medium text-fg">Print tickets from this device</span>
+            <span className="block text-meta text-fg-muted">
+              {settings.enabled ? 'On. The board shows a print button on every ticket.' : 'Off. Nothing prints from this screen.'}
+            </span>
+          </span>
+        </button>
+
+        {settings.enabled && (
+          <div className="mt-2 rounded-lg border border-border-subtle px-3 py-2.5">
+            <p className="text-meta font-medium uppercase tracking-wide text-fg-muted">Status</p>
+            {/* Never "connected". A browser can revoke a device grant, a
+                printer can be unpaired at the operating system, and a cable
+                can be pulled - none of which reach this page. What it can
+                state truthfully is when it last actually worked, and the
+                test print is the only way to answer "now". */}
+            <p className="mt-0.5 text-caption text-fg">
+              {settings.transport === 'browser'
+                ? 'Using this device’s own print dialog.'
+                : settings.label
+                  ? `Paired with ${settings.label}.`
+                  : 'No printer paired yet — choose one below.'}
+            </p>
+            <p className="mt-0.5 text-meta text-fg-muted">
+              {settings.lastPrintedAt
+                ? `Last printed ${new Date(settings.lastPrintedAt).toLocaleString()}.`
+                : 'Nothing has printed from this device yet.'}
+            </p>
+            {settings.transport !== 'browser' && settings.label && (
+              <button
+                type="button"
+                onClick={() => {
+                  forgetPrinter();
+                  setSettings(loadPrinterSettings());
+                  setNote('Forgotten. This app no longer has a printer for this device — the pairing itself stays in your system settings.');
+                }}
+                className="mt-1.5 text-meta font-medium text-fg-muted hover:text-error"
+              >
+                Forget this printer
+              </button>
+            )}
+          </div>
+        )}
 
         {settings.enabled && (
           <>
@@ -124,7 +183,7 @@ export function PrinterSettingsPanel({ onClose }: { onClose: () => void }) {
                     key={kind}
                     type="button"
                     disabled={busy || !available}
-                    onClick={() => (kind === 'browser' ? update({ transport: 'browser', label: null }) : void pick(kind))}
+                    onClick={() => (kind === 'browser' ? update({ transport: 'browser', label: null, pairedAt: null }) : void pick(kind))}
                     className={`flex w-full items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left disabled:opacity-50 ${
                       chosen ? 'border-accent bg-accent-soft' : 'border-border-subtle hover:bg-surface-2'
                     }`}
@@ -133,7 +192,13 @@ export function PrinterSettingsPanel({ onClose }: { onClose: () => void }) {
                     <span className="min-w-0 flex-1">
                       <span className="block text-caption font-medium text-fg">{label}</span>
                       <span className="block text-meta text-fg-muted">
-                        {available ? detail : 'This browser cannot do this. Chrome or Edge can.'}
+                        {!available
+                          ? 'This browser cannot do this. Chrome or Edge can.'
+                          : chosen && kind !== 'browser' && !settings.label
+                            ? `${detail} Tap to pair.`
+                            : chosen && kind !== 'browser'
+                              ? `${detail} Tap to pair a different one.`
+                              : detail}
                       </span>
                       {chosen && settings.label && <span className="block text-meta text-accent">{settings.label}</span>}
                     </span>
