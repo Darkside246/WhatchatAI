@@ -52,6 +52,18 @@ export interface WorkspaceChatSummary {
   /** Real WhatsApp chat flags synced from Baileys - false until a sync actually reports them. */
   isPinned: boolean;
   isArchived: boolean;
+  /**
+   * What the operator chose in AURA, which is a different thing from the two
+   * above: those are WhatsApp's own view and are overwritten by every sync.
+   * Nothing here is ever pushed to WhatsApp.
+   */
+  pinned: boolean;
+  archived: boolean;
+  favorite: boolean;
+  /** Notifications silenced until this moment. Null when not muted; a year of 9999 means "until I say otherwise". */
+  mutedUntil: string | null;
+  /** Left unread on purpose after being read. unreadCount above stays the honest count. */
+  markedUnread: boolean;
   aiMode: 'AI_ACTIVE' | 'AI_PAUSED' | 'HUMAN_TAKEOVER';
   /** A real, non-expired status exists for this chat's JID right now - WhatsApp's own "status ring" signal. */
   hasActiveStatus: boolean;
@@ -2616,6 +2628,25 @@ export const api = {
    * board is polled every five seconds and should not carry a searchable
    * archive on that hot path.
    */
+  // ── What the operator decided about a conversation, inside AURA ────────
+  // None of these sends anything to WhatsApp, blocks anybody, or touches the
+  // customer's own app.
+  setChatArchived: (chatId: string, on: boolean) =>
+    request<{ chat: unknown }>(`/workspace/chats/${chatId}/archived`, { method: 'PATCH', body: JSON.stringify({ on }) }),
+  setChatPinned: (chatId: string, on: boolean) =>
+    request<{ chat: unknown }>(`/workspace/chats/${chatId}/pinned`, { method: 'PATCH', body: JSON.stringify({ on }) }),
+  setChatFavorite: (chatId: string, on: boolean) =>
+    request<{ chat: unknown }>(`/workspace/chats/${chatId}/favorite`, { method: 'PATCH', body: JSON.stringify({ on }) }),
+  setChatMarkedUnread: (chatId: string, on: boolean) =>
+    request<{ chat: unknown }>(`/workspace/chats/${chatId}/marked-unread`, { method: 'PATCH', body: JSON.stringify({ on }) }),
+  /** hours: null un-mutes, 0 is "until I say otherwise". A duration rather than a timestamp - the server owns now(). */
+  setChatMuted: (chatId: string, hours: number | null) =>
+    request<{ chat: unknown }>(`/workspace/chats/${chatId}/muted`, { method: 'PATCH', body: JSON.stringify({ hours }) }),
+  /** Empties the conversation in AURA. Returns how many messages were cleared, so the UI can say what really happened. */
+  clearChat: (chatId: string) =>
+    request<{ cleared: number }>(`/workspace/chats/${chatId}/clear`, { method: 'POST' }),
+  /** Removes the conversation from this workspace. The messages are kept, so a restore is a real restore. */
+  deleteChat: (chatId: string) => request<{ ok: true }>(`/workspace/chats/${chatId}`, { method: 'DELETE' }),
   getFoodHistory: (options: { query?: string; limit?: number; cursor?: FoodHistoryCursor | null } = {}) => {
     const search = new URLSearchParams();
     if (options.query?.trim()) search.set('query', options.query.trim());

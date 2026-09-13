@@ -1496,6 +1496,120 @@ app.patch('/api/workspace/chats/:chatId/ai-mode', requireWorkspaceContext, requi
   }
 });
 
+/**
+ * What the operator decided about a conversation, inside AURA.
+ *
+ * Every route below is local to this workspace. None of them sends anything
+ * to WhatsApp, blocks anybody, or touches the customer's own app - and the
+ * repository writes its own workspace_* columns rather than the is_archived
+ * / is_pinned ones the history sync owns, so none of it is undone by the
+ * next sync.
+ *
+ * whatsapp.manage rather than a read permission: these change what every
+ * other person in the business sees in their inbox.
+ */
+const chatFlagSchema = z.object({ on: z.boolean() });
+
+app.patch('/api/workspace/chats/:chatId/archived', requireWorkspaceContext, requirePermission('whatsapp.manage'), async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = chatFlagSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_FLAG' });
+  const chat = await workspaceService.setChatArchived(businessId, whatsappAccountId, String(req.params.chatId ?? ''), parsed.data.on).catch(() => null);
+  if (!chat) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
+  return res.status(200).json({ chat });
+});
+
+app.patch('/api/workspace/chats/:chatId/pinned', requireWorkspaceContext, requirePermission('whatsapp.manage'), async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = chatFlagSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_FLAG' });
+  const chat = await workspaceService.setChatPinned(businessId, whatsappAccountId, String(req.params.chatId ?? ''), parsed.data.on).catch(() => null);
+  if (!chat) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
+  return res.status(200).json({ chat });
+});
+
+app.patch('/api/workspace/chats/:chatId/favorite', requireWorkspaceContext, requirePermission('whatsapp.manage'), async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = chatFlagSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_FLAG' });
+  const chat = await workspaceService.setChatFavorite(businessId, whatsappAccountId, String(req.params.chatId ?? ''), parsed.data.on).catch(() => null);
+  if (!chat) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
+  return res.status(200).json({ chat });
+});
+
+app.patch('/api/workspace/chats/:chatId/marked-unread', requireWorkspaceContext, requirePermission('whatsapp.manage'), async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = chatFlagSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_FLAG' });
+  const chat = await workspaceService.setChatMarkedUnread(businessId, whatsappAccountId, String(req.params.chatId ?? ''), parsed.data.on).catch(() => null);
+  if (!chat) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
+  return res.status(200).json({ chat });
+});
+
+/**
+ * Muting for a stretch, or until told otherwise.
+ *
+ * A duration in hours rather than a client-supplied timestamp: a browser
+ * with a wrong clock would otherwise mute a chat until 1970 or forever, and
+ * the server is the only party here with a trustworthy now().
+ */
+const muteSchema = z.object({
+  /** Null un-mutes. 0 means "until I say otherwise", stored as a far-future date. */
+  hours: z.number().int().min(0).max(24 * 365).nullable(),
+});
+
+app.patch('/api/workspace/chats/:chatId/muted', requireWorkspaceContext, requirePermission('whatsapp.manage'), async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = muteSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_MUTE' });
+
+  const { hours } = parsed.data;
+  const until =
+    hours === null ? null : hours === 0 ? new Date('9999-12-31T00:00:00Z') : new Date(Date.now() + hours * 3600 * 1000);
+
+  const chat = await workspaceService.setChatMuted(businessId, whatsappAccountId, String(req.params.chatId ?? ''), until).catch(() => null);
+  if (!chat) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
+  return res.status(200).json({ chat });
+});
+
+/**
+ * Emptying a conversation, in AURA only.
+ *
+ * A soft delete of the messages - the rows stay, marked - so clearing the
+ * wrong thread has not destroyed the record of what a customer said. The
+ * count comes back so the operator is told what really happened rather than
+ * shown a success over a no-op.
+ */
+app.post('/api/workspace/chats/:chatId/clear', requireWorkspaceContext, requirePermission('whatsapp.manage'), async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    const cleared = await workspaceService.clearChatMessages(businessId, whatsappAccountId, String(req.params.chatId ?? ''));
+    return res.status(200).json({ cleared });
+  } catch (error) {
+    if (isChatNotFoundError(error)) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
+    throw error;
+  }
+});
+
+/**
+ * Removing a conversation from this workspace.
+ *
+ * Soft, and deliberately leaves the messages alone: a chat can be restored,
+ * and a delete that had quietly emptied it would restore an empty shell.
+ * WhatsApp is untouched either way - the conversation still exists on the
+ * phone, and the customer can still write to it.
+ */
+app.delete('/api/workspace/chats/:chatId', requireWorkspaceContext, requirePermission('whatsapp.manage'), async (req, res) => {
+  const { businessId, whatsappAccountId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  try {
+    await workspaceService.deleteChat(businessId, whatsappAccountId, String(req.params.chatId ?? ''));
+    return res.status(200).json({ ok: true });
+  } catch (error) {
+    if (isChatNotFoundError(error)) return res.status(404).json({ error: 'CHAT_NOT_FOUND' });
+    throw error;
+  }
+});
+
 const assignChatSchema = z.object({
   assigneeUserId: z.string().uuid().nullable(),
   assigneeTeamId: z.string().uuid().nullable(),

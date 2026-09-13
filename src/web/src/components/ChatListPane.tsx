@@ -6,6 +6,7 @@ import { Pin, Mic, Image as ImageIcon, Video, FileText, Sticker, MapPin, UserSqu
 import { Avatar } from './Avatar.js';
 import { MediaLightbox } from './MediaLightbox.js';
 import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
+import { ChatContextMenu } from './ChatContextMenu.js';
 
 const AI_MODE_DOT: Record<WorkspaceChatSummary['aiMode'], string> = {
   AI_ACTIVE: 'bg-accent',
@@ -101,9 +102,11 @@ interface Props {
 function ChatRow({
   chat,
   onOpenPhoto,
+  onContextMenu,
 }: {
   chat: WorkspaceChatSummary;
   onOpenPhoto: (url: string) => void;
+  onContextMenu: (chat: WorkspaceChatSummary, x: number, y: number) => void;
 }) {
   const MediaIcon = chat.lastMessageType ? LAST_MESSAGE_ICON[chat.lastMessageType] : undefined;
   const urgency = chatUrgency(chat);
@@ -111,6 +114,12 @@ function ChatRow({
   return (
     <NavLink
       to={`/chats/${chat.id}`}
+      // Right-click opens the menu instead of the browser's own, which has
+      // nothing useful to offer about a conversation.
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onContextMenu(chat, event.clientX, event.clientY);
+      }}
       title={urgency === 'HIGH' ? 'Urgent - needs human attention' : urgency === 'MEDIUM' ? 'Needs attention' : undefined}
       className={({ isActive }) =>
         `flex h-[68px] w-full items-center gap-3 border-b border-r-4 border-border-subtle/60 px-4 text-left transition-colors ${
@@ -171,6 +180,12 @@ export function ChatListPane({ className = '' }: Props) {
   const initialFilter = searchParams.get('filter');
   const [filter, setFilterState] = useState<FilterPill>(initialFilter ?? 'all');
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  /** The right-click menu, and which conversation it was opened on. */
+  const [menu, setMenu] = useState<{ chat: WorkspaceChatSummary; x: number; y: number } | null>(null);
+
+  function openMenu(chat: WorkspaceChatSummary, x: number, y: number) {
+    setMenu({ chat, x, y });
+  }
   const [lists, setLists] = useState<ListDto[]>([]);
 
   function setFilter(next: FilterPill) {
@@ -228,11 +243,17 @@ export function ChatListPane({ className = '' }: Props) {
   // is_pinned flag synced from the connected account, never a local
   // preference invented here. Archived chats are split out entirely rather
   // than being sorted among the active ones.
-  const active = filtered
-    .filter((chat) => !chat.isArchived)
-    .slice()
-    .sort((a, b) => Number(b.isPinned) - Number(a.isPinned));
-  const archived = filtered.filter((chat) => chat.isArchived);
+  /**
+   * Archived or pinned EITHER way - by WhatsApp, or by somebody here.
+   *
+   * The two are genuinely different facts (chat.isArchived is what the
+   * connected account reports, chat.archived is what an operator chose in
+   * AURA, and only the second survives a sync) but to a person reading this
+   * list they mean the same thing, so both count. The server already orders
+   * pinned-first; this keeps that ordering rather than re-deriving it.
+   */
+  const active = filtered.filter((chat) => !chat.isArchived && !chat.archived);
+  const archived = filtered.filter((chat) => chat.isArchived || chat.archived);
 
   return (
     <div className={`h-full flex-col ${className}`}>
@@ -276,7 +297,7 @@ export function ChatListPane({ className = '' }: Props) {
           <p className="p-4 text-body text-fg-muted">No chats match this filter.</p>
         )}
         {active.map((chat) => (
-          <ChatRow key={chat.id} chat={chat} onOpenPhoto={setLightboxUrl} />
+          <ChatRow key={chat.id} chat={chat} onOpenPhoto={setLightboxUrl} onContextMenu={openMenu} />
         ))}
 
         {archived.length > 0 && (
@@ -287,11 +308,21 @@ export function ChatListPane({ className = '' }: Props) {
               <span className="text-meta text-fg-muted">{archived.length}</span>
             </div>
             {archived.map((chat) => (
-              <ChatRow key={chat.id} chat={chat} onOpenPhoto={setLightboxUrl} />
+              <ChatRow key={chat.id} chat={chat} onOpenPhoto={setLightboxUrl} onContextMenu={openMenu} />
             ))}
           </>
         )}
       </div>
+
+      {menu && (
+        <ChatContextMenu
+          chat={menu.chat}
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          onChanged={() => void load()}
+        />
+      )}
 
       {lightboxUrl && <MediaLightbox imageUrl={lightboxUrl} fileName={null} onClose={() => setLightboxUrl(null)} />}
     </div>

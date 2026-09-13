@@ -17,8 +17,21 @@ export interface WhatsAppChatRecord {
   name: string | null;
   phoneNumber: string | null;
   isGroup: boolean;
+  /** WhatsApp's own view, from the history sync. Not the operator's choice - see workspaceArchivedAt. */
   isArchived: boolean | null;
   isPinned: boolean | null;
+  /**
+   * What the operator decided about this conversation inside AURA. Kept
+   * apart from the two fields above on purpose: those are overwritten by
+   * every sync, and a setting that quietly undoes itself is worse than no
+   * setting. Nothing here is ever pushed to WhatsApp.
+   */
+  workspaceArchivedAt: string | null;
+  workspacePinnedAt: string | null;
+  workspaceFavoritedAt: string | null;
+  /** Null is not muted; a far-future date is "until I say otherwise". */
+  workspaceMutedUntil: string | null;
+  workspaceMarkedUnreadAt: string | null;
   unreadCount: number;
   messageCount: number;
   lastMessageId: string | null;
@@ -66,6 +79,11 @@ interface ChatRow {
   is_group: boolean;
   is_archived: boolean | null;
   is_pinned: boolean | null;
+  workspace_archived_at: string | null;
+  workspace_pinned_at: string | null;
+  workspace_favorited_at: string | null;
+  workspace_muted_until: string | null;
+  workspace_marked_unread_at: string | null;
   unread_count: number;
   message_count: number;
   last_message_id: string | null;
@@ -102,6 +120,11 @@ function toRecord(row: ChatRow): WhatsAppChatRecord {
     isGroup: row.is_group,
     isArchived: row.is_archived,
     isPinned: row.is_pinned,
+    workspaceArchivedAt: row.workspace_archived_at,
+    workspacePinnedAt: row.workspace_pinned_at,
+    workspaceFavoritedAt: row.workspace_favorited_at,
+    workspaceMutedUntil: row.workspace_muted_until,
+    workspaceMarkedUnreadAt: row.workspace_marked_unread_at,
     unreadCount: row.unread_count,
     messageCount: row.message_count,
     lastMessageId: row.last_message_id,
@@ -233,13 +256,127 @@ export class WhatsAppChatRepository {
     );
   }
 
-  /** Real "mark as read" - the user actually opened and viewed this conversation. */
+  /**
+   * Real "mark as read" - the user actually opened and viewed this
+   * conversation.
+   *
+   * Also clears a deliberate mark-as-unread. Someone who left a chat unread
+   * on purpose and has now opened it has answered their own reminder, and a
+   * dot that survives opening the thread is a dot people stop believing.
+   */
   async resetUnreadCount(chatId: string): Promise<WhatsAppChatRecord | null> {
     const { rows } = await this.db.query<ChatRow>(
-      `UPDATE whatsapp_chats SET unread_count = 0, updated_at = now() WHERE id = $1 RETURNING *`,
+      `UPDATE whatsapp_chats
+       SET unread_count = 0, workspace_marked_unread_at = NULL, updated_at = now()
+       WHERE id = $1 RETURNING *`,
       [chatId],
     );
     return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
+   * The operator's own decisions about a conversation, inside AURA.
+   *
+   * Every one of these is local. Nothing here is pushed to WhatsApp, the
+   * customer's own app is untouched, and none of them writes the
+   * is_archived / is_pinned columns the history sync owns - see migration
+   * 1043 for why those two must never be shared.
+   *
+   * Business-scoped in the WHERE clause rather than checked first, so a
+   * chat id from another tenant updates nothing and reads back as not
+   * found, exactly like an id that does not exist.
+   */
+  private async setWorkspaceFlag(
+    businessId: string,
+    chatId: string,
+    column: 'workspace_archived_at' | 'workspace_pinned_at' | 'workspace_favorited_at' | 'workspace_marked_unread_at',
+    on: boolean,
+  ): Promise<WhatsAppChatRecord | null> {
+    const { rows } = await this.db.query<ChatRow>(
+      `UPDATE whatsapp_chats SET ${column} = CASE WHEN $3 THEN now() ELSE NULL END, updated_at = now()
+       WHERE business_id = $1 AND id = $2 AND deleted_at IS NULL
+       RETURNING *`,
+      [businessId, chatId, on],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  async setArchived(businessId: string, chatId: string, archived: boolean): Promise<WhatsAppChatRecord | null> {
+    return this.setWorkspaceFlag(businessId, chatId, 'workspace_archived_at', archived);
+  }
+
+  async setPinned(businessId: string, chatId: string, pinned: boolean): Promise<WhatsAppChatRecord | null> {
+    return this.setWorkspaceFlag(businessId, chatId, 'workspace_pinned_at', pinned);
+  }
+
+  async setFavorite(businessId: string, chatId: string, favorite: boolean): Promise<WhatsAppChatRecord | null> {
+    return this.setWorkspaceFlag(businessId, chatId, 'workspace_favorited_at', favorite);
+  }
+
+  /**
+   * Leaving a chat unread on purpose, after it has already been read.
+   *
+   * Only meaningful while the real unread count is zero - a chat with
+   * genuinely unread messages is already unread and does not need marking.
+   * Setting it does NOT invent an unread message; the count stays honest and
+   * this is a separate flag the list reads alongside it.
+   */
+  async setMarkedUnread(businessId: string, chatId: string, unread: boolean): Promise<WhatsAppChatRecord | null> {
+    return this.setWorkspaceFlag(businessId, chatId, 'workspace_marked_unread_at', unread);
+  }
+
+  /**
+   * Muting notifications for a while, or until told otherwise.
+   *
+   * `until` null un-mutes. A far-future date is how "always" is stored -
+   * one column rather than a boolean plus a date, so there is no state in
+   * which the two disagree about whether a chat is muted.
+   */
+  async setMutedUntil(businessId: string, chatId: string, until: Date | null): Promise<WhatsAppChatRecord | null> {
+    const { rows } = await this.db.query<ChatRow>(
+      `UPDATE whatsapp_chats SET workspace_muted_until = $3, updated_at = now()
+       WHERE business_id = $1 AND id = $2 AND deleted_at IS NULL
+       RETURNING *`,
+      [businessId, chatId, until],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
+   * Emptying a conversation of its messages, in AURA only.
+   *
+   * A soft delete, not a DELETE: the rows stay, marked, so an owner who
+   * clears the wrong thread has not destroyed a record of what a customer
+   * actually said. WhatsApp still has every message - this clears our copy
+   * and the customer's phone is untouched.
+   *
+   * Returns how many were cleared, so the caller can tell the operator what
+   * actually happened rather than claiming success over a no-op.
+   */
+  async clearMessages(businessId: string, chatId: string): Promise<number> {
+    const { rowCount } = await this.db.query(
+      `UPDATE whatsapp_messages SET deleted_at = now()
+       WHERE business_id = $1 AND chat_id = $2 AND deleted_at IS NULL`,
+      [businessId, chatId],
+    );
+    return rowCount ?? 0;
+  }
+
+  /**
+   * Removing a conversation from this workspace.
+   *
+   * Also a soft delete, and deliberately does not touch the messages: a
+   * chat can be restored by clearing deleted_at, and a delete that had
+   * silently emptied it would restore an empty shell. "Clear" and "delete"
+   * stay two separate decisions, which is what they look like on the menu.
+   */
+  async softDelete(businessId: string, chatId: string): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      `UPDATE whatsapp_chats SET deleted_at = now(), updated_at = now()
+       WHERE business_id = $1 AND id = $2 AND deleted_at IS NULL`,
+      [businessId, chatId],
+    );
+    return (rowCount ?? 0) > 0;
   }
 
   async findByJid(businessId: string, whatsappAccountId: string, chatJid: string): Promise<WhatsAppChatRecord | null> {
@@ -292,11 +429,26 @@ export class WhatsAppChatRepository {
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
-  async listByAccount(businessId: string, whatsappAccountId: string): Promise<WhatsAppChatRecord[]> {
+  /**
+   * The inbox.
+   *
+   * Pinned conversations lead, newest pin first, then everything else by
+   * recency - the ordering the operator asked for by pinning. Archived
+   * chats are excluded rather than sorted to the bottom: archiving is a
+   * request not to see something, and a long list with the archived ones
+   * still in it at the end is the same list.
+   */
+  async listByAccount(
+    businessId: string,
+    whatsappAccountId: string,
+    options: { archived?: boolean } = {},
+  ): Promise<WhatsAppChatRecord[]> {
+    const archivedOnly = options.archived === true;
     const { rows } = await this.db.query<ChatRow>(
       `SELECT * FROM whatsapp_chats
        WHERE business_id = $1 AND whatsapp_account_id = $2 AND deleted_at IS NULL
-       ORDER BY last_message_at DESC NULLS LAST`,
+         AND workspace_archived_at IS ${archivedOnly ? 'NOT NULL' : 'NULL'}
+       ORDER BY workspace_pinned_at DESC NULLS LAST, last_message_at DESC NULLS LAST`,
       [businessId, whatsappAccountId],
     );
     return rows.map(toRecord);

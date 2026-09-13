@@ -89,8 +89,17 @@ export interface WorkspaceChatSummary {
   /** The real persisted message type of the last message - drives the media icon in the list row, never guessed from the preview text. */
   lastMessageType: string | null;
   /** Real WhatsApp chat flags, synced from Baileys (chat.pinned / chat.archived). Null in the DB until a sync has actually reported them, surfaced as false. */
+  /** WhatsApp's own flags, from the history sync. */
   isPinned: boolean;
   isArchived: boolean;
+  /** What the operator chose in AURA. Kept separate because the two above are overwritten by every sync. */
+  pinned: boolean;
+  archived: boolean;
+  favorite: boolean;
+  /** Notifications silenced until this moment. Null when not muted. */
+  mutedUntil: string | null;
+  /** Left unread on purpose after being read. The real unreadCount above stays honest. */
+  markedUnread: boolean;
   aiMode: ChatAiMode;
   /** A real, non-expired status exists for this chat's JID right now - WhatsApp's own "status ring" signal. */
   hasActiveStatus: boolean;
@@ -580,6 +589,11 @@ export class WorkspaceService {
         lastMessageType,
         isPinned: chat.isPinned ?? false,
         isArchived: chat.isArchived ?? false,
+        pinned: chat.workspacePinnedAt !== null,
+        archived: chat.workspaceArchivedAt !== null,
+        favorite: chat.workspaceFavoritedAt !== null,
+        mutedUntil: chat.workspaceMutedUntil,
+        markedUnread: chat.workspaceMarkedUnreadAt !== null,
         aiMode: chat.aiMode,
         hasActiveStatus: activeStatusCounts.has(chat.chatJid),
         activeStatusCount: activeStatusCounts.get(chat.chatJid) ?? 0,
@@ -588,7 +602,15 @@ export class WorkspaceService {
       });
     }
 
+    /**
+     * Pinned first, then by recency.
+     *
+     * The repository already orders this way; re-sorting here on
+     * lastMessageAt alone would throw the pins away, which is how a pin
+     * appears to do nothing.
+     */
     return summaries.sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
       if (!a.lastMessageAt) return 1;
       if (!b.lastMessageAt) return -1;
       return b.lastMessageAt.localeCompare(a.lastMessageAt);
@@ -698,6 +720,11 @@ export class WorkspaceService {
         lastMessageType,
         isPinned: chat.isPinned ?? false,
         isArchived: chat.isArchived ?? false,
+        pinned: chat.workspacePinnedAt !== null,
+        archived: chat.workspaceArchivedAt !== null,
+        favorite: chat.workspaceFavoritedAt !== null,
+        mutedUntil: chat.workspaceMutedUntil,
+        markedUnread: chat.workspaceMarkedUnreadAt !== null,
         aiMode: chat.aiMode,
         hasActiveStatus: false,
         activeStatusCount: 0,
@@ -810,6 +837,62 @@ export class WorkspaceService {
   /** Idempotent, tenant-scoped - see whatsappStatusRepository.ts's markViewed. */
   async markStatusViewed(businessId: string, statusId: string): Promise<void> {
     await this.statusRepository.markViewed(businessId, statusId);
+  }
+
+  /**
+   * What the operator decided about a conversation, inside AURA.
+   *
+   * Every one of these is local to this workspace. None of them sends
+   * anything to WhatsApp, blocks anybody, or touches the customer's own app,
+   * and the repository writes its own workspace_* columns rather than the
+   * is_archived / is_pinned pair the history sync overwrites - so none of it
+   * is quietly undone by the next sync.
+   *
+   * The account check is here rather than in the route because every chat
+   * mutation in this service makes it: a chat id that belongs to this
+   * business but a different connected number is not this caller's to change.
+   */
+  private async ownedChat(businessId: string, whatsappAccountId: string, chatId: string) {
+    const chat = await this.chatRepository.findByIdForBusiness(chatId, businessId);
+    if (!chat || chat.whatsappAccountId !== whatsappAccountId || chat.deletedAt) throw this.notFound();
+    return chat;
+  }
+
+  async setChatArchived(businessId: string, whatsappAccountId: string, chatId: string, archived: boolean) {
+    await this.ownedChat(businessId, whatsappAccountId, chatId);
+    return this.chatRepository.setArchived(businessId, chatId, archived);
+  }
+
+  async setChatPinned(businessId: string, whatsappAccountId: string, chatId: string, pinned: boolean) {
+    await this.ownedChat(businessId, whatsappAccountId, chatId);
+    return this.chatRepository.setPinned(businessId, chatId, pinned);
+  }
+
+  async setChatFavorite(businessId: string, whatsappAccountId: string, chatId: string, favorite: boolean) {
+    await this.ownedChat(businessId, whatsappAccountId, chatId);
+    return this.chatRepository.setFavorite(businessId, chatId, favorite);
+  }
+
+  async setChatMarkedUnread(businessId: string, whatsappAccountId: string, chatId: string, unread: boolean) {
+    await this.ownedChat(businessId, whatsappAccountId, chatId);
+    return this.chatRepository.setMarkedUnread(businessId, chatId, unread);
+  }
+
+  async setChatMuted(businessId: string, whatsappAccountId: string, chatId: string, until: Date | null) {
+    await this.ownedChat(businessId, whatsappAccountId, chatId);
+    return this.chatRepository.setMutedUntil(businessId, chatId, until);
+  }
+
+  /** Empties the conversation in AURA. WhatsApp still has every message and the customer's phone is untouched. */
+  async clearChatMessages(businessId: string, whatsappAccountId: string, chatId: string): Promise<number> {
+    await this.ownedChat(businessId, whatsappAccountId, chatId);
+    return this.chatRepository.clearMessages(businessId, chatId);
+  }
+
+  /** Removes the conversation from this workspace. Soft, and deliberately leaves the messages alone so a restore is a real restore. */
+  async deleteChat(businessId: string, whatsappAccountId: string, chatId: string): Promise<boolean> {
+    await this.ownedChat(businessId, whatsappAccountId, chatId);
+    return this.chatRepository.softDelete(businessId, chatId);
   }
 
   private notFound(): ChatNotFoundError {
