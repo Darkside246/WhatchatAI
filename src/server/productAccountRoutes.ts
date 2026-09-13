@@ -104,6 +104,15 @@ router.post('/product-accounts', requireAuth, async (req, res) => {
 });
 
 router.get('/developer/product-accounts', requireAuth, requireDeveloper, async (_req, res) => res.status(200).json({ accounts: await listAllProductAccounts() }));
+/**
+ * The real detail behind the "Active trials" stat pill - every
+ * product_trials row.
+ *
+ * There was a second GET /developer/trials further down this file that
+ * mapped these rows to a narrower shape. Express matches the first
+ * registration, so that one could never run and the frontend has always
+ * been served this - typed as the narrower shape it never actually got.
+ */
 router.get('/developer/trials', requireAuth, requireDeveloper, async (_req, res) => res.status(200).json({ trials: await trials.listAll() }));
 
 /** List all verticals available in the product catalog. */
@@ -196,17 +205,6 @@ async function renderPreview(subject: string, bodyText: string) {
 router.get('/developer/control-plane-stats', requireAuth, requireDeveloper, async (_req, res) => {
   const stats = await getControlPlaneStats();
   return res.status(200).json({ stats });
-});
-
-/** The real detail behind the "Active trials" stat pill - every product_trials row, business name resolved server-side so the frontend needs no second lookup. */
-router.get('/developer/trials', requireAuth, requireDeveloper, async (_req, res) => {
-  const allTrials = await trials.listAll();
-  return res.status(200).json({
-    trials: allTrials.map((trial) => ({
-      id: trial.id, email: trial.email, productKey: trial.productKey, state: trial.state,
-      startsAt: trial.startsAt, endsAt: trial.endsAt, productAccountId: trial.productAccountId,
-    })),
-  });
 });
 
 /** The real detail behind the "Security events (24h)" stat pill - structural fields only, never raw message content. */

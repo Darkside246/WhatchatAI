@@ -20,6 +20,7 @@ import {
 } from '../lib/stationView.js';
 import { KitchenSettings } from '../components/KitchenSettings.js';
 import { MenuEditor } from '../components/MenuEditor.js';
+import { FoodPaymentPanel } from '../components/FoodPaymentPanel.js';
 import { OrderHistory } from '../components/OrderHistory.js';
 import { ServiceSummary } from '../components/ServiceSummary.js';
 import { Register } from '../components/Register.js';
@@ -116,6 +117,14 @@ export function FoodOperationsPage() {
   }, [station]);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  /**
+   * Which order's money is open, by id rather than by the order object.
+   *
+   * The board reloads under the panel on every poll, and holding the object
+   * would leave the panel showing a snapshot from before the payment it
+   * just recorded.
+   */
+  const [paymentOrderId, setPaymentOrderId] = useState<string | null>(null);
   /**
    * Seconds since the last poll, added to each server-computed age so the
    * timers tick smoothly between refreshes. The BAND still comes from the
@@ -369,6 +378,17 @@ export function FoodOperationsPage() {
     [stationOrders],
   );
 
+  /**
+   * Resolved from the live board every render, so the panel follows the
+   * order rather than a copy of it. It closes on its own if the order
+   * leaves the board while it is open - there is nothing left to record
+   * against a ticket that is no longer there.
+   */
+  const paymentOrder = useMemo(
+    () => (paymentOrderId ? ((orders ?? []).find((candidate) => candidate.id === paymentOrderId) ?? null) : null),
+    [orders, paymentOrderId],
+  );
+
   /** Offered only when the menu actually defines stations - a picker with one entry is a control that teaches nothing. */
   const availableStations = useMemo(() => stationOptions(stations, orders ?? []), [stations, orders]);
   /**
@@ -424,6 +444,7 @@ export function FoodOperationsPage() {
       onPhotoTaken={() => void load()}
       onAskForPayment={() => void askForPayment(order)}
       onConfirmPayment={() => void confirmPayment(order)}
+      onTakePayment={() => setPaymentOrderId(order.id)}
       onAcknowledgeQc={() => void acknowledgeQc(order)}
     />
   );
@@ -633,6 +654,10 @@ export function FoodOperationsPage() {
         </div>
       )}
 
+      {paymentOrder && (
+        <FoodPaymentPanel order={paymentOrder} onClose={() => setPaymentOrderId(null)} onChanged={load} />
+      )}
+
       {historyOpen && (
         <div data-print-sheet className="fixed inset-0 z-40 flex flex-col bg-surface-0">
           <header className="flex items-center gap-3 border-b border-border-subtle px-4 py-3 print:hidden">
@@ -836,7 +861,7 @@ const PAYMENT_BADGE: Record<FoodBoardOrderDto['paymentState'], { label: string; 
 };
 
 function OrderCard({
-  order, station, drift, busy, onBump, onSendBack, onRelease, onSendOutWithoutPhoto, onPhotoTaken, onAskForPayment, onConfirmPayment, onAcknowledgeQc,
+  order, station, drift, busy, onBump, onSendBack, onRelease, onSendOutWithoutPhoto, onPhotoTaken, onAskForPayment, onConfirmPayment, onTakePayment, onAcknowledgeQc,
 }: {
   order: FoodBoardOrderDto;
   /** Which station this screen is for, so a line can say whether it is this cook's job. Null on the whole board, where every line is. */
@@ -850,6 +875,7 @@ function OrderCard({
   onPhotoTaken: () => void;
   onAskForPayment: () => void;
   onConfirmPayment: () => void;
+  onTakePayment: () => void;
   /** Somebody looked at what the photo flagged and is saying so. */
   onAcknowledgeQc: () => void;
 }) {
@@ -954,14 +980,44 @@ function OrderCard({
             <button
               type="button"
               disabled={busy}
-              onClick={onAskForPayment}
+              /* Asking needs somebody to ask. A counter order has no chat by
+                 definition, so the only honest button on it is the one that
+                 records the cash actually handed over. */
+              onClick={order.chatId ? onAskForPayment : onTakePayment}
               className="flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-meta font-medium text-fg hover:bg-surface-2 disabled:opacity-50"
             >
-              <Send size={11} aria-hidden />
-              Ask for payment
+              {order.chatId ? <Send size={11} aria-hidden /> : <HandCoins size={11} aria-hidden />}
+              {order.chatId ? 'Ask for payment' : 'Take payment'}
+            </button>
+          )}
+          {/* The till, for money that arrived some other way than the one
+              that was asked for - cash at the door on an order that was
+              sent a transfer request, a card tapped at the counter. */}
+          {order.chatId && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onTakePayment}
+              className="text-meta text-fg-muted hover:text-fg disabled:opacity-50"
+            >
+              Take payment
             </button>
           )}
         </div>
+      )}
+
+      {/* Settled money is still something somebody may have to correct - a
+          refund given at the door, a payment recorded against the wrong
+          ticket. Quiet, because on a paid order it is the exception. */}
+      {(order.paymentState === 'PAID' || order.paymentState === 'REFUNDED') && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onTakePayment}
+          className="mt-1 text-meta text-fg-muted hover:text-fg disabled:opacity-50"
+        >
+          Payment details
+        </button>
       )}
 
       {/* The allergen banner is full width and loud on purpose - it is the

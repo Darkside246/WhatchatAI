@@ -6,7 +6,7 @@ import {
   HardHat, Package, ChevronDown, ChevronRight, LayoutGrid, Check, HeartPulse, X, Coins,
   Wallet, Save, PlugZap, Plus, ShieldAlert, Radar, Mail,
 } from 'lucide-react';
-import { api, ApiError, type DeveloperPlan, type PlanEntitlement, type IntegrationHealth, type GovernanceFlagDto, type GovernanceThresholdsDto, type OversightFindingDto, type OversightThresholdsDto } from '../lib/api.js';
+import { api, ApiError, type DeveloperPlan, type PlanEntitlement, type IntegrationHealth, type GovernanceFlagDto, type GovernanceThresholdsDto, type OversightFindingDto, type OversightFindingEventDto, type OversightThresholdsDto } from '../lib/api.js';
 import { ToggleSwitch } from '../components/ToggleSwitch.js';
 import { IntegrationHealthList } from '../components/IntegrationHealthList.js';
 import { useAuth } from '../hooks/useAuth.js';
@@ -734,13 +734,16 @@ const SUBSCRIPTION_STATUS_STYLE: Record<string, string> = {
 
 /** One row in the Accounts table - phone number as the real identifier, a real trial/plan status, and the manual "change plan" override this feature exists for. */
 function PlatformAccountRow({
-  account, plans, busy, onChangePlan, onExtendTrial, onDelete,
+  account, plans, busy, isDeveloperAdmin, onChangePlan, onExtendTrial, onSetUnrestricted, onDelete,
 }: {
   account: DeveloperAccount;
   plans: DeveloperPlan[];
   busy: boolean;
+  /** The exemption below is Admin-only server-side; hiding it for everyone else keeps the row honest rather than offering a button that answers 403. */
+  isDeveloperAdmin: boolean;
   onChangePlan: (businessId: string, planKey: string) => Promise<void>;
   onExtendTrial: (businessId: string, days: number) => Promise<void>;
+  onSetUnrestricted: (businessId: string, unrestricted: boolean) => Promise<void>;
   onDelete: (account: DeveloperAccount) => void;
 }) {
   const [selectedPlanKey, setSelectedPlanKey] = useState(account.planKey ?? '');
@@ -822,6 +825,37 @@ function PlatformAccountRow({
               someone else's business, on a table where the rows look alike,
               is a mis-click waiting to happen.
             */}
+            {/* The exemption that takes a business out of every subscription,
+                trial and entitlement gate. It has always been grantable
+                only by API, so a business granted it could not be told
+                apart from one that was simply paying - the state is shown
+                here because a permanent, free-service grant nobody can see
+                is the kind that gets forgotten. */}
+            {isDeveloperAdmin && account.businessId && (
+              <button
+                type="button"
+                disabled={busy}
+                title={
+                  account.tierUnrestricted
+                    ? 'This business bypasses every plan and trial gate. Click to put it back on its plan.'
+                    : 'Exempt this business from every plan and trial gate.'
+                }
+                onClick={() => {
+                  if (
+                    !account.tierUnrestricted &&
+                    !window.confirm(`Give ${account.businessName ?? 'this business'} unrestricted access?\n\nIt stops being checked against any plan, trial or entitlement until this is turned off. The grant is recorded against your account.`)
+                  ) {
+                    return;
+                  }
+                  void onSetUnrestricted(account.businessId!, !account.tierUnrestricted);
+                }}
+                className={`rounded-md px-2 py-1 text-meta font-medium disabled:opacity-50 ${
+                  account.tierUnrestricted ? 'bg-warning/15 text-warning hover:bg-warning/25' : 'text-fg-muted hover:bg-surface-2'
+                }`}
+              >
+                {account.tierUnrestricted ? 'Unrestricted' : 'Unrestrict'}
+              </button>
+            )}
             {!account.isDeveloper && (
               <button
                 type="button"
@@ -1499,11 +1533,52 @@ function OversightThresholdsForm({ thresholds, onSave }: { thresholds: Oversight
   );
 }
 
-function OversightFindingRow({ finding, onChangeStatus }: { finding: OversightFindingDto; onChangeStatus: (id: string, status: 'investigating' | 'resolved' | 'rejected' | 'monitoring') => Promise<void> }) {
+function OversightFindingRow({ finding, onChangeStatus }: { finding: OversightFindingDto; onChangeStatus: (id: string, status: 'investigating' | 'resolved' | 'rejected' | 'monitoring', notes?: string) => Promise<void> }) {
   const [busy, setBusy] = useState(false);
+  /**
+   * Who moved this finding, when, and why.
+   *
+   * Every status change has always been recorded against the finding and
+   * there was nothing anywhere that could read it back - so a finding
+   * dismissed last month looked identical to one nobody had ever touched,
+   * and there was no way to tell whether a recurring problem had already
+   * been looked at and rejected.
+   *
+   * Fetched when it is opened rather than with the list: this is a
+   * question asked about one finding, not about all of them.
+   */
+  const [history, setHistory] = useState<OversightFindingEventDto[] | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  async function toggleHistory() {
+    const opening = !historyOpen;
+    setHistoryOpen(opening);
+    if (!opening || history !== null) return;
+    try {
+      const { events } = await api.getOversightFindingEvents(finding.id);
+      setHistory(events);
+    } catch {
+      setHistory([]);
+    }
+  }
+
   async function handle(status: 'investigating' | 'resolved' | 'rejected' | 'monitoring') {
+    /**
+     * Dismissing is the one that needs a reason.
+     *
+     * It says "this is not a real problem", and a finding that keeps coming
+     * back needs the last person's reasoning more than it needs another
+     * dismissal. The others are progress on something already accepted as
+     * real, so they are not worth a prompt every time.
+     */
+    let notes: string | undefined;
+    if (status === 'rejected') {
+      const reason = window.prompt(`Dismiss "${finding.title}"?\n\nSay why — it is recorded against the finding.`);
+      if (reason === null) return;
+      notes = reason.trim() || undefined;
+    }
     setBusy(true);
-    try { await onChangeStatus(finding.id, status); } finally { setBusy(false); }
+    try { await onChangeStatus(finding.id, status, notes); setHistory(null); } finally { setBusy(false); }
   }
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border-subtle bg-surface-1 p-3">
@@ -1522,6 +1597,22 @@ function OversightFindingRow({ finding, onChangeStatus }: { finding: OversightFi
           </p>
         )}
         {finding.recommendedInvestigation && <p className="mt-1 text-caption text-fg-secondary">{finding.recommendedInvestigation}</p>}
+
+        <button type="button" onClick={() => void toggleHistory()} className="mt-1 text-meta font-medium text-fg-muted hover:text-fg">
+          {historyOpen ? 'Hide history' : 'History'}
+        </button>
+        {historyOpen && (
+          <div className="mt-1 space-y-0.5">
+            {history === null && <p className="text-meta text-fg-muted">Loading…</p>}
+            {history !== null && history.length === 0 && <p className="text-meta text-fg-muted">Nobody has touched this yet.</p>}
+            {(history ?? []).map((event) => (
+              <p key={event.id} className="text-meta text-fg-muted">
+                {new Date(event.createdAt).toLocaleString()} · {event.fromStatus ? `${event.fromStatus} → ` : ''}{event.toStatus ?? event.eventType}
+                {event.notes ? ` · ${event.notes}` : ''}
+              </p>
+            ))}
+          </div>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <span className={`rounded-full px-2 py-0.5 text-meta font-medium ${OVERSIGHT_SEVERITY_COLOR[finding.severity]}`}>{finding.severity}</span>
@@ -1547,7 +1638,7 @@ function OversightSection({
 }: {
   findings: OversightFindingDto[] | null;
   thresholds: OversightThresholdsDto | null;
-  onChangeStatus: (id: string, status: 'investigating' | 'resolved' | 'rejected' | 'monitoring') => Promise<void>;
+  onChangeStatus: (id: string, status: 'investigating' | 'resolved' | 'rejected' | 'monitoring', notes?: string) => Promise<void>;
   onSaveThresholds: (t: OversightThresholdsDto) => Promise<void>;
 }) {
   const monitoringGaps = (findings ?? []).filter((f) => f.category === 'monitoring_gap');
@@ -1778,6 +1869,23 @@ export function DeveloperControlPlanePage() {
     api.getDevelopers().then((r) => setDevelopers(r.developers)).catch(() => undefined);
   }, []);
 
+  /**
+   * Grant or revoke the plan-gate exemption, and reflect it in place.
+   *
+   * The list is not refetched: it is a cross-tenant scan that decrypts a
+   * phone number per user, and re-running all of that to change one
+   * boolean the response already carries would be a visible pause on a
+   * page that lists every account on the platform.
+   */
+  const handleSetUnrestricted = async (businessId: string, unrestricted: boolean) => {
+    const { business } = await api.setBusinessTierUnrestricted(businessId, unrestricted);
+    setPlatformAccounts((previous) =>
+      (previous ?? []).map((account) =>
+        account.businessId === businessId ? { ...account, tierUnrestricted: business.tierUnrestricted } : account,
+      ),
+    );
+  };
+
   const handlePromoteDeveloper = async (email: string, tier: 'ADMIN' | 'STANDARD') => {
     await api.promoteDeveloper(email, tier);
     api.getDevelopers().then((r) => setDevelopers(r.developers)).catch(() => undefined);
@@ -1806,8 +1914,8 @@ export function DeveloperControlPlanePage() {
     setGovernanceThresholds(saved);
   };
 
-  const handleChangeOversightFindingStatus = async (id: string, status: 'investigating' | 'resolved' | 'rejected' | 'monitoring') => {
-    const { finding } = await api.changeOversightFindingStatus(id, status);
+  const handleChangeOversightFindingStatus = async (id: string, status: 'investigating' | 'resolved' | 'rejected' | 'monitoring', notes?: string) => {
+    const { finding } = await api.changeOversightFindingStatus(id, status, notes);
     // 'resolved'/'rejected' are terminal - listOpenAcrossPlatform never
     // returns them again, so remove locally. 'investigating'/'monitoring'
     // stay open - update in place rather than incorrectly disappearing.
@@ -2123,8 +2231,10 @@ export function DeveloperControlPlanePage() {
                           account={account}
                           plans={plans}
                           busy={changingPlanForBusinessId === account.businessId}
+                          isDeveloperAdmin={isDeveloperAdmin}
                           onChangePlan={handleChangeBusinessPlan}
                           onExtendTrial={handleExtendTrial}
+                          onSetUnrestricted={handleSetUnrestricted}
                           onDelete={setPurgeTarget}
                         />
                       ))}

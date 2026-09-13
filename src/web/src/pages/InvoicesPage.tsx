@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Plus, Receipt, FileText, CheckSquare, Send, DollarSign, X, Eye, Trash2, Ban, Palette } from 'lucide-react';
+import { Plus, Receipt, FileText, CheckSquare, Send, DollarSign, X, Eye, Pencil, Trash2, Ban, Palette } from 'lucide-react';
 import { api, ApiError, previewInvoiceHtml, type InvoiceDto, type InvoiceLineItemDto, type CreateInvoiceInput } from '../lib/api.js';
 import { InvoiceCustomizePanel } from '../components/InvoiceCustomizePanel.js';
 
@@ -277,6 +277,9 @@ function CreateInvoiceModal({ onClose, onCreated }: { onClose: () => void; onCre
 
 // ── Detail panel ──────────────────────────────────────────────────────────────
 
+const DETAIL_FIELD =
+  'mt-1 w-full rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-caption text-fg focus:outline-none focus:ring-1 focus:ring-accent';
+
 function InvoiceDetailPanel({ invoice, lineItems, onUpdate, onDeleted, onClose }: {
   invoice: InvoiceDto;
   lineItems: InvoiceLineItemDto[];
@@ -314,6 +317,49 @@ function InvoiceDetailPanel({ invoice, lineItems, onUpdate, onDeleted, onClose }
   }
 
   const Icon = DOC_ICON[invoice.documentType] ?? Receipt;
+
+  /**
+   * Fixing a document before it goes out.
+   *
+   * Everything below was set once when the invoice was created and could
+   * never be touched again - so a typo in the payment terms, a wrong due
+   * date or a tax rate entered as 15 instead of 0.15 meant deleting the
+   * draft and retyping every line item. The route for this has always
+   * existed.
+   *
+   * Only before it reaches the customer. The server allows DRAFT and
+   * PENDING_APPROVAL and refuses the rest; this matches it rather than
+   * offering an edit that comes back as an error.
+   */
+  const canEditDetails = invoice.status === 'DRAFT' || invoice.status === 'PENDING_APPROVAL';
+  const [editing, setEditing] = useState(false);
+  const [draftNotes, setDraftNotes] = useState(invoice.notes ?? '');
+  const [draftTerms, setDraftTerms] = useState(invoice.terms ?? '');
+  const [draftFooter, setDraftFooter] = useState(invoice.footerText ?? '');
+  const [draftDueDate, setDraftDueDate] = useState(invoice.dueDate ? invoice.dueDate.slice(0, 10) : '');
+  const [draftTaxPct, setDraftTaxPct] = useState(String(invoice.taxBasisPoints / 100));
+
+  async function handleSaveDetails() {
+    const taxPct = Number(draftTaxPct);
+    if (!Number.isFinite(taxPct) || taxPct < 0) {
+      setErr('Tax rate has to be a number.');
+      return;
+    }
+    await action(
+      () =>
+        api.patchInvoice(invoice.id, {
+          // Empty means "remove this", which is a real edit - so these are
+          // sent as null rather than left out of the patch.
+          notes: draftNotes.trim() || null,
+          terms: draftTerms.trim() || null,
+          footerText: draftFooter.trim() || null,
+          dueDate: draftDueDate || null,
+          taxBasisPoints: Math.round(taxPct * 100),
+        }),
+      'Save',
+    );
+    setEditing(false);
+  }
 
   const canSubmit = invoice.status === 'DRAFT';
   const canApprove = invoice.status === 'PENDING_APPROVAL';
@@ -397,6 +443,57 @@ function InvoiceDetailPanel({ invoice, lineItems, onUpdate, onDeleted, onClose }
           <div>
             <h3 className="mb-1 text-caption font-medium text-fg-muted uppercase tracking-wide">Notes</h3>
             <p className="text-caption text-fg-secondary whitespace-pre-wrap">{invoice.notes}</p>
+          </div>
+        )}
+
+        {canEditDetails && (
+          <div className="rounded-lg border border-border-subtle p-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-caption font-medium uppercase tracking-wide text-fg-muted">Details</h3>
+              <button
+                type="button"
+                onClick={() => setEditing((open) => !open)}
+                className="flex items-center gap-1 text-caption font-medium text-accent hover:text-accent-dim"
+              >
+                <Pencil size={12} aria-hidden />
+                {editing ? 'Close' : 'Edit'}
+              </button>
+            </div>
+
+            {editing && (
+              <div className="mt-3 space-y-2.5">
+                <div className="grid grid-cols-2 gap-2.5">
+                  <label className="block text-meta font-medium uppercase tracking-wide text-fg-muted">
+                    Due date
+                    <input type="date" value={draftDueDate} onChange={(e) => setDraftDueDate(e.target.value)} className={DETAIL_FIELD} />
+                  </label>
+                  <label className="block text-meta font-medium uppercase tracking-wide text-fg-muted">
+                    Tax %
+                    <input inputMode="decimal" value={draftTaxPct} onChange={(e) => setDraftTaxPct(e.target.value)} className={DETAIL_FIELD} />
+                  </label>
+                </div>
+                <label className="block text-meta font-medium uppercase tracking-wide text-fg-muted">
+                  Notes
+                  <textarea rows={2} value={draftNotes} onChange={(e) => setDraftNotes(e.target.value)} className={`resize-y ${DETAIL_FIELD}`} />
+                </label>
+                <label className="block text-meta font-medium uppercase tracking-wide text-fg-muted">
+                  Terms
+                  <textarea rows={2} value={draftTerms} onChange={(e) => setDraftTerms(e.target.value)} className={`resize-y ${DETAIL_FIELD}`} />
+                </label>
+                <label className="block text-meta font-medium uppercase tracking-wide text-fg-muted">
+                  Footer
+                  <textarea rows={2} value={draftFooter} onChange={(e) => setDraftFooter(e.target.value)} className={`resize-y ${DETAIL_FIELD}`} />
+                </label>
+                <button
+                  type="button"
+                  disabled={!!busy}
+                  onClick={() => void handleSaveDetails()}
+                  className="w-full rounded-lg bg-accent px-3 py-2 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+                >
+                  {busy === 'Save' ? 'Saving…' : 'Save details'}
+                </button>
+              </div>
+            )}
           </div>
         )}
 

@@ -39,6 +39,15 @@ export interface DeveloperAccountSummary {
   trialEndsAt: string | null;
   planKey: string | null;
   planName: string | null;
+  /**
+   * Exempt from every subscription, trial and entitlement gate.
+   *
+   * Carried on this list because the toggle that grants it lives on this
+   * row, and a switch that cannot show what it is currently set to is a
+   * switch people flip twice to find out. The business record is already
+   * loaded above, so this costs nothing.
+   */
+  tierUnrestricted: boolean;
 }
 
 /**
@@ -89,6 +98,7 @@ export async function listAllAccounts(): Promise<DeveloperAccountSummary[]> {
         trialEndsAt: subscription?.trialEndsAt ?? null,
         planKey: plan?.planKey ?? null,
         planName: plan?.name ?? null,
+        tierUnrestricted: business?.tierUnrestricted ?? false,
       };
     }),
   );

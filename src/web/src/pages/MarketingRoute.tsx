@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type MouseEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Megaphone, Send, Check, X, Users, CalendarClock, Image as ImageIcon, Sparkles, Trash2, Ban, Paperclip } from 'lucide-react';
+import { ArrowLeft, Megaphone, Send, Check, X, Users, CalendarClock, Image as ImageIcon, Sparkles, Trash2, Ban, Paperclip, Pencil } from 'lucide-react';
 import {
   api,
   ApiError,
@@ -285,6 +285,10 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recallResult, setRecallResult] = useState<{ queued: number; skipped: { messageId: string; reason: string }[] } | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editMessage, setEditMessage] = useState('');
+  const [removeAttachment, setRemoveAttachment] = useState(false);
 
   /**
    * Real delete-for-everyone across the campaign's delivered messages. The
@@ -333,6 +337,33 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
     }
   }
 
+  /**
+   * Fixing a draft before it goes to a list of real customers.
+   *
+   * A campaign's name and message were set at creation and could not be
+   * changed afterwards, so a typo in something about to be sent to every
+   * contact on a list meant deleting the campaign and picking all the
+   * recipients again. Drafts only, which is what the server allows - once
+   * it has been submitted for review the words people approved are the
+   * words that go out.
+   */
+  async function handleSaveEdit() {
+    if (!detail) return;
+    if (!editName.trim() || !editMessage.trim()) {
+      setError('A campaign needs a name and a message.');
+      return;
+    }
+    await handleAction(() =>
+      api.updateCampaign(detail.campaign.id, {
+        name: editName.trim(),
+        messageText: editMessage.trim(),
+        ...(removeAttachment ? { removeAttachment: true } : {}),
+      }),
+    );
+    setEditing(false);
+    setRemoveAttachment(false);
+  }
+
   async function handleDelete(campaignId: string) {
     if (!window.confirm('Permanently delete this campaign? This cannot be undone.')) return;
     setBusy(true);
@@ -379,7 +410,71 @@ function CampaignDetailView({ campaignId, onBack }: { campaignId: string; onBack
 
       {error && <p className="mt-3 text-caption text-error">{error}</p>}
 
+      {campaign.status === 'DRAFT' && editing && (
+        <div className="mt-4 space-y-2.5 rounded-lg border border-border-subtle p-3">
+          <label className="block text-meta font-medium uppercase tracking-wide text-fg-muted">
+            Name
+            <input
+              value={editName}
+              onChange={(event) => setEditName(event.target.value)}
+              className="mt-1 w-full rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-caption text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+            />
+          </label>
+          <label className="block text-meta font-medium uppercase tracking-wide text-fg-muted">
+            Message
+            <textarea
+              rows={5}
+              value={editMessage}
+              onChange={(event) => setEditMessage(event.target.value)}
+              className="mt-1 w-full resize-y rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-caption text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+            />
+          </label>
+          {/* Offered only where there is an attachment to remove. Replacing
+              one is the composer's job, not this form's - re-uploading media
+              belongs where the picker already is. */}
+          {campaign.messageType !== 'text' && (
+            <label className="flex items-center gap-2 text-caption text-fg-secondary">
+              <input type="checkbox" checked={removeAttachment} onChange={(event) => setRemoveAttachment(event.target.checked)} />
+              Remove the attachment{campaign.mediaFileName ? ` (${campaign.mediaFileName})` : ''}
+            </label>
+          )}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void handleSaveEdit()}
+              className="rounded-lg bg-accent px-3 py-1.5 text-caption font-medium text-white hover:bg-accent-dim disabled:opacity-50"
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              className="rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg-secondary hover:bg-surface-3"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="mt-4 flex flex-wrap gap-2">
+        {campaign.status === 'DRAFT' && !editing && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              setEditName(campaign.name);
+              setEditMessage(campaign.messageText);
+              setRemoveAttachment(false);
+              setEditing(true);
+            }}
+            className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-1.5 text-caption font-medium text-fg hover:bg-surface-3 disabled:opacity-50"
+          >
+            <Pencil size={13} aria-hidden />
+            Edit
+          </button>
+        )}
         {campaign.status === 'DRAFT' && (
           <button
             type="button"

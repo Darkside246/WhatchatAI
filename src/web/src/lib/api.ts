@@ -3059,8 +3059,16 @@ export const api = {
   setOversightThresholds: (thresholds: OversightThresholdsDto) =>
     request<{ thresholds: OversightThresholdsDto }>('/developer/oversight/thresholds', { method: 'PATCH', body: JSON.stringify(thresholds) }),
   // ── Accurate stat drill-down + tiered developer roles ─────────────────
+  /** Typed as the route really answers - see productAccountRoutes.ts, where a second, narrower handler for this path was shadowed and has been removed. */
   getPlatformTrials: () =>
-    request<{ trials: { id: string; email: string; productKey: string; state: string; startsAt: string | null; endsAt: string | null; productAccountId: string | null }[] }>('/developer/trials'),
+    request<{
+      trials: {
+        id: string; email: string; productKey: string;
+        state: 'CREATED' | 'ACTIVE' | 'EXPIRING' | 'EXPIRED' | 'CONVERTED' | 'CANCELLED';
+        startsAt: string | null; endsAt: string | null; expiredAt: string | null; convertedAt: string | null;
+        productAccountId: string | null; createdAt: string;
+      }[];
+    }>('/developer/trials'),
   getPlatformSecurityEvents: (hours = 24) =>
     request<{ events: { id: string; eventType: string; severity: string; businessId: string | null; businessName: string | null; createdAt: string }[] }>(`/developer/security-events?hours=${hours}`),
   getDevelopers: () =>
@@ -3102,6 +3110,8 @@ export const api = {
         trialEndsAt: string | null;
         planKey: string | null;
         planName: string | null;
+        /** Exempt from every subscription, trial and entitlement gate - see setBusinessTierUnrestricted. */
+        tierUnrestricted: boolean;
       }>;
     }>('/billing/developer/accounts'),
   /** Confirms an email address from the link in the welcome email. Unauthenticated - the link is opened from an inbox. */
@@ -3365,13 +3375,4 @@ export const api = {
         displayName: string; status: string; ownerUserId: string | null;
       }>;
     }>('/platform/developer/product-accounts'),
-  listDeveloperTrials: () =>
-    request<{
-      trials: Array<{
-        id: string; email: string; productKey: string;
-        state: 'CREATED' | 'ACTIVE' | 'EXPIRING' | 'EXPIRED' | 'CONVERTED' | 'CANCELLED';
-        startsAt: string | null; endsAt: string | null; expiredAt: string | null; convertedAt: string | null;
-        createdAt: string;
-      }>;
-    }>('/developer/trials'),
 };
