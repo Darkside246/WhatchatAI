@@ -170,6 +170,9 @@ const TEXT_PREVIEW_MAX_LENGTH = 200;
  * codebase imports it as a value, and the numbers are wire format - they
  * cannot change without breaking every WhatsApp client at once.
  */
+/** proto.Message.PinInChatMessage.Type, as raw numbers - wire format, taken as a type only. */
+const PIN_IN_CHAT_TYPE = { PIN_FOR_ALL: 1, UNPIN_FOR_ALL: 2 } as const;
+
 const PROTOCOL_MESSAGE_TYPE = {
   REVOKE: 0,
   EPHEMERAL_SETTING: 3,
@@ -200,6 +203,18 @@ export type WhatsAppSystemEvent =
   | { kind: 'ephemeral_setting'; expirationSeconds: number }
   /** A group member was given a short label/nickname by another member. */
   | { kind: 'member_label'; label: string }
+  /**
+   * Somebody pinned or unpinned a message in this conversation.
+   *
+   * Not a protocolMessage - WhatsApp sends it as its own top-level
+   * pinInChatMessage, which is why it fell through the classifier entirely
+   * and rendered as a bare bubble with no words in it.
+   */
+  | { kind: 'pin'; pinned: boolean; targetMessageId: string | null }
+  /** A message was kept, or un-kept, so a disappearing-messages timer does not remove it. */
+  | { kind: 'keep_in_chat'; kept: boolean; targetMessageId: string | null }
+  /** Who may share what out of this chat was narrowed. */
+  | { kind: 'limit_sharing' }
   /** WhatsApp talking to itself. Never a conversation message, never persisted. */
   | { kind: 'plumbing'; typeCode: number };
 
@@ -214,6 +229,15 @@ function describeSystemEvent(event: WhatsAppSystemEvent): string | null {
         : 'Disappearing messages turned off';
     case 'member_label':
       return `Member tag: ${event.label}`;
+    case 'pin':
+      // Deliberately not "X pinned a message": whoever did it is already
+      // rendered as the sender of this event, and repeating a name we would
+      // have to resolve separately is how a wrong name gets shown.
+      return event.pinned ? 'Pinned a message' : 'Unpinned a message';
+    case 'keep_in_chat':
+      return event.kept ? 'Kept a message in this chat' : 'Stopped keeping a message';
+    case 'limit_sharing':
+      return 'Changed who can share from this chat';
     // An edit is applied to the message it edits, so it has no line of its
     // own; plumbing never reaches a conversation at all.
     case 'edit':
@@ -562,8 +586,25 @@ function classifyContent(content: proto.IMessage | null | undefined, fromMe: boo
   if (message.reactionMessage) {
     return { ...empty, contentType: 'reaction', textPreview: message.reactionMessage.text ?? null, fullText: message.reactionMessage.text ?? null };
   }
-  if (message.pollCreationMessage || message.pollCreationMessageV2 || message.pollCreationMessageV3) {
-    const poll = message.pollCreationMessage ?? message.pollCreationMessageV2 ?? message.pollCreationMessageV3;
+  if (
+    message.pollCreationMessage ||
+    message.pollCreationMessageV2 ||
+    message.pollCreationMessageV3 ||
+    // V4 and V5 are what a current phone actually sends. Without them a poll
+    // from an up-to-date client classified as unsupported and rendered as a
+    // bubble with nothing in it.
+    message.pollCreationMessageV4 ||
+    message.pollCreationMessageV5
+  ) {
+    const poll =
+      message.pollCreationMessage ??
+      message.pollCreationMessageV2 ??
+      message.pollCreationMessageV3 ??
+      /* V4 is wrapped in a future-proof envelope and V5 is not - checked
+         against the protobuf rather than assumed, because guessing either
+         way silently produces a poll with no question and no options. */
+      message.pollCreationMessageV4?.message?.pollCreationMessage ??
+      message.pollCreationMessageV5;
     const options = (poll?.options ?? [])
       .map((option) => option.optionName ?? '')
       .filter((name) => name.trim().length > 0);
@@ -616,6 +657,158 @@ function classifyContent(content: proto.IMessage | null | undefined, fromMe: boo
       structuredPayload: call,
     };
   }
+  /**
+   * Pinning, keeping and sharing limits.
+   *
+   * All three arrive as their own top-level message rather than inside a
+   * protocolMessage, which is exactly why they fell past every branch above
+   * and rendered as an empty bubble - reported as "he pinned a message and
+   * our side showed a blank". They are conversation events with real
+   * wording, so they classify as 'system' with a description like every
+   * other event, never as unsupported.
+   */
+  if (message.pinInChatMessage) {
+    const pinned = message.pinInChatMessage.type !== PIN_IN_CHAT_TYPE.UNPIN_FOR_ALL;
+    const systemEvent: WhatsAppSystemEvent = {
+      kind: 'pin',
+      pinned,
+      targetMessageId: message.pinInChatMessage.key?.id ?? null,
+    };
+    const description = describeSystemEvent(systemEvent);
+    return { ...empty, contentType: 'system', textPreview: description, fullText: description, systemEvent };
+  }
+
+  if (message.keepInChatMessage) {
+    /* KeepType 1 is "keep", anything else is undoing it. Read as a number
+       for the same reason the other wire enums here are. */
+    const kept = Number(message.keepInChatMessage.keepType ?? 0) === 1;
+    const systemEvent: WhatsAppSystemEvent = {
+      kind: 'keep_in_chat',
+      kept,
+      targetMessageId: message.keepInChatMessage.key?.id ?? null,
+    };
+    const description = describeSystemEvent(systemEvent);
+    return { ...empty, contentType: 'system', textPreview: description, fullText: description, systemEvent };
+  }
+
+  if (message.limitSharingMessage) {
+    const systemEvent: WhatsAppSystemEvent = { kind: 'limit_sharing' };
+    const description = describeSystemEvent(systemEvent);
+    return { ...empty, contentType: 'system', textPreview: description, fullText: description, systemEvent };
+  }
+
+  /**
+   * A round video note. Real, ordinary media that simply had no branch, so
+   * it arrived as an empty bubble with no way to play it.
+   */
+  if (message.ptvMessage) {
+    return {
+      ...empty,
+      contentType: 'video',
+      mimetype: message.ptvMessage.mimetype ?? null,
+      rawMediaMessage: media(message),
+    };
+  }
+
+  /** An animated sticker, which is still a sticker. */
+  if (message.lottieStickerMessage) {
+    return { ...empty, contentType: 'sticker', rawMediaMessage: media(message) };
+  }
+
+  /**
+   * An event somebody created in the chat. The name is the whole point of
+   * it, and without a branch here the operator saw that something had
+   * arrived and not what.
+   */
+  if (message.eventMessage) {
+    const event = message.eventMessage;
+    const parts = [event.name?.trim(), event.description?.trim()].filter(Boolean);
+    const text = event.isCanceled ? `Event cancelled: ${parts.join(' - ')}` : `Event: ${parts.join(' - ')}`;
+    return { ...empty, contentType: 'interactive', textPreview: truncatePreview(text), fullText: text };
+  }
+
+  /**
+   * Money and commerce.
+   *
+   * These matter more here than in a general chat client: this app is for
+   * businesses taking payments, and a customer sending a payment request or
+   * placing a catalogue order arriving as a blank bubble is the worst thing
+   * on this whole list. Every one carries what it is worth or what it is
+   * for, because "Payment" on its own tells an owner nothing.
+   *
+   * Nothing here is treated as a settled payment. WhatsApp's payment rails
+   * are not available in most of the places this app runs, and these are
+   * messages ABOUT money rather than proof of any - a request is a request,
+   * and the kitchen gate is never opened by one.
+   */
+  if (message.requestPaymentMessage) {
+    const request = message.requestPaymentMessage;
+    // amount1000 is the amount in thousandths, which is WhatsApp's own unit
+    // here - not cents, and not a mistake.
+    const thousandths = Number(request.amount1000 ?? 0);
+    const currency = request.currencyCodeIso4217 ?? '';
+    const amount = thousandths > 0 ? `${currency} ${(thousandths / 1000).toFixed(2)}`.trim() : null;
+    const note = request.noteMessage?.conversation ?? request.noteMessage?.extendedTextMessage?.text ?? null;
+    const text = [`Payment requested${amount ? `: ${amount}` : ''}`, note].filter(Boolean).join(' - ');
+    return { ...empty, contentType: 'interactive', textPreview: truncatePreview(text), fullText: text };
+  }
+
+  if (message.sendPaymentMessage) {
+    const note =
+      message.sendPaymentMessage.noteMessage?.conversation ??
+      message.sendPaymentMessage.noteMessage?.extendedTextMessage?.text ??
+      null;
+    // Deliberately "sent a payment", never "paid": what reaches us is the
+    // customer's claim, and this app must not turn a claim into a receipt.
+    const text = note ? `Payment sent - ${note}` : 'Payment sent';
+    return { ...empty, contentType: 'interactive', textPreview: truncatePreview(text), fullText: text };
+  }
+
+  if (message.cancelPaymentRequestMessage) {
+    return { ...empty, contentType: 'interactive', textPreview: 'Payment request cancelled', fullText: 'Payment request cancelled' };
+  }
+  if (message.declinePaymentRequestMessage) {
+    return { ...empty, contentType: 'interactive', textPreview: 'Payment request declined', fullText: 'Payment request declined' };
+  }
+  if (message.paymentInviteMessage) {
+    const text = 'Invitation to set up payments';
+    return { ...empty, contentType: 'interactive', textPreview: text, fullText: text };
+  }
+
+  if (message.orderMessage) {
+    const order = message.orderMessage;
+    const count = typeof order.itemCount === 'number' && order.itemCount > 0 ? `${order.itemCount} item${order.itemCount === 1 ? '' : 's'}` : null;
+    const text = [`Order${order.orderTitle ? `: ${order.orderTitle}` : ''}`, count, order.message?.trim()]
+      .filter(Boolean)
+      .join(' - ');
+    return { ...empty, contentType: 'interactive', textPreview: truncatePreview(text), fullText: text };
+  }
+
+  if (message.productMessage) {
+    const title = message.productMessage.product?.title?.trim();
+    const text = title ? `Product: ${title}` : 'A product from the catalogue';
+    return { ...empty, contentType: 'interactive', textPreview: truncatePreview(text), fullText: text };
+  }
+
+  /**
+   * A set of photos sent together. The pictures themselves arrive as their
+   * own messages straight after; this is the header that says how many are
+   * coming, which is why it has no media of its own to download.
+   */
+  if (message.albumMessage) {
+    const images = Number(message.albumMessage.expectedImageCount ?? 0);
+    const videos = Number(message.albumMessage.expectedVideoCount ?? 0);
+    const parts = [images > 0 ? `${images} photo${images === 1 ? '' : 's'}` : null, videos > 0 ? `${videos} video${videos === 1 ? '' : 's'}` : null].filter(Boolean);
+    const text = parts.length > 0 ? `Album - ${parts.join(', ')}` : 'Album';
+    return { ...empty, contentType: 'interactive', textPreview: text, fullText: text };
+  }
+
+  /** The customer is being asked to share their number - worth seeing, since somebody is about to. */
+  if (message.requestPhoneNumberMessage) {
+    const text = 'Asked to share a phone number';
+    return { ...empty, contentType: 'interactive', textPreview: text, fullText: text };
+  }
+
   if (message.protocolMessage) {
     // Identified rather than collapsed - see WhatsAppSystemEvent. The
     // description, where there is one, is put in textPreview/fullText so it
