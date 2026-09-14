@@ -1,0 +1,33 @@
+-- Whether this business lets its managers raise and settle invoices, or
+-- keeps that to the owner and admins.
+--
+-- WHY THIS EXISTS. A security review found every invoice route behind
+-- "is signed in" and nothing else, so any member of the business - a
+-- VIEWER, whose entire role is the nine *.view permissions - could approve
+-- an invoice, mark it paid, send it to a customer, void it or delete it.
+-- That is now gated on billing.manage, which OWNER and ADMIN hold.
+--
+-- But "who may raise an invoice" is a real difference between businesses,
+-- not a fact about software. A restaurant where the owner does the books
+-- wants exactly the new behaviour. A property firm with a manager running
+-- the office wants that manager invoicing without being made an admin of
+-- everything else. Hard-coding either answer makes the product wrong for
+-- half the people using it.
+--
+-- So it is a setting, and the setting is narrow: it extends invoice
+-- management to MANAGER and SUPERVISOR, the two supervisory roles, and to
+-- nobody else. AGENT, MARKETING and VIEWER never reach it however this is
+-- set - a delegation is a wider circle of trusted people, never an open
+-- door.
+--
+-- DEFAULT FALSE, which is today's behaviour exactly. Nobody's access
+-- changes when this ships; a business that wants managers invoicing turns
+-- it on deliberately, having read what it does. The opposite default would
+-- quietly re-open the hole the review just closed.
+--
+-- Changing it requires settings.manage (OWNER/ADMIN), so a manager can
+-- never switch on their own access - the one way a delegation setting
+-- becomes an escalation.
+
+ALTER TABLE businesses
+  ADD COLUMN IF NOT EXISTS invoice_manage_delegated boolean NOT NULL DEFAULT false;

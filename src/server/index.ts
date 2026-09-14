@@ -206,6 +206,7 @@ import {
 import { requireAuth, requirePermission, requireActiveSubscription, requireDeveloper, setSessionCookie, clearSessionCookie, readSessionToken, type AuthContext } from './authMiddleware.js';
 import { isMaintenanceModeOn } from '../services/platform/platformConfigService.js';
 import { BUSINESS_ROLES, isBusinessRole } from '../domain/auth/permissions.js';
+import { canManageInvoices, canDelegateInvoiceManagement, DELEGABLE_INVOICE_ROLES } from '../domain/auth/invoiceAccess.js';
 // Runs the real outbound-send BullMQ worker in this process, not the
 // separate incomingMessagesWorker.ts process - every tenant's live Baileys
 // socket only exists here, wherever whatsappConnectionManager.connect()
@@ -4277,6 +4278,51 @@ app.patch('/api/workspace/settings/pii-warning', requireWorkspaceContext, requir
   const business = await new BusinessRepository(pool).setPiiWarningEnabled(businessId, parsed.data.enabled);
   if (!business) return res.status(404).json({ error: 'BUSINESS_NOT_FOUND' });
   return res.status(200).json({ piiWarningEnabled: business.piiWarningEnabled });
+});
+
+/**
+ * Whether this business lets its managers raise and settle invoices.
+ *
+ * A security review found every invoice route open to any signed-in member,
+ * a VIEWER included. That is now gated on billing.manage (OWNER/ADMIN) -
+ * but who may raise an invoice is a real difference between businesses, not
+ * a fact about software, so a business can delegate it to its two
+ * supervisory roles. Off by default, which is exactly today's behaviour;
+ * see migration 1052.
+ *
+ * requirePermission('settings.manage') is the load-bearing part of this
+ * route. The roles the setting delegates TO must never be able to switch it
+ * on, or the delegation is an escalation and worse than having no setting.
+ */
+app.patch('/api/workspace/settings/invoice-delegation', requireWorkspaceContext, requirePermission('settings.manage'), async (req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const parsed = z.object({ delegated: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'INVALID_INPUT' });
+
+  const business = await new BusinessRepository(pool).setInvoiceManageDelegated(businessId, parsed.data.delegated);
+  if (!business) return res.status(404).json({ error: 'BUSINESS_NOT_FOUND' });
+  return res.status(200).json({ invoiceManageDelegated: business.invoiceManageDelegated });
+});
+
+/**
+ * What the caller may actually do with invoices, answered for the browser.
+ *
+ * Readable by any member, because the honest answer to "may I?" for
+ * somebody who may not is "no", not 403. The screen uses it to hide buttons
+ * that would only fail; the server enforces the same rule regardless of
+ * what the screen decided to show.
+ */
+app.get('/api/workspace/settings/invoice-delegation', requireWorkspaceContext, async (_req, res) => {
+  const { businessId } = res.locals.workspaceContext as { businessId: string; whatsappAccountId: string };
+  const auth = res.locals.auth as AuthContext;
+  const business = await new BusinessRepository(pool).findById(businessId);
+  if (!business) return res.status(404).json({ error: 'BUSINESS_NOT_FOUND' });
+  return res.status(200).json({
+    invoiceManageDelegated: business.invoiceManageDelegated,
+    canManageInvoices: canManageInvoices(auth.role, business.invoiceManageDelegated),
+    canChangeSetting: canDelegateInvoiceManagement(auth.role),
+    delegableRoles: DELEGABLE_INVOICE_ROLES,
+  });
 });
 
 app.get('/api/workspace/statuses', requireWorkspaceContext, async (_req, res) => {

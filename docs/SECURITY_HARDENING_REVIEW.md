@@ -46,14 +46,30 @@ the classic shape of this bug.
 routes. A `VIEWER` could approve an invoice, mark it paid, send it to a
 customer, void it or delete it.
 
-**Fixed:** all ten now require `billing.manage`. Reads are deliberately
-untouched — a colleague looking at a document their own business issued was
-never the problem.
+**Fixed:** all ten now go through `canManageInvoices()`
+(`src/domain/auth/invoiceAccess.ts`). Reads are deliberately untouched — a
+colleague looking at a document their own business issued was never the
+problem.
 
-> **One policy call to check.** `billing.manage` is held by `OWNER` and
-> `ADMIN`. If a business wants its `MANAGER`s raising invoices too, that is
-> one line in `src/domain/auth/permissions.ts`. It should be a decision
-> somebody makes on purpose, rather than the absence of a check.
+**And it is a setting, not a decision made once for everybody.** "Who may
+raise an invoice" is a real difference between businesses rather than a fact
+about software: a restaurant where the owner does the books wants it locked
+down, while a property firm with a manager running the office needs that
+manager invoicing without being made an admin of everything else. So
+Settings carries *Let managers raise and settle invoices*:
+
+- **Off by default** (migration 1052) — exactly the locked-down state, so
+  nobody's access changes the day this ships. The opposite default would
+  quietly re-open the hole the review just closed.
+- **On** extends invoice management to `MANAGER` and `SUPERVISOR` and to
+  nobody else. `AGENT`, `MARKETING` and `VIEWER` never reach it however the
+  setting is set — a delegation widens the circle of trusted people, it does
+  not open the door.
+- **Changing it requires `settings.manage`**, which the delegated roles do
+  not hold, and the control is not rendered for them either. This is the
+  load-bearing part: a manager who could switch on manager invoicing has not
+  been delegated anything, they have found an escalation, and the setting
+  would be worse than no setting at all.
 
 ### 3. The test that guards against exactly this read 3 of 20 routers
 

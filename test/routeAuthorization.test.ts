@@ -383,8 +383,11 @@ describe('the two routers where being signed in used to be the whole check', () 
     for (const route of routes) expect(route.rest, `${route.key} is unguarded`).toContain('requireInvoiceChange');
   });
 
-  it('invoice changes are bound to a permission a VIEWER does not hold', () => {
-    expect(invoiceSource).toContain("requirePermission('billing.manage')");
+  it('invoice changes go through the one rule that reads the business own setting', () => {
+    // Not requirePermission directly: who may raise an invoice is a real
+    // difference between businesses, so the decision lives in
+    // domain/auth/invoiceAccess.ts and this router only enforces it.
+    expect(invoiceSource).toContain('canManageInvoices(');
     expect(hasPermission('VIEWER', 'billing.manage')).toBe(false);
     expect(hasPermission('AGENT', 'billing.manage')).toBe(false);
     expect(hasPermission('OWNER', 'billing.manage')).toBe(true);

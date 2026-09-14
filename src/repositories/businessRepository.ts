@@ -39,6 +39,8 @@ export interface BusinessRecord {
   channelNotificationsEnabled: boolean;
   /** Warn an operator before sending a message that looks like it contains personal information (migration 1021). Default true. */
   piiWarningEnabled: boolean;
+  /** Whether MANAGER and SUPERVISOR may manage invoices too. Off by default - see migration 1052. */
+  invoiceManageDelegated: boolean;
   /** Last time this business's own member (not a developer) ran the generic AI test-connection check - backs the 15-minute rate limit on that route. Null until ever tested. */
   aiConnectionTestedAt: Date | null;
   /** A real, first-class home for these three (previously only Motto existed, buried as free text inside the "Business Profile" KB document). The raw text always stays here regardless of missionStatementAiVisible - see workspaceService.ts's setMissionStatement. */
@@ -82,6 +84,7 @@ interface BusinessRow {
   ai_operator_paused_until: string | null;
   channel_notifications_enabled: boolean | null;
   pii_warning_enabled: boolean | null;
+  invoice_manage_delegated: boolean | null;
   ai_connection_tested_at: Date | null;
   motto: string | null;
   vision: string | null;
@@ -100,7 +103,7 @@ interface BusinessRow {
 }
 
 const BUSINESS_COLUMNS =
-  'id, name, timezone, time_source, manual_override_target_utc, manual_override_set_at, deletion_requested_at, scheduled_purge_at, brand_color, logo_data_url, ai_actions_paused, ai_actions_paused_at, name_usage_level, name_usage_enabled, customer_memory_enabled, relationship_confidence_enabled, ai_operator_paused_until, channel_notifications_enabled, pii_warning_enabled, ai_connection_tested_at, motto, vision, mission, mission_statement_ai_visible, invoice_customization, address, phone, tax_registration_number, tax_registration_label, invoice_email, invoice_website, payment_instructions, tier_unrestricted';
+  'id, name, timezone, time_source, manual_override_target_utc, manual_override_set_at, deletion_requested_at, scheduled_purge_at, brand_color, logo_data_url, ai_actions_paused, ai_actions_paused_at, name_usage_level, name_usage_enabled, customer_memory_enabled, relationship_confidence_enabled, ai_operator_paused_until, channel_notifications_enabled, pii_warning_enabled, invoice_manage_delegated, ai_connection_tested_at, motto, vision, mission, mission_statement_ai_visible, invoice_customization, address, phone, tax_registration_number, tax_registration_label, invoice_email, invoice_website, payment_instructions, tier_unrestricted';
 
 function toRecord(row: BusinessRow): BusinessRecord {
   return {
@@ -123,6 +126,9 @@ function toRecord(row: BusinessRow): BusinessRecord {
     aiOperatorPausedUntil: row.ai_operator_paused_until,
     channelNotificationsEnabled: row.channel_notifications_enabled ?? false,
     piiWarningEnabled: row.pii_warning_enabled ?? true,
+    /* Falsy-safe on purpose: a row read before the column existed must read
+       as NOT delegated, which is the closed state. */
+    invoiceManageDelegated: row.invoice_manage_delegated ?? false,
     aiConnectionTestedAt: row.ai_connection_tested_at,
     motto: row.motto,
     vision: row.vision,
@@ -236,6 +242,21 @@ export class BusinessRepository {
     const { rows } = await this.db.query<BusinessRow>(
       `UPDATE businesses SET ai_operator_paused_until = $2, updated_at = now() WHERE id = $1 RETURNING ${BUSINESS_COLUMNS}`,
       [id, until],
+    );
+    return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  /**
+   * Turns invoice management on or off for this business's managers.
+   *
+   * Extends it to MANAGER and SUPERVISOR only, never further - see
+   * migration 1052 for why this is a setting rather than a decision made
+   * once in the permission table.
+   */
+  async setInvoiceManageDelegated(id: string, delegated: boolean): Promise<BusinessRecord | null> {
+    const { rows } = await this.db.query<BusinessRow>(
+      `UPDATE businesses SET invoice_manage_delegated = $2, updated_at = now() WHERE id = $1 RETURNING ${BUSINESS_COLUMNS}`,
+      [id, delegated],
     );
     return rows[0] ? toRecord(rows[0]) : null;
   }

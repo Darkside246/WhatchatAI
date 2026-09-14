@@ -368,6 +368,13 @@ function parseProfileContent(content: string): { slogan: string; address: string
 }
 
 function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | null }) {
+  /* Mirrors settings.manage in domain/auth/permissions.ts. Used ONLY to
+     decide whether the invoice-delegation switch below is shown at all: a
+     manager who could see, and flip, the control that grants managers
+     invoicing has not been delegated anything. The server refuses them
+     either way; this stops the screen from suggesting otherwise. */
+  const profileAuth = useAuth();
+  const canChangeAccess = profileAuth.role === 'OWNER' || profileAuth.role === 'ADMIN';
   // Business name
   const [bizName, setBizName] = useState('');
   const [editingName, setEditingName] = useState(false);
@@ -400,6 +407,11 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
   // than briefly claiming the warning is off.
   const [piiWarning, setPiiWarning] = useState(true);
   const [piiWarningError, setPiiWarningError] = useState<string | null>(null);
+  /* Off by default, matching the column (migration 1052): before the real
+     value loads the UI should show the CLOSED state, never briefly claim a
+     delegation that is not in force. */
+  const [invoiceDelegated, setInvoiceDelegated] = useState(false);
+  const [invoiceDelegatedError, setInvoiceDelegatedError] = useState<string | null>(null);
   const [channelNotifsError, setChannelNotifsError] = useState<string | null>(null);
   const [showMission, setShowMission] = useState(false);
   const [savingMission, setSavingMission] = useState(false);
@@ -485,6 +497,7 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
       setMissionAiVisible(res.business.missionStatementAiVisible);
       setChannelNotifs(res.business.channelNotificationsEnabled);
       setPiiWarning(res.business.piiWarningEnabled);
+      setInvoiceDelegated(res.business.invoiceManageDelegated);
     }).catch(() => undefined);
     api.listKnowledgeBaseDocuments().then((res) => {
       const doc = res.documents.find((d) => d.title === PROFILE_KB_TITLE);
@@ -880,6 +893,43 @@ function ProfileCard({ connection }: { connection: WhatsAppConnectionSnapshot | 
                 label="Warn before sending personal information"
               />
             </div>
+            {canChangeAccess && (<>
+            {/* Who may raise an invoice.
+                A security review found every invoice route open to any
+                signed-in member of the business, a VIEWER included. That is
+                now owner/admin only - but a firm with a manager running the
+                office needs that manager invoicing without being made an
+                admin of everything else, so it is a setting rather than a
+                decision made once for everybody.
+                OFF by default, which is exactly the locked-down state. Only
+                an owner or admin sees this control at all, which is the
+                whole point: a manager who could grant themselves invoicing
+                has not been delegated anything. */}
+            <div className="flex items-start justify-between gap-3 border-t border-border-subtle pt-3">
+              <div className="min-w-0">
+                <p className="text-meta font-medium text-fg">Let managers raise and settle invoices</p>
+                <p className="text-meta text-fg-muted">
+                  Off by default: only owners and admins can create, approve, send, mark paid, void or delete an
+                  invoice. Turn this on to extend that to your Managers and Supervisors. Agents, Marketing and Viewers
+                  are never included, and anyone on your team can still read invoices either way.
+                </p>
+                {invoiceDelegatedError && <p className="mt-1 text-meta text-error">{invoiceDelegatedError}</p>}
+              </div>
+              <ToggleSwitch
+                checked={invoiceDelegated}
+                onChange={() => {
+                  const next = !invoiceDelegated;
+                  setInvoiceDelegated(next);
+                  setInvoiceDelegatedError(null);
+                  api.setInvoiceManageDelegated(next).catch((err: unknown) => {
+                    setInvoiceDelegated(!next);
+                    setInvoiceDelegatedError(err instanceof Error ? err.message : 'Could not save that setting.');
+                  });
+                }}
+                label="Let managers raise and settle invoices"
+              />
+            </div>
+            </>)}
             {missionError && <p className="text-meta text-error">{missionError}</p>}
             {missionSaved && <p className="text-meta text-success">{missionSaved}</p>}
             <button type="submit" disabled={savingMission}

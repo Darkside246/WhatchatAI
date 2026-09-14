@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { pool } from '../db/pool.js';
 import { InvoiceService } from '../services/invoice/invoiceService.js';
@@ -8,7 +8,8 @@ import { CrmContactRepository } from '../repositories/crmContactRepository.js';
 import { WhatsAppContactRepository } from '../repositories/whatsappContactRepository.js';
 import { resolveDisplayName } from '../domain/whatsapp/displayName.js';
 import type { RenderableCustomer, RenderableBusiness } from '../services/invoice/invoiceTemplates.js';
-import { requireAuth, requireActiveSubscription, requirePermission, type AuthContext } from './authMiddleware.js';
+import { requireAuth, requireActiveSubscription, type AuthContext } from './authMiddleware.js';
+import { canManageInvoices } from '../domain/auth/invoiceAccess.js';
 import { invoiceCustomizationSchema, DEFAULT_INVOICE_CUSTOMIZATION, type InvoiceCustomization } from '../services/invoice/invoiceTemplates.js';
 
 const router = Router();
@@ -30,12 +31,27 @@ router.use(requireActiveSubscription);
  * a colleague looking at a document their business issued is not the
  * problem. Only the routes that CHANGE one are gated.
  *
- * billing.manage is held by OWNER and ADMIN. If a business wants its
- * MANAGERs raising invoices too, that is one line in
- * domain/auth/permissions.ts - a policy decision, made deliberately, rather
- * than the absence of a check.
+ * The rule itself lives in domain/auth/invoiceAccess.ts, because "who may
+ * raise an invoice" is a real difference between businesses rather than a
+ * fact about software - OWNER and ADMIN always may, and a business can
+ * additionally delegate it to its managers from Settings. This middleware
+ * only reads that decision and enforces it.
  */
-const requireInvoiceChange = requirePermission('billing.manage');
+async function requireInvoiceChange(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const auth = res.locals['auth'] as AuthContext | undefined;
+  if (!auth) return void res.status(401).json({ error: 'NOT_AUTHENTICATED' });
+
+  /* Read per request rather than cached: an owner who has just revoked the
+     delegation expects it to be revoked, not to take effect whenever a
+     process happens to restart. One indexed primary-key read. */
+  const business = await businessRepository.findById(auth.businessId);
+  if (!business) return void res.status(404).json({ error: 'BUSINESS_NOT_FOUND' });
+
+  if (!canManageInvoices(auth.role, business.invoiceManageDelegated)) {
+    return void res.status(403).json({ error: 'PERMISSION_DENIED', permission: 'billing.manage', role: auth.role });
+  }
+  next();
+}
 
 const LineItemSchema = z.object({
   description: z.string().min(1).max(500),
