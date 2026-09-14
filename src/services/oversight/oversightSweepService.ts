@@ -32,6 +32,7 @@ import { AiUsageRepository } from '../../repositories/aiUsageRepository.js';
 import { AiTokenTopupRepository } from '../../repositories/aiTokenTopupRepository.js';
 import { PlatformSettingsRepository } from '../../repositories/platformSettingsRepository.js';
 import { getOversightThresholds } from '../platform/platformConfigService.js';
+import { dispatchSecurityAlert, shouldDispatch } from '../alerting/securityAlertDispatch.js';
 
 const oversightFindingRepository = new OversightFindingRepository(pool);
 const securityAuditLogRepository = new SecurityAuditLogRepository(pool);
@@ -50,6 +51,20 @@ const MIN_SAMPLES_FOR_FORECAST = 8;
  * occurrence_count/last_detected_at - the "one continuing finding, not a
  * new emergency every sweep" rule (never spams a fresh row for a
  * still-triggering condition). Audits only on real, first creation.
+ *
+ * And, since a security review found this stopping here: a serious finding
+ * is now also DISPATCHED to a person. Everything above wrote a row and an
+ * audit event and told nobody, so a credential-stuffing run raised a real,
+ * correct, severity-high finding that sat in a table until somebody thought
+ * to open the developer console. Detection that reaches nobody is a log, not
+ * a control.
+ *
+ * Deliberately inside the "brand new" branch, after the row exists. The
+ * dedup that keeps this from being a new emergency every fifteen minutes is
+ * the same dedupKey the finding itself uses - a still-triggering condition
+ * bumps silently, exactly as it already did. And the alert goes out after
+ * the record is written, never instead of it: a failing mail provider must
+ * cost a notification, never the finding.
  */
 async function raiseOrBumpFinding(input: CreateOversightFindingInput): Promise<void> {
   const existing = await oversightFindingRepository.findOpenByDedupKey(input.dedupKey);
@@ -67,6 +82,20 @@ async function raiseOrBumpFinding(input: CreateOversightFindingInput): Promise<v
       rawMetadata: { findingId: created.id, findingType: input.findingType, category: input.category },
     })
     .catch(() => undefined);
+
+  if (shouldDispatch(input.severity)) {
+    await dispatchSecurityAlert({
+      severity: input.severity,
+      title: input.title,
+      /* recommendedInvestigation is what a person should actually go and
+         do, so it is the body. A finding that somehow carries none still
+         gets sent - the title alone beats silence - with an honest line
+         rather than an empty message. */
+      detail: input.recommendedInvestigation ?? 'No recommended investigation was recorded for this finding - open the oversight console for the full evidence.',
+    }).catch((error: unknown) => {
+      console.error('[oversightSweepService] Security alert dispatch failed:', error instanceof Error ? error.message : String(error));
+    });
+  }
 }
 
 /**
@@ -166,6 +195,92 @@ async function checkApplicationHealth(): Promise<void> {
 }
 
 // ── Security / abuse ─────────────────────────────────────────────────────
+
+/**
+ * Whether inbound messages are actually being screened, and whether the
+ * outbound guard is catching things.
+ *
+ * THE FAIL-OPEN THIS WATCHES. The Sentinel screens every inbound message in
+ * two stages. Stage 1 is a deterministic heuristic gate and always applies.
+ * Stage 2 asks a model, and when that model is unreachable the message is
+ * allowed through with a sentinel_ai_unavailable audit row rather than
+ * blocked (sentinel.ts). That is the right call and is not changed here:
+ * Stage 1 still holds, and refusing every inbound message during a provider
+ * outage would stop the business working.
+ *
+ * What was wrong is that nobody watched it. A security review found that an
+ * outage silently downgraded screening to heuristics-only for as long as it
+ * lasted, visible only as rows nobody was reading. The fix for a monitored
+ * fail-open is monitoring, and this is it.
+ *
+ * Counted platform-wide rather than per business, deliberately: the cause is
+ * one shared provider being down, so a hundred businesses each seeing a few
+ * is the same single incident, and splitting it per tenant would report it
+ * as a hundred.
+ */
+async function checkSecurityScreening(): Promise<void> {
+  const thresholds = await getOversightThresholds();
+  const sinceIso = new Date(Date.now() - RATE_WINDOW_MS).toISOString();
+  const windowEnd = new Date().toISOString();
+
+  const unavailableCount = await securityAuditLogRepository.countSince(['sentinel_ai_unavailable'], sinceIso);
+  if (unavailableCount >= thresholds.sentinelUnavailablePerHour) {
+    await raiseOrBumpFinding({
+      category: 'security',
+      findingType: 'sentinel_screening_degraded',
+      /* Says what is actually true right now, rather than "Sentinel error".
+         Somebody reading this at speed needs to know messages are still
+         flowing and still heuristically screened - not that screening
+         stopped. */
+      title: 'Inbound AI screening is failing open - messages are passing on heuristics alone',
+      severity: unavailableCount >= thresholds.sentinelUnavailablePerHour * 3 ? 'high' : 'medium',
+      confidence: 1,
+      impact: 4, likelihood: 3, exposure: 4, urgency: 3,
+      scopeDescription: 'Inbound message screening, platform-wide',
+      evidence: {
+        metric: 'sentinel_ai_unavailable count',
+        windowHours: 1,
+        count: unavailableCount,
+        threshold: thresholds.sentinelUnavailablePerHour,
+      },
+      recommendedInvestigation:
+        "The Sentinel's second stage is designed to fail open, so nothing is blocked and no message has been lost - " +
+        'but AI screening is effectively off while this lasts, leaving only the Stage 1 heuristic gate. Check the ' +
+        'screening model provider (key, quota, reachability) on /developer/security-events. This clears itself once ' +
+        'the provider recovers.',
+      windowStart: sinceIso,
+      windowEnd,
+      dedupKey: 'security:sentinel_screening_degraded',
+    });
+  }
+
+  /**
+   * The other direction: replies the outbound guard stopped before they were
+   * sent. Every one of these is the guard working, which is exactly why a
+   * run of them matters - either something is systematically probing, or an
+   * agent's configuration is producing them, and both need a person.
+   */
+  const leakCount = await securityAuditLogRepository.countSince(['ai_output_leak_blocked'], sinceIso);
+  if (leakCount >= thresholds.outputLeaksPerHour) {
+    await raiseOrBumpFinding({
+      category: 'security',
+      findingType: 'output_leak_spike',
+      title: 'Repeated AI replies blocked for disclosing a protected fact',
+      severity: leakCount >= thresholds.outputLeaksPerHour * 3 ? 'high' : 'medium',
+      confidence: 1,
+      impact: 5, likelihood: 3, exposure: 4, urgency: 4,
+      scopeDescription: 'Outbound AI replies, platform-wide',
+      evidence: { metric: 'ai_output_leak_blocked count', windowHours: 1, count: leakCount, threshold: thresholds.outputLeaksPerHour },
+      recommendedInvestigation:
+        'Nothing leaked - each of these was caught and the chat handed to a human. But repeated blocks mean either ' +
+        "somebody is probing an agent for protected facts, or an agent's own configuration keeps producing them. " +
+        'Read the blocked reasons on /developer/security-events and check which agents and businesses they came from.',
+      windowStart: sinceIso,
+      windowEnd,
+      dedupKey: 'security:output_leak_spike',
+    });
+  }
+}
 
 async function checkAuthAbuse(): Promise<void> {
   const thresholds = await getOversightThresholds();
@@ -414,6 +529,7 @@ async function reportMonitoringGaps(): Promise<void> {
 export async function runOversightSweep(): Promise<void> {
   await runRule('application_health', checkApplicationHealth);
   await runRule('auth_abuse', checkAuthAbuse);
+  await runRule('security_screening', checkSecurityScreening);
   await runRule('ai_usage_growth', checkAiUsageGrowth);
   await runRule('entitlement_proximity', checkEntitlementProximity);
   await runRule('connection_ceiling', checkConnectionCeiling);

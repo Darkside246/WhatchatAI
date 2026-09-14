@@ -3,10 +3,13 @@
 A read of this application looking for ways in, and for the places where a
 rule everybody believes is true is not actually enforced by anything.
 
-Three findings were fixed in the same change as this document. The rest are
-written down as real, open items with what each one would cost to close.
-Nothing here was inferred from a scan: every finding below was traced to the
-line that allows it.
+Six findings, all fixed. Two privilege escalations and an enforcement gap in
+the first pass; the alerting, monitoring and rate-limiting gaps that pass
+left behind in the second. One recommendation is still open, at the bottom.
+
+Nothing here was inferred from a scan: every finding was traced to the line
+that allows it, and every fix was checked by removing it again and confirming
+a test fails.
 
 ---
 
@@ -95,48 +98,100 @@ cannot pass vacuously.
 
 ---
 
-## Open items
+## Also fixed, in a second pass
 
-### 4. Security events are recorded but nobody is told — medium
+### 4. Security events were recorded but nobody was told — FIXED
 
-`security_audit_logs` faithfully records `sentinel_ai_block`,
-`sentinel_ai_unavailable`, `output_leak_blocked`, `auth_rate_limited` and
-the rest. `src/services/alerting/incidentAlertService.ts` alerts on database,
-Redis, queue and Goose health — **infrastructure only**. No security event
-raises an alert to anybody.
+`security_audit_logs` faithfully records every screening block, leak block
+and rate-limit trip, and the oversight sweep
+(`services/oversight/oversightSweepService.ts`) genuinely *detects* abuse
+from them — auth rate-limit trips already raised a real, correctly-scored
+finding.
 
-That means credential stuffing against `/api/auth/login`, or an outbound
-leak the guard caught, is visible only to somebody who opens the developer
-console and looks. Detection without notification is a log, not a control.
+Then it stopped. `raiseOrBumpFinding` wrote the row, wrote an audit event,
+and returned. Nothing was dispatched anywhere, while
+`incidentAlertService.ts` had a fully built email-and-Telegram path used only
+by database, Redis, queue and Goose health. So a credential-stuffing run
+produced a correct severity-high finding that sat in a table until somebody
+thought to open the developer console.
 
-**To close:** reuse the existing alert channels
-(`alerting/alertChannels.ts` already does email and Telegram) with a rate
-threshold per event type — a burst of `auth_rate_limited`, any
-`output_leak_blocked`, a sustained run of `sentinel_ai_unavailable`. The
-dedup and reminder machinery already exists in `incidentAlertService.ts`.
+To be precise about the original finding: it was not that nothing detects
+security events. It is that detection reached nobody, which makes it a log
+rather than a control.
 
-### 5. The Sentinel's second stage fails open, and nothing watches it — medium
+**Fixed:** `services/alerting/securityAlertDispatch.ts` — the missing wire,
+and nothing more. Same two channels, same "never pretend an alert was sent"
+honesty.
 
-`src/security/sentinel/sentinel.ts:79` — when the AI screening stage is
-unavailable, the message is allowed through with a
-`sentinel_ai_unavailable` audit row.
+- **Critical and high only.** A medium finding is worth looking at during the
+  day and a bad thing to be paged about at 3am; a channel that cries wolf is
+  one people mute, which is worse than having none. Every severity is still
+  written to `oversight_findings` and the audit log regardless — this decides
+  only what gets pushed.
+- **Deduped by the mechanism already there.** The dispatch sits in
+  `raiseOrBumpFinding`'s brand-new branch, so a still-triggering condition
+  bumps silently exactly as before, rather than paging every fifteen minutes
+  for one outage.
+- **After the record, never instead of it.** A dead mail provider costs a
+  notification, never the finding — pinned by a test.
+- **Its own module**, deliberately: `ALERT_MONITORING_ENABLED=false` turns
+  off health polling and must not also silence security.
 
-This is a deliberate, documented trade-off and the right one: Stage 1's
-heuristic gate stays enforced, and blocking every inbound message during a
-Gemini outage would stop the business working. But combined with finding 4,
-a provider outage silently downgrades screening to heuristics-only for as
-long as it lasts, and nobody finds out. The fix is not to change the fail
-mode — it is to alert on it.
+### 5. The Sentinel's second stage failed open, unwatched — FIXED
 
-### 6. The driver session exchange has no dedicated rate limit — low
+`security/sentinel/sentinel.ts:79` — when the AI screening stage is
+unavailable the message is allowed through with a `sentinel_ai_unavailable`
+audit row.
 
-`POST /api/driver/session` trades a link token for a session cookie. It is
-covered only by the global 300/min per-IP limiter, not by `authLimiter`
-(10 per 15 minutes), which guards the other credential-exchange endpoints.
+**The fail mode is unchanged, and deliberately so.** Stage 1's heuristic gate
+still applies, and blocking every inbound message during a provider outage
+would stop the business working. The trade-off is right. What was wrong is
+that nobody watched it, so an outage silently downgraded screening to
+heuristics-only for as long as it lasted.
 
-The token is 32+ characters and compared as a hash, so this is not
-practically brute-forceable; it is an inconsistency rather than a live hole.
-Adding it to `authLimiter` in `src/server/index.ts` is one line.
+**Fixed:** a new `security_screening` rule in the oversight sweep, which now
+alerts by way of finding 4.
+
+- `sentinel_ai_unavailable` above `sentinelUnavailablePerHour` (default 20)
+  raises a finding; three times over makes it high, and pages. A handful of
+  one-off timeouts stays quiet.
+- `ai_output_leak_blocked` above `outputLeaksPerHour` (default 3) raises a
+  separate one. Each of those is the guard working — which is exactly why a
+  run of them means either somebody is probing or an agent's configuration is
+  wrong.
+- Counted platform-wide, not per tenant: the cause is one shared provider, so
+  splitting it per business would report one incident as a hundred.
+- The finding text says what is actually true — messages are still flowing
+  and still heuristically screened — because "screening degraded" read at
+  speed is easy to mistake for "messages stopped".
+
+Both thresholds are editable in the developer control plane alongside the
+existing ones.
+
+### 6. The driver session exchange was missing from the auth rate limiter — FIXED
+
+`POST /api/driver/session` trades a link token for a session cookie and was
+covered only by the global 300/min per-IP limiter, not `authLimiter`
+(10 per 15 minutes) like every other credential exchange.
+
+The token is 32+ characters and compared as a hash, so this was an
+inconsistency rather than a live hole. Two reasons it still mattered: "not
+worth attacking today" is a property of the current token, not of the
+endpoint; and the limiter is also the only thing that writes
+`auth_rate_limited`, which is what the oversight sweep counts and now alerts
+on. Without it, the driver door was the one credential endpoint nothing would
+have noticed being hammered.
+
+**Fixed:** added to `authLimiter`, registered in `index.ts` before
+`mountPlatformRoutes()` — Express applies middleware in registration order,
+so a limiter declared inside the router would have sat behind its own routes
+and never run. That ordering is itself pinned by a test, since the failure
+mode is a line of code and a test that both look correct while protecting
+nothing.
+
+---
+
+## Still open
 
 ### 7. `tier_unrestricted` and developer-plane surface — worth a second read
 

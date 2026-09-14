@@ -1123,6 +1123,10 @@ export interface OversightFindingEventDto {
 export interface OversightThresholdsDto {
   authAbusePerHour: number;
   recaptchaFailuresPerHour: number;
+  /** How many messages may skip AI screening in an hour before somebody is told. The Sentinel's second stage fails open by design; this is what watches it. */
+  sentinelUnavailablePerHour: number;
+  /** How many blocked outbound leaks in an hour constitute an incident. Each one is the guard working; a run of them needs a person. */
+  outputLeaksPerHour: number;
   aiUsageGrowthWarningPct: number;
   entitlementWarningPct: number;
   entitlementCriticalPct: number;

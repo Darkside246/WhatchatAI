@@ -1457,7 +1457,7 @@ const OVERSIGHT_SEVERITY_COLOR: Record<OversightFindingDto['severity'], string> 
 
 function OversightThresholdsForm({ thresholds, onSave }: { thresholds: OversightThresholdsDto | null; onSave: (t: OversightThresholdsDto) => Promise<void> }) {
   const [fields, setFields] = useState<Record<keyof OversightThresholdsDto, string>>({
-    authAbusePerHour: '', recaptchaFailuresPerHour: '', aiUsageGrowthWarningPct: '',
+    authAbusePerHour: '', recaptchaFailuresPerHour: '', sentinelUnavailablePerHour: '', outputLeaksPerHour: '', aiUsageGrowthWarningPct: '',
     entitlementWarningPct: '', entitlementCriticalPct: '', connectionCeilingWarningPct: '', configDriftGraceHours: '',
   });
   const [saving, setSaving] = useState(false);
@@ -1468,6 +1468,8 @@ function OversightThresholdsForm({ thresholds, onSave }: { thresholds: Oversight
     setFields({
       authAbusePerHour: String(thresholds.authAbusePerHour),
       recaptchaFailuresPerHour: String(thresholds.recaptchaFailuresPerHour),
+      sentinelUnavailablePerHour: String(thresholds.sentinelUnavailablePerHour),
+      outputLeaksPerHour: String(thresholds.outputLeaksPerHour),
       aiUsageGrowthWarningPct: String(thresholds.aiUsageGrowthWarningPct),
       entitlementWarningPct: String(thresholds.entitlementWarningPct),
       entitlementCriticalPct: String(thresholds.entitlementCriticalPct),
@@ -1483,6 +1485,8 @@ function OversightThresholdsForm({ thresholds, onSave }: { thresholds: Oversight
       await onSave({
         authAbusePerHour: clamp(fields.authAbusePerHour, 100_000),
         recaptchaFailuresPerHour: clamp(fields.recaptchaFailuresPerHour, 100_000),
+        sentinelUnavailablePerHour: clamp(fields.sentinelUnavailablePerHour, 100_000),
+        outputLeaksPerHour: clamp(fields.outputLeaksPerHour, 100_000),
         aiUsageGrowthWarningPct: clamp(fields.aiUsageGrowthWarningPct, 10_000),
         entitlementWarningPct: clamp(fields.entitlementWarningPct, 100),
         entitlementCriticalPct: clamp(fields.entitlementCriticalPct, 100),
@@ -1501,6 +1505,8 @@ function OversightThresholdsForm({ thresholds, onSave }: { thresholds: Oversight
   const labels: Record<keyof OversightThresholdsDto, string> = {
     authAbusePerHour: 'Auth rate-limit trips / hr',
     recaptchaFailuresPerHour: 'reCAPTCHA failures / hr',
+    sentinelUnavailablePerHour: 'Unscreened messages / hr',
+    outputLeaksPerHour: 'Blocked reply leaks / hr',
     aiUsageGrowthWarningPct: 'AI usage growth warning %',
     entitlementWarningPct: 'Entitlement warning %',
     entitlementCriticalPct: 'Entitlement critical %',

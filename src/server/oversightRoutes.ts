@@ -68,6 +68,10 @@ router.get('/developer/oversight/thresholds', requireAuth, requireDeveloper, asy
 const oversightThresholdsSchema = z.object({
   authAbusePerHour: z.number().int().min(1).max(100_000),
   recaptchaFailuresPerHour: z.number().int().min(1).max(100_000),
+  /* Security screening degradation and blocked outbound leaks - see
+     OversightThresholds for why each has the default it has. */
+  sentinelUnavailablePerHour: z.number().int().min(1).max(100_000),
+  outputLeaksPerHour: z.number().int().min(1).max(100_000),
   aiUsageGrowthWarningPct: z.number().int().min(1).max(10_000),
   entitlementWarningPct: z.number().int().min(1).max(100),
   entitlementCriticalPct: z.number().int().min(1).max(100),

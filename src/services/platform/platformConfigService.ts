@@ -157,6 +157,34 @@ export async function setGovernanceThresholds(thresholds: GovernanceThresholds, 
 export interface OversightThresholds {
   authAbusePerHour: number;
   recaptchaFailuresPerHour: number;
+  /**
+   * How many messages may skip AI screening in an hour before somebody is
+   * told.
+   *
+   * The Sentinel's second stage fails OPEN by design (sentinel.ts): when the
+   * screening model is unreachable the message is allowed through with a
+   * sentinel_ai_unavailable audit row, because Stage 1's heuristic gate
+   * still applies and blocking every inbound message during a provider
+   * outage would stop the business working. That trade-off is right.
+   *
+   * What was missing is that nothing watched it, so an outage silently
+   * downgraded screening to heuristics-only for as long as it lasted. The
+   * fix is not to change the fail mode - it is this number.
+   *
+   * 20/hour: a handful of one-off timeouts is ordinary and not worth a page;
+   * twenty in an hour is a provider that is down rather than flaky.
+   */
+  sentinelUnavailablePerHour: number;
+  /**
+   * How many blocked outbound leaks in an hour constitute an incident.
+   *
+   * Every one of these is the guard working - a reply that would have
+   * disclosed a protected fact, caught before it was sent. One is worth
+   * knowing about. A run of them means something is systematically trying,
+   * or an agent's configuration is wrong in a way that keeps producing
+   * them, and either way a person should look the same day.
+   */
+  outputLeaksPerHour: number;
   aiUsageGrowthWarningPct: number;
   entitlementWarningPct: number;
   entitlementCriticalPct: number;
@@ -167,6 +195,8 @@ export interface OversightThresholds {
 const DEFAULT_OVERSIGHT_THRESHOLDS: OversightThresholds = {
   authAbusePerHour: 30,
   recaptchaFailuresPerHour: 20,
+  sentinelUnavailablePerHour: 20,
+  outputLeaksPerHour: 3,
   aiUsageGrowthWarningPct: 50,
   entitlementWarningPct: 80,
   entitlementCriticalPct: 95,
@@ -182,6 +212,8 @@ export async function getOversightThresholds(): Promise<OversightThresholds> {
   return {
     authAbusePerHour: pick('authAbusePerHour'),
     recaptchaFailuresPerHour: pick('recaptchaFailuresPerHour'),
+    sentinelUnavailablePerHour: pick('sentinelUnavailablePerHour'),
+    outputLeaksPerHour: pick('outputLeaksPerHour'),
     aiUsageGrowthWarningPct: pick('aiUsageGrowthWarningPct'),
     entitlementWarningPct: pick('entitlementWarningPct'),
     entitlementCriticalPct: pick('entitlementCriticalPct'),

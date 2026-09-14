@@ -407,6 +407,24 @@ app.use('/api/auth/password/forgot', authLimiter);
 app.use('/api/auth/password/reset', authLimiter);
 /** Same reasoning: a token-guessing loop is a credential attack. */
 app.use('/api/auth/email/verify', authLimiter);
+/**
+ * The driver portal's token-for-session exchange, which is a credential
+ * exchange like every route above it and was covered only by the global
+ * 300/min limiter.
+ *
+ * The token is 32+ characters and compared as a hash, so this was never
+ * practically brute-forceable - it was an inconsistency rather than a hole,
+ * found in a security review. But "not worth attacking today" is a property
+ * of the current token, not of this endpoint, and the limiter is also what
+ * writes the auth_rate_limited audit row that the oversight sweep reads.
+ * Without it, somebody hammering the driver door is the one credential
+ * endpoint nothing would notice.
+ *
+ * Registered here rather than in driverPortalRouter because Express applies
+ * middleware in registration order and mountPlatformRoutes() runs below -
+ * a limiter declared inside the router would sit behind its own routes.
+ */
+app.use('/api/driver/session', authLimiter);
 
 // 20mb (not the old 2mb) to fit base64-encoded outbound media uploads -
 // this is one global parser, so every route's real ceiling moved with it.

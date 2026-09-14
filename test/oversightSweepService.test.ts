@@ -169,3 +169,99 @@ describe('oversightSweepService.runOversightSweep (real Postgres, AURA AI Oversi
     expect(await findingsByType('queue_backlog_trend')).toEqual([]);
   });
 });
+
+/**
+ * Watching the fail-open.
+ *
+ * The Sentinel screens every inbound message in two stages. Stage 1 is a
+ * deterministic heuristic gate and always applies. Stage 2 asks a model, and
+ * when that model is unreachable the message is allowed through with a
+ * sentinel_ai_unavailable row rather than blocked - the right call, since
+ * Stage 1 still holds and refusing every inbound message during a provider
+ * outage would stop the business working.
+ *
+ * A security review found that nothing watched it. An outage silently
+ * downgraded screening to heuristics-only for as long as it lasted, visible
+ * only as rows nobody read. The fix for a monitored fail-open is monitoring.
+ */
+describe('security screening degradation', () => {
+  async function recordMany(eventType: 'sentinel_ai_unavailable' | 'ai_output_leak_blocked', count: number) {
+    for (let i = 0; i < count; i++) {
+      await securityAuditLogRepository.record({ businessId: null, eventType, rawMetadata: {} });
+    }
+  }
+
+  it('says nothing about the handful of one-off timeouts every provider has', async () => {
+    await resetDatabase();
+    await recordMany('sentinel_ai_unavailable', 19);
+    await runOversightSweep();
+    expect(await findingsByType('sentinel_screening_degraded')).toEqual([]);
+  });
+
+  it('raises a finding once enough messages have skipped screening to mean an outage', async () => {
+    await resetDatabase();
+    await recordMany('sentinel_ai_unavailable', 20);
+    await runOversightSweep();
+
+    const findings = await findingsByType('sentinel_screening_degraded');
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.category).toBe('security');
+    expect((findings[0]?.evidence as { count?: number }).count).toBe(20);
+  });
+
+  it('escalates to high when it is three times over, because that is an outage not a blip', async () => {
+    await resetDatabase();
+    await recordMany('sentinel_ai_unavailable', 60);
+    await runOversightSweep();
+    expect((await findingsByType('sentinel_screening_degraded'))[0]?.severity).toBe('high');
+  });
+
+  it('tells the reader that nothing was blocked and nothing was lost', async () => {
+    // Read at speed, "screening degraded" is easy to misread as "messages
+    // stopped". The recommended investigation has to say what is actually
+    // true: messages are flowing, heuristics still apply, the model is down.
+    await resetDatabase();
+    await recordMany('sentinel_ai_unavailable', 20);
+    await runOversightSweep();
+    const finding = (await findingsByType('sentinel_screening_degraded'))[0];
+    expect(finding?.recommendedInvestigation).toContain('fail open');
+    expect(finding?.recommendedInvestigation).toContain('no message has been lost');
+  });
+
+  it('stays one continuing finding rather than a new emergency every sweep', async () => {
+    await resetDatabase();
+    await recordMany('sentinel_ai_unavailable', 25);
+    await runOversightSweep();
+    await runOversightSweep();
+    await runOversightSweep();
+    expect(await findingsByType('sentinel_screening_degraded')).toHaveLength(1);
+  });
+
+  it('raises a separate finding when the outbound guard keeps blocking replies', async () => {
+    // The other direction: each of these is the guard working, which is
+    // exactly why a run of them matters.
+    await resetDatabase();
+    await recordMany('ai_output_leak_blocked', 3);
+    await runOversightSweep();
+
+    const findings = await findingsByType('output_leak_spike');
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.category).toBe('security');
+  });
+
+  it('does not confuse the two - one being noisy never raises the other', async () => {
+    await resetDatabase();
+    await recordMany('sentinel_ai_unavailable', 60);
+    await runOversightSweep();
+    expect(await findingsByType('output_leak_spike')).toEqual([]);
+  });
+
+  it('respects a threshold the platform has actually changed', async () => {
+    await resetDatabase();
+    await platformSettingsRepository.set('oversight_thresholds', { sentinelUnavailablePerHour: 5 }, null);
+    await recordMany('sentinel_ai_unavailable', 5);
+    await runOversightSweep();
+    expect(await findingsByType('sentinel_screening_degraded')).toHaveLength(1);
+  });
+});
+
