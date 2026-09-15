@@ -1331,7 +1331,7 @@ async function tryFallbackProviders(
   // beyond the first are joined rather than silently discarded.
   const transcript = contents.map((content) => ({
     role: content.role === 'model' ? ('assistant' as const) : ('user' as const),
-    content: content.parts
+    content: (content.parts ?? [])
       .map((part) => (typeof (part as { text?: unknown }).text === 'string' ? (part as { text: string }).text : ''))
       .filter((text) => text.length > 0)
       .join('\n'),
