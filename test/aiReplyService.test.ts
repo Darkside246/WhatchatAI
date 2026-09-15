@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generateAiReply, buildSystemInstruction, wrapUntrustedData, escapeUntrustedDataBoundary, NO_REPLY_SENTINEL } from '../src/services/aiReplyService.js';
+import { generateAiReply, buildSystemInstruction, wrapUntrustedData, escapeUntrustedDataBoundary, NO_REPLY_SENTINEL, toContents } from '../src/services/aiReplyService.js';
 import type { AiAgentRecord } from '../src/repositories/aiAgentRepository.js';
 import type { AiHandoffContext } from '../src/services/aiContextGathererService.js';
 import type { WhatsAppMessageRecord } from '../src/repositories/whatsappMessageRepository.js';
@@ -216,6 +216,50 @@ describe('generateAiReply (real GEMINI_API_KEY state in this environment - never
     if (result.status === 'unavailable') {
       expect(result.reason).toContain('No real message text to reply to');
     }
+  });
+});
+
+
+describe('toContents: message bursts become one model turn', () => {
+  function burstMessage(id: string, textContent: string, sequence: number, overrides: Partial<WhatsAppMessageRecord> = {}): WhatsAppMessageRecord {
+    const timestamp = new Date(Date.UTC(2026, 8, 15, 12, 0, sequence)).toISOString();
+    return fakeMessage({ id, whatsappMessageId: id, textContent, timestamp, createdAt: timestamp, ...overrides });
+  }
+
+  it('combines consecutive customer bubbles in chronological order', () => {
+    const history = [
+      burstMessage('m3', 'asking for my mum', 1),
+      burstMessage('m2', 'are you open today', 2),
+      burstMessage('m1', 'hey', 3),
+    ];
+
+    const contents = toContents(history, null, new Set(), new Map());
+
+    expect(contents).toHaveLength(1);
+    expect(contents[0]!.role).toBe('user');
+    expect((contents[0]!.parts[0] as { text: string }).text).toBe('hey\nare you open today\nasking for my mum');
+  });
+
+  it('keeps a genuine alternating conversation as separate turns', () => {
+    const history = [
+      burstMessage('m3', 'perfect, thank you', 1),
+      burstMessage('m2', 'Yes, until 6pm.', 2, { fromMe: true }),
+      burstMessage('m1', 'are you open today', 3),
+    ];
+
+    expect(toContents(history, null, new Set(), new Map()).map((content) => content.role)).toEqual(['user', 'model', 'user']);
+  });
+
+  it('keeps media attached when its customer bubble is merged', () => {
+    const history = [
+      burstMessage('m2', 'check this out', 1, { hasMedia: true, messageType: 'image' }),
+      burstMessage('m1', 'one sec', 2),
+    ];
+
+    const contents = toContents(history, { mimeType: 'image/jpeg', data: 'BASE64DATA' }, new Set(), new Map());
+
+    expect(contents).toHaveLength(1);
+    expect(contents[0]!.parts.filter((part) => 'inlineData' in part)).toHaveLength(1);
   });
 });
 

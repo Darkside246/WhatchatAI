@@ -40,6 +40,7 @@ import { FoodOperationsRepository, type FoodAiOrderTaking } from '../repositorie
 import { confirmProposal, resolveProposal, type DraftOrderProposal, type ProposedLine } from './food/orderIntake.js';
 import { describeModifierPrice } from '../domain/food/modifierPricing.js';
 import { describeEpisodeBoundary, silenceIsAvailable, splitEpisode } from '../domain/conversation/conversationClosure.js';
+import { groupConversationTurns } from '../domain/conversation/conversationTurnGrouping.js';
 import { RelayedMessageRepository } from '../repositories/relayedMessageRepository.js';
 import { RetailOperationsRepository } from '../repositories/retailOperationsRepository.js';
 import { recomputeLeadScoreForContact } from './leadScoringService.js';
@@ -1238,7 +1239,7 @@ function conversationTurns(history: AiHandoffContext['conversationHistory']) {
     .reverse();
 }
 
-function toContents(
+export function toContents(
   history: AiHandoffContext['conversationHistory'],
   media: InlineMediaPart | null,
   aiGeneratedMessageIds: Set<string>,
@@ -1252,7 +1253,7 @@ function toContents(
 
   const ordered = chronological;
 
-  return ordered.map((message, index) => {
+  return groupConversationTurns(ordered.map((message, index) => {
     const isTriggeringMessage = index === ordered.length - 1;
     const attachMedia = isTriggeringMessage && Boolean(media);
     const isHumanReply = message.fromMe && !aiGeneratedMessageIds.has(message.id);
@@ -1272,7 +1273,7 @@ function toContents(
     if (attachMedia && media) parts.push({ inlineData: { mimeType: media.mimeType, data: media.data } });
 
     return { role: message.fromMe ? ('model' as const) : ('user' as const), parts };
-  });
+  }));
 }
 
 /**
